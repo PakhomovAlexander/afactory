@@ -439,3 +439,5 @@ future readers need.
   CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
 - [0235 — Prove release validation without
   publication](0235-prove-release-validation-without-publication.md)
+- [0257 — Bound bare af's first browser
+  frame](0257-bound-bare-afs-first-browser-frame.md)

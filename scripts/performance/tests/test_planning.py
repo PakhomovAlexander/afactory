@@ -210,8 +210,8 @@ class Authority(History):
         self.assertEqual(plan["authority"]["suite_sha256"], loaded.raw_sha256)
         self.assertEqual([case["instance_id"] for case in plan["cases"]],
                          [item["instance_id"] for item in loaded.instances("quick")])
-        self.assertEqual(plan["verdict_policy"]["family_size"], 28)
-        self.assertEqual(plan["verdict_policy"]["case_alpha"], "1/560")
+        self.assertEqual(plan["verdict_policy"]["family_size"], 30)
+        self.assertEqual(plan["verdict_policy"]["case_alpha"], "1/600")
         self.assertEqual(len(plan["shards"]), 16)
         with self.assertRaises(ContractError):
             self.plan(trigger="main_push", scope="full", head=later, cases=["cli_discovery"])
@@ -638,7 +638,7 @@ class Frozen(History):
         refused(lambda p: p["cases"][0].update(seed={
             "seed_id": "x", "case_id": "x", "contract_id": "x_v1",
             "parameters": {"package": "issue_255_medium"}}), "a subset of the instance")
-        refused(lambda p: p.update(schema="af.perf-run/5"), "expected 'af.perf-run/6'")
+        refused(lambda p: p.update(schema="af.perf-run/5"), "expected 'af.perf-run/7'")
 
     def test_expected_slots_cover_sentinels_warmups_and_pairs(self):
         plan = self.plan(scope="partial_scope", base=self.c2, head=self.c3,
@@ -796,8 +796,15 @@ class Command(History):
         code, out, _ = self.run_cli("list", "--suite", SUITE, "--json")
         self.assertEqual(code, 0)
         listing = json.loads(out.decode())
-        self.assertEqual(len(listing["tiers"]["quick"]), 28)
+        self.assertEqual(len(listing["tiers"]["quick"]), 30)
         self.assertEqual(listing["policy_digest"], suite.load(SUITE).policy_digest)
+        self.assertEqual(listing["capabilities"]["budgets"]["tui_browser_under_200ms"],
+                         "pending_calibration")
+        code, out, _ = self.run_cli("list", "--suite", SUITE)
+        self.assertEqual(code, 0)
+        self.assertIn(b"tui_open__registry_empty", out)
+        self.assertIn(b"tui_open__registry_stores_20x10000", out)
+        self.assertIn(b"tui_browser_under_200ms  pending_calibration  cases tui_open", out)
         broken = self.path("broken.toml")
         with open(broken, "wb") as stream:
             stream.write(read(SUITE).replace(b'relative_tolerance = "0.05"',

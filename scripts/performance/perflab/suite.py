@@ -1,4 +1,4 @@
-"""The reviewed registry `fixtures/performance/suite.toml` (`af.perf-suite/3`).
+"""The reviewed registry `fixtures/performance/suite.toml` (`af.perf-suite/4`).
 
 It separates workload (cases, parameters, oracles, timing and cache scope), policy
 (criticality, tolerances, budgets, samples), recipe (build and instrument) and environment
@@ -7,6 +7,7 @@ parameter domain before anything is planned. Version 2 added the native probe de
 each library case's probe contract (ADR-0163). Version 3 names the seed a library case's probe
 reads, speaks `af.perf-probe-request/2`, and lets a recipe pin its build image by either
 canonical digest form (ADR-0170); earlier versions are refused.
+Version 4 admits a reviewed driver-reported process interval for the browser frame (ADR-0257).
 """
 from fractions import Fraction
 import itertools
@@ -20,7 +21,7 @@ from .values import (ContractError, ID_PATTERN, canonical_digest, is_id, parse_d
                      require, sha256_bytes)
 from . import tomlfile
 
-SCHEMA = "af.perf-suite/3"
+SCHEMA = "af.perf-suite/4"
 PROBE_REQUEST_SCHEMA = "af.perf-probe-request/2"
 PROBE_MESSAGE_SCHEMA = "af.perf-probe/1"
 TIERS = ("quick", "nightly", "release")
@@ -66,7 +67,7 @@ BUDGET = Obj(
 
 FIXTURE = Obj(
     Field("kind", Str(enum=("typed_envelope", "canonical_small", "event_log", "file_tree",
-                            "cli_state", "cli_task"))),
+                            "cli_state", "cli_task", "cli_registry"))),
     Field("description", TEXT),
     Field("serialized_envelope_bytes", Int(1, ARTIFACT_ENVELOPE_CAP_BYTES), required=False),
     Field("size_rule", Str(enum=("exact", "approximate")), required=False),
@@ -149,6 +150,8 @@ ORACLE = Obj(
 TIMING = Tagged("boundary", {
     "child_process_lifetime": tagged_variant(
         "boundary", "child_process_lifetime", Field("description", TEXT)),
+    "reported_interval": tagged_variant(
+        "boundary", "reported_interval", Field("field", ID), Field("description", TEXT)),
     "library_region": tagged_variant(
         "boundary", "library_region", Field("region", ID),
         Field("setup_excluded", Arr(SHORT_TEXT, 0, 16)), Field("description", TEXT)),
@@ -505,8 +508,13 @@ def _validate_case(doc, case_id, case, at):
     require(case["warmup_pairs"] % 2 == 0,
             at + ".warmup_pairs: warmups come in AB/BA blocks; use an even count")
     timing = case["timing"]["boundary"]
-    require((case["kind"] == "process") == (timing == "child_process_lifetime"),
-            at + ".timing: process cases time the child lifetime; library cases a region")
+    require((case["kind"] == "process") == (timing in ("child_process_lifetime",
+                                                       "reported_interval")),
+            at + ".timing: process cases time the child lifetime or a reported interval; "
+            "library cases time a region")
+    if timing == "reported_interval":
+        require(case_id == "tui_open" and case["timing"]["field"] == "browser_ms",
+                at + ".timing: only tui_open reports browser_ms")
     if case["cache"]["projection"] == "by_parameter":
         domain = case.get("parameters", {}).get("projection")
         require(domain is not None and domain["kind"] == "enum"

@@ -5,7 +5,7 @@ index, and runs that shard's planned slots in their planned order on this host: 
 sentinel pairs, each case's two-pair AB/BA warmup and measured blocks, then the end sentinel
 pairs. Nothing is rebuilt, retried, replaced, dropped or reordered, and no count changes with an
 outcome. Every sample runs under the authority supervisor in the plan's environment: explicitly
-trusted local mode on macOS (a process group, discovery and nonspawning library cases) or a
+trusted local mode on macOS (a process group, cases declared without Linux containment) or a
 pinned Linux sample container per sample (a PID namespace, with only the per-sample directory of
 a verified disk-bounded scratch filesystem writable). Every binary is rehashed against the build
 manifest immediately before its launch.
@@ -679,7 +679,8 @@ class Shard(object):
         if not isinstance(adapter, dict):
             return None
         entry = clicases.command(adapter, case["case_id"], case["parameters"])
-        if entry is None or entry.get("setup") != "seed_copy":
+        if entry is None or entry.get("setup") not in ("seed_copy",
+                                                       "registry_stores_20x10000"):
             return None
         key = (slot["side"], entry["seed"])
         return None if key in self.seeds else ("cli",) + key
@@ -761,7 +762,8 @@ class Shard(object):
         if entry is None or "pending" in entry:
             return "CLI adapter %s has no runnable command: %s" % (
                 adapter_id, entry["pending"] if entry else "not declared")
-        if entry["setup"] == "seed_copy" and self.binaries.get(side, "library") is None:
+        if entry["setup"] in ("seed_copy", "registry_stores_20x10000") and \
+                self.binaries.get(side, "library") is None:
             return "the %s build has no probe to write the CLI seed %s" % (side, entry["seed"])
         return None
 
@@ -1064,7 +1066,7 @@ class Shard(object):
         adapter_id, adapter = self.adapters[side]
         entry = clicases.command(adapter, case["case_id"], case["parameters"])
         seed = None
-        if entry["setup"] == "seed_copy":
+        if entry["setup"] in ("seed_copy", "registry_stores_20x10000"):
             # Written once per side, before the first sample that copies it.
             seed = self.ensure_seed(side, entry["seed"], case)
         started_unix_ms = int(self.options.wall() * 1000)
@@ -1092,6 +1094,7 @@ class Shard(object):
                 namespace = oracle.Namespace(self.options.scratch)
                 scratch = namespace.path
                 values = {"af": af_path, "probe": probe_path or "", "scratch": scratch,
+                          "fixtures": self.authority.fixtures,
                           "package_version": self.versions[side]}
                 setup_script = os.path.join(self.authority.fixtures, "setup.sh")
                 containment, readonly = "process_group", None
@@ -1099,6 +1102,7 @@ class Shard(object):
             else:
                 scratch = supervise.SCRATCH
                 values = dict(CONTAINER_BINARIES, scratch=scratch,
+                              fixtures=supervise.FIXTURES,
                               package_version=self.versions[side])
                 setup_script = supervise.FIXTURES + "/setup.sh"
                 containment, readonly = "pid_namespace", {supervise.FIXTURES:
@@ -1140,12 +1144,26 @@ class Shard(object):
             passed, why, observed = clicases.judge(
                 entry, values, returncode, supervised.stdout, result["stdout"]["truncated"],
                 result["stdout_pattern_counts"], result["stdout_json"])
+            interval = None
+            if passed and case["timing"]["boundary"] == "reported_interval":
+                try:
+                    interval = clicases.tui_interval(supervised.stdout,
+                                                     case["timing"]["field"])
+                except ContractError as error:
+                    passed, why = False, str(error)
             record["oracle"].update(status="passed" if passed else "failed",
                                     observed_digest=observed, detail=why[:1024])
-            wall = result["timing"]["child_wall_ns"]
-            record["metrics"][case["primary_metric"]["key"]] = {
-                "value": format_decimal(Fraction(int(wall), 1000000)), "unit": "ms"}
-            record["metric_scopes"][case["primary_metric"]["key"]] = "child_process_lifetime"
+            if case["timing"]["boundary"] == "reported_interval":
+                if passed:
+                    record["metrics"][case["primary_metric"]["key"]] = {
+                        "value": format_decimal(interval), "unit": "ms"}
+                    record["metric_scopes"][case["primary_metric"]["key"]] = "probe_reported"
+            else:
+                wall = result["timing"]["child_wall_ns"]
+                record["metrics"][case["primary_metric"]["key"]] = {
+                    "value": format_decimal(Fraction(int(wall), 1000000)), "unit": "ms"}
+                record["metric_scopes"][case["primary_metric"]["key"]] = \
+                    "child_process_lifetime"
             extra = {}
             self.record_injection(slot, record, supervised, extra)
             for key, (metric, scope) in extra.items():
@@ -1185,6 +1203,8 @@ class Shard(object):
         environment = dict(CLI_ENVIRONMENT)
         environment.update(supervise.scratch_environment(scratch))
         environment.update(case["af_environment"])
+        if case["timing"]["boundary"] == "reported_interval":
+            environment.update(clicases.tui_home_environment(scratch))
         return environment
 
     # Seeds (ADR-0169) ---------------------------------------------------------------------
@@ -1238,7 +1258,9 @@ class Shard(object):
                 containment = "pid_namespace"
                 readonly = {supervise.FIXTURES: self.authority.fixtures}
                 output, seed_output = supervise.SEED_OUTPUT, seed.path
-            environment = self.cli_environment(case, scratch)
+            environment = dict(CLI_ENVIRONMENT)
+            environment.update(supervise.scratch_environment(scratch))
+            environment.update(case["af_environment"])
             request = canonical_bytes(clicases.seed_request(self.authority.cli, seed_id,
                                                             scratch)).decode("utf-8")
             order = supervise.request(

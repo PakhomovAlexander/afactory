@@ -560,7 +560,7 @@
       "path": "cli/invalid-seed-copy-without-seed.toml",
       "contract": "cli",
       "valid": false,
-      "error": "named exactly by a seed_copy setup",
+      "error": "named exactly by a seed-copying setup",
       "shape": false
     },
     {
@@ -581,7 +581,7 @@
       "path": "cli/invalid-version.toml",
       "contract": "cli",
       "valid": false,
-      "error": "expected af.perf-cli/5",
+      "error": "expected af.perf-cli/6",
       "shape": true
     },
     {
@@ -1484,7 +1484,7 @@
       "path": "run/invalid-version.json",
       "contract": "run",
       "valid": false,
-      "error": "expected af.perf-run/6",
+      "error": "expected af.perf-run/7",
       "shape": true
     },
     {
@@ -2389,6 +2389,25 @@
       "valid": false,
       "error": "retired ownership",
       "shape": false
+    },
+    {
+      "path": "tui-open/valid-frame.json",
+      "contract": "tui-open",
+      "valid": true
+    },
+    {
+      "path": "tui-open/invalid-splash-order.json",
+      "contract": "tui-open",
+      "valid": false,
+      "error": "splash arrived after",
+      "shape": false
+    },
+    {
+      "path": "tui-open/invalid-extra-field.json",
+      "contract": "tui-open",
+      "valid": false,
+      "error": "unknown field extra",
+      "shape": true
     }
   ]
 }

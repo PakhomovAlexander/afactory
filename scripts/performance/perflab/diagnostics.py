@@ -1402,6 +1402,8 @@ class Profile(object):
         environment = dict(CLI_ENVIRONMENT)
         environment.update(supervise.scratch_environment(scratch))
         environment.update(case.get("af_environment") or {})
+        if case["timing"]["boundary"] == "reported_interval":
+            environment.update(clicases.tui_home_environment(scratch))
         return environment
 
     def cli_run(self, side, case, binary, wrap=None, writes=(), file_bytes=None, trace=False,
@@ -1424,6 +1426,7 @@ class Profile(object):
             scratch = namespace.path
             probe = self.probes[side][0] if side in self.probes else None
             values = {"af": binary, "probe": probe or "", "scratch": scratch,
+                      "fixtures": self.cli.fixtures,
                       "package_version": self.cli.versions[side]}
             environment = self.cli_environment(case, scratch)
             if telemetry is not None:
@@ -1437,8 +1440,12 @@ class Profile(object):
                 self.copy_seed(side, case, os.path.join(scratch, "seed"),
                                cli_seed=entry["seed"])
             elif entry["setup"] != "none":
+                seed_argument = "-"
+                if entry["setup"] == "registry_stores_20x10000":
+                    seed_argument = os.path.join(scratch, "seed")
+                    self.copy_seed(side, case, seed_argument, cli_seed=entry["seed"])
                 setup = (["/bin/sh", os.path.join(self.cli.fixtures, "setup.sh"),
-                          entry["setup"], scratch, binary, probe or "-", "-"], environment,
+                          entry["setup"], scratch, binary, probe or "-", seed_argument], environment,
                          scratch, CLI_SETUP_SECONDS)
             argv = [clicases.expand(text, values) for text in entry["argv"]]
             if wrap is not None:

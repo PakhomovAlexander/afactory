@@ -1411,7 +1411,17 @@ class CliRegistry(TempDir):
                                                                   sort_keys=True))
                           for entry in adapter["commands"] if "pending" not in entry)
         self.assertEqual(len(runnable), 9)
-        self.assertEqual([entry for entry in adapter["commands"] if "pending" in entry], [])
+        self.assertEqual([entry["parameters"]["registry"] for entry in adapter["commands"]
+                          if "pending" in entry], ["empty", "stores_20x10000"])
+        current = [entry for entry in doc["adapters"]["af_cli_v2"]["commands"]
+                   if entry["case_id"] == "tui_open"]
+        self.assertEqual([(entry["parameters"]["registry"], entry["setup"])
+                          for entry in current],
+                         [("empty", "registry_empty"),
+                          ("stores_20x10000", "registry_stores_20x10000")])
+        self.assertTrue(all(entry["argv"] == ["python3", "-I",
+                                               "{fixtures}/tui-open.py", "{af}"]
+                            for entry in current))
         # The commands the design requires exist and use the help that exists: task show
         # --json, review ledger's semantic text (it has no --json flag) and review report
         # --format json, each over a private copy of the side's own seed.

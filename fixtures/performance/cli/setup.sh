@@ -21,6 +21,9 @@
 #                      (request ARGUMENT) tops its log up to exactly 10,000 events
 # seed_publish         copy SCRATCH/seed, written by a seed writer whose processes have all
 #                      exited, to the empty directory ARGUMENT
+# registry_empty       create private HOME/XDG directories without a Store registry
+# registry_stores_20x10000  copy the Task seed to 20 explicit Stores and register each
+#                      through the side's own af task list --state
 #
 # Any failure exits nonzero and the supervisor measures nothing.
 set -eu
@@ -75,6 +78,11 @@ probe_writer() {
     grep -q '"count":10000,' "$scratch/writer.json"
 }
 
+registry_home() {
+    mkdir -p "$scratch/home/state" "$scratch/home/config" "$scratch/home/cache" \
+        "$scratch/home/data"
+}
+
 case "$setup" in
 task_repository)
     task_repository
@@ -117,6 +125,24 @@ seed_campaign_state)
 seed_publish)
     test -d "$scratch/seed"
     copy_tree "$scratch/seed" "$argument"
+    ;;
+registry_empty)
+    registry_home
+    ;;
+registry_stores_20x10000)
+    test -f "$argument/probe-work/events.sqlite"
+    registry_home
+    number=1
+    while test "$number" -le 20; do
+        target="$scratch/home/explicit/$number"
+        mkdir -p "$target"
+        copy_tree "$argument/probe-work" "$target"
+        (cd "$fixtures" && "$af" task list --state "$target" \
+            >"$scratch/registry-list.json")
+        number=$((number + 1))
+    done
+    test -f "$scratch/home/state/af/stores.toml"
+    test "$(grep -c '^\[\[store\]\]$' "$scratch/home/state/af/stores.toml")" -eq 20
     ;;
 *)
     echo "setup.sh: unknown setup $setup" >&2

@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/6",
+  "schema": "af.perf-run/7",
   "run_id": "schema_fixture_run",
   "parent_run_id": null,
   "scope": "bootstrap",
