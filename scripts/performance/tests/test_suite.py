@@ -27,16 +27,28 @@ class Registry(unittest.TestCase):
             load_text(replace_once(self.text, old, new))
         self.assertIn(message, str(caught.exception))
 
+    def test_only_long_running_tier_can_override_the_bounded_build_allowance(self):
+        self.assertEqual(self.suite.doc["limits"]["build_minutes"], 20)
+        self.assertEqual(self.suite.doc["tiers"]["e2e_long_running"]["build_minutes"], 45)
+        for tier in ("quick", "nightly", "release"):
+            self.assertNotIn("build_minutes", self.suite.doc["tiers"][tier])
+            self.refuses("[tiers.%s]" % tier,
+                         "[tiers.%s]\nbuild_minutes = 45" % tier,
+                         "only e2e_long_running may override")
+        for value in (0, 46):
+            self.refuses("build_minutes = 45", "build_minutes = %d" % value,
+                         "build_minutes")
+
     def test_initial_coverage_expands_to_the_design_cases(self):
         ids = dict((tier, [item["instance_id"] for item in self.suite.instances(tier)])
                    for tier in suite.TIERS)
         self.assertEqual((len(ids["quick"]), len(ids["nightly"]), len(ids["release"])),
                          (30, 39, 11))
         for registry in ("empty", "stores_20x10000"):
-            for tier in suite.TIERS:
+            for tier in ("quick", "nightly", "release"):
                 self.assertIn("tui_open__registry_" + registry, ids[tier])
         for command in ("version", "help", "task_help", "review_run_help"):
-            for tier in suite.TIERS:
+            for tier in ("quick", "nightly", "release"):
                 self.assertIn("cli_discovery__command_" + command, ids[tier])
         for command in ("task_show", "review_ledger", "review_report"):
             self.assertIn("cli_state_read__command_%s_state_cli_state_10000" % command,
@@ -52,7 +64,7 @@ class Registry(unittest.TestCase):
                     if item["criticality"] == "advisory"]
         self.assertEqual(advisory, ["persistence_fs__operation_cas_write_read",
                                     "persistence_fs__operation_state_append_read"])
-        for tier in suite.TIERS:
+        for tier in ("quick", "nightly", "release"):
             self.assertEqual(ids[tier], sorted(ids[tier]))
 
     def test_initial_sampling_policy(self):
@@ -125,7 +137,7 @@ class Registry(unittest.TestCase):
         spawning = sorted(key for key, case in doc["cases"].items()
                           if case["requires_linux_containment"])
         self.assertEqual(spawning, ["cli_state_read", "cli_task_run_check", "cli_task_start",
-                                    "cli_task_wait", "source_capture"])
+                                    "cli_task_wait", "dev_default_light_smoke", "source_capture"])
         for key, fixture in doc["fixtures"].items():
             pending = fixture["kind"] in ("cli_state", "cli_task", "cli_registry")
             self.assertEqual(fixture["golden"], "pending_native_oracle" if pending
@@ -199,10 +211,10 @@ class Registry(unittest.TestCase):
                      "TOML floats are not allowed")
         self.refuses('suite_id = "af_performance"', 'suite_id = "af_performance"\n'
                      "when = 2026-01-01", "dates and times are not allowed")
-        # Version 4 admits the browser's reported interval; earlier shapes fail closed.
-        for earlier in ("1", "2", "3"):
-            self.refuses('schema = "af.perf-suite/4"', 'schema = "af.perf-suite/%s"' % earlier,
-                         "expected 'af.perf-suite/4'")
+        # Earlier shapes, including the global-only build allowance, fail closed.
+        for earlier in ("1", "2", "3", "4", "5"):
+            self.refuses('schema = "af.perf-suite/6"', 'schema = "af.perf-suite/%s"' % earlier,
+                         "expected 'af.perf-suite/6'")
         self.refuses('request = "af.perf-probe-request/2"', 'request = "af.perf-probe-request/1"',
                      "expected 'af.perf-probe-request/2'")
 
@@ -227,7 +239,7 @@ class Registry(unittest.TestCase):
         self.refuses("pairs = { quick = 40, nightly = 40, release = 40 }",
                      "pairs = { quick = 41, nightly = 40, release = 40 }", "even count")
         self.refuses("pairs = { quick = 40, nightly = 40, release = 40 }",
-                     "pairs = { quick = 202, nightly = 40, release = 40 }", "12..200")
+                     "pairs = { quick = 202, nightly = 40, release = 40 }", "1..200")
         self.refuses("pairs = { quick = 40, nightly = 40, release = 40 }",
                      "pairs = { quick = 10, nightly = 40, release = 40 }", "12..200")
         self.refuses("pairs = { quick = 40, nightly = 40, release = 40 }",

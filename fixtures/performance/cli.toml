@@ -47,7 +47,7 @@
 # around every sample, and every sample copies it into its own scratch: no sample shares a
 # mutable Store, a side's state or a cached projection with another, and the copy is setup.
 
-schema = "af.perf-cli/7"
+schema = "af.perf-cli/8"
 description = "Whole-CLI commands, fixture setups and independent oracle rules, per CLI adapter."
 setup_script = "cli/setup.sh"
 
@@ -619,6 +619,52 @@ description = "The driver sees the first NORMAL status line and reports launch-t
 
 
 [[adapters.af_cli_v3.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "cold" }
+setup = "none"
+pending = "Requires the current native Task and pipeline/6 contracts."
+description = "No retired-contract execution fallback."
+
+[[adapters.af_cli_v3.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "primed" }
+setup = "none"
+pending = "Requires the current native Task and pipeline/6 contracts."
+description = "No retired-contract execution fallback."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "cold" }
+setup = "none"
+pending = "The development-flow driver requires the current default-light and flow evidence contracts."
+description = "No legacy execution fallback."
+
+
+[[adapters.af_cli_v1.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "primed" }
+setup = "none"
+pending = "The development-flow driver requires the current default-light and flow evidence contracts."
+description = "No legacy execution fallback."
+
+
+[[adapters.af_cli_v2.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "cold" }
+setup = "none"
+pending = "The development-flow driver requires the current default-light and flow evidence contracts."
+description = "No legacy execution fallback."
+
+
+[[adapters.af_cli_v2.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "primed" }
+setup = "none"
+pending = "The development-flow driver requires the current default-light and flow evidence contracts."
+description = "No legacy execution fallback."
+
+
+[[adapters.af_cli_v3.commands]]
 case_id = "tui_open"
 parameters = { registry = "stores_20x10000" }
 setup = "registry_stores_20x10000"
@@ -1079,3 +1125,48 @@ rules = [
 ]
 description = "The side's cli_wait_fixture_v1 writer creates cli_wait_large_history_100; the real waiter must exit 124 while running under its normal final lease."
 
+
+[[adapters.af_cli_v4.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "cold" }
+setup = "dev_flow_cold"
+argv = ["{python}", "-I", "{fixtures}/default-light-smoke/run_and_validate.py", "--af", "{af}", "--work", "{scratch}/work", "--output", "{scratch}/flow.json"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af.perf-dev-flow-summary/1" },
+  { kind = "json_matches", path = "accepted_wall_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+  { kind = "json_equals", path = "mock.implementer", value = 3 },
+  { kind = "json_equals", path = "mock.correctness", value = 3 },
+  { kind = "json_equals", path = "mock.evaluator", value = 3 },
+  { kind = "json_equals", path = "cargo_fresh.0", value = 0 },
+  { kind = "json_equals", path = "cargo_dirty.0", value = 6 },
+  { kind = "json_equals", path = "cargo_fresh.1", value = 2 },
+  { kind = "json_equals", path = "cargo_dirty.1", value = 4 },
+  { kind = "json_equals", path = "cargo_fresh.2", value = 0 },
+  { kind = "json_equals", path = "cargo_dirty.2", value = 6 },
+]
+description = "Cold default-light smoke: three Tasks, two continuations, and the exact cold/incremental Cargo freshness sequence."
+
+
+[[adapters.af_cli_v4.commands]]
+case_id = "dev_default_light_smoke"
+parameters = { initial_cache = "primed" }
+setup = "dev_flow_primed"
+argv = ["{python}", "-I", "{fixtures}/default-light-smoke/run_and_validate.py", "--af", "{af}", "--work", "{scratch}/work", "--primed", "--output", "{scratch}/flow.json"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af.perf-dev-flow-summary/1" },
+  { kind = "json_matches", path = "accepted_wall_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+  { kind = "json_equals", path = "mock.implementer", value = 3 },
+  { kind = "json_equals", path = "mock.correctness", value = 3 },
+  { kind = "json_equals", path = "mock.evaluator", value = 3 },
+  { kind = "json_equals", path = "cargo_fresh.0", value = 6 },
+  { kind = "json_equals", path = "cargo_dirty.0", value = 0 },
+  { kind = "json_equals", path = "cargo_fresh.1", value = 2 },
+  { kind = "json_equals", path = "cargo_dirty.1", value = 4 },
+  { kind = "json_equals", path = "cargo_fresh.2", value = 0 },
+  { kind = "json_equals", path = "cargo_dirty.2", value = 6 },
+]
+description = "Primed default-light smoke: a valid Round-0 seed reuses every initial unit, then only the two repair closures rebuild."

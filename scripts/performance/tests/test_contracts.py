@@ -8,9 +8,10 @@ pass the schema, which proves the reader enforces what a schema cannot state.
 import json
 import os
 import re
+import tempfile
 import unittest
 
-from perflab import adapters, cli_cases, contracts, diagnostics, suite, toml_file
+from perflab import adapters, ci, cli_cases, contracts, diagnostics, equivalence, executor, suite, toml_file
 from perflab.values import ContractError
 from tests.support import ROOT, read
 
@@ -252,6 +253,58 @@ class Parity(unittest.TestCase):
             with self.assertRaises(ContractError, msg=contract):
                 contracts.read_json(json.dumps({"schema": newer}).encode(), contract)
 
+    def test_tier_contracts_round_trip_and_refuse_otherwise_valid_prior_versions(self):
+        # Exercise canonical writers and real readers with complete documents, including
+        # standard tiers: the identity, not the presence of the new tier, retires a shape.
+        families = {"executor": (5, "valid-synthetic.json"),
+                    "history": (2, "valid-fixture-split.json"),
+                    "equivalence": (2, "valid-verified.json"),
+                    "schedule": (3, "valid-push-without-a-parent.json")}
+        for name, (version, fixture) in families.items():
+            for tier in ("quick", "e2e_long_running"):
+                with self.subTest(contract=name, tier=tier), tempfile.TemporaryDirectory() as root:
+                    doc = json.loads(read(os.path.join(FIXTURES, name, fixture)))
+                    if name == "executor":
+                        doc["core"]["tier"] = tier
+                        # The service consumes TOML, independently of the JSON entry point.
+                        raw = read(os.path.join(ROOT, "scripts/performance/service/executor.example.toml"))
+                        raw = raw.replace(b'tier = "quick"', ('tier = "%s"' % tier).encode())
+                        path = os.path.join(root, "executor.toml")
+                        with open(path, "wb") as stream:
+                            stream.write(raw)
+                        loaded = executor.load_config(path)
+                        self.assertEqual(loaded["core"]["tier"], tier)
+                        self.assertEqual(loaded["schema"], "af.perf-executor/5")
+                        with open(path, "wb") as stream:
+                            stream.write(raw.replace(b'af.perf-executor/5', b'af.perf-executor/4'))
+                        with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/5"):
+                            executor.load_config(path)
+                    elif name == "history":
+                        for run in doc["runs"]:
+                            run["tier"] = tier
+                    elif name == "schedule":
+                        doc["comparisons"][0]["request"]["tier"] = tier
+                        ci.write(os.path.join(root, "schedule"), doc, {})
+                        self.assertEqual(contracts.read_file(os.path.join(root, "schedule/schedule.json"),
+                                                             name), doc)
+                    else:
+                        doc["tier"] = tier
+                        for role in equivalence.ROLES:
+                            doc[role]["tier"] = tier
+                        ctx = {key: doc[key] for key in equivalence.CONTEXT}
+                        # The production constructor must emit the new identity too.
+                        doc = equivalence.record(ctx, doc["golden"], doc["post_merge_aa"])
+                    self.assertEqual(doc["schema"], "af.perf-%s/%d" % (name, version))
+                    data = contracts.write_bytes(doc, name)
+                    self.assertEqual(contracts.read_json(data, name), doc)
+                    self.assertTrue(schema_for(name).valid(doc))
+                    doc["schema"] = "af.perf-%s/%d" % (name, version - 1)
+                    self.assertFalse(schema_for(name).valid(doc))
+                    with self.assertRaisesRegex(ContractError, "expected.*af.perf-" + name):
+                        contracts.read_json(json.dumps(doc).encode(), name)
+                    with self.assertRaises(ContractError):
+                        contracts.write_bytes(doc, name)
+
     def test_earlier_versions_of_changed_shapes_are_refused(self):
         # run/3 freezes the build (its image included) into the recipe identity and names each
         # library instance's seed, builds/5 records the run's execution start and total
@@ -294,9 +347,9 @@ class Parity(unittest.TestCase):
                    "supervisor-result", "probe-request", "golden", "cohort",
                    "calibration-parameters", "readiness", "activation-verification", "cost",
                    "shipping", "profiles", "executor", "executor-state", "executor-result",
-                   "executor-request")
+                   "executor-request", "history", "equivalence", "schedule")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 4, 2, 3, 3])
+                         [8, 3, 1, 6, 3, 2, 4, 5, 6, 2, 2, 5, 2, 7, 3, 3, 3, 7, 5, 2, 3, 3, 2, 2, 3])
         self.assertEqual(dict((name, sorted(versions)) for name, versions
                               in contracts.READABLE.items()),
                          {"executor-request": ["af.perf-executor-request/1",
@@ -306,9 +359,9 @@ class Parity(unittest.TestCase):
         # profiles/6 bound retained archives (ADR-0224) and profiles/7 indexes a repeated
         # capture's recordings; report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
-                         (7, 3))
-        self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (7, 4))
+        self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
+                         (8, 6))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
                      and entry["contract"] in changed
                      and parse(entry)[0]["schema"] == contracts.CONTRACTS[entry["contract"]][0])

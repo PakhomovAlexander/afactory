@@ -4,8 +4,7 @@
 //! failing tests; a refused plan names the limits that fit and `--fit` plans with them; a Task
 //! file takes its kind's defaults; planning is idempotent and `--replace` re-plans in place; the
 //! wall clock starts at the first run; and every not-found error names what was looked for and
-//! where. The fixture pipeline's Workers are
-//! commands: no test spends a model token.
+//! where. Workers use commands or isolated fixture Providers: no test calls a live model.
 
 use serde_json::Value;
 use std::path::PathBuf;
@@ -1719,4 +1718,234 @@ fn empty_diff_bind_failure_is_incomplete_execution_with_a_public_kernel_cause() 
     assert_eq!(label, "finished/execution_failed/kernel_execution");
     assert_eq!(next.as_deref(), Some(expected.as_str()));
     assert_eq!(group, "stopped");
+}
+
+/// A genuine per-Attempt usage overrun wins even when the same native graph also failed
+/// empty-Diff admission. The evaluator uses the independent check branch, so a missing
+/// review result cannot suppress its late Provider usage or turn it into a synthetic charge.
+#[test]
+fn empty_diff_bind_failure_with_a_late_provider_overrun_is_exhausted_budget() {
+    use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = fixture("embedded-review");
+    task_cli::load_safe_walls(&fixture.repo);
+    fixture.write(
+        "pagination.py",
+        "def paginate(items, offset=0, limit=2):\n    return items[offset:offset+limit]\n",
+    );
+    let home = fixture.root.join("provider");
+    let bin = fixture.root.join("bin");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&bin).unwrap();
+    let native = r#"#!/usr/bin/python3 -B
+import json,os,sys
+home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  r=json.loads(line)
+  if r.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if r.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
+ sys.exit(0)
+request=sys.stdin.read()
+if request==PROBE_INPUT:
+ kind='admission'; message='OK'; tokens=1
+else:
+ kind='evaluator'; r=json.loads(request)
+ i={k:v[0] for k,v in r['inputs'].items()}
+ assert i['checks']['payload']['outcome']=='passed'
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{
+  'outcome':'passed','reason':'Checked unchanged pagination against passed native checks.'}]}})
+ tokens=16385
+with open(home+'/calls','a') as f: f.write(kind+'\n')
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':tokens,'cached_input_tokens':0,'output_tokens':0}}))
+"#;
+    std::fs::write(
+        bin.join("codex"),
+        crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(native)),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let providers = home.join("providers.toml");
+    std::fs::write(
+        &providers,
+        toml::to_string(&serde_json::json!({"version":4,"providers":[{
+            "id":"codex-fixture","kind":"codex","auth_dir":home
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let worker_path = fixture
+        .repo
+        .join(".af/task-packages/fixture/evaluator/worker.toml");
+    let mut worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(&worker_path).unwrap()).unwrap();
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "codex".into(),
+        model: "codex-fixture-1".into(),
+        effort: "high".into(),
+    };
+    worker.signature.attempt.as_mut().unwrap().tokens = 16384;
+    std::fs::write(worker_path, toml::to_string(&worker).unwrap()).unwrap();
+    let pipeline_path = fixture
+        .repo
+        .join(".af/task-packages/fixture/implementation/pipeline.toml");
+    let mut pipeline: Value =
+        toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
+    // This fixture's captured plan has one additional, real Provider admission Attempt
+    // beside the original five business/verification reservations. Allocate that Attempt
+    // explicitly before planning, including its verifier reserve; original slot caps stay put.
+    pipeline["max_attempts"] = serde_json::json!(6);
+    // Evaluation deliberately consumes the independent native check, rather than acceptance
+    // of the review whose Base is unchanged. No review verdict is manufactured or bypassed.
+    let evaluate = pipeline["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|n| n["id"] == "evaluate_goal")
+        .unwrap();
+    evaluate["inputs"]["source"] =
+        serde_json::json!({"kind":"node","node":"seal","port":"snapshot"});
+    evaluate["inputs"]["checks"] =
+        serde_json::json!({"kind":"node","node":"review","port":"checks"});
+    evaluate.as_object_mut().unwrap().remove("when");
+    std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
+    let catalog_path = fixture.repo.join(".af/task-catalog.toml");
+    let mut catalog: Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["providers"] = serde_json::json!({"fixture/evaluator":"codex-fixture"});
+    catalog["provider_admission"] = serde_json::json!({"tokens":100,"wall_ms":45000});
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    fixture.commit();
+    let file = fixture.task_file("overrun.json", |ticket| {
+        task_cli::load_safe_limits(&mut ticket["limits"]);
+        ticket["limits"]["tokens"] = serde_json::json!(50000);
+        ticket["limits"]["max_attempts"] = serde_json::json!(6);
+        ticket["limits"]["verification"]["tokens"] = serde_json::json!(20000);
+        ticket["limits"]["verification"]["attempts"] = serde_json::json!(5);
+    });
+    let cli = |args: &[&str], code| {
+        let output = crate::common::af()
+            .current_dir(&fixture.repo)
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", &providers)
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&fixture.state)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}\n{}",
+            out(&output),
+            err(&output)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let done = cli(
+        &[
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            file.to_str().unwrap(),
+        ],
+        4,
+    );
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &done);
+    assert_eq!(done["state"]["phase"], "finished");
+    assert_eq!(done["state"]["outcome"], "exhausted");
+    assert_eq!(done["state"]["cause"], "budget");
+    assert_eq!(done["result"]["execution"], "exhausted");
+    assert_eq!(done["result"]["acceptance"], "inconclusive");
+    assert_eq!(done["result"]["domain_conclusion"], "incomplete");
+    assert_eq!(done["attempts"], 4);
+    assert_eq!(done["chargeable_tokens"], "16386");
+    let cas = af_store::Cas::open_existing(fixture.state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(fixture.state.join("events.sqlite")).unwrap();
+    let projection = store.task_projection(&cas, TASK).unwrap().unwrap();
+    let execution = projection.execution.as_ref().unwrap();
+    assert!(execution.budget.breached());
+    assert!(execution.budget.begun_attempts() < u64::from(projection.revision.limits.max_attempts));
+    assert!(execution.budget.committed_tokens() < u128::from(projection.revision.limits.tokens));
+    assert!(projection.last_recorded_unix_ms() < projection.deadline_unix_ms());
+    assert!(execution.pending_attempts().is_empty());
+    let evaluator = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|a| a.reservation.node == "root.nodes.evaluate_goal")
+        .unwrap();
+    assert_eq!(evaluator.reservation.tokens, 16384);
+    assert_eq!(evaluator.charged_tokens, 16385);
+    assert!(evaluator.usage_id.is_some());
+    let report =
+        af_store::store::task::read_task_run_report(&cas, projection.run_reports.last().unwrap())
+            .unwrap();
+    use af_contracts::task::run_report::{TaskFailureClassV1, TaskNodeOutcomeV1};
+    let bind = report
+        .nodes
+        .iter()
+        .find(|n| n.node == "root.nodes.review.nodes.bind")
+        .unwrap();
+    let TaskNodeOutcomeV1::Failed {
+        class: TaskFailureClassV1::Execution,
+        diagnostic_id,
+    } = &bind.outcome
+    else {
+        panic!("{bind:?}")
+    };
+    let diagnostic = cas.get_artifact(diagnostic_id).unwrap();
+    assert!(
+        diagnostic
+            .payload
+            .to_string()
+            .contains("Cannot review an empty Diff Subject")
+    );
+    for node in ["root.nodes.review.nodes.check", "root.nodes.evaluate_goal"] {
+        assert!(report.nodes.iter().any(|n| n.node == node && matches!(n.outcome, TaskNodeOutcomeV1::Completed { .. })), "{report:?}");
+    }
+    for reviewer in ["bugs", "correctness"] {
+        assert!(
+            report
+                .nodes
+                .iter()
+                .any(|n| n.node == format!("root.nodes.review.nodes.{reviewer}")
+                    && matches!(
+                        n.outcome,
+                        TaskNodeOutcomeV1::Suppressed {
+                            reason:
+                                af_contracts::task::run_report::TaskSuppressionV1::UpstreamMissing
+                        }
+                    )),
+            "{report:?}"
+        );
+    }
+    let calls = std::fs::read_to_string(home.join("calls")).unwrap();
+    assert_eq!(calls, "admission\nevaluator\n");
+    // Each inspection/recovery opens the durable Store in a fresh CLI process.
+    for args in [
+        ["task", "show", TASK],
+        ["task", "status", TASK],
+        ["task", "run", TASK],
+    ] {
+        let again = cli(&args, if args[1] == "run" { 4 } else { 0 });
+        assert_eq!(again["state"], done["state"]);
+    }
+    assert_eq!(std::fs::read_to_string(home.join("calls")).unwrap(), calls);
+    assert!(
+        done["state"]["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("af task plan --file")
+    );
 }

@@ -48,7 +48,7 @@ Copy [executor.example.toml](../scripts/performance/service/executor.example.tom
 Replace its deliberately unusable zero SHA and image digests with real accepted identities.
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
-The configuration is `af.perf-executor/4`; misspellings and obsolete v1, v2 and v3
+The configuration is `af.perf-executor/5`; misspellings and obsolete v1 through v4
 configurations refuse. `[core.windows]` (optional; absent, or JSON `null`, keeps the tier's
 own) declares the `shard_sampling_minutes` and `run_total_minutes` a core plan freezes instead
 of its tier's; a declared table must supply both numbers (an empty table refuses), within the

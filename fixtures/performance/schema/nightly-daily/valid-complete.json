@@ -245,7 +245,7 @@
     "measured_candidate_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
     "measured_is_shipped": true,
     "measured_reason": null,
-    "plan_digest": "sha256:3e4fff5570255eb63e27c3524421e1f2af102f0da4a57495f037c52c77db523c",
+    "plan_digest": "sha256:4e05f5107fbd1b20327bb6fe638dfbc69665e06a08c1e8b49f93c644568ac2c9",
     "provenance": "synthetic",
     "reasons": [
       {
@@ -266,7 +266,7 @@
     },
     "shipped_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
     "unchanged": 2,
-    "verdict_sha256": "sha256:6e22a02c3147b140bb412f97fc3b2620a92843e19bfbc83292274f800937f72d"
+    "verdict_sha256": "sha256:ec63ad18fe72edd249a355a94cfdf5eea9c3fcbc2ea113886ddb2c85f2a6ead3"
   },
   "repository": "owner/af",
   "schema": "af.nightly-daily/1",

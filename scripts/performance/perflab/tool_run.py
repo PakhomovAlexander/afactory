@@ -1,7 +1,7 @@
 """Diagnostic tools and candidates under the authority supervisor (package p5, ADR-0175).
 
 Nothing here forks process supervision. Every diagnostic tool and every candidate execution is
-one `af.perf-supervisor-request/4` to the authority-built `perf-supervisor`, the same hashed
+one `af.perf-supervisor-request/5` to the authority-built `perf-supervisor`, the same hashed
 bytes that bracket verdict samples, so its deadline, process-group or PID-namespace
 containment, bounded stdin, concurrent bounded drains, descendant scan and cleanup are
 `af_process::sample`'s (ADR-0026, ADR-0166). This module only builds the request, launches

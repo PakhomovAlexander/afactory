@@ -526,8 +526,11 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
         case = doc["cases"][item["case_id"]]
         policy = doc["policies"][case["policy"]]
         pairs = request.pairs if request.pairs is not None else case["pairs"][tier]
-        require(type(pairs) is int and limits.PAIRS_MIN <= pairs <= limits.PAIRS_MAX
-                and pairs % 2 == 0, "pairs: an even count within 12..200")
+        execution_class = case.get("execution_class", "standard")
+        minimum_pairs = (contracts.minimum_pairs(execution_class)
+                         if tier == "e2e_long_running" else limits.PAIRS_MIN)
+        require(type(pairs) is int and minimum_pairs <= pairs <= limits.PAIRS_MAX
+                and pairs % 2 == 0, "pairs: an even count within %d..200" % minimum_pairs)
         alpha = case_alpha if item["criticality"] == "critical" else advisory_alpha
         rank = stats.critical_rank(pairs, 1, alpha)
         if rank is None:
@@ -554,6 +557,7 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
         cases.append({
             "instance_id": item["instance_id"], "case_id": item["case_id"],
             "family": case["family"], "kind": case["kind"],
+            "execution_class": execution_class,
             "requires_linux_containment": case["requires_linux_containment"],
             "parameters": item["parameters"], "criticality": item["criticality"],
             "timing": case["timing"], "cache": case["cache"], "oracle": case["oracle"],
@@ -602,7 +606,10 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
                     "environment": environment, "recipe_id": recipe_id,
                     "recipe_digest": contracts.recipe_digest(recipe_id, recipe, build),
                     "recipe": recipe, "build": build, "default": is_default},
-        "verdict_policy": {"algorithm": doc["verdict"]["algorithm"],
+        "verdict_policy": {"algorithm": (
+            stats.LONG_ALGORITHM if any(doc["cases"][item["case_id"]].get(
+                "execution_class", "standard") == "long_running" for item in instances)
+            else doc["verdict"]["algorithm"]),
                            "family_alpha": format_rational(family_alpha),
                            "advisory_alpha": format_rational(advisory_alpha),
                            "family_size": family_size,
@@ -615,7 +622,9 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
                    "max_mad_ratio": health["max_mad_ratio"],
                    "denominator_floor": health["denominator_floor"],
                    "state": health["state"], "oracle": health["oracle"]},
-        "limits": dict(doc["limits"], shard_sampling_minutes=windows["shard_sampling_minutes"],
+        "limits": dict(doc["limits"],
+                       build_minutes=tier_doc.get("build_minutes", doc["limits"]["build_minutes"]),
+                       shard_sampling_minutes=windows["shard_sampling_minutes"],
                        run_total_minutes=windows["run_total_minutes"],
                        concurrent_jobs=min(tier_doc["concurrent_jobs"], shards),
                        record_bytes=limits.RECORD_BYTES_MAX),

@@ -101,9 +101,9 @@ class LocalOriginals(TempDir):
         with executor.Journal(self.c) as journal:
             with self.assertRaises(ContractError):
                 local_calibration.collect(journal, dict(self.cohort, schema=contracts.COHORT_SCHEMA))
-            # Hosted v7 remains a current, separately declared hosted cohort.
+            # Current hosted declarations remain separate from local authority.
             hosted = contracts.read_file(os.path.join(executor.ROOT,
-                "fixtures/performance/cohort-quick-20261028-hosted-v7.json"), "cohort")
+                "fixtures/performance/schema/cohort/valid-synthetic.json"), "cohort")
             self.assertEqual(hosted["schedule"]["runners"], "fresh_hosted")
             self.assertEqual(hosted["dispatch"]["event"], "workflow_dispatch")
 
@@ -240,7 +240,7 @@ class LocalOriginals(TempDir):
             runs, refused, hist = local_calibration.collect(journal, self.cohort, parameters)
             self.assertEqual(refused, [])
             result = calibration.readiness(self.cohort, parameters, runs, refused, hist)
-            self.assertEqual(result["schema"], "af.perf-local-readiness/1")
+            self.assertEqual(result["schema"], "af.perf-local-readiness/2")
             self.assertEqual(result["tallies"]["aa_members"], 20)
             self.assertEqual(result["tallies"]["power_members"], 10)
             self.assertEqual(result["tallies"]["power_qualifying"], 9)

@@ -2202,16 +2202,26 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
 
 #[path = "schema_parity/attempt_wall.rs"]
 mod attempt_wall;
+#[path = "schema_parity/remote_check.rs"]
+mod remote_check;
 #[path = "schema_parity/task_agent_loop.rs"]
 mod task_agent_loop;
 #[path = "schema_parity/task_check_receipt.rs"]
 mod task_check_receipt;
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
+#[path = "schema_parity/task_owned.rs"]
+mod task_owned;
+#[path = "schema_parity/task_recording.rs"]
+mod task_recording;
+#[path = "schema_parity/task_report.rs"]
+mod task_report;
 #[path = "schema_parity/task_reports.rs"]
 mod task_reports;
 #[path = "schema_parity/task_review_findings.rs"]
 mod task_review_findings;
+#[path = "schema_parity/task_state.rs"]
+mod task_state;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {

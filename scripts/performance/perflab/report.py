@@ -3,7 +3,7 @@
 `report --run DIR --output OUT` recomputes the run's verdict from its retained evidence
 (`evaluate_results.evaluate`: every bundle rehashed, every planned slot matched) and writes, below a new
 OUT, `report.html` (self-contained, `perflab.render`), the matching `report.json`
-(`af.perf-report/3`, ADR-0177, ADR-0214), the recomputed `verdict.json`, the compact GitHub job-summary table
+(`af.perf-report/4`, ADR-0177, ADR-0214), the recomputed `verdict.json`, the compact GitHub job-summary table
 `summary.md` and `evidence/`, verified copies of the run's bundle members that the page links
 as downloads. Nothing is added, dropped, retried or reclassified: the report shows the
 verdict's classifications, its exact rational bounds and every planned slot as a raw point,
@@ -255,7 +255,7 @@ def _case_extras(plan, verdict, children=()):
             failures[failure["side"]] += 1
         planned = 2 * (len(case["warmup_orders"]) + len(case["measured_orders"]))
         out.append({"instance_id": entry["instance_id"], "case_id": case["case_id"],
-                    "failures": failures,
+                    "execution_class": case["execution_class"], "failures": failures,
                     "denominator": {"planned_records": planned,
                                     "missing_records": entry["missing_records"],
                                     "measured_pairs": case["pairs"],
@@ -769,7 +769,7 @@ def _shards(evaluation):
 
 
 def build(evaluation, downloads, children=()):
-    """The `af.perf-report/3` document of an evaluated run and its linked child runs."""
+    """The `af.perf-report/4` document of an evaluated run and its linked child runs."""
     plan, verdict = evaluation.plan, evaluation.verdict
     doc = {"schema": contracts.REPORT_SCHEMA, "run_id": plan["run_id"],
            "plan_digest": plan["plan_digest"], "comparison": "same_host_paired",

@@ -3,9 +3,11 @@
 //! One authority-built binary measures both sides of a comparison: the laboratory builds it once
 //! from the authority source, hashes it, and launches the same bytes for every baseline and
 //! candidate sample. One process supervises one sample. It reads one bounded
-//! `af.perf-supervisor-request/4` from stdin and writes, to stdout, one
-//! `af.perf-supervisor-result/5` line followed by exactly the retained bytes of the child's
-//! stdout and then its stderr, whose lengths the line declares. The timing, draining and
+//! `af.perf-supervisor-request/5` from stdin and writes, to stdout, one
+//! `af.perf-supervisor-result/6` line followed by exactly the retained bytes of the child's
+//! stdout, then its stderr, then the declared evidence files, whose lengths the line declares.
+//! Evidence is read untimed after a verified-empty PID namespace and before scratch cleanup;
+//! a refused capture transfers no partial files. The timing, draining and
 //! lifecycle semantics are `af_process::sample`'s; this file only parses, refuses and
 //! reports.
 //!
@@ -33,6 +35,9 @@
 //! after verifying that no other process remains, so no candidate process can race the removal
 //! and the host removes no candidate-controlled path.
 
+#[path = "perf-supervisor/evidence.rs"]
+mod evidence;
+
 use af_process::json_stream::{self, Kind, Observer, Selected, Selector};
 use af_process::sample::{
     Containment, Control, ExitObservation, LifecycleStatus, NOT_NAMESPACE_INIT, SampleOutcome,
@@ -46,8 +51,8 @@ use std::io::{Read, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-const REQUEST_SCHEMA: &str = "af.perf-supervisor-request/4";
-const RESULT_SCHEMA: &str = "af.perf-supervisor-result/5";
+const REQUEST_SCHEMA: &str = "af.perf-supervisor-request/5";
+const RESULT_SCHEMA: &str = "af.perf-supervisor-result/6";
 const RECORD_BYTES_MAX: usize = 64 * 1024;
 const LOG_BYTES_MAX: u64 = 1024 * 1024;
 const PATTERNS_MAX: usize = 8;
@@ -75,6 +80,7 @@ struct Request {
     setup: Option<Setup>,
     stdout_patterns: Vec<String>,
     stdout_json: Vec<JsonSelector>,
+    evidence_paths: Vec<String>,
 }
 
 /// One declared field of the child's stdout as a JSON document (ADR-0172).
@@ -138,6 +144,7 @@ fn main() -> ExitCode {
         .and_then(|()| stdout.write_all(b"\n"))
         .and_then(|()| stdout.write_all(&outcome.stdout.retained))
         .and_then(|()| stdout.write_all(&outcome.stderr.retained))
+        .and_then(|()| stdout.write_all(&supervised.evidence.bytes))
         .and_then(|()| stdout.flush());
     match written {
         Ok(()) => ExitCode::SUCCESS,
@@ -163,6 +170,12 @@ fn parse(input: &[u8]) -> Result<(Request, Parsed), String> {
             "schema {:?} is not {REQUEST_SCHEMA}",
             request.schema
         ));
+    }
+    evidence::check_paths(&request.evidence_paths)?;
+    if !request.evidence_paths.is_empty()
+        && (request.containment != "pid_namespace" || request.scratch.is_none())
+    {
+        return Err("evidence_paths requires PID namespace containment with owned scratch".into());
     }
     check_command(&request.argv, &request.environment, &request.cwd)?;
     if let Some(setup) = &request.setup {
@@ -310,6 +323,7 @@ struct Supervised {
     setup: Option<SampleOutcome>,
     /// The setup did not end as required, so the measured child was never launched.
     setup_failed: Option<String>,
+    evidence: evidence::Evidence,
 }
 
 /// Run the sample, refusing it first when this process cannot provide its containment or its
@@ -323,6 +337,7 @@ fn supervise(request: &Request, parsed: &Parsed, control: &Control) -> Supervise
         scratch,
         setup: None,
         setup_failed: None,
+        evidence: evidence::capture(std::path::Path::new("/"), &request.evidence_paths, false),
     };
     // The library refuses it too; refusing here first leaves the scratch untouched.
     if spec.containment == Containment::PidNamespace && !namespace_init() {
@@ -362,6 +377,7 @@ fn supervise(request: &Request, parsed: &Parsed, control: &Control) -> Supervise
             scratch: Value::Null,
             setup: setup_outcome,
             setup_failed,
+            evidence: evidence::capture(std::path::Path::new("/"), &request.evidence_paths, false),
         };
     };
     // The namespace the scratch is cleared in must be verified empty by the last child that
@@ -374,6 +390,7 @@ fn supervise(request: &Request, parsed: &Parsed, control: &Control) -> Supervise
         last.status,
         LifecycleStatus::Clean | LifecycleStatus::UnexpectedDescendants
     ) && last.remaining_after_cleanup == Some(0);
+    let evidence = evidence::capture(scratch, &request.evidence_paths, verified);
     let report = if !verified {
         json!({"status": "retained", "detail": "the namespace was not verified empty, so the \
                scratch was not cleared"})
@@ -389,6 +406,7 @@ fn supervise(request: &Request, parsed: &Parsed, control: &Control) -> Supervise
         scratch: report,
         setup: setup_outcome,
         setup_failed,
+        evidence,
     }
 }
 
@@ -627,6 +645,7 @@ fn result(
         "lifecycle": lifecycle,
         "setup": supervised.setup.as_ref().map(setup_record),
         "scratch": supervised.scratch,
+        "evidence": supervised.evidence.report,
         "rusage": rusage,
         "rusage_unavailable": outcome.rusage.as_ref().err().map(|reason| bounded(reason)),
         "observations": match (before, after) {

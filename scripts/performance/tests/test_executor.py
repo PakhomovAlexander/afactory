@@ -2324,9 +2324,10 @@ class AuthorityAndShapes(TempDir):
         with self.assertRaisesRegex(ContractError, "requires zigbuild_bin"):
             contracts.validate_executor(c)
         obsolete = config(self.path("old"), self.tmp, "1" * 40)
-        for schema in ("af.perf-executor/2", "af.perf-executor/3"):
+        for schema in ("af.perf-executor/1", "af.perf-executor/2", "af.perf-executor/3",
+                       "af.perf-executor/4"):
             obsolete["schema"] = schema
-            with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/4"):
+            with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/5"):
                 contracts.validate_executor(obsolete)
 
     def test_service_refuses_missing_or_invalid_shipping_configuration_before_reservation(self):
