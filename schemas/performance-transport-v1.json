@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-transport:1",
+  "title": "af.perf-transport/1",
+  "description": "The declared format of one Actions transport artifact (ADR-0172): which run, a run or shard bundle, and the transported views it carries as data.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-transport/1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "content": {
+      "type": "string",
+      "enum": [
+        "run_bundle",
+        "shard_bundle"
+      ]
+    },
+    "shard": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        }
+      ]
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relative_path"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "content",
+    "shard",
+    "views"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

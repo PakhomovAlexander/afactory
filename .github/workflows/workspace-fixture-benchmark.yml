@@ -1,0 +1,56 @@
+# Advisory paired measurements only; standard validation/release checks are unchanged.
+name: Workspace fixture benchmark
+
+on:
+  pull_request:
+    paths:
+      - scripts/test-scenario-git-workspace.py
+      - scripts/benchmark-workspace-fixtures.py
+      - scripts/test-workspace-fixtures.py
+      - scripts/test-workspace-fixture-benchmark.py
+      - schemas/workspace-fixture-benchmark-v1.json
+      - schemas/workspace-fixture-suite-v1.json
+      - .github/workflows/workspace-fixture-benchmark.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-fixture-benchmark-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Compare exact PR base and head on this runner
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          git fetch --no-tags origin "$BASE_SHA"
+          python -I -S -B scripts/benchmark-workspace-fixtures.py \
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --output "$RUNNER_TEMP/workspace-fixture-benchmark" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain all measurements and logs, including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: workspace-fixture-benchmark-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/workspace-fixture-benchmark
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,1548 @@
+//! The timed production operations of every declared case.
+//!
+//! Each sample generates its fixture (setup, timed separately), or opens the private copy of
+//! the seed its side wrote once (ADR-0170), performs its production operation exactly once per
+//! declared repetition inside the region, keeps the result alive through `black_box`, and only
+//! afterwards reduces it to the digest and count the driver checks against golden entries.
+//! Setup, CAS population, prewarming and every check stay outside the region. Freshness is per
+//! sample: a fresh process, a fresh Store and CAS under the sample's own scratch or its own copy
+//! of a seed, an application-cold or prewarmed projection as declared, and whatever the OS page
+//! cache holds; nothing here evicts or claims to evict physical caches.
+
+use std::collections::BTreeMap;
+use std::hint::black_box;
+use std::path::Path;
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+use af_contracts::task::plan::ExecutionPlan;
+use af_contracts::{ArtifactEnvelope, Producer};
+use af_graph::task::CompiledTask;
+use af_runtime::task::host::CapturedTaskAuthority;
+use af_runtime::task::{TaskOperatorHost, TaskRuntime};
+use af_source_git::{Capture, Entry, EntryKind, Manifest, Repo};
+use af_store::canonical::blob_content_id;
+use af_store::{Cas, EventStore, StoreError};
+use serde_json::{Value, json};
+
+use af_contracts::perf_trace::{self, Phase};
+
+use crate::authority::{self, AuthorityFixture};
+use crate::control;
+use crate::fixtures::{self, Envelope};
+use crate::protocol::{Failure, FailureKind, Observation, Outcome, Request};
+
+fn fixture_error(error: impl ToString) -> Failure {
+    Failure::new(FailureKind::FixtureFailed, error.to_string())
+}
+
+fn operation_error(error: impl ToString) -> Failure {
+    Failure::new(FailureKind::OperationFailed, error.to_string())
+}
+
+fn observed(digest: String, count: u64, detail: String) -> Observation {
+    Observation {
+        digest: Some(digest),
+        count: Some(count),
+        detail,
+        extra_metrics: Default::default(),
+    }
+}
+
+fn digest_of(value: &Value) -> Result<String, Failure> {
+    af_store::content_id(value).map_err(operation_error)
+}
+
+/// A failure before the region: only setup was timed.
+fn before_region(started: Instant, fixture_digest: Option<String>, failure: Failure) -> Outcome {
+    Outcome {
+        fixture_digest,
+        setup_nanos: started.elapsed().as_nanos(),
+        region_nanos: None,
+        result: Err(failure),
+    }
+}
+
+/// Run `setup`, then `region` once, then `observe`, timing setup and region separately.
+fn sample<S, R>(
+    started: Instant,
+    setup: impl FnOnce() -> Result<(Option<String>, S), Failure>,
+    region: impl FnOnce(&mut S) -> R,
+    observe: impl FnOnce(S, R) -> Result<Observation, Failure>,
+) -> Outcome {
+    let setup_span = perf_trace::span(Phase::ProbeSetup);
+    let (fixture_digest, mut state) = match setup() {
+        Ok(value) => value,
+        Err(failure) => return before_region(started, None, failure),
+    };
+    drop(setup_span);
+    let setup_nanos = started.elapsed().as_nanos();
+    // A profiling build brackets the region outside its clock (ADR-0174).
+    let bracket = control::begin();
+    let region_started = Instant::now();
+    let region_span = perf_trace::span(Phase::ProbeRegion);
+    let result = black_box(region(black_box(&mut state)));
+    // A calibration trial's loop runs inside the region, after the operation (ADR-0181).
+    af_contracts::perf_calibration::inject();
+    drop(region_span);
+    let region_nanos = region_started.elapsed().as_nanos();
+    drop(bracket);
+    Outcome {
+        fixture_digest,
+        setup_nanos,
+        region_nanos: Some(region_nanos),
+        result: observe(state, result),
+    }
+}
+
+pub fn execute(request: &Request, work: &Path) -> Outcome {
+    let started = Instant::now();
+    match request.contract.contract_id {
+        "canonical_serialize_v1" => canonical_serialize(request, work, started),
+        "canonical_validate_v1" => canonical_validate(request, work, started),
+        "cas_raw_get_verify_v1" => cas_raw_get(request, work, started),
+        "cas_typed_get_validate_v1" => cas_typed_get(request, work, started),
+        "source_capture_v2" => source_capture(request, work, started),
+        "source_capture_seed_v1" => source_capture_seed(request, work, started),
+        "state_projection_v2" => state_projection(request, work, started),
+        "state_projection_seed_v1" => state_projection_seed(work, started),
+        "authority_seed_v1" => authority_seed(request, work, started),
+        "authority_plan_check_v3" | "authority_runtime_new_v3" => authority_sample_from(
+            request.text("package"),
+            request
+                .seed
+                .as_deref()
+                .expect("an admitted seed reader has its seed"),
+            if request.contract.contract_id == "authority_plan_check_v3" {
+                AuthorityRegion::CurrentPlanCheck
+            } else {
+                AuthorityRegion::TaskRuntimeNew
+            },
+            PRODUCTION_LEASE,
+            started,
+            SetupHooks::default(),
+            true,
+        ),
+        "persistence_fs_v3" => persistence(request, work, started),
+        "cli_state_fixture_v1" => cli_state_fixture(work, started),
+        "cli_wait_original_fixture_v1" => cli_wait_fixture(request, work, started),
+        "cli_wait_fixture_v1" => cli_wait_fixture(request, work, started),
+        "cli_native_review_fixture_v1" => cli_native_review_fixture(request, started),
+        "sentinel_canonical_v1" => sentinel(request, started),
+        other => before_region(
+            started,
+            None,
+            Failure::new(
+                FailureKind::FixtureFailed,
+                format!("no workload for {other}"),
+            ),
+        ),
+    }
+}
+
+// Typed envelopes -----------------------------------------------------------------------------
+
+/// Write the named typed-envelope fixture through the product's writer into `cas` and check its
+/// stored size is exactly the declared full serialized envelope size.
+pub fn write_envelope(cas: &Cas, fixture_id: &str) -> Result<(String, ArtifactEnvelope), Failure> {
+    let fixture = fixtures::envelope_fixture(fixture_id)
+        .ok_or_else(|| fixture_error(format!("{fixture_id} is not a typed envelope fixture")))?;
+    let (id, envelope) = match fixture.envelope {
+        Envelope::Requirements { text_bytes } => cas
+            .put_artifact(
+                fixtures::REQUIREMENTS_V1,
+                fixtures::producer(),
+                vec![],
+                None,
+                fixtures::requirements_payload(text_bytes),
+            )
+            .map_err(fixture_error)?,
+        Envelope::Package { digits, tens } => {
+            let id = authority::capture_author_package(cas, Some(fixtures::padding(digits, tens)))
+                .map_err(fixture_error)?;
+            let envelope = cas.get_artifact(&id).map_err(fixture_error)?;
+            (id, envelope)
+        }
+    };
+    let stored = cas.stored_len(&id).map_err(fixture_error)?;
+    if stored != fixture.serialized_bytes as u64 {
+        return Err(fixture_error(format!(
+            "{fixture_id} generated a {stored}-byte envelope; the fixture declares exactly {}",
+            fixture.serialized_bytes
+        )));
+    }
+    Ok((id, envelope))
+}
+
+/// The semantic projection of a decoded, validated envelope; both identities are verified
+/// before it exists.
+pub fn envelope_projection(envelope: &ArtifactEnvelope, envelope_bytes: u64) -> Value {
+    let producer = match envelope.producer {
+        Producer::Attempt { .. } => "attempt",
+        Producer::KernelOperation { .. } => "kernel_operation",
+    };
+    json!({
+        "artifact_id": envelope.artifact_id,
+        "artifact_type": envelope.artifact_type,
+        "content_id": envelope.content_id,
+        "envelope_bytes": envelope_bytes,
+        "input_artifacts": envelope.input_artifacts.len(),
+        "producer_kind": producer,
+    })
+}
+
+fn canonical_serialize(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let cas = Cas::open(work.join("cas")).map_err(fixture_error)?;
+            // Decoding the fixture into the typed value is setup.
+            let (id, envelope) = write_envelope(&cas, package)?;
+            Ok((Some(id), envelope))
+        },
+        |envelope| {
+            serde_json::to_value(&*envelope)
+                .map_err(|error| error.to_string())
+                .and_then(|value| af_store::canonicalize(&value).map_err(|error| error.to_string()))
+        },
+        |_, bytes| {
+            let bytes = bytes.map_err(operation_error)?;
+            Ok(observed(
+                blob_content_id(&bytes),
+                bytes.len() as u64,
+                format!(
+                    "fixture={package} serialized_envelope_bytes={}",
+                    bytes.len()
+                ),
+            ))
+        },
+    )
+}
+
+fn canonical_validate(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let cas = Cas::open(work.join("cas")).map_err(fixture_error)?;
+            let (id, _) = write_envelope(&cas, package)?;
+            // Reading the fixture bytes into memory is setup.
+            let bytes = cas.get(&id).map_err(fixture_error)?;
+            Ok((Some(id), bytes))
+        },
+        |bytes| {
+            serde_json::from_slice::<ArtifactEnvelope>(bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|envelope| af_store::validate_envelope(&envelope).map(|()| envelope))
+        },
+        |bytes, envelope| {
+            let envelope = envelope.map_err(operation_error)?;
+            let projection = envelope_projection(&envelope, bytes.len() as u64);
+            Ok(observed(
+                digest_of(&projection)?,
+                bytes.len() as u64,
+                format!("fixture={package} validated_envelope_bytes={}", bytes.len()),
+            ))
+        },
+    )
+}
+
+/// A fresh CAS holding the fixture envelope, flushed and reopened so no in-process state of
+/// the writer survives into the region.
+fn populated_cas(work: &Path, package: &str) -> Result<(String, Cas), Failure> {
+    let root = work.join("cas");
+    let cas = Cas::open(&root).map_err(fixture_error)?;
+    let (id, _) = write_envelope(&cas, package)?;
+    cas.flush().map_err(fixture_error)?;
+    drop(cas);
+    Ok((id, Cas::open_existing(&root).map_err(fixture_error)?))
+}
+
+fn cas_raw_get(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let (id, cas) = populated_cas(work, package)?;
+            // The envelope's exact bytes, filed as a raw object: get/verify covers its full size.
+            let bytes = cas.get(&id).map_err(fixture_error)?;
+            let raw = cas.put(&bytes).map_err(fixture_error)?;
+            cas.flush().map_err(fixture_error)?;
+            drop(cas);
+            let cas = Cas::open_existing(work.join("cas")).map_err(fixture_error)?;
+            Ok((Some(id), (cas, raw)))
+        },
+        |(cas, raw)| cas.get(raw),
+        |(_, raw), bytes| {
+            let bytes = bytes.map_err(operation_error)?;
+            let digest = blob_content_id(&bytes);
+            if digest != raw {
+                return Err(operation_error("raw get returned bytes of another object"));
+            }
+            Ok(observed(
+                digest,
+                bytes.len() as u64,
+                format!("fixture={package} raw_object_bytes={}", bytes.len()),
+            ))
+        },
+    )
+}
+
+fn cas_typed_get(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let (id, cas) = populated_cas(work, package)?;
+            Ok((Some(id.clone()), (cas, id)))
+        },
+        |(cas, id)| cas.get_artifact(id),
+        |(cas, id), envelope| {
+            let envelope = envelope.map_err(operation_error)?;
+            let bytes = cas.stored_len(&id).map_err(operation_error)?;
+            let projection = envelope_projection(&envelope, bytes);
+            Ok(observed(
+                digest_of(&projection)?,
+                bytes,
+                format!("fixture={package} typed_envelope_bytes={bytes}"),
+            ))
+        },
+    )
+}
+
+// Source capture ------------------------------------------------------------------------------
+
+fn git(repo: &Path, home: &Path, args: &[&str]) -> Result<(), Failure> {
+    let output = Command::new("git")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .env("GIT_AUTHOR_NAME", "AF performance fixture")
+        .env("GIT_AUTHOR_EMAIL", "perf-fixture@invalid")
+        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_NAME", "AF performance fixture")
+        .env("GIT_COMMITTER_EMAIL", "perf-fixture@invalid")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+        .current_dir(repo)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.autocrlf=false",
+            // A commit of 10,000 loose objects would otherwise start a detached `gc --auto`
+            // that repacks the repository after the writer exits: the seed must be complete
+            // and unchanging once every process of its writer has exited (ADR-0170).
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+        ])
+        .args(args)
+        .output()
+        .map_err(fixture_error)?;
+    if !output.status.success() {
+        return Err(fixture_error(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(())
+}
+
+/// A committed repository of `files` deterministic 128-byte files at `root/repo`, written
+/// through Git with the private Git home `root/home`; nothing else is written.
+pub fn source_repository(root: &Path, files: usize) -> Result<(), Failure> {
+    let repo_root = root.join("repo");
+    let home = root.join("home");
+    for directory in [&repo_root, &home] {
+        std::fs::create_dir_all(directory).map_err(fixture_error)?;
+    }
+    for index in 0..files {
+        let (path, bytes) = fixtures::source_file(index);
+        let target = repo_root.join(&path);
+        std::fs::create_dir_all(target.parent().expect("file has a directory"))
+            .map_err(fixture_error)?;
+        std::fs::write(&target, bytes).map_err(fixture_error)?;
+    }
+    git(&repo_root, &home, &["init", "-q", "-b", "main"])?;
+    git(&repo_root, &home, &["add", "-A"])?;
+    git(
+        &repo_root,
+        &home,
+        &["commit", "-q", "-m", "performance fixture"],
+    )
+}
+
+/// The opened source repository a sample captures, below `root` as [`source_repository`] wrote
+/// it, and a fresh CAS in the sample's own work directory.
+fn opened_repository(root: &Path, work: &Path) -> Result<(Repo, Cas), Failure> {
+    let repo_root = root.join("repo");
+    let metadata = std::fs::symlink_metadata(repo_root.join(".git")).map_err(|error| {
+        fixture_error(format!(
+            "the seed holds no committed repository at {}: {error}",
+            repo_root.display()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(fixture_error("the seed's repository has no .git directory"));
+    }
+    let cas = Cas::open(work.join("cas")).map_err(fixture_error)?;
+    Ok((Repo::open(&repo_root, root.join("home")), cas))
+}
+
+/// The written working tree of `repo` as a source manifest: every regular file outside `.git`,
+/// with the CAS content identity of its bytes as read back, in path-byte order.
+fn written_manifest(repo: &Path) -> Result<Manifest, Failure> {
+    let mut entries = Vec::new();
+    let mut pending = vec![repo.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for item in std::fs::read_dir(&directory).map_err(operation_error)? {
+            let item = item.map_err(operation_error)?;
+            let path = item.path();
+            let kind = item.file_type().map_err(operation_error)?;
+            if kind.is_dir() {
+                if path != repo.join(".git") {
+                    pending.push(path);
+                }
+            } else if kind.is_file() {
+                let bytes = std::fs::read(&path).map_err(operation_error)?;
+                let relative = path
+                    .strip_prefix(repo)
+                    .map_err(operation_error)?
+                    .to_str()
+                    .ok_or_else(|| operation_error("a written path is not UTF-8"))?
+                    .to_string();
+                entries.push(Entry {
+                    path: relative,
+                    kind: EntryKind::File,
+                    content: af_source_git::digest_bytes(&bytes),
+                    size: bytes.len() as u64,
+                });
+            } else {
+                return Err(operation_error(format!(
+                    "{} is neither a directory nor a regular file",
+                    path.display()
+                )));
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+    let manifest = Manifest { entries };
+    manifest.validate().map_err(operation_error)?;
+    Ok(manifest)
+}
+
+/// The source capture seed (ADR-0170): the committed repository its side's readers copy. Its
+/// check reads the written tree back and reports its source-manifest digest, which the driver
+/// compares with the golden seed entry before any sample copies it.
+fn source_capture_seed(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let files = request.integer("files") as usize;
+    sample(
+        started,
+        || Ok((None, source_repository(work, files)?)),
+        |()| written_manifest(&work.join("repo")),
+        |(), manifest| {
+            let manifest = manifest?;
+            Ok(observed(
+                manifest.content_digest(),
+                manifest.entries.len() as u64,
+                format!(
+                    "files={} file_bytes={} seed=committed_repository",
+                    manifest.entries.len(),
+                    fixtures::SOURCE_FILE_BYTES
+                ),
+            ))
+        },
+    )
+}
+
+fn source_capture(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let files = request.integer("files") as usize;
+    let seed = request
+        .seed
+        .clone()
+        .expect("an admitted seed reader has its seed");
+    sample(
+        started,
+        || Ok((None, opened_repository(&seed, work)?)),
+        |(repo, cas)| Capture::new(repo, cas).committed("HEAD"),
+        |(_, cas), snapshot| {
+            let snapshot = snapshot.map_err(operation_error)?;
+            let entries = &snapshot.manifest.entries;
+            if entries.len() != files {
+                return Err(operation_error(format!(
+                    "captured {} entries of {files} files",
+                    entries.len()
+                )));
+            }
+            for entry in entries {
+                let stored = cas.verify(&entry.content).map_err(operation_error)?;
+                if entry.kind != EntryKind::File
+                    || entry.size != fixtures::SOURCE_FILE_BYTES as u64
+                    || stored != entry.size
+                {
+                    return Err(operation_error(format!(
+                        "{} is not a stored 128-byte file",
+                        entry.path
+                    )));
+                }
+            }
+            Ok(observed(
+                snapshot.content_digest.clone(),
+                entries.len() as u64,
+                format!("files={files} file_bytes={}", fixtures::SOURCE_FILE_BYTES),
+            ))
+        },
+    )
+}
+
+// State projection ----------------------------------------------------------------------------
+
+/// The admitted fixture Task with exactly `events` relevant events: open, propose, admit
+/// and production lease renewals through the protected public writer. Clock eligibility
+/// coordination belongs to setup, outside projection/CLI timing. A seed writer
+/// the driver gave a preparation directory ([`fixture_prep`]) writes the log there and publishes
+/// it to `work`; every sample writes it in `work` itself.
+pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
+    let Some(prep) = fixture_prep()? else {
+        return write_event_log(work, events);
+    };
+    let staged = staging(&prep, work)?;
+    write_event_log(&staged, events)?;
+    publish(&staged, work)?;
+    let run = af_store::store::task::task_run_id(authority::TASK_ID).map_err(fixture_error)?;
+    let store = EventStore::open(work.join("events.sqlite")).map_err(fixture_error)?;
+    let recorded = store.len(&run).map_err(fixture_error)?;
+    if recorded != events {
+        return Err(fixture_error(format!(
+            "the published fixture Task log holds {recorded} events, not exactly {events}"
+        )));
+    }
+    Ok(())
+}
+
+fn write_event_log(work: &Path, events: u64) -> Result<(), Failure> {
+    let mut fixture =
+        authority::build(work, None, fixtures::TASK_LEASE_MS).map_err(fixture_error)?;
+    let run = fixture.run_id().map_err(fixture_error)?;
+    let mut length = fixture.store.len(&run).map_err(fixture_error)?;
+    while length < events {
+        fixture.renew().map_err(|error| {
+            classify(
+                &fixture.store,
+                &fixture.lease,
+                error,
+                FailureKind::FixtureFailed,
+            )
+        })?;
+        length += 1;
+    }
+    let recorded = fixture.store.len(&run).map_err(fixture_error)?;
+    if recorded != events {
+        return Err(fixture_error(format!(
+            "the fixture Task log holds {recorded} events, not exactly {events}"
+        )));
+    }
+    Ok(())
+}
+
+// Seed preparation (ADR-0170) ----------------------------------------------------------------
+
+/// Names the bounded, memory-backed directory a seed writer prepares its 10,000-event fixture
+/// in. Only the trusted driver sets it, and only for a seed writer: on the seed's own
+/// filesystem every one of the 10,000 protected writes is a durable commit, and their
+/// per-commit flushes dominate the writer's bound. The writes, their order and their
+/// validation through the protected public writer are the same; the finished Store is then
+/// published, every file flushed, to the seed's work directory, where a fresh Store and the
+/// seed's independent oracle read it. No sample ever runs with it.
+pub const FIXTURE_PREP_ENV: &str = "AF_PERF_FIXTURE_PREP";
+
+/// The preparation directory the driver named, when it names one: an existing directory.
+fn fixture_prep() -> Result<Option<std::path::PathBuf>, Failure> {
+    let Some(prep) = std::env::var_os(FIXTURE_PREP_ENV) else {
+        return Ok(None);
+    };
+    let prep = std::path::PathBuf::from(prep);
+    if !prep.is_absolute()
+        || !std::fs::symlink_metadata(&prep).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err(fixture_error(format!(
+            "{FIXTURE_PREP_ENV} names {}, not an existing absolute directory",
+            prep.display()
+        )));
+    }
+    Ok(Some(prep))
+}
+
+/// A new, empty directory below `prep` for the fixture published to `target`.
+fn staging(prep: &Path, target: &Path) -> Result<std::path::PathBuf, Failure> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| fixture_error("the fixture's target has no name"))?;
+    let staged = prep.join(name);
+    std::fs::create_dir(&staged).map_err(|error| {
+        fixture_error(format!(
+            "the preparation directory {}: {error}",
+            staged.display()
+        ))
+    })?;
+    Ok(staged)
+}
+
+/// Copy the finished fixture `staged`, whose every writer handle is closed, into the empty
+/// directory `target` ([`copy_tree`]), then remove the staged copy.
+fn publish(staged: &Path, target: &Path) -> Result<(), Failure> {
+    copy_tree(staged, target)?;
+    std::fs::remove_dir_all(staged).map_err(|error| {
+        fixture_error(format!(
+            "removing the prepared fixture {}: {error}",
+            staged.display()
+        ))
+    })?;
+    eprintln!(
+        "perf-probe: fixture prepared in {FIXTURE_PREP_ENV} {} and published to {}",
+        staged.display(),
+        target.display()
+    );
+    Ok(())
+}
+
+/// Copy the tree `from` into the empty directory `to`: the same directories, files and modes,
+/// each file and directory flushed. Symbolic links and special files are refused.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), Failure> {
+    let failed = |what: &Path, error: std::io::Error| {
+        fixture_error(format!("copying the fixture {}: {error}", what.display()))
+    };
+    let (staged, target) = (from, to);
+    if std::fs::read_dir(target)
+        .map_err(|error| failed(target, error))?
+        .next()
+        .is_some()
+    {
+        return Err(fixture_error(format!(
+            "the fixture's target {} is not empty",
+            target.display()
+        )));
+    }
+    fn copy(
+        from: &Path,
+        to: &Path,
+        failed: &dyn Fn(&Path, std::io::Error) -> Failure,
+    ) -> Result<(), Failure> {
+        let mut entries = std::fs::read_dir(from)
+            .map_err(|error| failed(from, error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| failed(from, error))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let source = entry.path();
+            let destination = to.join(entry.file_name());
+            let metadata =
+                std::fs::symlink_metadata(&source).map_err(|error| failed(&source, error))?;
+            if metadata.is_dir() {
+                std::fs::create_dir(&destination).map_err(|error| failed(&destination, error))?;
+                copy(&source, &destination, failed)?;
+                std::fs::set_permissions(&destination, metadata.permissions())
+                    .map_err(|error| failed(&destination, error))?;
+            } else if metadata.is_file() {
+                std::fs::copy(&source, &destination)
+                    .map_err(|error| failed(&destination, error))?;
+                std::fs::File::open(&destination)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| failed(&destination, error))?;
+            } else {
+                return Err(fixture_error(format!(
+                    "the prepared fixture holds {}, neither a file nor a directory",
+                    source.display()
+                )));
+            }
+        }
+        std::fs::File::open(to)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| failed(to, error))
+    }
+    copy(staged, target, &failed)
+}
+
+pub fn state_projection_value(
+    state: &af_store::store::task::TaskProjection,
+    events: u64,
+) -> Result<Value, Failure> {
+    Ok(json!({
+        "task_id": state.task_id,
+        "phase": serde_json::to_value(&state.phase).map_err(operation_error)?,
+        "admitted": state.admitted,
+        "plan_recorded": state.plan_id.is_some(),
+        "next_sequence": state.next_sequence,
+        "events": events,
+    }))
+}
+
+/// The state projection seed (ADR-0170): exactly [`fixtures::PROJECTION_EVENTS`] events written
+/// through the protected public writer into `work`, which its side's readers copy. Its check
+/// projects them through a fresh Store, so the message's count is what was recorded.
+fn state_projection_seed(work: &Path, started: Instant) -> Outcome {
+    state_projection_sample(
+        work,
+        fixtures::PROJECTION_EVENTS,
+        false,
+        started,
+        |_| Ok(()),
+    )
+}
+
+fn state_projection(request: &Request, _work: &Path, started: Instant) -> Outcome {
+    let prewarmed = request.text("projection") == "prewarmed";
+    let seed = request
+        .seed
+        .clone()
+        .expect("an admitted seed reader has its seed");
+    sample(
+        started,
+        || {
+            // An absent log is the seed's failure, never a new empty Store.
+            let log = seed.join("events.sqlite");
+            if !std::fs::symlink_metadata(&log).is_ok_and(|metadata| metadata.is_file()) {
+                return Err(fixture_error(format!(
+                    "the seed holds no event log at {}",
+                    log.display()
+                )));
+            }
+            Ok((None, opened_projection(&seed, prewarmed)?))
+        },
+        project,
+        |state, projected| observe_projection(state, projected, prewarmed),
+    )
+}
+
+/// A newly opened Store over the log below `root` has no projection memo: application-cold.
+/// Prewarming is one full projection on that connection, still setup.
+fn opened_projection(root: &Path, prewarmed: bool) -> Result<(EventStore, Cas), Failure> {
+    let store = EventStore::open(root.join("events.sqlite")).map_err(fixture_error)?;
+    let cas = Cas::open_existing(root.join("cas")).map_err(fixture_error)?;
+    if prewarmed {
+        store
+            .task_projection(&cas, authority::TASK_ID)
+            .map_err(fixture_error)?
+            .ok_or_else(|| fixture_error("the fixture Task is unknown"))?;
+    }
+    Ok((store, cas))
+}
+
+type Projected = Result<Option<af_store::store::task::TaskProjection>, StoreError>;
+
+fn project(state: &mut (EventStore, Cas)) -> Projected {
+    let (store, cas) = state;
+    store.task_projection(cas, authority::TASK_ID)
+}
+
+fn observe_projection(
+    (store, _): (EventStore, Cas),
+    state: Projected,
+    prewarmed: bool,
+) -> Result<Observation, Failure> {
+    let state = state
+        .map_err(operation_error)?
+        .ok_or_else(|| operation_error("the projected Task is unknown"))?;
+    let run = af_store::store::task::task_run_id(authority::TASK_ID).map_err(operation_error)?;
+    let recorded = store.len(&run).map_err(operation_error)?;
+    let projection = state_projection_value(&state, recorded)?;
+    Ok(observed(
+        digest_of(&projection)?,
+        recorded,
+        format!(
+            "events={recorded} projection={}",
+            if prewarmed {
+                "prewarmed"
+            } else {
+                "application_cold"
+            }
+        ),
+    ))
+}
+
+/// The state projection region over a fixture log of exactly `events` events written in this
+/// sample's `work`. `after_log` runs once the log is written and before the Store is reopened;
+/// only tests use it, to damage the fixture and prove the production projection's refusal is
+/// reported, never hidden.
+pub fn state_projection_sample(
+    work: &Path,
+    events: u64,
+    prewarmed: bool,
+    started: Instant,
+    after_log: impl FnOnce(&Path) -> Result<(), Failure>,
+) -> Outcome {
+    sample(
+        started,
+        || {
+            event_log(work, events)?;
+            after_log(work)?;
+            Ok((None, opened_projection(work, prewarmed)?))
+        },
+        project,
+        |state, projected| observe_projection(state, projected, prewarmed),
+    )
+}
+
+/// The CLI state fixture: the admitted fixture Task with exactly
+/// [`fixtures::CLI_STATE_EVENTS`] events, written through the protected public writer into
+/// `work`, the state directory (`events.sqlite`, `cas`) a side's `af task show --state` reads.
+/// Its region re-reads that log through a fresh Store so the message's count is what was
+/// recorded, never what was intended.
+fn cli_state_fixture(work: &Path, started: Instant) -> Outcome {
+    state_projection_sample(work, fixtures::CLI_STATE_EVENTS, false, started, |_| Ok(()))
+}
+
+fn cli_wait_fixture(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let (events, heavy, history) = if request.contract.contract_id == "cli_wait_original_fixture_v1"
+    {
+        (fixtures::CLI_STATE_EVENTS, false, 0)
+    } else {
+        fixtures::wait_state(request.text("state")).expect("admitted wait fixture")
+    };
+    sample(
+        started,
+        || {
+            let padding = if heavy {
+                let Envelope::Package { digits, tens } =
+                    fixtures::envelope_fixture("issue_255_large")
+                        .expect("large fixture")
+                        .envelope
+                else {
+                    unreachable!()
+                };
+                Some(fixtures::padding(digits, tens))
+            } else {
+                None
+            };
+            let fixture = if request.contract.contract_id == "cli_wait_original_fixture_v1" {
+                authority::build_original_waiter(work, events)?
+            } else {
+                authority::build_waiter(work, padding, events, history)?
+            };
+            Ok((None, fixture))
+        },
+        |fixture| {
+            fixture
+                .store
+                .task_projection(&fixture.cas, authority::TASK_ID)
+        },
+        |fixture, projected| {
+            let task = projected
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("missing waiter Task"))?;
+            let run = fixture.run_id().map_err(operation_error)?;
+            let count = fixture.store.len(&run).map_err(operation_error)?;
+            let tasks = fixture
+                .store
+                .run_ids()
+                .map_err(operation_error)?
+                .iter()
+                .filter(|run| run.starts_with("task:"))
+                .count();
+            if count != events
+                || tasks != history + 1
+                || !task.lease_held_at(authority::now_ms().map_err(operation_error)?)
+            {
+                return Err(operation_error(
+                    "waiter fixture event count, history count or live lease differs",
+                ));
+            }
+            let (plan, graph) = load_plan_and_graph(
+                &fixture.cas,
+                task.plan_id
+                    .as_deref()
+                    .ok_or_else(|| operation_error("unplanned waiter"))?,
+            )?;
+            let semantic = authority::semantic_projection(&fixture.cas, &task, &plan, &graph)
+                .map_err(operation_error)?;
+            Ok(observed(
+                digest_of(&semantic)?,
+                count,
+                format!(
+                    "events={count} historical_tasks={history} issue_255_large={heavy}; final production lease"
+                ),
+            ))
+        },
+    )
+}
+
+/// Current native Review seed. Public lease transitions extend the same Task log without
+/// changing its selected Round, Findings, conclusion, charges or candidate.
+fn cli_native_review_fixture(request: &Request, started: Instant) -> Outcome {
+    sample(
+        started,
+        || {
+            let state = request
+                .scratch
+                .parent()
+                .ok_or_else(|| fixture_error("missing seed parent"))?
+                .join("native-review");
+            let mut store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
+            let cas = Cas::open_existing(state.join("cas")).map_err(fixture_error)?;
+            let run = af_store::store::task::task_run_id("perf-review").map_err(fixture_error)?;
+            let initial = store
+                .task_projection(&cas, "perf-review")
+                .map_err(fixture_error)?
+                .ok_or_else(|| fixture_error("missing native Review Task"))?;
+            let length = store.len(&run).map_err(fixture_error)?;
+            if length == 0 || length + 2 > fixtures::CLI_NATIVE_REVIEW_EVENTS {
+                return Err(fixture_error(
+                    "native Review log has no room for a bounded lease",
+                ));
+            }
+            let lease = store
+                .take_task_lease(&cas, "perf-review", "perf-native-seed", 120_000)
+                .map_err(fixture_error)?;
+            for _ in (length + 1)..(fixtures::CLI_NATIVE_REVIEW_EVENTS - 1) {
+                store
+                    .renew_task_lease(&cas, &lease, 120_000)
+                    .map_err(fixture_error)?;
+            }
+            store
+                .release_task_lease(&cas, &lease)
+                .map_err(fixture_error)?;
+            let actual = store
+                .task_projection(&cas, "perf-review")
+                .map_err(fixture_error)?
+                .ok_or_else(|| fixture_error("missing native Review projection"))?;
+            if actual.phase != initial.phase
+                || actual.execution.as_ref().map(|e| &e.outputs)
+                    != initial.execution.as_ref().map(|e| &e.outputs)
+            {
+                return Err(fixture_error("native Review seed changed selected work"));
+            }
+            drop(store);
+            let store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
+            Ok((None, (store, cas, run)))
+        },
+        |(store, cas, _)| store.task_projection(cas, "perf-review"),
+        |(store, _, run), projection| {
+            let projection = projection
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("missing native Review Task"))?;
+            let count = store.len(&run).map_err(operation_error)?;
+            Ok(observed(
+                digest_of(&serde_json::to_value(&projection.phase).map_err(operation_error)?)?,
+                count,
+                format!("events={count} native_review=perf-review projection=application_cold"),
+            ))
+        },
+    )
+}
+
+// Authority -----------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityRegion {
+    CurrentPlanCheck,
+    TaskRuntimeNew,
+}
+
+/// How a sample holds its production lease. Immediately before the region every state-persistence
+/// request hands it off, and every authority request takes a fresh one after its setup writer
+/// handed its lease over ([`PRODUCTION_LEASE`]); only the expiry tests keep the setup lease and
+/// let it lapse at that boundary, waiting until the Store itself reports it lapsed, to prove
+/// expiry is reported as the side's failure and never retried.
+#[derive(Debug, Clone, Copy)]
+pub struct LeasePolicy {
+    pub refresh_before_region: bool,
+    pub wait_for_expiry: bool,
+}
+
+pub const PRODUCTION_LEASE: LeasePolicy = LeasePolicy {
+    refresh_before_region: true,
+    wait_for_expiry: false,
+};
+
+/// Wait until the Store itself reports the lease lapsed; bounded by twice the lease.
+fn wait_for_expiry(store: &EventStore, lease: &af_store::store::task::TaskLease) {
+    let deadline = Instant::now() + Duration::from_millis(2 * fixtures::TASK_LEASE_MS);
+    while Instant::now() < deadline {
+        match (lease_state(store, lease), authority::now_ms()) {
+            (LeaseState::Live(until), Ok(now)) if now < until => {
+                std::thread::sleep(Duration::from_millis(until - now + 10));
+            }
+            // Lapsed, unreadable or a clock error: the classification that follows says which.
+            _ => return,
+        }
+    }
+}
+
+/// The Store's own spelling of a lapsed lease: [`EventStore::task_lease_state`] returns a
+/// [`StoreError::Conflict`] starting with exactly this when it observes the lease expired at its
+/// clock or the stream written by another writer or epoch (fenced), and for nothing else.
+const LEASE_LAPSED: &str = "Task writer lease is expired or fenced";
+
+/// What the Store itself establishes about a lease, read once after a failure.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LeaseState {
+    /// The Store observed the lease held and live, until this Unix millisecond.
+    Live(u64),
+    /// The Store established expiry or fencing; its own diagnostic.
+    Lapsed(String),
+    /// The state could not be read: a SQLite, decoding, malformed-transition or clock error.
+    /// Expiry is not established.
+    Unreadable(String),
+}
+
+pub fn lease_state(store: &EventStore, lease: &af_store::store::task::TaskLease) -> LeaseState {
+    match store.task_lease_state(lease) {
+        Ok(until) => LeaseState::Live(until),
+        Err(StoreError::Conflict(what)) if what.starts_with(LEASE_LAPSED) => {
+            LeaseState::Lapsed(what)
+        }
+        Err(error) => LeaseState::Unreadable(error.to_string()),
+    }
+}
+
+/// Classify a failed lease-bound operation by the lease state the Store establishes after it.
+/// It is `lease_expired` only when the Store reports the lease lapsed or fenced; otherwise it is
+/// `otherwise`, the operation's or fixture's own failure. The original diagnostic always leads,
+/// and an unreadable lease state is appended to it, never mistaken for expiry. Nothing is
+/// retried.
+pub fn classify(
+    store: &EventStore,
+    lease: &af_store::store::task::TaskLease,
+    error: String,
+    otherwise: FailureKind,
+) -> Failure {
+    match lease_state(store, lease) {
+        LeaseState::Lapsed(state) => Failure::new(
+            FailureKind::LeaseExpired,
+            format!("{error}; the Store reports: {state}"),
+        ),
+        LeaseState::Live(_) => Failure::new(otherwise, error),
+        LeaseState::Unreadable(state) => Failure::new(
+            otherwise,
+            format!(
+                "{error}; the lease state is unreadable, so expiry is not established: {state}"
+            ),
+        ),
+    }
+}
+
+fn load_plan_and_graph(cas: &Cas, plan_id: &str) -> Result<(ExecutionPlan, CompiledTask), Failure> {
+    let plan: ExecutionPlan =
+        serde_json::from_value(cas.get_artifact(plan_id).map_err(operation_error)?.payload)
+            .map_err(operation_error)?;
+    let graph = compiled_graph(cas, &plan)?;
+    Ok((plan, graph))
+}
+
+fn compiled_graph(cas: &Cas, plan: &ExecutionPlan) -> Result<CompiledTask, Failure> {
+    serde_json::from_value(
+        cas.get_artifact(&plan.compiled_graph_id)
+            .map_err(operation_error)?
+            .payload,
+    )
+    .map_err(operation_error)
+}
+
+/// Write one admitted Task through this side's own public writers. Both setup leases are
+/// released while live; the process exits and closes every handle before the driver seals it.
+/// Its original revision deadline is preserved in every copy, never extended by a reader.
+fn authority_seed(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let Some(Envelope::Package { digits, tens }) =
+                fixtures::envelope_fixture(package).map(|fixture| fixture.envelope)
+            else {
+                return Err(fixture_error("an authority seed needs a package fixture"));
+            };
+            let (fixture, author) = authority::build_then(
+                work,
+                Some(fixtures::padding(digits, tens)),
+                fixtures::TASK_LEASE_MS,
+                authority::Setup {
+                    hand_over: true,
+                    ..authority::Setup::default()
+                },
+                |_, _, _, packages, _| packages[fixtures::AUTHOR_PACKAGE].clone(),
+            )?;
+            Ok((Some(author), fixture))
+        },
+        |fixture| {
+            let state = fixture
+                .store
+                .task_projection(&fixture.cas, authority::TASK_ID)
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("the seed Task is unknown"))?;
+            let plan_id = state
+                .plan_id
+                .as_deref()
+                .ok_or_else(|| operation_error("the seed Task has no plan"))?;
+            let (plan, graph) = load_plan_and_graph(&fixture.cas, plan_id)?;
+            authority::semantic_projection(&fixture.cas, &state, &plan, &graph)
+                .map_err(operation_error)
+        },
+        |_, projection| {
+            let projection = projection?;
+            let bytes = projection["packages"][fixtures::AUTHOR_PACKAGE]["envelope_bytes"]
+                .as_u64()
+                .ok_or_else(|| operation_error("the seed lacks its author package"))?;
+            Ok(observed(
+                digest_of(&projection)?,
+                bytes,
+                format!("package={package} seed=admitted_task setup_leases=released"),
+            ))
+        },
+    )
+}
+
+/// Measure the current-plan check or the first `TaskRuntime::new` of the two-node graph whose
+/// author package envelope is the named fixture's exact size. The setup writes' authority is
+/// captured before the first setup lease opens, and each setup write holds a production lease of
+/// its own that ends after it ([`authority::build_then`]). After setup, outside every lease, the
+/// region captures a host and authority no setup write used, whose plan validator is cold
+/// ([`authority::require_cold`]); then a fresh production lease is taken and a fresh Store
+/// connection opened immediately before the region, so the region's lease is whole and its
+/// projection application-cold.
+#[cfg(test)]
+pub fn authority_sample(
+    package: &str,
+    work: &Path,
+    region: AuthorityRegion,
+    lease: LeasePolicy,
+    started: Instant,
+) -> Outcome {
+    authority_sample_with(package, work, region, lease, started, SetupHooks::default())
+}
+
+/// Test hooks of [`authority_sample_with`], run where setup's own costs lie; only a test passes
+/// ones that do anything.
+pub struct SetupHooks<'a> {
+    /// Between the setup capture and the first lease's opening.
+    pub after_capture: Box<dyn FnOnce() -> Result<(), String> + 'a>,
+    /// Between the proposal's released lease and the admission's fresh one.
+    pub between_writes: Box<dyn FnOnce() -> Result<(), String> + 'a>,
+    /// After the region's capture and before the region's lease is taken.
+    pub after_region_capture: Box<dyn FnOnce() -> Result<(), String> + 'a>,
+}
+
+impl Default for SetupHooks<'_> {
+    fn default() -> Self {
+        SetupHooks {
+            after_capture: Box::new(|| Ok(())),
+            between_writes: Box::new(|| Ok(())),
+            after_region_capture: Box::new(|| Ok(())),
+        }
+    }
+}
+
+/// [`authority_sample`] with test hooks where setup's costs lie.
+#[cfg(test)]
+pub fn authority_sample_with(
+    package: &str,
+    work: &Path,
+    region: AuthorityRegion,
+    lease: LeasePolicy,
+    started: Instant,
+    hooks: SetupHooks<'_>,
+) -> Outcome {
+    authority_sample_from(package, work, region, lease, started, hooks, false)
+}
+
+/// The seeded reader and the direct writer tests share exactly the same timed operation.
+/// `restore` reads the private seed copy at `work`; it never reuses a setup lease.
+pub fn authority_sample_from(
+    package: &str,
+    work: &Path,
+    region: AuthorityRegion,
+    lease: LeasePolicy,
+    started: Instant,
+    hooks: SetupHooks<'_>,
+    restore: bool,
+) -> Outcome {
+    let setup_span = perf_trace::span(Phase::ProbeSetup);
+    let padding = match fixtures::envelope_fixture(package).map(|fixture| fixture.envelope) {
+        Some(Envelope::Package { digits, tens }) => fixtures::padding(digits, tens),
+        _ => {
+            return before_region(
+                started,
+                None,
+                fixture_error(format!("{package} is not a package envelope fixture")),
+            );
+        }
+    };
+    let declared =
+        fixtures::envelope_fixture(package).map(|fixture| fixture.serialized_bytes as u64);
+    let store_path = work.join("events.sqlite");
+    let cas_path = work.join("cas");
+    let after_region_capture = hooks.after_region_capture;
+    let measure = |store: &mut EventStore,
+                   cas: &Cas,
+                   task_lease: Option<&af_store::store::task::TaskLease>,
+                   packages: &BTreeMap<String, String>,
+                   inputs: &authority::Region<'_>| {
+        let author = packages[fixtures::AUTHOR_PACKAGE].clone();
+        match cas.stored_len(&author) {
+            Ok(bytes) if Some(bytes) == declared => {}
+            other => {
+                return Err((
+                    Some(author),
+                    fixture_error(format!(
+                        "the author package envelope is {other:?} bytes, not {declared:?}"
+                    )),
+                ));
+            }
+        }
+        let operation = |authority: &CapturedTaskAuthority<'_>, host: &dyn TaskOperatorHost| {
+            after_region_capture().map_err(|error| (Some(author.clone()), fixture_error(error)))?;
+            // The setup writers' leases ended after their writes; the region's own
+            // production lease is taken here, as the last Store write before it.
+            let region_lease = if lease.refresh_before_region {
+                authority::take_fresh_lease(store, cas)
+                    .map_err(|error| (Some(author.clone()), fixture_error(error)))?
+            } else {
+                task_lease
+                    .expect("only direct writer tests keep a setup lease")
+                    .clone()
+            };
+            if lease.wait_for_expiry {
+                wait_for_expiry(store, &region_lease);
+            }
+            let task_lease = &region_lease;
+            let fresh = EventStore::open(&store_path)
+                .map_err(fixture_error)
+                .and_then(|store| {
+                    Cas::open_existing(&cas_path)
+                        .map_err(fixture_error)
+                        .map(|cas| (store, cas))
+                })
+                .and_then(|opened| {
+                    authority::require_cold(authority)
+                        .map_err(fixture_error)
+                        .map(|()| opened)
+                });
+            let (mut fresh, fresh_cas) =
+                fresh.map_err(|failure| (Some(author.clone()), failure))?;
+            drop(setup_span);
+            let setup_nanos = started.elapsed().as_nanos();
+            let bracket = control::begin();
+            let region_started = Instant::now();
+            let region_span = perf_trace::span(Phase::ProbeRegion);
+            let (region_nanos, result) = match region {
+                AuthorityRegion::CurrentPlanCheck => {
+                    let checked =
+                        black_box(fresh.check_current_task_plan_for_recording(
+                            &fresh_cas, task_lease, authority,
+                        ));
+                    af_contracts::perf_calibration::inject();
+                    let nanos = region_started.elapsed().as_nanos();
+                    drop(region_span);
+                    drop(bracket);
+                    let result = checked.map_err(|error| error.to_string()).and_then(|plan| {
+                        fresh
+                            .task_projection(&fresh_cas, authority::TASK_ID)
+                            .map_err(|error| error.to_string())
+                            .map(|state| (Some(plan), state))
+                    });
+                    (nanos, result)
+                }
+                AuthorityRegion::TaskRuntimeNew => {
+                    let constructed = black_box(TaskRuntime::new(
+                        &mut fresh,
+                        &fresh_cas,
+                        task_lease.clone(),
+                        authority,
+                        host,
+                    ));
+                    af_contracts::perf_calibration::inject();
+                    let nanos = region_started.elapsed().as_nanos();
+                    drop(region_span);
+                    drop(bracket);
+                    // The constructed runtime's own projection names the plan it loaded.
+                    let result = constructed
+                        .and_then(|runtime| runtime.projection())
+                        .map(|state| (None, Some(state)));
+                    (nanos, result)
+                }
+            };
+            let result = result
+                .map_err(|error| classify(&fresh, task_lease, error, FailureKind::OperationFailed));
+            Ok((author.clone(), setup_nanos, region_nanos, result))
+        };
+        let measured = if restore {
+            inputs.with_cold_validator(operation)
+        } else {
+            inputs.capture(operation)
+        };
+        measured.map_err(|error| (Some(author.clone()), fixture_error(error)))?
+    };
+    let built = if restore {
+        authority::restore_then(work, Some(padding), |store, cas, packages, inputs| {
+            measure(store, cas, None, packages, inputs)
+        })
+    } else {
+        authority::build_then(
+            work,
+            Some(padding),
+            fixtures::TASK_LEASE_MS,
+            authority::Setup {
+                hand_over: lease.refresh_before_region,
+                after_capture: hooks.after_capture,
+                between_writes: hooks.between_writes,
+                ..authority::Setup::default()
+            },
+            |store, cas, lease, packages, inputs| {
+                measure(store, cas, Some(lease), packages, inputs)
+            },
+        )
+        .map(|(fixture, value)| (fixture.cas, value))
+    };
+    let (cas, author, setup_nanos, region_nanos, result) = match built {
+        Ok((cas, Ok((author, setup, region, result)))) => (cas, author, setup, region, result),
+        Ok((_, Err((author, failure)))) => return before_region(started, author, failure),
+        Err(failure) => return before_region(started, None, failure),
+    };
+    let result = result.and_then(|(plan, state)| {
+        let state = state.ok_or_else(|| operation_error("the fixture Task is unknown"))?;
+        let plan_id = state
+            .plan_id
+            .clone()
+            .ok_or_else(|| operation_error("the fixture Task has no plan"))?;
+        let (plan, graph) = match plan {
+            Some(plan) => {
+                let graph = compiled_graph(&cas, &plan)?;
+                (plan, graph)
+            }
+            None => load_plan_and_graph(&cas, &plan_id)?,
+        };
+        let projection =
+            authority::semantic_projection(&cas, &state, &plan, &graph).map_err(operation_error)?;
+        let bytes = projection["packages"][fixtures::AUTHOR_PACKAGE]["envelope_bytes"]
+            .as_u64()
+            .ok_or_else(|| operation_error("the plan does not depend on the author package"))?;
+        Ok(observed(
+            digest_of(&projection)?,
+            bytes,
+            format!(
+                "package={package} author_envelope_bytes={bytes} nodes={}",
+                graph.nodes.len()
+            ),
+        ))
+    });
+    Outcome {
+        fixture_digest: Some(author),
+        setup_nanos,
+        region_nanos: Some(region_nanos),
+        result,
+    }
+}
+
+// Persistence diagnostic ----------------------------------------------------------------------
+
+fn persistence(request: &Request, work: &Path, started: Instant) -> Outcome {
+    match request.text("operation") {
+        "cas_write_read" => sample(
+            started,
+            || {
+                let blob = fixtures::persistence_blob();
+                let cas = Cas::open(work.join("cas")).map_err(fixture_error)?;
+                Ok((Some(blob_content_id(&blob)), (cas, blob)))
+            },
+            // Flush semantics: Cas::flush fsyncs the object, its shard directory, `objects`,
+            // the CAS root and the root's parent (plain fsync, as the event store's SQLite).
+            |(cas, blob)| {
+                let digest = cas.put(blob)?;
+                cas.flush()?;
+                cas.get(&digest)
+            },
+            |(_, blob), read| {
+                let read = read.map_err(operation_error)?;
+                if read != blob {
+                    return Err(operation_error("read back differs from the written object"));
+                }
+                let logical = (blob.len() + read.len()) as u64;
+                let mut observation = observed(
+                    blob_content_id(&read),
+                    logical,
+                    format!(
+                        "flush=cas_fsync_object_and_directories written_bytes={} read_bytes={}",
+                        blob.len(),
+                        read.len()
+                    ),
+                );
+                observation
+                    .extra_metrics
+                    .insert("logical_bytes", (logical.to_string(), "bytes"));
+                Ok(observation)
+            },
+        ),
+        _ => persistence_state_sample(work, PRODUCTION_LEASE, started),
+    }
+}
+
+/// The advisory state round trip: [`fixtures::PERSISTENCE_EVENTS`] production lease renewals
+/// appended and the log read back, with the production lease.
+pub fn persistence_state_sample(work: &Path, lease: LeasePolicy, started: Instant) -> Outcome {
+    persistence_state_sample_with(work, lease, started, |_| Ok(()))
+}
+
+/// [`persistence_state_sample`] with `before_refresh` run after every setup read of the Store
+/// and before the lease refresh; only tests pass one that does anything.
+///
+/// Setup reads the run ID and the built log's length first, then refreshes the fixture's lease
+/// as its last successful operation, so the region starts with a full production lease whatever
+/// setup cost. One renewal appends exactly one event, counted into the prefix
+/// without another full log read. A failed refresh or renewal in the region is classified by
+/// the Store's own lease state, and the first failure ends the sample without retry. A
+/// scheduler pause between the refresh and the region can still consume the lease; that is
+/// reported as `lease_expired`, never hidden. Only the expiry test passes a policy other than
+/// [`PRODUCTION_LEASE`].
+pub fn persistence_state_sample_with(
+    work: &Path,
+    lease: LeasePolicy,
+    started: Instant,
+    before_refresh: impl FnOnce(&AuthorityFixture) -> Result<(), String>,
+) -> Outcome {
+    sample(
+        started,
+        || {
+            let mut fixture =
+                authority::build(work, None, fixtures::TASK_LEASE_MS).map_err(fixture_error)?;
+            let run = fixture.run_id().map_err(fixture_error)?;
+            let built = fixture.store.len(&run).map_err(fixture_error)?;
+            before_refresh(&fixture).map_err(fixture_error)?;
+            let prefix = if lease.refresh_before_region {
+                fixture.renew().map_err(|error| {
+                    classify(
+                        &fixture.store,
+                        &fixture.lease,
+                        error,
+                        FailureKind::FixtureFailed,
+                    )
+                })?;
+                built + 1
+            } else {
+                built
+            };
+            if lease.wait_for_expiry {
+                wait_for_expiry(&fixture.store, &fixture.lease);
+            }
+            Ok((None, (fixture, run, prefix)))
+        },
+        // Flush semantics: each renewal is one SQLite transaction at synchronous=FULL in
+        // WAL mode, committed before the next begins; the read is a full ordered replay.
+        // v3 includes bounded clock-eligibility reads/waits before each of the 100 renewals.
+        |(fixture, run, _): &mut (AuthorityFixture, String, u64)| {
+            for _ in 0..fixtures::PERSISTENCE_EVENTS {
+                if let Err(error) = fixture.renew() {
+                    return Err(classify(
+                        &fixture.store,
+                        &fixture.lease,
+                        error,
+                        FailureKind::OperationFailed,
+                    ));
+                }
+            }
+            fixture.store.replay(run).map_err(operation_error)
+        },
+        |(_, _, prefix), events| {
+            let events = events?;
+            let appended = events.get(prefix as usize..).unwrap_or_default();
+            let mut types = std::collections::BTreeSet::new();
+            for event in appended {
+                let spelled = serde_json::to_value(event.event_type).map_err(operation_error)?;
+                types.insert(
+                    spelled
+                        .as_str()
+                        .ok_or_else(|| operation_error("an event type is not a string"))?
+                        .to_string(),
+                );
+            }
+            let contiguous = appended
+                .windows(2)
+                .all(|pair| pair[1].sequence == pair[0].sequence + 1);
+            let renewals = appended
+                .iter()
+                .all(|event| event.payload["change"]["kind"] == "lease_renewed");
+            if appended.len() as u64 != fixtures::PERSISTENCE_EVENTS || !contiguous || !renewals {
+                return Err(operation_error(format!(
+                    "read back {} appended events (contiguous: {contiguous}, all renewals: {renewals})",
+                    appended.len()
+                )));
+            }
+            // The canonical bytes of the appended events, metadata included: their timestamps
+            // and identifiers vary, so this is reported, never compared with a golden value.
+            let mut logical = 0_u64;
+            for event in appended {
+                let value = serde_json::to_value(event).map_err(operation_error)?;
+                logical += af_store::canonicalize(&value)
+                    .map_err(operation_error)?
+                    .len() as u64;
+            }
+            let projection = json!({
+                "appended": appended.len(),
+                "event_types": types.into_iter().collect::<Vec<_>>(),
+                "prefix_events": prefix,
+            });
+            let mut observation = observed(
+                digest_of(&projection)?,
+                appended.len() as u64,
+                format!(
+                    "flush=sqlite_wal_synchronous_full_per_event appended={} prefix={prefix} \
+                     lease=refreshed_before_region cadence=clock_eligible_in_region",
+                    appended.len()
+                ),
+            );
+            observation
+                .extra_metrics
+                .insert("logical_bytes", (logical.to_string(), "bytes"));
+            Ok(observation)
+        },
+    )
+}
+
+// Health sentinel -----------------------------------------------------------------------------
+
+fn sentinel(request: &Request, started: Instant) -> Outcome {
+    let repetitions = request.repetitions as usize;
+    sample(
+        started,
+        || Ok((None, fixtures::sentinel_value())),
+        |value| {
+            let mut outputs = Vec::with_capacity(repetitions);
+            for _ in 0..repetitions {
+                outputs.push(af_store::canonicalize(black_box(&*value)));
+            }
+            outputs
+        },
+        |_, outputs| {
+            let outputs = outputs
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(operation_error)?;
+            // Every repetition is checked: all of them must be the same bytes, and the driver's
+            // golden digest covers their concatenation.
+            if let Some(first) = outputs.first() {
+                if let Some(index) = outputs.iter().position(|output| output != first) {
+                    return Err(operation_error(format!(
+                        "repetition {index} differs from the first"
+                    )));
+                }
+            }
+            let joined = outputs.concat();
+            Ok(observed(
+                blob_content_id(&joined),
+                outputs.len() as u64,
+                format!(
+                    "repetitions={} canonical_bytes={}",
+                    outputs.len(),
+                    joined.len() / outputs.len().max(1)
+                ),
+            ))
+        },
+    )
+}

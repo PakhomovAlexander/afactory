@@ -1,0 +1,37 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 78,
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "event": "push",
+      "head_sha": "@HEAD@",
+      "run_attempt": 1,
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/octo/gate/actions/runs/78",
+      "pull_requests": []
+    },
+    {
+      "id": 79,
+      "name": "CI",
+      "path": ".github/workflows/other.yml",
+      "event": "pull_request",
+      "head_sha": "@HEAD@",
+      "run_attempt": 1,
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/octo/gate/actions/runs/79",
+      "pull_requests": [
+        {
+          "number": 12,
+          "head": {
+            "ref": "af-gate/@TASK@/head",
+            "sha": "@HEAD@"
+          }
+        }
+      ]
+    }
+  ]
+}

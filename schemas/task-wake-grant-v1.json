@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-grant:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "route_id",
+    "capability"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-grant@1"
+    },
+    "route_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  }
+}

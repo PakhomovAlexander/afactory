@@ -1,0 +1,132 @@
+{
+  "$id": "urn:af:schema:github-check-outcome:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "GitHub Scenario adapter v1. Semantic validation also binds exact identities, scope and durable state.",
+  "properties": {
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "identity": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "app_id": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "check"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name",
+                  "app_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "context": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "creator_id": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "status"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "context",
+                  "creator_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "pending",
+              "ready",
+              "repairable"
+            ]
+          },
+          "suite_id": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "identity",
+          "id",
+          "suite_id",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "maxItems": 32,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "revision": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af/github-check-outcome@1"
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "ready",
+        "repairable"
+      ]
+    },
+    "subject": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^github-pr:sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "subject",
+    "revision",
+    "state",
+    "checks"
+  ],
+  "type": "object"
+}

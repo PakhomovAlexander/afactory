@@ -1,0 +1,5 @@
+task run task:sha256:8888888888888888888888888888888888888888888888888888888888888888  history prefix:1 — retained executions 1–1
+2 turns
+harness 009c22caf55d944d attempt golden-attempt-1 node root.nodes.review  stream complete
+  turn 1   2023-11-14T22:18:20.010Z +0 µs         5.000 ms     ok     succeeded  stop tool_use   in 12, out 34, cache read 5600, cache write 78  text 0/0 B  thinking 1/25 B  tools 2
+  turn 2   2023-11-14T22:18:20.020Z +10.000 ms    10.000 ms    ok     succeeded  stop end_turn   in 9, out 21, cache read 5700, cache write 0  text 1/25 B  thinking 0/0 B  tools 0

@@ -1,0 +1,2088 @@
+use super::{assert_invalid, assert_valid, workspace_root};
+use af_contracts::task::{
+    ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1,
+    plan::{
+        EffectiveWorkerBindingV3, ExecutionPlan, IndependencePolicyV1, PlanDecisionV1,
+        WorkerExecutionV3, validate_independent_bindings,
+    },
+    review::{RepairAssessmentV1, ReviewConclusionV1, ReviewHistoryV1, VerificationContinuationV1},
+};
+use serde_json::{Value, json};
+
+#[test]
+fn optimization_economics_contracts_preserve_unknowns_and_pending_live_gates() {
+    use af_contracts::task::optimization::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let receipt = format!("sha256:{}", "2".repeat(64));
+    let history = json!({
+        "schema":"af.optimization-history/1", "project_id":id,
+        "cutoff_unix_ms":"100", "receipts":[{
+            "receipt_id":receipt,"adapter":"fixture","adapter_version":"v1",
+            "project_id":id,"source_id":"fixture.jsonl","execution_id":"session-1",
+            "byte_start":"0","byte_end":"0","prefix_digest":id,"cutoff_unix_ms":"100",
+            "redaction_version":"v1","completeness":"complete"
+        }], "observations":[], "gaps":["timing"]
+    });
+    assert_valid("optimization-history-v1.json", &history);
+    serde_json::from_value::<OptimizationHistoryV1>(history.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let usage = json!({"chargeable_tokens":"0"});
+    let economics = json!({
+        "schema":"af.optimization-economics/1","project_id":id,"capture_ids":[id],
+        "cutoff_unix_ms":"100","rows":[],"af_usage":usage,"outer_session_usage":usage,
+        "active_ms":"0","elapsed_ms":"0","summed_work_ms":"0","verified":0,
+        "failed_or_incomplete":0,"repeated_failures":0,"missing_fields":["timing"],
+        "cache_economics":{"cargo":{"eligible":1,"ineligible":0,"hits":1,"misses":0,
+            "unknown_results":0,"cold":0,"warm":1,"unknown_temperature":0,
+            "bytes_reused":"10","invalidation_ids":["Cargo.lock:fixture"],
+            "missing_fields":["lookup_time","tokens_reused","warmup_time"]}}
+    });
+    assert_valid("optimization-economics-v1.json", &economics);
+    serde_json::from_value::<OptimizationEconomicsV1>(economics.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut invalid_history = history;
+    invalid_history["gaps"] = json!(["missing\n* injected"]);
+    assert_invalid(
+        "optimization-history-v1.json",
+        &invalid_history,
+        "gaps are identifiers",
+    );
+    assert!(
+        serde_json::from_value::<OptimizationHistoryV1>(invalid_history)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut invalid_economics = economics;
+    invalid_economics["missing_fields"] = json!(["invalid field"]);
+    assert_invalid(
+        "optimization-economics-v1.json",
+        &invalid_economics,
+        "missing fields are identifiers",
+    );
+    assert!(
+        serde_json::from_value::<OptimizationEconomicsV1>(invalid_economics)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let report = json!({"schema":"af.optimization-report/1","economics_id":id,
+        "project_id":id,"status":"partial","summary":"Timing is unknown.","highlights":[],
+        "missing_measurements":["timing"]});
+    assert_valid("optimization-report-v1.json", &report);
+    let report: OptimizationReportV1 = serde_json::from_value(report).unwrap();
+    report.validate().unwrap();
+    assert!(
+        report
+            .render_markdown()
+            .unwrap()
+            .contains("Live paid demonstrations and adoption observations are still pending.")
+    );
+    let policy = json!({"schema":"af.optimization-policy/1","project_id":id,
+        "strategy":"light","max_sessions":200,"max_raw_bytes":"268435456",
+        "max_record_bytes":"1048576","max_normalized_bytes":"16777216"});
+    assert_valid("optimization-policy-v1.json", &policy);
+    serde_json::from_value::<OptimizationPolicyV1>(policy)
+        .unwrap()
+        .validate()
+        .unwrap();
+}
+
+#[test]
+fn task_input_bindings_record_provenance_and_close_every_form() {
+    use af_contracts::task::input_bindings::*;
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let record = TaskInputBindingsV1 {
+        schema: "af.task-input-bindings/1".into(),
+        bindings: std::collections::BTreeMap::from([
+            (
+                "history".into(),
+                TaskInputBindingV1 {
+                    artifact_id: id('a'),
+                    resolved_artifact_id: None,
+                    snapshot_id: None,
+                    rerooted_snapshot_id: None,
+                    task: None,
+                    also: Vec::new(),
+                },
+            ),
+            (
+                "source".into(),
+                TaskInputBindingV1 {
+                    artifact_id: id('b'),
+                    resolved_artifact_id: Some(id('c')),
+                    snapshot_id: Some(id('d')),
+                    rerooted_snapshot_id: Some(id('e')),
+                    task: Some(ReferencedTaskV1 {
+                        task_id: "layout-l3b".into(),
+                        task_revision_id: id('1'),
+                        result_id: id('2'),
+                        port: "snapshot".into(),
+                        acceptance: TaskAcceptanceV1::Unsatisfied,
+                        domain_conclusion: "changes_requested".into(),
+                    }),
+                    also: Vec::new(),
+                },
+            ),
+        ]),
+    };
+    record.validate().unwrap();
+    let value = serde_json::to_value(&record).unwrap();
+    assert_valid("task-input-bindings-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<TaskInputBindingsV1>(value.clone()).unwrap(),
+        record
+    );
+
+    let mut unknown = value.clone();
+    unknown["bindings"]["source"]["approved"] = json!(true);
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &unknown,
+        "a binding grants nothing beyond the identities it names",
+    );
+    assert!(serde_json::from_value::<TaskInputBindingsV1>(unknown).is_err());
+
+    let mut empty = value.clone();
+    empty["bindings"] = json!({});
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &empty,
+        "the record is written only when a port is bound",
+    );
+    assert!(
+        serde_json::from_value::<TaskInputBindingsV1>(empty)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+
+    // A `many` port bound from several outputs (ADR-0134): every further output names its Task
+    // and its own Snapshot, and none is re-rooted or nested.
+    let referenced = |port: &str| ReferencedTaskV1 {
+        task_id: "experiment".into(),
+        task_revision_id: id('1'),
+        result_id: id('2'),
+        port: port.into(),
+        acceptance: TaskAcceptanceV1::Satisfied,
+        domain_conclusion: "verified".into(),
+    };
+    let output = |byte: char, snapshot: char, port: &str| TaskInputBindingV1 {
+        artifact_id: id(byte),
+        resolved_artifact_id: None,
+        snapshot_id: Some(id(snapshot)),
+        rerooted_snapshot_id: None,
+        task: Some(referenced(port)),
+        also: Vec::new(),
+    };
+    let mut measurements = output('3', '4', "baseline");
+    measurements.also.push(output('5', '6', "candidate"));
+    let several = TaskInputBindingsV1 {
+        schema: "af.task-input-bindings/1".into(),
+        bindings: std::collections::BTreeMap::from([("measurements".into(), measurements)]),
+    };
+    several.validate().unwrap();
+    let several = serde_json::to_value(&several).unwrap();
+    assert_valid("task-input-bindings-v1.json", &several);
+    for (pointer, member, why) in [
+        (
+            "/bindings/measurements/also/0",
+            "rerooted_snapshot_id",
+            "a further output is never re-rooted",
+        ),
+        (
+            "/bindings/measurements/also/0",
+            "also",
+            "a further output is never nested",
+        ),
+        (
+            "/bindings/measurements",
+            "resolved_artifact_id",
+            "a port bound from several outputs republishes none",
+        ),
+    ] {
+        let mut invalid = several.clone();
+        invalid.pointer_mut(pointer).unwrap()[member] = match member {
+            "also" => json!([several["bindings"]["measurements"]["also"][0]]),
+            _ => json!(id('7')),
+        };
+        assert_invalid("task-input-bindings-v1.json", &invalid, why);
+        let decoded = serde_json::from_value::<TaskInputBindingsV1>(invalid);
+        let refused = decoded.map_or(true, |record| record.validate().is_err());
+        assert!(refused, "{why}");
+    }
+    let mut anonymous = several.clone();
+    anonymous["bindings"]["measurements"]["also"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("task");
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &anonymous,
+        "every further output names the Task it came from",
+    );
+    let decoded: TaskInputBindingsV1 = serde_json::from_value(anonymous).unwrap();
+    assert!(decoded.validate().is_err());
+    let mut empty = several;
+    empty["bindings"]["measurements"]["also"] = json!([]);
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &empty,
+        "a single-reference binding has one spelling",
+    );
+    assert!(serde_json::from_value::<TaskInputBindingsV1>(empty).is_err());
+
+    let mut orphaned = value;
+    orphaned["bindings"]["history"]["rerooted_snapshot_id"] = json!(id('f'));
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &orphaned,
+        "a re-rooted binding keeps the Snapshot and artifact it came from",
+    );
+    assert!(
+        serde_json::from_value::<TaskInputBindingsV1>(orphaned)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+
+/// Generation two of a Task source origin. The Rust reader lives in `af-source-git`, which
+/// depends on this crate, so the closure is checked here against the wire shape and there
+/// against the reader.
+#[test]
+fn current_task_source_origin_preserves_captured_and_bound_provenance() {
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let bound = json!({"schema":"af.task-source-origin/3","kind":"bound","repository_id":"example/hub",
+        "content_digest":id('a'),
+        "bound_from":{"artifact_id":id('b'),"snapshot_id":id('c'),
+            "task":{"task_id":"layout-l3b","task_revision_id":id('1'),"result_id":id('2'),
+                "port":"snapshot","acceptance":"unsatisfied",
+                "domain_conclusion":"changes_requested"}}});
+    assert_valid("task-source-origin-v3.json", &bound);
+
+    let mut exact = bound.clone();
+    exact["bound_from"].as_object_mut().unwrap().remove("task");
+    assert_valid("task-source-origin-v3.json", &exact);
+
+    let mut committed = bound.clone();
+    committed["source_revision"] = json!("bba24cb");
+    assert_invalid(
+        "task-source-origin-v3.json",
+        &committed,
+        "a re-rooted tree has no commit and must not claim one",
+    );
+
+    let mut unbound = bound;
+    unbound.as_object_mut().unwrap().remove("bound_from");
+    assert_invalid(
+        "task-source-origin-v3.json",
+        &unbound,
+        "a bound source retains where its tree came from",
+    );
+}
+
+/// Every execution-record wrapper in the inspection document declares the generation its record
+/// is read against, and the two must agree. A payload shape several generations share stays
+/// admitted under each of them; a payload only one generation accepts is refused under every
+/// other — a generation-two settled record under an `af/TaskExecutionRecord@1` wrapper above all.
+#[test]
+fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation() {
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let attempt = "A".repeat(26);
+    let settled = |charged: Value| {
+        json!({"kind":"settled","attempt_id":attempt,"charged_tokens":charged,
+            "result":{"kind":"succeeded","output_id":id('4')},"raw_artifact_ids":[]})
+    };
+    // The one execution-record generation this release writes, under the one inspection document
+    // it prints; a binding record rides beside it and is checked by its own schema.
+    let record = settled(json!("7"));
+    let document = |bindings: Value| {
+        json!({"schema":"af/task-inspection@20","task_id":"chain-history","revision_id":id('1'),
+            "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
+            "history":[],"run_reports":[],
+            "execution_records":[{"artifact_id":id('3'),
+                "artifact_type":"af/TaskExecutionRecord@5","record":record}],
+            "input_bindings":bindings})
+    };
+    assert_valid(
+        "task-inspection-v20.json",
+        &document(json!({"schema":"af.task-input-bindings/1",
+            "bindings":{"history":{"artifact_id":id('a')}}})),
+    );
+    assert_invalid(
+        "task-inspection-v20.json",
+        &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
+        "a binding record with no bindings",
+    );
+    assert_invalid(
+        "task-inspection-v20.json",
+        &document(json!({"schema":"af.task-input-bindings/1",
+            "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
+        "an unknown binding field",
+    );
+}
+
+#[test]
+fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
+    use af_contracts::task::document::*;
+    let sources = json!({"schema":"af.document-sources/1","sources":{"ticket":{"title":"Pagination","uri":"https://example.invalid/AF-42","revision":"42@1","text":"Add offset pagination."}}});
+    assert_valid("document-sources-v1.json", &sources);
+    serde_json::from_value::<DocumentSourcesV1>(sources.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let draft = json!({"schema":"af.document-draft/3","title":"Release notes","sections":[{"heading":"Summary","body":"Adds offset pagination."}],"citations":[{"kind":"source","name":"ticket"}]});
+    assert_valid("document-draft-v3.json", &draft);
+    serde_json::from_value::<DocumentDraft>(draft.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (schema, value) in [
+        ("document-sources-v1.json", sources),
+        ("document-draft-v3.json", draft.clone()),
+    ] {
+        let mut invalid = value;
+        invalid["allowed_effects"] = json!(["write-source"]);
+        assert_invalid(
+            schema,
+            &invalid,
+            "document source/draft data cannot grant execution effects",
+        );
+    }
+    let mut duplicate = draft;
+    let section = duplicate["sections"][0].clone();
+    duplicate["sections"].as_array_mut().unwrap().push(section);
+    assert!(
+        serde_json::from_value::<DocumentDraft>(duplicate)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let id = format!("sha256:{}", "1".repeat(64));
+    let document = json!({"schema":"af.document/2","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
+    assert_valid("document-v2.json", &document);
+    serde_json::from_value::<DocumentV1>(document.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    // The rendering that escaped every ASCII punctuation character fails closed (ADR-0145).
+    let mut earlier = document.clone();
+    earlier["schema"] = json!("af.document/1");
+    assert_invalid(
+        "document-v2.json",
+        &earlier,
+        "the af.document/1 rendering is not read",
+    );
+    assert!(
+        serde_json::from_value::<DocumentV1>(earlier)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut invalid = document;
+    invalid["snapshot_id"] = json!(id);
+    assert_invalid(
+        "document-v2.json",
+        &invalid,
+        "a document is not a fabricated code Snapshot",
+    );
+    let evaluation = json!({"document_id":id,"sources_id":id,"requirements_id":id,"check_receipt_id":id,"outcome":"passed","summary":"Exact sources verified."});
+    assert_valid("document-evaluation-v1.json", &evaluation);
+    serde_json::from_value::<DocumentEvaluationV1>(evaluation.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut missing = evaluation;
+    missing.as_object_mut().unwrap().remove("document_id");
+    assert_invalid(
+        "document-evaluation-v1.json",
+        &missing,
+        "evaluation requires exact document identity",
+    );
+}
+
+#[test]
+fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
+    use af_contracts::task::document::*;
+    use af_contracts::task::report_domain::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let snapshot = format!("sha256:{}", "2".repeat(64));
+    // The report sources file is the Document's file shape; it may be empty.
+    let empty = json!({"schema":"af.document-sources/1","sources":{}});
+    assert_valid("report-sources-v1.json", &empty);
+    assert_invalid(
+        "document-sources-v1.json",
+        &empty,
+        "the Document profile still requires a source",
+    );
+    let long = json!({"schema":"af.document-sources/1","sources":{"task":{"title":"Task",
+        "uri":"repo:README.md","revision":"r1","text":"x".repeat(MAX_REPORT_SOURCE_BYTES)}}});
+    assert_valid("report-sources-v1.json", &long);
+    serde_json::from_value::<ReportSourcesV1>(long.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut over = long;
+    over["sources"]["task"]["text"] = json!("x".repeat(MAX_REPORT_SOURCE_BYTES + 1));
+    assert_invalid(
+        "report-sources-v1.json",
+        &over,
+        "an entry is at most 256 KiB",
+    );
+    assert!(
+        serde_json::from_value::<ReportSourcesV1>(over)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut granted = empty.clone();
+    granted["allowed_effects"] = json!(["write-source"]);
+    assert_invalid(
+        "report-sources-v1.json",
+        &granted,
+        "sources grant no effect",
+    );
+    assert!(serde_json::from_value::<ReportSourcesV1>(granted).is_err());
+
+    let draft = json!({"schema":"af.document-draft/3","title":"Where the time goes",
+        "sections":[{"heading":"Findings","body":"Tests dominate."}],"citations":[{"kind":"source","name":"r1"},{"kind":"repository","location":{"path":"README.md"}},{"kind":"repository","location":{"path":"src/lib.rs","line":3}}]});
+    assert_valid("document-draft-v3.json", &draft);
+    let typed: DocumentDraft = serde_json::from_value(draft.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), draft);
+    // The same format represents a draft without repository citations.
+    let mut bare = draft.clone();
+    bare["citations"] = json!([{"kind":"source","name":"r1"}]);
+    assert_valid("document-draft-v3.json", &bare);
+    let typed: DocumentDraft = serde_json::from_value(bare.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), bare);
+    for (bad, why) in [
+        (json!({"path":"README.md","line":0}), "a line is 1-based"),
+        (json!({"path":""}), "a citation names a path"),
+        (json!({"path":"a\nb"}), "a path is one line"),
+        (json!({"path":" README.md"}), "a path is spelled exactly"),
+        (
+            json!({"path":"README.md","column":1}),
+            "a citation is closed",
+        ),
+    ] {
+        let mut invalid = draft.clone();
+        invalid["citations"] = json!([{"kind":"repository","location":bad}]);
+        assert_invalid("document-draft-v3.json", &invalid, why);
+        assert!(
+            serde_json::from_value::<DocumentDraft>(invalid)
+                .map_err(|e| e.to_string())
+                .and_then(|draft| draft.validate())
+                .is_err(),
+            "{why}"
+        );
+    }
+    for old in ["af.document-draft/1", "af.document-draft/2"] {
+        let mut retired = draft.clone();
+        retired["schema"] = json!(old);
+        assert_invalid(
+            "document-draft-v3.json",
+            &retired,
+            "retired draft formats fail closed",
+        );
+        assert!(
+            serde_json::from_value::<DocumentDraft>(retired)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    assert!(typed.validate_document().is_ok());
+    let repository_draft: DocumentDraft = serde_json::from_value(draft.clone()).unwrap();
+    assert!(
+        repository_draft.validate_document().is_err(),
+        "a Document has no repository Snapshot"
+    );
+    let mut untagged = draft.clone();
+    untagged["citations"] = json!(["r1"]);
+    assert_invalid(
+        "document-draft-v3.json",
+        &untagged,
+        "citations require explicit kinds",
+    );
+    assert!(serde_json::from_value::<DocumentDraft>(untagged).is_err());
+    let named: Vec<_> = (0..32)
+        .map(|n| json!({"kind":"source","name":format!("source{n:02}")}))
+        .collect();
+    let repository: Vec<_> = (0..64)
+        .map(|n| json!({"kind":"repository","location":{"path":format!("file{n:02}.rs")}}))
+        .collect();
+    let mut bounded = draft.clone();
+    bounded["citations"] = json!(named.iter().chain(repository.iter()).collect::<Vec<_>>());
+    assert_valid("document-draft-v3.json", &bounded);
+    serde_json::from_value::<DocumentDraft>(bounded.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut too_many_sources = named;
+    too_many_sources.push(json!({"kind":"source","name":"source99"}));
+    let mut too_many_repository = repository;
+    too_many_repository.push(json!({"kind":"repository","location":{"path":"overflow.rs"}}));
+    for citations in [too_many_sources, too_many_repository] {
+        let mut over = bounded.clone();
+        over["citations"] = json!(citations);
+        assert_invalid(
+            "document-draft-v3.json",
+            &over,
+            "each citation kind retains its own bound independently",
+        );
+        assert!(
+            serde_json::from_value::<DocumentDraft>(over)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    for malformed in [
+        json!({"kind":"source","name":"r1","location":{"path":"README.md"}}),
+        json!({"kind":"repository","name":"r1","location":{"path":"README.md"}}),
+        json!({"kind":"unknown","name":"r1"}),
+    ] {
+        let mut invalid = draft.clone();
+        invalid["citations"] = json!([malformed]);
+        assert_invalid(
+            "document-draft-v3.json",
+            &invalid,
+            "citation variants are closed",
+        );
+        assert!(serde_json::from_value::<DocumentDraft>(invalid).is_err());
+    }
+
+    let receipt = json!({"plan_id":id,"document_id":id,"sources_id":id,"policy_id":id,
+        "source_snapshot_id":snapshot,"manifest_id":id,
+        "checks":{"repository_citations":"failed","size":"passed"},
+        "citation_failures":[{"citation":{"path":"src/lib.rs","line":9},"reason":"line_out_of_range"}],
+        "outcome":"failed"});
+    assert_valid("report-check-receipt-v1.json", &receipt);
+    let typed: ReportCheckReceiptV1 = serde_json::from_value(receipt.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), receipt);
+    for field in ["source_snapshot_id", "manifest_id"] {
+        let mut missing = receipt.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert_invalid(
+            "report-check-receipt-v1.json",
+            &missing,
+            "a receipt names the tree it judged",
+        );
+        assert!(serde_json::from_value::<ReportCheckReceiptV1>(missing).is_err());
+    }
+    let mut reason = receipt.clone();
+    reason["citation_failures"][0]["reason"] = json!("unreadable");
+    assert_invalid("report-check-receipt-v1.json", &reason, "closed reasons");
+    assert!(serde_json::from_value::<ReportCheckReceiptV1>(reason).is_err());
+
+    let evaluation = json!({"document_id":id,"sources_id":id,"requirements_id":id,
+        "check_receipt_id":id,"source_snapshot_id":snapshot,"outcome":"passed",
+        "summary":"Cited lines read on the same Snapshot."});
+    assert_valid("report-evaluation-v1.json", &evaluation);
+    serde_json::from_value::<ReportEvaluationV1>(evaluation.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut missing = evaluation;
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("source_snapshot_id");
+    assert_invalid(
+        "report-evaluation-v1.json",
+        &missing,
+        "an evaluation names its Snapshot",
+    );
+    assert!(serde_json::from_value::<ReportEvaluationV1>(missing).is_err());
+
+    let invocation = json!({"plan_id":id,"node":"root.nodes.accept","inputs":{}});
+    let verification = json!({"invocation":invocation,"document_id":id,"policy_id":id,
+        "check_receipt_id":id,"evaluation_id":id,"source_snapshot_id":snapshot,"outcome":"passed"});
+    assert_valid("report-verification-v1.json", &verification);
+    let typed: ReportVerificationV1 = serde_json::from_value(verification.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), verification);
+    let mut absent = verification.clone();
+    absent.as_object_mut().unwrap().remove("evaluation_id");
+    assert_valid("report-verification-v1.json", &absent);
+    let mut null = verification;
+    null["evaluation_id"] = Value::Null;
+    assert_invalid("report-verification-v1.json", &null, "absent, never null");
+    assert!(serde_json::from_value::<ReportVerificationV1>(null).is_err());
+
+    // The three report operators are closed members of the Pipeline operator schema.
+    for (operator, valid) in [
+        (json!({"op": "report_seal"}), true),
+        (json!({"op": "report_check"}), true),
+        (json!({"op": "report_accept"}), true),
+        (json!({"op": "report_check", "checks": ["size"]}), false),
+    ] {
+        let definition = json!({
+            "schema": "af.pipeline/6", "name": "fixture/report", "version": "1.0.0",
+            "contract": {"inputs": {}, "outputs": {"out": {"artifact_type": "af/Document@1",
+                "cardinality": "one", "optional": false, "affinity": {"kind": "unbound"}, "covers": []}}},
+            "accepts": {"kinds": ["report"], "required_facts": {}},
+            "slots": {},
+            "nodes": [{"id": "n", "operator": operator, "inputs": {}}],
+            "outputs": {"out": {"kind": "node", "node": "n", "port": "document"}},
+            "coverage": {}, "max_attempts": 1, "max_parallel": 1
+        });
+        if valid {
+            assert_valid("pipeline-definition-v6.json", &definition);
+        } else {
+            assert_invalid(
+                "pipeline-definition-v6.json",
+                &definition,
+                "closed operator",
+            );
+        }
+        let rust =
+            serde_json::from_value::<af_contracts::task::pipeline::PipelineDefinition>(definition)
+                .is_ok_and(|p| p.validate().is_ok());
+        assert_eq!(rust, valid, "{operator}");
+    }
+}
+
+/// The pipeline chooses where a check runs (ADR-0140): a check node lists `remote_checks`
+/// beside `checks`, and a plan with remote checks records its `github:` destination. Schema and
+/// Rust admit and refuse the same documents, and a node without the field keeps its bytes.
+#[test]
+fn check_nodes_choose_remote_checks_and_plans_record_their_github_destination() {
+    for (operator, valid) in [
+        (json!({"op": "check", "checks": ["lint"]}), true),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": ["kernel"]}),
+            true,
+        ),
+        (
+            json!({"op": "check", "checks": [], "remote_checks": ["kernel"]}),
+            true,
+        ),
+        (json!({"op": "check", "checks": []}), false),
+        (json!({"op": "check", "remote_checks": ["kernel"]}), false),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": []}),
+            false,
+        ),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": ["bad name"]}),
+            false,
+        ),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": null}),
+            false,
+        ),
+    ] {
+        let mut definition = fixture("pipeline-definition");
+        definition["nodes"][0]["operator"] = operator.clone();
+        if valid {
+            assert_valid("pipeline-definition-v6.json", &definition);
+            assert_eq!(
+                typed_value("pipeline-definition", definition.clone()).as_ref(),
+                Ok(&definition),
+                "{operator} round-trips byte for byte"
+            );
+        } else {
+            assert_invalid("pipeline-definition-v6.json", &definition, "check node");
+            assert!(
+                typed("pipeline-definition", definition).is_err(),
+                "{operator}"
+            );
+        }
+    }
+    // A name in both lists is schema-shaped but refused by semantic admission, naming the
+    // pipeline, the node and the check.
+    let mut both = fixture("pipeline-definition");
+    both["nodes"][0]["operator"] =
+        json!({"op": "check", "checks": ["kernel"], "remote_checks": ["kernel"]});
+    assert_valid("pipeline-definition-v6.json", &both);
+    let error = typed("pipeline-definition", both).unwrap_err();
+    assert!(
+        error.contains("node write lists check kernel in both"),
+        "{error}"
+    );
+
+    for (destinations, valid) in [
+        (json!(["personal"]), true),
+        (json!(["github:octo/gate", "personal"]), true),
+        (json!(["github:octo/gate.js"]), true),
+        (json!(["github:octo"]), false),
+        (json!(["github:octo/.."]), false),
+        (json!(["github:octo/gate/extra"]), false),
+        (json!(["gitlab:octo/gate"]), false),
+    ] {
+        let mut revision = fixture("task-revision");
+        revision["authority"]["data_destinations"] = destinations.clone();
+        if valid {
+            assert_valid("task-revision-v1.json", &revision);
+            typed("task-revision", revision).unwrap();
+        } else {
+            assert_invalid("task-revision-v1.json", &revision, "destination");
+            assert!(typed("task-revision", revision).is_err(), "{destinations}");
+        }
+    }
+}
+
+fn typed_value(contract: &str, value: Value) -> Result<Value, String> {
+    corpus::typed_round_trip(contract, value)
+}
+
+fn fixture(name: &str) -> Value {
+    let path = workspace_root()
+        .join("fixtures/task-contracts/v1")
+        .join(format!("{name}.json"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+#[path = "../support/task_fixtures.rs"]
+mod corpus;
+
+#[test]
+fn compiler_feedback_retains_a_bounded_exact_proposal_and_closes_its_fields() {
+    use af_contracts::task::feedback::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let value = json!({"attempt_id":"01AAAAAAAAAAAAAAAAAAAAAAAA","contract_id":id,"code":"compiler_rejected",
+        "compiler":{"proposal_id":id,"proposal":{"schema":"af.pipeline-proposal/1","root":"generated/task","definitions":{"generated/task":"invalid TOML awaits compiler repair"}},"diagnostics":["Missing public output verification"]}});
+    assert_valid("task-retry-feedback-v1.json", &value);
+    serde_json::from_value::<TaskRetryFeedbackV1>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for case in ["missing", "null", "extra", "wrong_code", "diagnostics"] {
+        let mut invalid = value.clone();
+        match case {
+            "missing" => {
+                invalid.as_object_mut().unwrap().remove("compiler");
+            }
+            "null" => invalid["compiler"] = Value::Null,
+            "extra" => invalid["compiler"]["transcript"] = json!("undeclared history"),
+            "wrong_code" => invalid["code"] = json!("provider_failure"),
+            _ => invalid["compiler"]["diagnostics"] = json!([]),
+        }
+        assert_invalid("task-retry-feedback-v1.json", &invalid, case);
+        assert!(
+            serde_json::from_value::<TaskRetryFeedbackV1>(invalid)
+                .map_err(|e| e.to_string())
+                .and_then(|f| f.validate())
+                .is_err()
+        );
+    }
+}
+
+fn typed(contract: &str, value: Value) -> Result<(), String> {
+    corpus::typed_round_trip(contract, value).map(|_| ())
+}
+
+#[test]
+fn task_contract_positive_and_negative_fixtures() {
+    let schema = |contract: &str| {
+        format!(
+            "{contract}-v{}.json",
+            match contract {
+                "execution-plan" => 4,
+                "pipeline-definition" => 6,
+                _ => 1,
+            }
+        )
+    };
+    let manifest = fixture("content-ids");
+    for name in manifest.as_object().unwrap().keys() {
+        let contract = name.strip_suffix(".json").unwrap();
+        let value = fixture(contract);
+        assert_valid(&schema(contract), &value);
+        typed(contract, value).unwrap_or_else(|e| panic!("{contract}: {e}"));
+    }
+    for case in fixture("negative").as_array().unwrap() {
+        let contract = case["contract"].as_str().unwrap();
+        let why = case["why"].as_str().unwrap();
+        let value = corpus::expand(&fixture(contract), case);
+        match case["layer"].as_str() {
+            Some("shape") => assert_invalid(&schema(contract), &value, why),
+            Some("semantic") => assert_valid(&schema(contract), &value),
+            _ => panic!("unknown negative fixture layer"),
+        }
+        assert!(
+            typed(contract, value.clone()).is_err(),
+            "Rust admitted {contract}: {why}"
+        );
+    }
+    // The format discriminator is a string, never serde's alternate map spelling of a
+    // unit enum variant. Captured JSON and the published schema have the same authority.
+    for discriminator in [json!(null), json!(5), json!({"af.pipeline/6":null})] {
+        let mut invalid = fixture("pipeline-definition");
+        invalid["schema"] = discriminator;
+        assert_invalid(
+            "pipeline-definition-v6.json",
+            &invalid,
+            "the discriminator is a string",
+        );
+        assert!(typed("pipeline-definition", invalid).is_err());
+    }
+    // Structural acceptance is a capability of the same format, with its original
+    // data-only operator boundary even when a slot also declares recovery.
+    let mut structured = fixture("pipeline-definition");
+    structured["slots"]["author"]["recovery_attempts"] = json!(2);
+    structured["nodes"].as_array_mut().unwrap().push(json!({
+        "id":"accept", "operator":{"op":"structured_accept"}, "inputs":{}
+    }));
+    assert_valid("pipeline-definition-v6.json", &structured);
+    typed("pipeline-definition", structured.clone()).unwrap();
+    for forbidden in [
+        json!({"op":"seal"}),
+        json!({"op":"check","checks":["kernel"]}),
+    ] {
+        let mut mixed = structured.clone();
+        mixed["nodes"].as_array_mut().unwrap().push(json!({
+            "id":"forbidden", "operator":forbidden, "inputs":{}
+        }));
+        assert_invalid(
+            "pipeline-definition-v6.json",
+            &mixed,
+            "structured acceptance stays data-only",
+        );
+        assert!(
+            typed("pipeline-definition", mixed)
+                .unwrap_err()
+                .contains("Structured acceptance permits only")
+        );
+    }
+}
+
+#[test]
+fn many_inputs_and_explicit_empty_history_are_valid() {
+    let input =
+        json!({"artifact_ids": [], "artifact_type":"af/Requirements@1", "cardinality":"many"});
+    serde_json::from_value::<ArtifactInputV1>(input)
+        .unwrap()
+        .validate()
+        .unwrap();
+    let history = json!({"kind":"empty"});
+    assert_valid("review-history-v1.json", &history);
+    typed("review-history", history).unwrap();
+}
+
+#[test]
+fn empty_tagged_variants_reject_hidden_fields() {
+    use af_contracts::task::pipeline::{PortAffinityV1, TaskOperatorV1};
+    for kind in ["submitted", "ready", "running"] {
+        assert!(
+            serde_json::from_value::<TaskPhaseV1>(json!({"kind":kind,"plan":"hidden"})).is_err()
+        );
+    }
+    for op in [
+        "seal",
+        "review_bind",
+        "attest_fixes",
+        "select",
+        "structured_accept",
+    ] {
+        assert!(
+            serde_json::from_value::<TaskOperatorV1>(json!({"op":op,"script":"hidden"})).is_err()
+        );
+    }
+    assert!(
+        serde_json::from_value::<PortAffinityV1>(json!({"kind":"unbound","input":"hidden"}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ReviewHistoryV1>(json!({"kind":"empty","subject_id":"hidden"}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<WorkerExecutionV3>(json!({"kind":"command","model":"hidden"}))
+            .is_err()
+    );
+}
+
+#[test]
+fn optional_properties_accept_omission_but_reject_explicit_null() {
+    for (contract, parent, field) in [
+        ("task-revision", "/inputs/requirements", "snapshot_id"),
+        ("task-revision", "", "previous_revision_id"),
+        ("task-revision", "", "pipeline"),
+        (
+            "pipeline-definition",
+            "/contract/inputs/requirements",
+            "root_default",
+        ),
+        ("pipeline-definition", "/nodes/0", "when"),
+    ] {
+        let mut value = fixture(contract);
+        value
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_valid(
+            &format!(
+                "{contract}-v{}.json",
+                if contract == "pipeline-definition" {
+                    6
+                } else {
+                    1
+                }
+            ),
+            &value,
+        );
+        typed(contract, value.clone()).unwrap();
+        value.pointer_mut(parent).unwrap()[field] = Value::Null;
+        assert_invalid(
+            &format!(
+                "{contract}-v{}.json",
+                if contract == "pipeline-definition" {
+                    6
+                } else {
+                    1
+                }
+            ),
+            &value,
+            "optional means absent or a typed value",
+        );
+        assert!(
+            typed(contract, value).is_err(),
+            "{contract} accepted null {field}"
+        );
+    }
+}
+
+#[test]
+fn output_affinity_can_reference_an_input_with_the_same_name() {
+    let mut value = fixture("pipeline-definition");
+    value["contract"]["outputs"]["document"]["affinity"] =
+        json!({"kind":"same_as","input":"document"});
+    value["contract"]["inputs"]["document"] = value["contract"]["inputs"]["requirements"].clone();
+    typed("pipeline-definition", value).unwrap();
+}
+
+#[test]
+fn approval_matches_only_exact_revision_plan_and_policy_and_never_dispatches() {
+    let mut plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let approval: PlanDecisionV1 = serde_json::from_value(fixture("plan-decision")).unwrap();
+    assert!(plan.requires_developer_approval());
+    assert!(approval.approves(&approval.plan_id, &plan));
+    assert!(!approval.approves(&plan.engine_id, &plan));
+    plan.task_revision_id = plan.engine_id.clone();
+    assert!(!approval.approves(&approval.plan_id, &plan));
+    plan.task_revision_id = approval.task_revision_id.clone();
+    plan.authority.policy_id = plan.engine_id.clone();
+    assert!(!approval.approves(&approval.plan_id, &plan));
+}
+
+#[test]
+fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let mut a: EffectiveWorkerBindingV3 = plan.bindings["author"].clone();
+    a.execution = WorkerExecutionV3::Model {
+        provider: "personal".into(),
+        provider_kind: "claude".into(),
+        principal_id: Some("account:one".into()),
+        model: "fable".into(),
+        pi: None,
+        effort: "high".into(),
+    };
+    let mut b = a.clone();
+    let policy = IndependencePolicyV1::default();
+    assert!(validate_independent_bindings(&a, &b, policy).is_err());
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                distinct_principals: false,
+                distinct_providers: true,
+                distinct_models: false,
+                ..policy
+            }
+        )
+        .is_err()
+    );
+    b.package_digest = plan.engine_id.clone();
+    if let WorkerExecutionV3::Model { provider, .. } = &mut b.execution {
+        *provider = "alias".into();
+    }
+    assert!(validate_independent_bindings(&a, &b, policy).is_err());
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                distinct_principals: false,
+                ..policy
+            }
+        )
+        .is_ok()
+    );
+    if let WorkerExecutionV3::Model { principal_id, .. } = &mut b.execution {
+        *principal_id = Some("account:two".into());
+    }
+    assert!(validate_independent_bindings(&a, &b, policy).is_ok());
+    b.execution = WorkerExecutionV3::Command {};
+    assert!(validate_independent_bindings(&a, &b, policy).is_ok());
+    a.execution = WorkerExecutionV3::Command {};
+    assert!(validate_independent_bindings(&a, &b, policy).is_ok());
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                command_workers_by_package: false,
+                ..policy
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                distinct_models: true,
+                ..policy
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn review_exit_preserves_findings_and_missing_output_precedence() {
+    let cases = [
+        (
+            ReviewConclusionV1::Pass,
+            TaskExecutionV1::Completed,
+            TaskAcceptanceV1::Satisfied,
+            0,
+        ),
+        (
+            ReviewConclusionV1::ChangesRequested,
+            TaskExecutionV1::Completed,
+            TaskAcceptanceV1::Satisfied,
+            3,
+        ),
+        (
+            ReviewConclusionV1::ChangesRequested,
+            TaskExecutionV1::Completed,
+            TaskAcceptanceV1::Unsatisfied,
+            3,
+        ),
+        (
+            ReviewConclusionV1::ConvergenceExhausted,
+            TaskExecutionV1::Completed,
+            TaskAcceptanceV1::Satisfied,
+            3,
+        ),
+        (
+            ReviewConclusionV1::ConvergenceExhausted,
+            TaskExecutionV1::Exhausted,
+            TaskAcceptanceV1::Unsatisfied,
+            3,
+        ),
+        (
+            ReviewConclusionV1::Incomplete,
+            TaskExecutionV1::Exhausted,
+            TaskAcceptanceV1::Inconclusive,
+            4,
+        ),
+    ];
+    for (conclusion, execution, acceptance, exit) in cases {
+        conclusion
+            .validate_result(
+                execution,
+                acceptance,
+                conclusion != ReviewConclusionV1::Incomplete,
+            )
+            .unwrap();
+        assert_eq!(conclusion.exit_code(), exit);
+    }
+    assert!(
+        ReviewConclusionV1::Incomplete
+            .validate_result(
+                TaskExecutionV1::Incomplete,
+                TaskAcceptanceV1::Satisfied,
+                false
+            )
+            .is_err()
+    );
+    assert!(
+        ReviewConclusionV1::ChangesRequested
+            .validate_result(
+                TaskExecutionV1::Incomplete,
+                TaskAcceptanceV1::Unsatisfied,
+                false
+            )
+            .is_err()
+    );
+    assert!(
+        ReviewConclusionV1::ConvergenceExhausted
+            .validate_result(
+                TaskExecutionV1::Exhausted,
+                TaskAcceptanceV1::Satisfied,
+                false
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn repair_receipts_cannot_change_snapshot_or_drop_original_claims() {
+    let continuation: VerificationContinuationV1 =
+        serde_json::from_value(fixture("verification-continuation")).unwrap();
+    let mut assessment: RepairAssessmentV1 =
+        serde_json::from_value(fixture("repair-assessment")).unwrap();
+    let id = assessment.continuation_id.clone();
+    assessment
+        .validate_continuation(&id, &continuation)
+        .unwrap();
+    assessment.current_subject_id = continuation.previous_subject_id.clone();
+    assert!(
+        assessment
+            .validate_continuation(&id, &continuation)
+            .is_err()
+    );
+    assessment.current_subject_id = continuation.current_subject_id.clone();
+    assessment
+        .claims
+        .get_mut("finding-1")
+        .unwrap()
+        .expected_view_id = continuation.plan_id.clone();
+    assert!(
+        assessment
+            .validate_continuation(&id, &continuation)
+            .is_err()
+    );
+    assessment.claims.clear();
+    assert!(
+        assessment
+            .validate_continuation(&id, &continuation)
+            .is_err()
+    );
+}
+
+#[test]
+fn missing_review_receipts_cannot_be_relabeled_as_convergence_exhaustion() {
+    for execution in [
+        TaskExecutionV1::Completed,
+        TaskExecutionV1::Incomplete,
+        TaskExecutionV1::Exhausted,
+    ] {
+        for acceptance in [
+            TaskAcceptanceV1::Satisfied,
+            TaskAcceptanceV1::Unsatisfied,
+            TaskAcceptanceV1::Inconclusive,
+        ] {
+            for conclusion in [
+                ReviewConclusionV1::Pass,
+                ReviewConclusionV1::ChangesRequested,
+                ReviewConclusionV1::ConvergenceExhausted,
+                ReviewConclusionV1::Incomplete,
+            ] {
+                let expected = conclusion == ReviewConclusionV1::Incomplete
+                    && execution != TaskExecutionV1::Completed
+                    && acceptance != TaskAcceptanceV1::Satisfied;
+                assert_eq!(
+                    conclusion
+                        .validate_result(execution, acceptance, false)
+                        .is_ok(),
+                    expected,
+                    "{conclusion:?}/{execution:?}/{acceptance:?}"
+                );
+                if expected {
+                    assert_eq!(conclusion.exit_code(), 4);
+                }
+                if conclusion == ReviewConclusionV1::Incomplete {
+                    assert!(
+                        conclusion
+                            .validate_result(execution, acceptance, true)
+                            .is_err()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repair_context_and_decisions_bind_every_current_view_and_keep_original_provenance() {
+    use af_contracts::task::repair::*;
+    use af_contracts::task::review::*;
+    let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let invocation = af_contracts::task::execution::TaskInvocationV1 {
+        plan_id: id('a'),
+        node: "root.nodes.attest".into(),
+        inputs: Default::default(),
+    };
+    let attestation = af_contracts::ChangeAttestationV1 {
+        finding_id: "finding-one".into(),
+        expected_finding_view_id: id('b'),
+        subject_id: id('c'),
+        change_set_id: Some(id('d')),
+        changed_regions: vec![af_contracts::ChangedRegionV1 {
+            path: "pagination.py".into(),
+            start_line: None,
+            end_line: None,
+        }],
+        actor: "af/attest-fixes".into(),
+        reason: "Sealed S1-to-S2 diff".into(),
+        evidence_ids: vec![id('e')],
+    };
+    let context = TaskRepairContextV1 {
+        invocation: invocation.clone(),
+        continuation_id: id('f'),
+        continuation: VerificationContinuationV1 {
+            task_revision_id: id('1'),
+            plan_id: id('a'),
+            prior_history_id: id('2'),
+            previous_subject_id: id('3'),
+            current_subject_id: id('c'),
+            current_snapshot_id: id('4'),
+            policy_id: id('5'),
+            claims: std::collections::BTreeMap::from([("finding-one".into(), id('b'))]),
+        },
+        subject: af_contracts::SubjectV1::diff(id('4'), id('6'), id('7')),
+        previous_snapshot_id: id('8'),
+        claims: std::collections::BTreeMap::from([(
+            "finding-one".into(),
+            TaskRepairClaimV1 {
+                file: "pagination.py".into(),
+                line: Some(1),
+                original_view_id: id('9'),
+                current_view_id: id('b'),
+                title: "Negative offset".into(),
+                body: "Must reject negative offset".into(),
+                remedy: "Raise ValueError".into(),
+                attestation_id: id('0'),
+                attestation,
+            },
+        )]),
+    };
+    context.validate().unwrap();
+    assert_valid(
+        "task-repair-context-v1.json",
+        &serde_json::to_value(&context).unwrap(),
+    );
+    let decision = TaskFixDecisionV1 {
+        expected_view_id: id('b'),
+        attestation_id: id('0'),
+        outcome: VerificationOutcomeV1::Positive,
+        reason: "Executed original regression case on S2".into(),
+    };
+    let verified = TaskFixVerificationV1 {
+        continuation_id: id('f'),
+        subject_id: id('c'),
+        claims: std::collections::BTreeMap::from([("finding-one".into(), decision.clone())]),
+    };
+    verified.validate_context(&context).unwrap();
+    assert_valid(
+        "task-fix-verification-v1.json",
+        &serde_json::to_value(&verified).unwrap(),
+    );
+    // `validate_fix_output` and `repair_acceptance` both admit a verifier result only through
+    // `validate_context`; "stale_snapshot_view" stands in for the removed real-process
+    // `task_repair::repair_rejects_a_stale_view_receipt` (exit 4, 8 Attempts and unchanged replay
+    // stay asserted by `task_repair::repair_rejects_a_stale_subject_receipt`).
+    for case in [
+        "missing",
+        "extra",
+        "old_view",
+        "stale_snapshot_view",
+        "old_subject",
+        "another_continuation",
+    ] {
+        let mut changed = verified.clone();
+        match case {
+            "missing" => changed.claims.clear(),
+            "stale_snapshot_view" => {
+                changed
+                    .claims
+                    .get_mut("finding-one")
+                    .unwrap()
+                    .expected_view_id = context.previous_snapshot_id.clone()
+            }
+            "extra" => {
+                changed
+                    .claims
+                    .insert("unrelated-finding".into(), decision.clone());
+            }
+            "old_view" => {
+                changed
+                    .claims
+                    .get_mut("finding-one")
+                    .unwrap()
+                    .expected_view_id = context.claims["finding-one"].original_view_id.clone()
+            }
+            "old_subject" => changed.subject_id = context.continuation.previous_subject_id.clone(),
+            _ => changed.continuation_id = id('1'),
+        }
+        assert!(changed.validate_context(&context).is_err(), "{case}");
+    }
+    let mut receipt = TaskFixReceiptV1 {
+        invocation,
+        finding_id: "finding-one".into(),
+        continuation_id: id('f'),
+        subject_id: id('c'),
+        decision,
+        verifier_output_id: Some(id('2')),
+    };
+    receipt.validate().unwrap();
+    assert_valid(
+        "task-fix-receipt-v1.json",
+        &serde_json::to_value(&receipt).unwrap(),
+    );
+    receipt.verifier_output_id = None;
+    assert!(
+        receipt.validate().is_err(),
+        "Missing verifier cannot certify a fix"
+    );
+    receipt.decision.outcome = VerificationOutcomeV1::Inconclusive;
+    receipt.validate().unwrap();
+    assert_valid(
+        "task-fix-receipt-v1.json",
+        &serde_json::to_value(&receipt).unwrap(),
+    );
+    let claims = TaskReviewClaimsV1 {
+        round_report_id: id('1'),
+        snapshot_id: id('8'),
+        claims: std::collections::BTreeMap::from([(
+            "finding-one".into(),
+            TaskReviewClaimV1 {
+                file: "pagination.py".into(),
+                line: Some(1),
+                view_id: id('9'),
+                title: "Negative offset".into(),
+                body: "Original claim".into(),
+                remedy: "Reject negative input".into(),
+            },
+        )]),
+    };
+    claims.validate().unwrap();
+    assert_valid(
+        "task-review-claims-v1.json",
+        &serde_json::to_value(claims).unwrap(),
+    );
+}
+
+#[test]
+fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_authority() {
+    use af_contracts::task::plan::PlanPreparationV1;
+    let original = fixture("execution-plan");
+    let mut plan: ExecutionPlan = serde_json::from_value(original.clone()).unwrap();
+    assert!(plan.preparation.is_none());
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap(),
+        original,
+        "Adding preparation changed frozen execution identity"
+    );
+    let original_coverage = plan.acceptance.clone();
+    let original_origins = plan.generated_origins.clone();
+    plan.preparation = Some(PlanPreparationV1::Planning {});
+    plan.acceptance.clear();
+    plan.generated_origins.clear();
+    plan.validate().unwrap();
+    let valid = serde_json::to_value(&plan).unwrap();
+    assert_valid("execution-plan-v4.json", &valid);
+    let mut invalid = valid.clone();
+    invalid["preparation"] = Value::Null;
+    assert_invalid(
+        "execution-plan-v4.json",
+        &invalid,
+        "Present preparation cannot be null",
+    );
+    assert!(serde_json::from_value::<ExecutionPlan>(invalid).is_err());
+    let mut invalid = valid;
+    invalid["preparation"]["auto_approved"] = json!(true);
+    assert_invalid(
+        "execution-plan-v4.json",
+        &invalid,
+        "Preparation cannot smuggle approval",
+    );
+    assert!(serde_json::from_value::<ExecutionPlan>(invalid).is_err());
+    plan.acceptance = original_coverage;
+    assert!(plan.validate().is_err());
+    assert_invalid(
+        "execution-plan-v4.json",
+        &serde_json::to_value(&plan).unwrap(),
+        "Preparation cannot certify business acceptance",
+    );
+    plan.acceptance.clear();
+    plan.generated_origins = original_origins;
+    assert!(!plan.generated_origins.is_empty());
+    assert!(plan.validate().is_err());
+    assert_invalid(
+        "execution-plan-v4.json",
+        &serde_json::to_value(&plan).unwrap(),
+        "Bootstrap is fixed, never generated",
+    );
+}
+
+#[test]
+fn proposals_are_bounded_pipeline_toml_and_never_worker_installation_or_approval() {
+    use af_contracts::task::planning::PipelineProposalV1;
+    let proposal = PipelineProposalV1 {
+        schema: "af.pipeline-proposal/1".into(),
+        root: "generated/implementation".into(),
+        definitions: std::collections::BTreeMap::from([(
+            "generated/implementation".into(),
+            "schema = \"af.pipeline/6\"\n".into(),
+        )]),
+    };
+    proposal.validate().unwrap();
+    let value = serde_json::to_value(&proposal).unwrap();
+    assert_valid("pipeline-proposal-v1.json", &value);
+    for field in ["workers", "approved", "limits"] {
+        let mut invalid = value.clone();
+        invalid[field] = json!({});
+        assert_invalid(
+            "pipeline-proposal-v1.json",
+            &invalid,
+            "Proposal cannot install other authority",
+        );
+        assert!(serde_json::from_value::<PipelineProposalV1>(invalid).is_err());
+    }
+    let mut invalid = proposal.clone();
+    invalid.root = "generated/absent".into();
+    assert!(invalid.validate().is_err());
+    let mut invalid = proposal.clone();
+    invalid.definitions.clear();
+    assert!(invalid.validate().is_err());
+    assert_invalid(
+        "pipeline-proposal-v1.json",
+        &serde_json::to_value(invalid).unwrap(),
+        "Proposal must contain a definition",
+    );
+    let mut invalid = proposal;
+    invalid.root = "project/existing".into();
+    invalid
+        .definitions
+        .insert("project/existing".into(), "name = 'existing'".into());
+    assert!(invalid.validate().is_err());
+    assert_invalid(
+        "pipeline-proposal-v1.json",
+        &serde_json::to_value(invalid).unwrap(),
+        "Generated code cannot shadow captured package names",
+    );
+}
+
+#[test]
+fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
+    use af_contracts::task::plan::{PiAuthorityV3, WorkerExecutionV3};
+    let authority = PiAuthorityV3 {
+        identity_mode: af_contracts::task::plan::PiIdentityModeV1::Account,
+        backend: "openai-codex".into(),
+        auth_method: "oauth".into(),
+        sdk_version: "1.4.0".into(),
+        sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+        node_program: "/installed/node".into(),
+        auth_context_id: format!("sha256:{}", "a".repeat(64)),
+        model_config_id: format!("sha256:{}", "b".repeat(64)),
+        adapter_policy_id: format!("sha256:{}", "c".repeat(64)),
+    };
+    let execution = WorkerExecutionV3::Model {
+        provider: "pi-personal".into(),
+        provider_kind: "pi".into(),
+        principal_id: Some(format!("sha256:{}", "d".repeat(64))),
+        model: "o3".into(),
+        effort: "high".into(),
+        pi: Some(Box::new(authority)),
+    };
+    execution.validate().unwrap();
+    let value = serde_json::to_value(execution).unwrap();
+    let valid = |v: &Value| {
+        super::validator("task-provider-admission-v4.json").is_valid(&json!({
+        "plan_id":format!("sha256:{}","e".repeat(64)),"invocation_policy_id":format!("sha256:{}","f".repeat(64)),
+        "bindings":["root.pi"],"execution":v,"outcome":"passed"}))
+    };
+    assert!(valid(&value));
+    for (field, wrong) in [
+        ("backend", json!("anthropic")),
+        ("auth_method", json!("api_key")),
+        ("sdk_version", json!("1.5.0")),
+        ("model_config_id", json!("unknown")),
+    ] {
+        let mut bad = value.clone();
+        bad["pi"][field] = wrong;
+        assert!(!valid(&bad), "{field}");
+        assert!(
+            serde_json::from_value::<WorkerExecutionV3>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let mut missing = value.clone();
+    missing.as_object_mut().unwrap().remove("pi");
+    assert!(!valid(&missing));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV3>(missing)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut exposed = value.clone();
+    exposed["principal_id"] = json!("unhashed-account");
+    assert!(!valid(&exposed));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV3>(exposed)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut bad = value.clone();
+    bad["provider_kind"] = json!("codex");
+    assert!(!valid(&bad));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV3>(bad)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
+    let ready = json!({"schema":"af.pi-host/7","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+        "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","catalog_id":format!("sha256:{}","c".repeat(64)),"models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
+    assert_valid("pi-host-v7.json", &ready);
+    let mut kimi_ready = ready.clone();
+    kimi_ready["backend"] = json!("kimi-coding");
+    kimi_ready["principal"] = Value::Null;
+    kimi_ready["models"][0]["id"] = json!("k3");
+    kimi_ready["models"][0]["efforts"] = json!(["low", "high", "max"]);
+    assert_valid("pi-host-v7.json", &kimi_ready);
+    for (pointer, wrong) in [
+        ("/principal", ready["principal"].clone()),
+        ("/models/0/id", json!("../invalid")),
+        ("/models/0/efforts", json!(["ultra"])),
+    ] {
+        let mut bad = kimi_ready.clone();
+        *bad.pointer_mut(pointer).unwrap() = wrong;
+        assert_invalid("pi-host-v7.json", &bad, pointer);
+    }
+    let init = json!({"schema":"af.pi-host/7","type":"init","backend":"kimi-coding",
+        "sdk":"/installed/sdk/dist/index.js","auth_dir":"/private/auth",
+        "auth_context_id":format!("sha256:{}","c".repeat(64)),"principal":null,
+        "cwd":"/sandbox","home":"/private/home","readable":["/sandbox"],"writable":[],"probe":false});
+    assert_valid("pi-host-v7.json", &init);
+    let mut missing_context = init;
+    missing_context
+        .as_object_mut()
+        .unwrap()
+        .remove("auth_context_id");
+    assert_invalid(
+        "pi-host-v7.json",
+        &missing_context,
+        "missing captured auth context",
+    );
+    for (field, wrong) in [
+        ("schema", json!("af.pi-host/0")),
+        ("schema", json!("af.pi-host/2")),
+        ("schema", json!("af.pi-host/3")),
+        ("schema", json!("af.pi-host/4")),
+        ("schema", json!("af.pi-host/5")),
+        ("schema", json!("af.pi-host/6")),
+        ("version", json!("1.5.0")),
+        ("backend", json!("anthropic")),
+        ("access", json!("secret")),
+    ] {
+        let mut bad = ready.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-host-v7.json", &bad, field);
+    }
+    let usage = json!({"schema":"af.pi-host/7","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v7.json", &usage);
+    let mut missing = usage;
+    missing.as_object_mut().unwrap().remove("input");
+    assert_invalid("pi-host-v7.json", &missing, "missing counter");
+    let failure = json!({"schema":"af.pi-host/7","type":"error","code":"inference_failed",
+        "diagnostic":"Distinctive SDK terminal error","failure_kind":"environment","accounting_complete":true});
+    assert_valid("pi-host-v7.json", &failure);
+    for kind in [
+        "auth_missing",
+        "auth_revoked",
+        "auth_expired",
+        "auth_refresh_contended",
+        "auth_refresh_failed",
+        "auth_rejected",
+        "quota",
+        "capacity",
+        "model_unavailable",
+        "model_refused",
+        "network",
+        "environment",
+    ] {
+        let mut categorized = failure.clone();
+        categorized["failure_kind"] = json!(kind);
+        assert_valid("pi-host-v7.json", &categorized);
+    }
+    for (field, wrong) in [
+        ("schema", json!("af.pi-host/6")),
+        ("schema", json!("af.pi-host/5")),
+        ("failure_kind", json!("unknown")),
+        ("failure_kind", json!("https://private.invalid")),
+        ("failure_kind", Value::Null),
+        ("diagnostic", json!("")),
+        ("diagnostic", json!("x".repeat(241))),
+        ("diagnostic", json!("error\u{1b}[31m")),
+        ("diagnostic", json!("error\n")),
+        ("diagnostic", json!("error\u{202e}")),
+        ("diagnostic", Value::Null),
+        ("accounting_complete", json!("true")),
+        ("payload", json!({"raw":"provider body"})),
+    ] {
+        let mut bad = failure.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-host-v7.json", &bad, field);
+    }
+    for field in ["diagnostic", "failure_kind", "accounting_complete"] {
+        let mut bad = failure.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-host-v7.json", &bad, "missing terminal failure field");
+    }
+    let refusal = json!({"schema":"af.pi-host/7","type":"error","code":"host_refused"});
+    assert_valid("pi-host-v7.json", &refusal);
+    let mut bad = failure;
+    bad["code"] = json!("host_refused");
+    assert_invalid("pi-host-v7.json", &bad, "unexpected inference diagnostic");
+    let setup = json!({"schema":"af/pi-provider-setup@4","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
+    assert_valid("pi-provider-setup-v4.json", &setup);
+    let mut kimi_setup = setup.clone();
+    kimi_setup["backend"] = json!("kimi-coding");
+    assert_valid("pi-provider-setup-v4.json", &kimi_setup);
+    for backend in [
+        "anthropic",
+        "openai",
+        "amazon-bedrock",
+        "operator-compatible",
+    ] {
+        let mut setup = setup.clone();
+        setup["backend"] = json!(backend);
+        assert_valid("pi-provider-setup-v4.json", &setup);
+    }
+    for (id, backend) in [
+        (Value::Null, Value::Null),
+        (json!("pi-personal"), Value::Null),
+        (Value::Null, json!("openai-codex")),
+        (json!("pi-kimi"), json!("kimi-coding")),
+    ] {
+        let mut refusal = setup.clone();
+        refusal["outcome"] = json!("human_action_required");
+        refusal["id"] = id;
+        refusal["backend"] = backend;
+        assert_valid("pi-provider-setup-v4.json", &refusal);
+    }
+    for (field, wrong) in [
+        ("schema", json!("af/pi-provider-setup@1")),
+        ("schema", json!("af/pi-provider-setup@2")),
+        ("schema", json!("af/pi-provider-setup@3")),
+        ("id", json!("../unsafe")),
+        ("id", json!("codex-ambient")),
+        ("backend", json!("../unsupported")),
+        ("access", json!("secret")),
+        ("id", Value::Null),
+    ] {
+        let mut bad = setup.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-provider-setup-v4.json", &bad, field);
+    }
+    for kind in ["prompt", "accepted"] {
+        let mut ack = json!({"schema":"af.pi-host/7","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
+        if kind == "prompt" {
+            ack["text"] = json!("private");
+        }
+        assert_valid("pi-host-v7.json", &ack);
+        for wrong in [Value::Null, json!(""), json!("sha256:wrong")] {
+            let mut bad = ack.clone();
+            bad["prompt_nonce"] = wrong;
+            assert_invalid("pi-host-v7.json", &bad, "invalid challenge");
+        }
+        let mut old = ack.clone();
+        old["schema"] = json!("af.pi-host/1");
+        assert_invalid("pi-host-v7.json", &old, "old protocol");
+        ack.as_object_mut().unwrap().remove("prompt_nonce");
+        assert_invalid("pi-host-v7.json", &ack, "missing challenge");
+    }
+    let registry = json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
+    assert_valid("provider-registry-v4.json", &registry);
+    for version in [1, 2, 3] {
+        let mut old = registry.clone();
+        old["version"] = json!(version);
+        assert_invalid("provider-registry-v4.json", &old, "old registry");
+    }
+    let mut kimi_registry = registry;
+    kimi_registry["providers"][0]["backend"] = json!("kimi-coding");
+    assert_valid("provider-registry-v4.json", &kimi_registry);
+}
+
+#[test]
+fn pi_validation_historical_claim_is_versioned_and_closed() {
+    // The stdlib helper reads this same schema; fixture mutations also exercise its real CLI.
+    let claim = json!({
+        "schema": "af/pi-validation-claim@1",
+        "source_sha256": format!("sha256:{}", "a".repeat(64)),
+        "entries": 3809,
+        "files": 3124,
+        "command": "make perf-kernel-measure",
+        "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+        "exit_code": 0,
+        "summary": "Summary [ 941.896s] 1 test run: 1 passed (1 slow), 3972 skipped",
+        "log_sha256": format!("sha256:{}", "b".repeat(64))
+    });
+    assert_valid("pi-validation-claim-v1.json", &claim);
+    for (field, wrong) in [
+        ("schema", json!("af/pi-validation-claim@0")),
+        ("source_sha256", json!("not-a-projection")),
+        ("entries", json!(true)),
+        ("files", json!(-1)),
+        ("command", json!("fake measurement")),
+        ("filter", json!("test(/anything/)")),
+        ("exit_code", json!(1)),
+        (
+            "summary",
+            json!("Summary [1s] 1 test run: 0 passed, 1 failed"),
+        ),
+        ("log_sha256", json!("unknown")),
+        ("exclusions", json!(["source"])),
+        ("snapshot_id", json!("invented")),
+    ] {
+        let mut bad = claim.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-validation-claim-v1.json", &bad, field);
+    }
+    for field in claim.as_object().unwrap().keys() {
+        let mut bad = claim.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-validation-claim-v1.json", &bad, field);
+    }
+}
+
+#[test]
+fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence() {
+    use af_contracts::task::plan::{PiAuthorityV3, PiIdentityModeV1};
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let mut kimi = plan.bindings["author"].clone();
+    kimi.execution = WorkerExecutionV3::Model {
+        provider: "kimi-one".into(),
+        provider_kind: "pi".into(),
+        principal_id: None,
+        model: "k3".into(),
+        effort: "high".into(),
+        pi: Some(Box::new(PiAuthorityV3 {
+            identity_mode: PiIdentityModeV1::Unavailable,
+            backend: "kimi-coding".into(),
+            auth_method: "oauth".into(),
+            sdk_version: "1.4.0".into(),
+            sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+            node_program: "/installed/node".into(),
+            auth_context_id: plan.engine_id.clone(),
+            model_config_id: plan.engine_id.clone(),
+            adapter_policy_id: plan.engine_id.clone(),
+        })),
+    };
+    kimi.validate().unwrap();
+    let value = serde_json::to_value(&kimi.execution).unwrap();
+    assert!(value["principal_id"].is_null());
+    assert_eq!(value["pi"]["identity_mode"], "unavailable");
+    let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
+        "execution":value,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
+    assert_valid("task-provider-admission-v4.json", &admission);
+    for (pointer, wrong) in [
+        ("/execution/principal_id", json!(plan.engine_id)),
+        ("/execution/pi/identity_mode", json!("account")),
+    ] {
+        let mut bad = admission.clone();
+        *bad.pointer_mut(pointer).unwrap() = wrong;
+        assert_invalid("task-provider-admission-v4.json", &bad, pointer);
+        assert!(
+            serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let mut missing = admission.clone();
+    missing["execution"]
+        .as_object_mut()
+        .unwrap()
+        .remove("principal_id");
+    assert_invalid(
+        "task-provider-admission-v4.json",
+        &missing,
+        "missing principal field",
+    );
+    assert!(
+        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(missing)
+            .is_err()
+    );
+    let mut other = kimi.clone();
+    other.package_digest = plan.engine_id.clone();
+    if other.package_digest == kimi.package_digest {
+        other.package_digest = plan.pipeline_id.clone();
+    }
+    if let WorkerExecutionV3::Model {
+        provider,
+        pi: Some(pi),
+        ..
+    } = &mut other.execution
+    {
+        *provider = "kimi-other-profile".into();
+        pi.auth_context_id = plan.pipeline_id.clone();
+    }
+    let strict = IndependencePolicyV1::default();
+    assert!(validate_independent_bindings(&kimi, &other, strict).is_err());
+    // Neither another backend's known principal nor a Command can make this principal known.
+    other.execution = WorkerExecutionV3::Model {
+        provider: "openai".into(),
+        provider_kind: "codex".into(),
+        principal_id: Some("known-account".into()),
+        model: "gpt-6-sol".into(),
+        effort: "high".into(),
+        pi: None,
+    };
+    assert!(validate_independent_bindings(&kimi, &other, strict).is_err());
+    assert!(
+        validate_independent_bindings(
+            &kimi,
+            &other,
+            IndependencePolicyV1 {
+                distinct_principals: false,
+                ..strict
+            }
+        )
+        .is_ok()
+    );
+    other.execution = WorkerExecutionV3::Command {};
+    assert!(validate_independent_bindings(&kimi, &other, strict).is_err());
+}
+
+#[test]
+fn pi_provider_neutral_authority_replays_all_auth_modes_without_inventing_independence() {
+    use af_contracts::task::plan::{PiAuthorityV3, PiIdentityModeV1};
+    let plan: ExecutionPlan = serde_json::from_value(fixture("execution-plan")).unwrap();
+    for (backend, method, model) in [
+        ("anthropic", "api_key", "claude-haiku-4-5"),
+        ("openai", "api_key", "gpt-4o-mini"),
+        ("amazon-bedrock", "context", "amazon.nova-lite-v1:0"),
+        ("team-compatible", "api_key", "team-code"),
+        ("kimi-coding", "oauth", "k3.1-pro"),
+    ] {
+        let mut binding = plan.bindings["author"].clone();
+        binding.execution = WorkerExecutionV3::Model {
+            provider: "pi-explicit".into(),
+            provider_kind: "pi".into(),
+            principal_id: None,
+            model: model.into(),
+            effort: "high".into(),
+            pi: Some(Box::new(PiAuthorityV3 {
+                identity_mode: PiIdentityModeV1::Unavailable,
+                backend: backend.into(),
+                auth_method: method.into(),
+                sdk_version: "1.4.0".into(),
+                sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+                node_program: "/installed/node".into(),
+                auth_context_id: plan.engine_id.clone(),
+                model_config_id: plan.engine_id.clone(),
+                adapter_policy_id: plan.engine_id.clone(),
+            })),
+        };
+        binding.validate().unwrap();
+        let admission = json!({"plan_id":plan.engine_id,"bindings":["root.writer"],
+            "execution":binding.execution,"invocation_policy_id":plan.engine_id,"outcome":"passed"});
+        assert_valid("task-provider-admission-v4.json", &admission);
+        serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(
+            admission.clone(),
+        )
+        .unwrap()
+        .validate()
+        .unwrap();
+        assert!(
+            validate_independent_bindings(
+                &binding,
+                &plan.bindings["author"],
+                IndependencePolicyV1::default()
+            )
+            .is_err()
+        );
+        for (pointer, wrong) in [
+            ("/execution/principal_id", json!(plan.engine_id)),
+            ("/execution/effort", json!("unrecognized")),
+            ("/execution/model", json!("../model")),
+            ("/execution/pi/auth_method", json!("ambient")),
+        ] {
+            let mut bad = admission.clone();
+            *bad.pointer_mut(pointer).unwrap() = wrong;
+            assert_invalid("task-provider-admission-v4.json", &bad, pointer);
+            assert!(
+                serde_json::from_value::<af_contracts::task::provider::TaskProviderAdmission>(bad)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
+    let context = json!({"schema":"af.pi-context/1","environment":{"GEMINI_API_KEY":"synthetic"}});
+    assert_valid("pi-context-v1.json", &context);
+    for (field, wrong) in [
+        ("schema", json!("af.pi-context/0")),
+        ("environment", json!({"NODE_OPTIONS":"--import=project"})),
+        ("tools", json!(["bash"])),
+    ] {
+        let mut bad = context.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-context-v1.json", &bad, field);
+    }
+}
+
+#[test]
+fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
+    let prepare = json!({"schema":"af.pi-host/7","type":"prepare","model":"k3","effort":"high",
+        "model_identity":format!("sha256:{}","a".repeat(64)),"remaining_tokens":37,"reply_schema":{"type":"object"}});
+    assert_valid("pi-host-v7.json", &prepare);
+    for tokens in [
+        Value::Null,
+        json!(0),
+        json!(-1),
+        json!("37"),
+        json!(1.5),
+        json!(9_007_199_254_740_992u64),
+    ] {
+        let mut bad = prepare.clone();
+        bad["remaining_tokens"] = tokens;
+        assert_invalid("pi-host-v7.json", &bad, "invalid trusted allowance");
+    }
+    for field in ["remaining_tokens", "reply_schema"] {
+        let mut bad = prepare.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-host-v7.json", &bad, "missing authority or contract");
+    }
+    let usage = json!({"inference":1,"complete":true,"observations":2,"input":439,"output":38,
+        "cache_read":null,"cache_write":null,"reasoning":24});
+    let evidence = json!({"schema":"af/pi-inference-evidence@2","backend":"kimi-coding",
+        "remaining_tokens":100,"request_nonce":format!("sha256:{}","c".repeat(64)),"adapter_policy_id":format!("sha256:{}","a".repeat(64)),
+        "provenance":"native-per-inference-cumulative;aggregate-af-charge","inferences":[usage],
+        "started_inferences":1,"completed_inferences":1,"tool_counts":{"read":2,"edit":1},
+        "settled":false,"successful":false,"aggregate":{"charge_complete":false,"reported_usage":{
+            "input_tokens":"439","output_tokens":"38","reasoning_tokens":"24","chargeable_tokens":"477"}}});
+    assert_valid("pi-inference-evidence-v2.json", &evidence);
+    // Complete native accounting is independent of a successful Worker reply; the
+    // terminal diagnostic is a separate versioned host record, not a new evidence shape.
+    let mut accounted_failure = evidence.clone();
+    accounted_failure["aggregate"]["charge_complete"] = json!(true);
+    assert_valid("pi-inference-evidence-v2.json", &accounted_failure);
+    for (pointer, value) in [
+        ("/inferences/0/observations", json!(129)),
+        ("/inferences/0/inference", json!(257)),
+        ("/started_inferences", json!(257)),
+        ("/tool_counts/read", json!(4097)),
+        ("/schema", json!("af/pi-inference-evidence@0")),
+    ] {
+        let mut bad = evidence.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert_invalid("pi-inference-evidence-v2.json", &bad, pointer);
+    }
+    for field in [
+        "prompt",
+        "completion",
+        "reasoning",
+        "tool_arguments",
+        "tool_results",
+        "credentials",
+        "claims",
+    ] {
+        let mut bad = evidence.clone();
+        bad[field] = json!("secret");
+        assert_invalid(
+            "pi-inference-evidence-v2.json",
+            &bad,
+            "sensitive extra field",
+        );
+        let mut bad = evidence.clone();
+        bad["inferences"][0][field] = json!("secret");
+        assert_invalid(
+            "pi-inference-evidence-v2.json",
+            &bad,
+            "sensitive inference field",
+        );
+    }
+    let count = json!({"schema":"af.pi-host/7","type":"tool_count","name":"read","count":2});
+    assert_valid("pi-host-v7.json", &count);
+    let mut bad = count;
+    bad["name"] = json!("shell");
+    assert_invalid("pi-host-v7.json", &bad, "undeclared tool");
+}
+
+#[test]
+fn structured_contract_and_validation_are_closed_versioned_data_only_shapes() {
+    use af_contracts::task::structured::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let port = json!({"artifact_type":"custom/Note@1","schema":{"type":"object"}});
+    let contract = json!({"schema":"af.structured-contract/2","inputs":{"note":port},"outputs":{"capitalized":port},"require_container":false});
+    let typed: StructuredContractV2 = serde_json::from_value(contract.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_valid(
+        "structured-contract-v2.json",
+        &serde_json::to_value(typed).unwrap(),
+    );
+    for version in ["af.structured-contract/1", "af.structured-contract/3"] {
+        let mut unsupported = contract.clone();
+        unsupported["schema"] = json!(version);
+        assert_invalid(
+            "structured-contract-v2.json",
+            &unsupported,
+            "unsupported version",
+        );
+        assert!(
+            serde_json::from_value::<StructuredContractV2>(unsupported)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    for bad_type in [
+        "af/SourceTree@1",
+        "af/StructuredValidation@1",
+        "review.kernel/Report@1",
+    ] {
+        let mut bad = contract.clone();
+        bad["inputs"]["note"]["artifact_type"] = json!(bad_type);
+        assert_invalid(
+            "structured-contract-v2.json",
+            &bad,
+            "reserved artifact type",
+        );
+        assert!(
+            serde_json::from_value::<StructuredContractV2>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let input = json!({"artifact_type":"custom/Note@1","cardinality":"one","artifact_ids":[id]});
+    let receipt = json!({"schema":"af.structured-validation/1","invocation":{"plan_id":id,"node":"root.accept","inputs":{"note":input}},"plan_id":id,"task_revision_id":id,"contract_id":id,"inputs":{"note":input},"outputs":{"capitalized":input},"conclusion":"structurally_validated"});
+    let typed: StructuredValidationV1 = serde_json::from_value(receipt.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_valid(
+        "structured-validation-v1.json",
+        &serde_json::to_value(typed).unwrap(),
+    );
+    for (field, value) in [
+        ("schema", json!("af.structured-validation/0")),
+        ("conclusion", json!("verified")),
+        ("contract_id", json!("untrusted")),
+        ("acceptance", json!("satisfied")),
+    ] {
+        let mut bad = receipt.clone();
+        bad[field] = value;
+        assert_invalid("structured-validation-v1.json", &bad, field);
+        assert!(
+            serde_json::from_value::<StructuredValidationV1>(bad)
+                .map_or(true, |v| v.validate().is_err())
+        );
+    }
+}

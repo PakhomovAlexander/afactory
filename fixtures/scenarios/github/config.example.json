@@ -1,0 +1,33 @@
+{
+  "schema": "af/github-adapter-config@1",
+  "repository": "octo/project",
+  "repository_id": 17,
+  "actor": {
+    "id": 7,
+    "login": "machine-bot"
+  },
+  "token_file": "/ABSOLUTE/PRIVATE/github-token",
+  "state_dir": "/ABSOLUTE/PRIVATE/github-receipts",
+  "heads": {
+    "approved/change": "main"
+  },
+  "required_checks": [
+    {
+      "kind": "check",
+      "name": "CI",
+      "app_id": 4
+    }
+  ],
+  "reviewers": [
+    {
+      "id": 8,
+      "login": "owner"
+    }
+  ],
+  "operations": [
+    "publish_pr",
+    "followup",
+    "notify",
+    "observe"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-proposal:1",
+  "title": "TaskReviewProposal@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "result_id",
+    "paths",
+    "report_indices",
+    "evidence_ids",
+    "auto_apply_nominated"
+  ],
+  "properties": {
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      }
+    },
+    "report_indices": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4294967295
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 0,
+      "maxItems": 64,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      }
+    },
+    "auto_apply_nominated": {
+      "type": "boolean"
+    },
+    "result_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    }
+  }
+}

@@ -1,0 +1,142 @@
+/* afactory design tokens. Dark first: ink is the brand's home ground.
+   The seven primitives are the colours the logo files use (brand/logo/source);
+   everything else is derived from them and checked for contrast in brand/README.md.
+   The same values live in brand/tokens.json for tools.
+
+   Dark is the default; a light ground applies under prefers-color-scheme: light
+   or data-theme="light", and data-theme="dark" forces dark back. */
+
+:root {
+  /* ---- primitives, from the logo --------------------------------------- */
+  --af-ink: #0F0F0F;
+  --af-paper: #F6EDE4;
+  --af-white: #FFFFFF;
+  --af-grey: #999999;
+  --af-blue: #5195F5;
+  --af-pink: #EE366A;
+  --af-green: #36EEA8;
+
+  /* the triad at text strength for a paper ground (4.5:1 on paper) */
+  --af-blue-deep: #0D65E2;
+  --af-pink-deep: #D51249;
+  --af-green-deep: #0A7B50;
+
+  /* the triad lifted toward paper, for hover on any ground */
+  --af-blue-soft: #7AABF1;
+  --af-pink-soft: #EF5780;
+  --af-green-soft: #66EEB7;
+
+  /* ---- grounds and text: dark ------------------------------------------ */
+  --af-bg: var(--af-ink);
+  --af-surface: #181818;
+  --af-raised: #212120;
+  --af-line: #2B2A29;
+  --af-border: #393735;
+  --af-text: var(--af-paper);
+  --af-text-2: #C3BCB5;
+  --af-muted: #9E9993;
+
+  /* ---- roles ------------------------------------------------------------ */
+  --af-link: var(--af-blue);
+  --af-link-hover: var(--af-blue-soft);
+  --af-accent: var(--af-pink);              /* a fill: buttons, focus, the mark */
+  --af-accent-hover: var(--af-pink-soft);
+  --af-accent-text: var(--af-pink);         /* the accent as text on the ground */
+  --af-on-accent: var(--af-ink);            /* text on any triad fill */
+  --af-ok: var(--af-green);                 /* text: verified, pass, ready */
+  --af-fail: var(--af-pink);                /* text: refused, failed, error, needs a person */
+  --af-active: var(--af-blue);              /* text: running, selected, focus */
+  --af-ok-fill: var(--af-green);
+  --af-fail-fill: var(--af-pink);
+  --af-active-fill: var(--af-blue);
+  --af-selection: var(--af-blue);
+  --af-on-selection: var(--af-ink);
+  --af-focus: var(--af-pink);
+
+  /* ---- type -------------------------------------------------------------- */
+  --af-font-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --af-text-xs: 0.8125rem;   /* 13px  meta, captions */
+  --af-text-sm: 0.875rem;    /* 14px  ui, nav, tables */
+  --af-text-md: 1rem;        /* 16px  body (the site clamps 15..17) */
+  --af-text-lg: 1.1875rem;   /* 19px  lede */
+  --af-text-xl: 1.5rem;      /* 24px  h3 */
+  --af-text-2xl: 2rem;       /* 32px  h2 */
+  --af-text-3xl: 3.5rem;     /* 56px  h1, hero */
+  --af-leading-tight: 1.06;
+  --af-leading-ui: 1.2;
+  --af-leading-body: 1.65;
+
+  /* ---- space (4px grid) and radius --------------------------------------- */
+  --af-space-1: 4px;
+  --af-space-2: 8px;
+  --af-space-3: 12px;
+  --af-space-4: 16px;
+  --af-space-5: 24px;
+  --af-space-6: 32px;
+  --af-space-7: 48px;
+  --af-space-8: 64px;
+  --af-space-9: 96px;
+  --af-radius-0: 0;          /* pixel art: the mark, the workers, bars */
+  --af-radius-1: 4px;        /* inputs, chips, small controls */
+  --af-radius-2: 6px;        /* buttons */
+  --af-radius-3: 8px;        /* panels, the terminal window */
+  --af-radius-tile: 18.75%;  /* 3 of 16 cells: the app-icon tile */
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --af-bg: var(--af-paper);
+    --af-surface: #EDE4DB;
+    --af-raised: #E4DBD3;
+    --af-line: #DAD2CA;
+    --af-border: #CCC5BE;
+    --af-text: var(--af-ink);
+    --af-text-2: #42403E;
+    --af-muted: #676360;
+    --af-link: var(--af-blue-deep);
+    --af-link-hover: #0B56C0;
+    --af-accent-text: var(--af-pink-deep);
+    --af-ok: var(--af-green-deep);
+    --af-fail: var(--af-pink-deep);
+    --af-active: var(--af-blue-deep);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --af-bg: var(--af-paper);
+  --af-surface: #EDE4DB;
+  --af-raised: #E4DBD3;
+  --af-line: #DAD2CA;
+  --af-border: #CCC5BE;
+  --af-text: var(--af-ink);
+  --af-text-2: #42403E;
+  --af-muted: #676360;
+  --af-link: var(--af-blue-deep);
+  --af-link-hover: #0B56C0;
+  --af-accent-text: var(--af-pink-deep);
+  --af-ok: var(--af-green-deep);
+  --af-fail: var(--af-pink-deep);
+  --af-active: var(--af-blue-deep);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --af-bg: var(--af-ink);
+  --af-surface: #181818;
+  --af-raised: #212120;
+  --af-line: #2B2A29;
+  --af-border: #393735;
+  --af-text: var(--af-paper);
+  --af-text-2: #C3BCB5;
+  --af-muted: #9E9993;
+  --af-link: var(--af-blue);
+  --af-link-hover: var(--af-blue-soft);
+  --af-accent-text: var(--af-pink);
+  --af-ok: var(--af-green);
+  --af-fail: var(--af-pink);
+  --af-active: var(--af-blue);
+  color-scheme: dark;
+}

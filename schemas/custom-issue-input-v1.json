@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:custom-issue-input:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "number",
+    "title",
+    "body",
+    "labels",
+    "comments",
+    "captured_identity",
+    "evidence",
+    "knowledge"
+  ],
+  "properties": {
+    "schema": {
+      "const": "custom.issue/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 16384
+    },
+    "labels": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "comments": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "body",
+          "truncated",
+          "original_sha256"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "original_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "captured_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "captured_at",
+        "body_sha256"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "captured_at": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "body_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "citation",
+          "text"
+        ],
+        "properties": {
+          "citation": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        }
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "as_of",
+        "freshness",
+        "entries"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "absent",
+            "captured"
+          ]
+        },
+        "as_of": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "freshness": {
+          "enum": [
+            "unknown",
+            "stale",
+            "current"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "citation",
+              "revision",
+              "text"
+            ],
+            "properties": {
+              "citation": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "revision": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 2048
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+schema = "af.task-kind/3"
+name = "builtin/optimization-analysis-kind"
+version = "1.0.1"
+kind = "optimize"
+profile = "optimization_analysis"
