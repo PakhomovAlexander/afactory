@@ -696,7 +696,7 @@ warmup_pairs = 2
 # each, once per side and shard; each sample copies it.
 sample_timeout_seconds = 120
 budgets = []
-probe = { contract_id = "state_projection_v3", repetitions = 1, seed = { case_id = "state_projection_seed", contract_id = "state_projection_seed_v2", parameters = ["log"], description = "The fixture Task's log of exactly 10,000 valid relevant events, written once per side and shard through the side's own protected public writer; each sample projects its private copy through a fresh Store." } }
+probe = { contract_id = "state_projection_v2", repetitions = 1, seed = { case_id = "state_projection_seed", contract_id = "state_projection_seed_v1", parameters = ["log"], description = "The fixture Task's log of open, propose, admit and exactly 9,997 production renewals, written once per side and shard through the side's own protected public writer; each sample projects its private copy through a fresh Store." } }
 
 [fixtures.cli_wait_small_100]
 kind = "cli_state"
@@ -859,7 +859,7 @@ family = "persistence"
 description = "Real filesystem CAS write/read and state append/read with declared flush semantics."
 kind = "library"
 requires_linux_containment = false
-timing = { boundary = "library_region", region = "persistence_round_trip", setup_excluded = ["scratch directory creation"], description = "Probe-named region; flush semantics are declared by the probe." }
+timing = { boundary = "library_region", region = "persistence_round_trip", setup_excluded = ["scratch directory creation"], description = "Probe-named region; state_append_read measures 100 production renewals including bounded clock-eligibility reads/waits and ordered replay. v3 cadence is not timing-comparable with v1; per-event FULL flush remains." }
 cache = { process = "fresh", store = "fresh", projection = "not_applicable", os_page_cache = "warm" }
 oracle = { kind = "persistence_round_trip", state = "available", description = "Read-back bytes and logical byte counts match." }
 execution = { state = "supported", pending = "" }
@@ -873,4 +873,4 @@ pairs = { nightly = 40 }
 warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = []
-probe = { contract_id = "persistence_fs_v2", repetitions = 1 }
+probe = { contract_id = "persistence_fs_v3", repetitions = 1 }

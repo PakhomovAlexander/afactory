@@ -296,10 +296,10 @@ class Registry(unittest.TestCase):
         self.refuses('parameters = ["files", "tree"]', 'parameters = ["tree", "files"]',
                      "sorted parameters of the case")
         self.refuses('case_id = "state_projection_seed", contract_id = '
-                     '"state_projection_seed_v2"', 'case_id = "state_projection", contract_id = '
-                     '"state_projection_seed_v2"', "a seed writer is not a timed case")
-        self.refuses('contract_id = "state_projection_seed_v2"',
-                     'contract_id = "state_projection_v3"', "a writer contract is not a case's")
+                     '"state_projection_seed_v1"', 'case_id = "state_projection", contract_id = '
+                     '"state_projection_seed_v1"', "a seed writer is not a timed case")
+        self.refuses('contract_id = "state_projection_seed_v1"',
+                     'contract_id = "state_projection_v2"', "a writer contract is not a case's")
         seeded = [item for item in self.suite.instances("nightly")
                   if suite.seed_of(self.suite.doc, item) is not None]
         self.assertEqual(sorted(set(suite.seed_of(self.suite.doc, item)["seed_id"]

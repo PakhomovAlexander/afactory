@@ -427,7 +427,7 @@ class RequestIdentity(TempDir):
                 request, line = self.recorded(instance_id)
                 self.assertIs(oracle.check_request(self.doc, request), request)
                 extra = {}
-                if request["contract_id"] == "persistence_fs_v2":
+                if request["contract_id"] == "persistence_fs_v3":
                     expected = reference.persistence_logical_bytes(
                         request["parameters"]["operation"])
                     extra = {"logical_bytes": {"value": str(expected or 4096),
@@ -517,7 +517,7 @@ class SeedWriters(TempDir):
         request = oracle.seed_request(self.doc, seed_id, self.tmp)
         self.assertEqual((request["case_id"], request["contract_id"], request["parameters"],
                           request["seed"]),
-                         ("state_projection_seed", "state_projection_seed_v2",
+                         ("state_projection_seed", "state_projection_seed_v1",
                           {"log": "events_10000"}, None))
         self.assertIs(oracle.check_request(self.doc, request), request)
         entry = self.seeds[seed_id]

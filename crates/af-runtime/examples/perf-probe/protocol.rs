@@ -203,7 +203,7 @@ pub const CONTRACTS: &[Contract] = &[
     seeded(
         library(
             "state_projection",
-            "state_projection_v3",
+            "state_projection_v2",
             "application_projection",
             &[
                 LOG_PARAMETER,
@@ -216,7 +216,7 @@ pub const CONTRACTS: &[Contract] = &[
         ),
         Seed::Reads {
             case_id: "state_projection_seed",
-            contract_id: "state_projection_seed_v2",
+            contract_id: "state_projection_seed_v1",
             parameters: &["log"],
         },
     ),
@@ -235,7 +235,7 @@ pub const CONTRACTS: &[Contract] = &[
     seeded(
         library(
             "state_projection_seed",
-            "state_projection_seed_v2",
+            "state_projection_seed_v1",
             "state_projection_seed",
             &[LOG_PARAMETER],
             FRESH_STORE,
@@ -282,7 +282,7 @@ pub const CONTRACTS: &[Contract] = &[
     ),
     library(
         "persistence_fs",
-        "persistence_fs_v2",
+        "persistence_fs_v3",
         "persistence_round_trip",
         &[(
             "operation",
@@ -295,8 +295,15 @@ pub const CONTRACTS: &[Contract] = &[
     // side's `af task show` then reads; the laboratory's CLI registry declares it.
     library(
         "cli_state_fixture",
-        "cli_state_fixture_v2",
+        "cli_state_fixture_v1",
         "cli_state_fixture",
+        &[("state", Domain::Fixture(&["cli_state_10000"]))],
+        FRESH_STORE,
+    ),
+    library(
+        "cli_wait_original_fixture",
+        "cli_wait_original_fixture_v1",
+        "cli_wait_original_fixture",
         &[("state", Domain::Fixture(&["cli_state_10000"]))],
         FRESH_STORE,
     ),

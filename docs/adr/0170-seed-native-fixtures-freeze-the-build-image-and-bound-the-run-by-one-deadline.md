@@ -1,6 +1,6 @@
 # ADR-0170: Seed native fixtures, freeze the build image and bound the run by one deadline
 
-**Status:** accepted (2026-10-20); benchmark event mix partially superseded by [Task observation](2026-11-10-reuse-validated-artifacts-for-task-observation.md). Closes packages p2 and p3 of the
+**Status:** accepted (2026-10-20); benchmark renewal coverage restored by [renewal workloads](2026-11-11-preserve-renewal-performance-workloads.md). Closes packages p2 and p3 of the
 [continuous performance laboratory](../design/continuous-performance.md) before reports, against
 the unverified snapshot of
 [ADR-0169](0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md).

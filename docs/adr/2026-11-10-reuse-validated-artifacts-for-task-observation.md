@@ -1,6 +1,7 @@
 # ADR-2026-11-10-reuse-validated-artifacts-for-task-observation: Reuse validated Task observations
 
-**Status:** accepted (2026-11-10). Supersedes in part
+**Status:** accepted (2026-11-10); benchmark event-mix consequences superseded by
+[renewal coverage restoration](2026-11-11-preserve-renewal-performance-workloads.md). Supersedes in part
 [ADR-0096](0096-revalidate-task-execution-evidence-on-cached-replay.md): repeating typed
 validation and projection construction on an unchanged observation. Its requirement to read and
 verify every artifact in the observed closure remains. Also supersedes the benchmark workload

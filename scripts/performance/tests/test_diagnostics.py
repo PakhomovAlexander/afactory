@@ -1487,7 +1487,7 @@ class ChildRun(ChildRunBase):
         cold = "state_projection__log_events_10000_projection_application_cold"
         warm = "state_projection__log_events_10000_projection_prewarmed"
         doc, _ = self.profile("linux_gnu_cpu_profile", [cold, warm], tools,
-                              {"refuse": ["state_projection_seed_v2"]})
+                              {"refuse": ["state_projection_seed_v1"]})
         reasons = sorted((item["instance_id"], item["side"], item["omission"]["reason"])
                          for item in doc["captures"])
         self.assertEqual(reasons, [(cold, "baseline", "seed_failed"),

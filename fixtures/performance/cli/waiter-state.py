@@ -6,7 +6,7 @@ import sys
 
 
 STATES = {
-    "cli_state_10000": ("cli_state_fixture", "cli_state_fixture_v2", 10000),
+    "cli_state_10000": ("cli_wait_original_fixture", "cli_wait_original_fixture_v1", 10000),
     "cli_wait_small_100": ("cli_wait_fixture", "cli_wait_fixture_v1", 100),
     "cli_wait_small_10000": ("cli_wait_fixture", "cli_wait_fixture_v1", 10000),
     "cli_wait_large_10000": ("cli_wait_fixture", "cli_wait_fixture_v1", 10000),

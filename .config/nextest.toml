@@ -50,6 +50,11 @@ path = "junit.xml"
 #   admission took 14.5 s; with ten probe tests beside it on a 14-core macOS host (load about
 #   90) one write ran past its lease and was reported lease_expired, as the Store must. Run
 #   alone at load 60-80 from other processes it passed in 116 s (ADR-0182).
+# - all_six_full_cli_waiter_fixtures_pass_running_timeout_and_rusage_oracles: each real
+#   side writer has the registry's 120 s setup deadline. Concurrent 10,000-renewal fixture
+#   writers took 274-301 s in the focused run on this host. Keep the full-CLI oracle's
+#   declared deadline intact by holding the suite's threads while it prepares its six
+#   fixtures; this gives no isolation from external host load and changes no sample bound.
 # - heavy_review_cannot_erase_stale_claims and heavy_review_cannot_erase_rediscovered_claims:
 #   eleven Attempts, each a Python Worker given its 5 s Attempt wall from reservation, under one
 #   15 s heartbeat lease. On the loaded gate a reviewer was left 377 ms of its wall after its
@@ -86,6 +91,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence$/)
 | test(/::af_help_and_af_project_help_answer_in_under_50_ms$/)
 | test(/authority_instances_at_both_package_sizes_pass_the_oracle$/)
+| test(/all_six_full_cli_waiter_fixtures_pass_running_timeout_and_rusage_oracles$/)
 | test(/::heavy_review_cannot_erase_stale_claims$/)
 | test(/::heavy_review_cannot_erase_rediscovered_claims$/)
 | test(/::heavy_starter_repair_uses_current_evidence$/)
