@@ -1973,3 +1973,11 @@ fn task_report_help_describes_the_whole_lines_added_block() {
     );
     assert!(!flat.contains("title first inside"), "{report}");
 }
+
+#[test]
+fn onboard_tasks_help_names_preview_and_additive_apply() {
+    let help = out(&af(&["onboard", "--help"]));
+    assert!(help.contains("--tasks"), "{help}");
+    assert!(help.contains("model-driven Tasks"), "{help}");
+    assert!(help.contains("adds only absent Task files"), "{help}");
+}

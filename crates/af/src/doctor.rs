@@ -2222,15 +2222,11 @@ esac
     #[test]
     fn every_af_fix_parses_with_the_cli() {
         use clap::Parser as _;
-        let registry = crate::providers::RegistryRead {
-            path: None,
-            registered: Vec::new(),
-            warning: None,
-            unregistered: Vec::new(),
-            candidates: Vec::new(),
-        };
-        let fixes = [
-            providers(&registry).fix.unwrap(),
+        // Parse the command for the empty-registry branch directly. `providers()` probes the
+        // host's real Provider state even with a synthetic RegistryRead, so calling it here
+        // makes this parser fixture depend on the machine running the test.
+        let fixes: [String; 12] = [
+            "af provider detect --apply".into(),
             "af self remove 0.1.0 && af self install 0.1.0".into(),
             "af onboard --repo '/w x' --refresh-lock --af 0.1.0".into(),
             "af provider setup claude-main --kind claude --login".into(),

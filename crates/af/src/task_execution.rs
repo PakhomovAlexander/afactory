@@ -612,9 +612,9 @@ fn capture_authority(
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml").map_err(|message| {
         if manifest.get(".af/task-catalog.toml").is_some() { return message; }
         crate::error_document::typed(
-            format!("{message}; review and commit a local catalog, then select that commit; af catalog init --repo .. --profile software --destination af-demo creates a starter"),
+            format!("{message}; if Task authority exists locally, review and commit it, then select that commit. Otherwise preview `af onboard --tasks` and apply it with `af onboard --tasks --apply`. For a deterministic starter beside this checkout, use `af catalog init --repo .. --profile software --destination af-demo`"),
             crate::error_document::Detail::new(crate::error_document::Cause::NoTaskCatalog)
-                .next("af catalog init --repo .. --profile software --destination af-demo")
+                .next("af onboard --tasks")
                 .with("path", ".af/task-catalog.toml")
                 .with("revision", "selected Authority Snapshot"),
         )

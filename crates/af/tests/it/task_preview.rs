@@ -316,10 +316,7 @@ fn missing_task_catalog_names_an_existing_starter_command() {
     );
     let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(document["cause"], "no_task_catalog", "{document}");
-    assert_eq!(
-        document["next_action"],
-        "af catalog init --repo .. --profile software --destination af-demo"
-    );
+    assert_eq!(document["next_action"], "af onboard --tasks");
     crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     let starter = crate::common::af()
         .current_dir(&repo)

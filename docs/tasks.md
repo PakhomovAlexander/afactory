@@ -43,7 +43,14 @@ automatic Integration are outside this path.
 - every tool named by the code policy's checks, such as the repository's compiler and test
   runner;
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
-  Worker packages it pins, and `.af/code-policy.toml` with the required checks.
+  Worker packages it pins, and `.af/code-policy.toml` with the required checks. Run
+  `af onboard --tasks` to preview the generic model-driven catalog and the exact
+  `[task.defaults]` text. `af onboard --tasks --apply` writes it with review authority
+  in a new repository, or adds absent Task files and appends the table to an existing
+  `.af/`. It refuses an existing target or `[task]` table without writing. Review the
+  diff and commit `.af/` before planning; local, uncommitted files are not authority.
+  With both Provider kinds registered, the generated implementer uses Claude and the
+  reviewers use Codex; with one kind, distinct models under that login serve all Workers.
 
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files
@@ -54,7 +61,8 @@ Its `--destination`, like that of `af catalog sync`, is a safe path relative to 
 ([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
 so changing any package byte requires a newly reviewed pin; `af catalog digest PACKAGE_DIR`
 prints that digest ([pin a package](task-execution/shared-catalogs.md#pin-a-package)). Checks
-are project-specific, so the code policy is written per repository.
+are project-specific. The onboarded code policy uses the same discovered Gate as review
+onboarding, or an explicit `--gate NAME=COMMAND`; inspect that check before committing.
 
 Trusting that committed authority and running `af task start --execute`, or confirming the
 previewed plan, authorizes Afactory to deliver each Worker its exact declared inputs for every
