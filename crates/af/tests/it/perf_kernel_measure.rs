@@ -520,15 +520,35 @@ fn receipt_documents(digest: &str, receipts: &[Value]) -> Vec<(&'static str, Val
         .iter()
         .map(|task| task["task_id"].as_str().unwrap())
         .collect();
-    let expected: Vec<_> = phases
+    let all: Vec<_> = phases
         .iter()
         .flat_map(|(_, _, tasks)| tasks.iter().copied())
         .collect();
+    let refusal: Vec<_> = phases[0]
+        .2
+        .iter()
+        .chain(phases[2].2.iter())
+        .copied()
+        .collect();
+    let selected: &[usize] = if actual == all {
+        &[0, 1, 2]
+    } else if actual == refusal {
+        &[0, 2]
+    } else if actual == phases[1].2 {
+        &[1]
+    } else {
+        panic!("receipt source-phase partition changed: {actual:?}");
+    };
+    let expected: Vec<_> = selected
+        .iter()
+        .flat_map(|&index| phases[index].2.iter().copied())
+        .collect();
     assert_eq!(actual, expected, "receipt source-phase partition changed");
     let mut offset = 0;
-    phases
-        .into_iter()
-        .map(|(phase, slowdown_ms, tasks)| {
+    selected
+        .iter()
+        .map(|&index| {
+            let (phase, slowdown_ms, tasks) = phases[index];
             let end = offset + tasks.len();
             let document = json!({
                 "schema": "af.perf-kernel-receipts/3",
@@ -615,6 +635,37 @@ fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
         assert_eq!(&saved, document);
     }
     assert_eq!(std::fs::read_dir(&exported).unwrap().count(), 3);
+    let refusal_receipts: Vec<_> = receipts[..1]
+        .iter()
+        .chain(receipts[2..].iter())
+        .cloned()
+        .collect();
+    let refusal_documents = receipt_documents(
+        fixture["harness_digest"].as_str().unwrap(),
+        &refusal_receipts,
+    );
+    assert_eq!(
+        refusal_documents
+            .iter()
+            .map(|(phase, _)| *phase)
+            .collect::<Vec<_>>(),
+        vec!["missing-inputs", "refusal"]
+    );
+    assert_eq!(
+        refusal_documents
+            .iter()
+            .flat_map(|(_, doc)| doc["tasks"].as_array().unwrap().clone())
+            .collect::<Vec<_>>(),
+        refusal_receipts
+    );
+    let improvement_documents =
+        receipt_documents(fixture["harness_digest"].as_str().unwrap(), &receipts[1..2]);
+    assert_eq!(improvement_documents.len(), 1);
+    assert_eq!(improvement_documents[0].0, "improve");
+    assert_eq!(improvement_documents[0].1["tasks"], json!(receipts[1..2]));
+    for (phase, document) in refusal_documents.iter().chain(improvement_documents.iter()) {
+        consumer.export_document(phase, document, None);
+    }
     for altered in [
         receipts[..10].to_vec(),
         {
@@ -1220,14 +1271,12 @@ fn guarded_improvement_margin_covers_observed_load_within_sample_timeout() {
     assert!(3 * SLOW_MS < timeout_ms);
 }
 
-#[test]
-fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness() {
-    let mut consumer = Consumer::new();
+/// A sealed consumer and the digest of the exact staged harness it installs.
+fn guarded_consumer() -> (Consumer, String, String) {
+    let consumer = Consumer::new();
     let workspace = workspace();
     let canonical = std::fs::read_to_string(workspace.join(CANONICAL)).unwrap();
     assert!(canonical.contains(VALIDATE));
-    let sleep = format!("    std::thread::sleep(std::time::Duration::from_millis({SLOW_MS}));\n");
-
     // The repository check agrees with the staged policy installed here: the consumer holds the
     // workspace's exact protected harness, so the staged digest is its digest.
     let check = Command::new("python3")
@@ -1249,6 +1298,13 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
     let staged = std::fs::read_to_string(workspace.join(STAGED)).unwrap();
     assert!(staged.contains(&format!("value = \"{digest}\"")));
 
+    (consumer, canonical, digest)
+}
+
+#[test]
+fn guarded_kernel_experiments_refuse_every_tampered_harness() {
+    let (mut consumer, canonical, digest) = guarded_consumer();
+    let workspace = workspace();
     // 1. Missing inputs fail: the warm Cargo home is empty and the build is offline and locked.
     let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
     let cas = consumer.cas();
@@ -1267,108 +1323,6 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
         &consumer.repo.join("Cargo.lock"),
         &warm_cargo_home(&consumer.root),
     );
-
-    // The disposable slow product revision for the successful comparison only.
-    consumer.commit(
-        &[(
-            CANONICAL,
-            canonical.replace(VALIDATE, &format!("{VALIDATE}{sleep}")),
-        )],
-        "disposable controlled slowdown inside the timed operation",
-    );
-    let unslow = json!({"replace": [sleep, ""]});
-
-    // 2. The guarded comparison improves with the harness byte-identical. The candidate also
-    // edits the staged policy fixture: nonexecuted data the captured bootstrap never reads.
-    let outcome = consumer.start(
-        "improve",
-        json!({
-            CANONICAL: unslow,
-            STAGED: {"replace": [digest.clone(), format!("sha256:{}", "0".repeat(64))]},
-        }),
-        0,
-    );
-    assert_eq!(outcome["result"]["domain_conclusion"], "verified");
-    let cas = consumer.cas();
-    let baseline = measurement(&cas, &outcome, "baseline");
-    let candidate = measurement(&cas, &outcome, "candidate");
-    assert_eq!(baseline.command_id, candidate.command_id);
-    for measured in [&baseline, &candidate] {
-        assert_eq!(outcome_of(&measured.outcome), "passed");
-        assert_eq!((measured.runs.len(), measured.repetitions), (3, 3));
-        assert!(measured.warm && measured.toolchain_id.is_some());
-        assert_eq!(measured.summary["wall_ms"].n, 3);
-        for run in &measured.runs {
-            // One judged sample per repetition: exactly one report line, nothing summarized.
-            let stdout = text(&cas, run.stdout_id.as_ref());
-            assert_eq!(stdout.matches("af.measure-report/1").count(), 1, "{stdout}");
-            let cache = run.cache.as_ref().expect("the bound target is observed");
-            assert!(cache.warm, "{cache:?}");
-            let stderr = text(&cas, run.stderr_id.as_ref());
-            // The guard verified the harness before anything was built or sampled.
-            let guard = stderr
-                .find(&format!("protected files match {digest}"))
-                .expect("the guard's line");
-            assert!(
-                guard < stderr.find("kernel-measure setup: ").unwrap(),
-                "{stderr}"
-            );
-            let observed = setup(&stderr);
-            assert_eq!(observed["target"], "kernel_bound");
-            assert_eq!(observed["instance_id"], INSTANCE);
-        }
-        // The first repetition of each source rebuilt the workspace's own packages from it,
-        // whatever the target held; later ones found that exact build.
-        let first = setup(&text(&cas, measured.runs[0].stderr_id.as_ref()));
-        assert_ne!(first["sources_before"], first["sources"]);
-        for run in &measured.runs[1..] {
-            let observed = setup(&text(&cas, run.stderr_id.as_ref()));
-            assert_eq!(
-                (
-                    observed["state_before"].as_str(),
-                    observed["probe_rebuilt"].as_bool()
-                ),
-                (Some("populated"), Some(false))
-            );
-            assert_eq!(observed["sources_before"], first["sources"]);
-            assert_eq!(observed["workspace_fingerprints_invalidated"], 0);
-        }
-    }
-    let slow = review_core::task::measurement::MeasureDecimal::from_u64(SLOW_MS);
-    assert!(baseline.summary["wall_ms"].median >= slow);
-    assert!(candidate.summary["wall_ms"].median < slow);
-    let recorded = comparison(&cas, &outcome);
-    assert_eq!(outcome_of(&recorded.outcome), "passed");
-    assert_eq!(
-        recorded.metrics["elapsed_ms"].conclusion.as_str(),
-        "improved"
-    );
-    assert!(attempted(&cas, &outcome, EVALUATE));
-    // The guarded inner metric folds the same two receipts to an improvement too; no staged
-    // objective selects it until the guard is accepted.
-    let inner: MeasureObjectiveV1 = serde_json::from_value(json!({
-        "measure": MEASURE, "metric": "wall_ms", "direction": "lower",
-        "min_improvement_ratio": "0.1", "min_repetitions": 3
-    }))
-    .unwrap();
-    let ids = |port: &str| {
-        outcome["result"]["outputs"][port]["artifact_ids"][0]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    let folded = compare_measurements(
-        &recorded.plan_id,
-        &recorded.policy_id,
-        (&ids("baseline"), &baseline),
-        (&ids("candidate"), &candidate),
-        ComparisonObjective {
-            name: "perf_canonical_validate_small_inner",
-            objective: &inner,
-        },
-    )
-    .unwrap();
-    assert_eq!(folded.metrics["wall_ms"].conclusion.as_str(), "improved");
 
     // 3. Tampered candidates: each removes the slowdown too, so only the guard keeps it from an
     // improved receipt, and each leaves an owned marker if any of its code ran.
@@ -1559,6 +1513,125 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             );
         }
     }
+    consumer.export(&digest);
+}
+
+#[test]
+#[ignore = "manual measurement: three cold release builds of perf-probe, about 20 minutes alone; make perf-kernel-measure"]
+fn guarded_kernel_experiments_measure_one_judged_sample() {
+    let (mut consumer, canonical, digest) = guarded_consumer();
+    // Create the kernel's bound warm-home key before copying offline dependencies into it.
+    // The refusal test checks this setup failure; only the judged Task is exported here.
+    consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
+    consumer.receipts.clear();
+    seed_cargo_home(
+        &consumer.repo.join("Cargo.lock"),
+        &warm_cargo_home(&consumer.root),
+    );
+    let sleep = format!("    std::thread::sleep(std::time::Duration::from_millis({SLOW_MS}));\n");
+
+    // The disposable slow product revision for the successful comparison only.
+    consumer.commit(
+        &[(
+            CANONICAL,
+            canonical.replace(VALIDATE, &format!("{VALIDATE}{sleep}")),
+        )],
+        "disposable controlled slowdown inside the timed operation",
+    );
+    let unslow = json!({"replace": [sleep, ""]});
+
+    // 2. The guarded comparison improves with the harness byte-identical. The candidate also
+    // edits the staged policy fixture: nonexecuted data the captured bootstrap never reads.
+    let outcome = consumer.start(
+        "improve",
+        json!({
+            CANONICAL: unslow,
+            STAGED: {"replace": [digest.clone(), format!("sha256:{}", "0".repeat(64))]},
+        }),
+        0,
+    );
+    assert_eq!(outcome["result"]["domain_conclusion"], "verified");
+    let cas = consumer.cas();
+    let baseline = measurement(&cas, &outcome, "baseline");
+    let candidate = measurement(&cas, &outcome, "candidate");
+    assert_eq!(baseline.command_id, candidate.command_id);
+    for measured in [&baseline, &candidate] {
+        assert_eq!(outcome_of(&measured.outcome), "passed");
+        assert_eq!((measured.runs.len(), measured.repetitions), (3, 3));
+        assert!(measured.warm && measured.toolchain_id.is_some());
+        assert_eq!(measured.summary["wall_ms"].n, 3);
+        for run in &measured.runs {
+            // One judged sample per repetition: exactly one report line, nothing summarized.
+            let stdout = text(&cas, run.stdout_id.as_ref());
+            assert_eq!(stdout.matches("af.measure-report/1").count(), 1, "{stdout}");
+            let cache = run.cache.as_ref().expect("the bound target is observed");
+            assert!(cache.warm, "{cache:?}");
+            let stderr = text(&cas, run.stderr_id.as_ref());
+            // The guard verified the harness before anything was built or sampled.
+            let guard = stderr
+                .find(&format!("protected files match {digest}"))
+                .expect("the guard's line");
+            assert!(
+                guard < stderr.find("kernel-measure setup: ").unwrap(),
+                "{stderr}"
+            );
+            let observed = setup(&stderr);
+            assert_eq!(observed["target"], "kernel_bound");
+            assert_eq!(observed["instance_id"], INSTANCE);
+        }
+        // The first repetition of each source rebuilt the workspace's own packages from it,
+        // whatever the target held; later ones found that exact build.
+        let first = setup(&text(&cas, measured.runs[0].stderr_id.as_ref()));
+        assert_ne!(first["sources_before"], first["sources"]);
+        for run in &measured.runs[1..] {
+            let observed = setup(&text(&cas, run.stderr_id.as_ref()));
+            assert_eq!(
+                (
+                    observed["state_before"].as_str(),
+                    observed["probe_rebuilt"].as_bool()
+                ),
+                (Some("populated"), Some(false))
+            );
+            assert_eq!(observed["sources_before"], first["sources"]);
+            assert_eq!(observed["workspace_fingerprints_invalidated"], 0);
+        }
+    }
+    let slow = review_core::task::measurement::MeasureDecimal::from_u64(SLOW_MS);
+    assert!(baseline.summary["wall_ms"].median >= slow);
+    assert!(candidate.summary["wall_ms"].median < slow);
+    let recorded = comparison(&cas, &outcome);
+    assert_eq!(outcome_of(&recorded.outcome), "passed");
+    assert_eq!(
+        recorded.metrics["elapsed_ms"].conclusion.as_str(),
+        "improved"
+    );
+    assert!(attempted(&cas, &outcome, EVALUATE));
+    // The guarded inner metric folds the same two receipts to an improvement too; no staged
+    // objective selects it until the guard is accepted.
+    let inner: MeasureObjectiveV1 = serde_json::from_value(json!({
+        "measure": MEASURE, "metric": "wall_ms", "direction": "lower",
+        "min_improvement_ratio": "0.1", "min_repetitions": 3
+    }))
+    .unwrap();
+    let ids = |port: &str| {
+        outcome["result"]["outputs"][port]["artifact_ids"][0]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let folded = compare_measurements(
+        &recorded.plan_id,
+        &recorded.policy_id,
+        (&ids("baseline"), &baseline),
+        (&ids("candidate"), &candidate),
+        ComparisonObjective {
+            name: "perf_canonical_validate_small_inner",
+            objective: &inner,
+        },
+    )
+    .unwrap();
+    assert_eq!(folded.metrics["wall_ms"].conclusion.as_str(), "improved");
+
     consumer.export(&digest);
 }
 

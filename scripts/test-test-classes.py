@@ -489,7 +489,8 @@ class Catalog(unittest.TestCase):
         for c in tc.CLASSES:
             expression = tc.filterset(entries, [c])
             self.assertIn('binary_id(', expression)
-        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample'), 'perf')
         self.assertEqual(tc.classify('af::it', 'cli_surface::usage_errors_name_only_the_failing_command'), 'uix')
         self.assertEqual(tc.classify('af::it', 'project::workflow'), 'e2e')
         self.assertEqual(tc.classify('af::bin/af', 'tui::tests::navigation'), 'uix')
