@@ -1,0 +1,233 @@
+# Model bindings for Task files
+
+Task files accept captured command Workers and native Claude/Codex Model Workers. A Model
+Worker's manifest declares its Provider family, versioned model ID and effort. The catalog
+maps its package name to a machine-local Provider registry label:
+
+```toml
+[providers]
+"team/implementer" = "claude-main"
+"team/reviewer" = "codex-main"
+```
+
+The registry contains authentication directory selectors. Credentials and those directories
+are not copied into shared packages or execution plans. The native identity adapters support
+first-party Claude subscription accounts and Codex ChatGPT accounts exposing an email identity.
+Unavailable identity or unsupported authentication types fail admission. An alias or directory
+name never proves independence.
+
+Planning probes only accounts used by the selected Pipeline. It obtains account metadata from
+`claude auth status --json` or Codex's local `account/read` protocol, then records a
+domain-separated principal digest. Raw account metadata and email addresses are not stored in
+Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
+part of the exact binding. Bare model-family aliases and `-latest` selectors are refused. A
+model or effort outside grammar G, the one spelling af prints verbatim (an ASCII letter or digit,
+then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`; no `/`, `@` or whitespace), is
+refused before any process starts, the Provider's own probes included, by `af task plan`, `af
+review run` and the Claude Task adapter alike: the refusal names the rule and the value's byte
+length, never the value, so a path or an account identifier is never echoed. G is checked first,
+so such a value gets G's refusal even when it is also not a versioned model ID. Both rules run
+over every Model Worker, in Worker-name order, or every captured reviewer, in node order, in a
+first pass before any Provider is probed, and a refusal names the Worker or node, the Provider
+label and the rule; only then is each Provider label probed, once.
+
+Every model and effort level is validated before anything is charged, by one validation
+authority shared by `af provider models`, the binders, both adapters and the TUI
+([ADR-0148](../adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
+Its static rules need no catalog and run in the first pass above, after G: an alias Claude Code
+documents (`fable`, `opus`, `sonnet`, `haiku`) is refused with the exact ID it resolves to today
+(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`), because af
+binds exact IDs and never an alias; a case or separator variant of a known exact ID
+(`claude-fable-5.1`) is refused with that ID; the versioned-ID rule follows; and the effort
+level must be one the Provider kind accepts, Claude `low medium high xhigh max` and Codex `low
+medium high xhigh max ultra`. At plan time, `af task plan` and `af review plan` then read each
+bound Provider's catalog token-free, once per Provider, and apply its rules: an alias the
+catalog lists is refused with the exact ID it resolves to, a near miss of a listed ID with the
+nearest IDs, and an effort level the model does not list with the levels it lists, so Claude
+Code never silently runs a lower level. A custom or deployment ID that passes the static rules
+and that the catalog does not list is accepted as `unverified against the catalog`, as is every
+binding when the harness cannot answer; the receipts keep recording what actually ran, and only
+the charged `af provider doctor` proves the account can run it. af never substitutes a model or
+an effort level. Each plan prints one line per Model Worker:
+
+```text
+model fixture/bugs claude-fable-5-1 xhigh  ok
+model fixture/correctness claude-opus-4-8 high  unverified against the catalog
+model fixture/review fable xhigh  refused: af refused the binding of model fable (effort xhigh) for Provider claude-personal (claude) (model_not_accepted): …
+```
+
+Every refusal, at plan time or from an adapter, names the Provider ID and kind, the rejected
+spelling, the rule or catalog fact, the nearest accepted spellings and `af provider models
+<id>`, through the one hint function. A reviewer package that sets an effort level and leaves the
+model to the harness has its effort level checked by the same rules, and its refusal names the
+harness's default model. Runs apply the static rules only and read no catalog.
+
+Planning performs no model inference. The compiler adds a visible internal capability node
+for each distinct effective Model binding and invocation policy. Slots with the same capability
+share that node. A catalog that declares no explicit cost reserves **4,096 tokens, one Attempt
+and 45 seconds** inside the Task's limits. Admission serving a required verifier is protected
+alongside that verifier. Pipeline and Task limits must have room for these Attempts; children
+do not create another allowance.
+
+A catalog may declare an explicit finite admission cost instead:
+
+```toml
+schema = "af.task-catalog/2"
+# Keep the catalog's other package, policy and binding declarations.
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
+```
+
+Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
+resources. Each distinct capability still has one Attempt. This example is a project choice,
+not a default: size the whole Task for this cost, business work and protected verification.
+The captured run authority records the cost and the original catalog bytes; changing local
+files after planning cannot change either.
+See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
+
+```text
+account identity probe       planning: no model call
+         |
+   exact compiled plan
+         |
+ normal Task admission      generated plans still require developer approval
+         |
+ Provider capability probe  durable reservation -> start -> charge -> settle
+         |
+   passed receipt
+      /       \
+  Worker A   Worker B        same native binding, isolated invocations
+```
+
+The capability probe receives only the installed acknowledgement prompt in an empty working
+directory, one line that says what it is for: `This is a Provider admission check by the af
+review tool: it only verifies that this account can run the bound model. No file needs to be read
+and no tool needs to be used. Reply with exactly: OK` (`PROBE_INPUT`, one trailing newline). Only
+the reply `OK` passes; the probe reads no file and uses no tool. A bare `Reply with exactly: OK`
+gave the safety classifier of Claude Fable 5.1 nothing to score but the client's static preamble,
+and it refused that 14 times out of 14; the purpose-stating line passed 6 times out of 6 (see
+[ADR-0147](../adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md), "The
+admission probe states its purpose"). Its exact prompt and context manifest are persisted before
+dispatch. It uses the
+same native adapter as downstream Workers. Failure retains reported usage and blocks their
+dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
+Successful receipts survive replay without another paid probe.
+
+A short probe prompt does not bound the native client's complete context. The native client adds its own context, so an observed probe can charge many times the
+prompt's own tokens, and no observed figure guarantees a future upper bound.
+Any individual reservation overrun retains exact usage and blocks further dispatch, even if
+the acknowledgement passed and the wider Task has tokens left. Raising a Task total cannot
+clear that fence or change a completed Task.
+
+Before a planned Task resumes, the adapter checks the current account and recompiles against
+the recorded binding. Account, model, package or policy changes cannot silently alter an
+admitted plan. Finished Tasks remain inspectable without Provider calls.
+
+Every native invocation also rechecks that exact local account, executable path and
+authentication context before sending private input. The token-free check shares the remaining
+Attempt deadline and cancellation control. Unavailable or changed identity refuses with zero
+new charge while preserving earlier admission and spend. Credentials can still change between
+the check and their consumption by the native client; this is not an atomic session guarantee.
+See [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
+The executable is the file the `af` process resolved when it started. A native client that
+updates itself during a Task repoints its launcher at a new version file; later Workers keep
+running the captured file, and the next `af` process resolves the new one. If the update removed
+the captured file, the remaining Workers run the installed client once it proves the same
+account, also when the file vanishes during a Worker's recheck or just before its start. Only a
+client that is no longer installed refuses, with `Captured Task Provider executable was removed
+and no installed client replaces it`.
+See [ADR-0126](../adr/0126-keep-the-captured-native-executable-when-its-launcher-moves.md).
+
+Native Task usage retains exact cumulative components and charge across multiple turns, even
+when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
+file cannot erase observed usage. The original Task budget still applies; an overrun never
+authorizes another call. Wider values use additive usage/provenance and Review presentation
+contracts, while representable values retain their previous encoding. See
+[ADR-0085](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md).
+
+Malformed native usage preserves known contributions in `TaskUsageObservation@1`. Its billing
+completeness is separate from optional metadata validity. Incomplete billing refuses business
+output and retains at least the original reservation and known charge floor; a fully reported
+failure retains its exact charge. The sidecar preserves both facts before CAS publication and
+through recovery. The refusal's diagnostic keeps the reason the Worker failed with, after
+`Native billing usage is incomplete:`. Valid native calls retain their previous artifact
+identities. See
+[ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+Generic Claude Task returns also account for an optional per-model usage breakdown, without
+adding its overlapping top-level summary twice. A breakdown that no top-level billed counter
+exceeds is the complete bill: Claude Code 2.1.285 counts requests there that its top-level
+summary leaves out. Malformed summaries, and a top-level counter above the breakdown, preserve
+known charge and refuse output. The adapter requires an explicit `--model`, and that model
+refuses other reported model activity while retaining its usage; an entirely zero foreign entry
+is unused metadata. This is detection after execution, not prevention of internal client
+inference or its input delivery.
+The adapter disables native nonessential traffic and terminal-title generation through owned
+environment settings. Static client evidence supports the automatic title path; it does not
+prove suppression of every internal call. Personal authentication grants remain unchanged.
+An absent breakdown retains the plain native usage format. See
+[ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md) and
+[ADR-0125](../adr/0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md).
+
+What admission and Workers refuse about the model: af never runs a model the Worker did not bind and never accepts a reply from one. Claude Code
+runs safety classifiers on Claude Fable 5.1, Fable 5, Opus 5.5, Sonnet 5.5 and Opus 5. When one
+flags a request, even the first request of a session, the client would re-run it on a fallback
+model and keep the session there. Every Claude Attempt, the Provider-admission probe included,
+therefore runs with `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, beside the two guards above and with
+their status: a client mitigation, never the authority. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not
+set, because it also disables the model substitution compaction may need. Three outcomes follow:
+
+- **`model_refused`.** The result reports `safety_stops` above zero or `stop_reason`
+  `refusal`, or Claude Code's error says its safeguards flagged the message: an error result
+  whose `result` carries that text is a refusal whatever `errors` or `error` hold, and its
+  `result` is read as Claude Code's error text whenever `errors` and `error` yield no string
+  (`[]`, `null`, an object without a string `message`). It is never a success, whatever
+  `is_error` says. The Attempt is charged the usage the result reports and is
+  not retried, because the same input is flagged again; a refused admission starts no business
+  Worker.
+- **A switched model.** `modelUsage` names a model other than the bound one: af refuses the reply
+  as before and charges what the breakdown reports (the recorded admission result of 2026-10-15,
+  `claude-fable-5-1` with 0 output tokens and `claude-opus-5` with 4, charges 9496). The
+  diagnostic names both models, their output tokens, `safety_stops` and `num_turns`, and says
+  whether it was a safety-classifier fallback (`model_refused`) or an unexplained switch
+  (`model_switched`). A switch is at least one foreign activity anywhere in `modelUsage`, however
+  many entries it holds: an entry whose key is a well-formed ID other than the bound model and
+  its aliases, whose counters parse completely and at least one of whose four counters is above
+  zero. An empty or malformed foreign entry is malformed usage, and an all-zero one is explicitly
+  unused; neither is a switch. This refusal outranks every other accounting reason: the
+  diagnostic starts with it, naming every foreign activity in map order, and every other reason
+  found (malformed usage, more than 32 entries, an unreconciled summary) follows it after a
+  semicolon; the charge, which reads at most 32 entries, is unchanged. A model ID outside grammar G is counted all the same and named
+  `[not printable]` with its byte length.
+- **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
+  it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling
+  it rejected, names the Provider, the nearest exact IDs af knows and `af provider models <id>`,
+  and names `af provider status` (token-free) and `af provider doctor` (charged).
+
+For each such failed admission or Worker Attempt, `af task run` and `af review run` print one
+stderr line naming the node, the Provider ID and kind, the bound model and effort, the
+classification and the next step; `af task show` keeps the full diagnostic. See
+[ADR-0147](../adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md).
+
+The native adapter's controlled invocation boundary can stop an owned process group and retain
+cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
+Common CLI Task, planning, Review and doctor execution share that control with their writer
+heartbeat. A failed exact-writer lease check interrupts supervised Workers, commands, Gates and
+Integration checks; the runtime retains paid observations and blocks later work and selection.
+This does not install CLI signal handlers or a domain-level Task cancellation command. The
+heartbeat observes its lease through its own Store connection, and renews through it when the
+work still holds the shared one with 2 s of lease left, so a long Store operation cannot fence
+a live writer. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md),
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
+[ADR-0128](../adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md).
+
+Codex final-message capture reads a bounded regular file through the held private output
+directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back
+to a different message; an absent or empty regular file retains the existing event-message
+fallback. These checks preserve observed usage on refusal.
+
+Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
+refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.

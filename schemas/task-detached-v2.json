@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-detached:2",
+  "title": "Task detached af/task-detached@2",
+  "$comment": "What `af task run ID --detach --json` prints (ADR-0211): the run it started in the background, its process and host, the log it writes, `runs/<task>-<run>.log` in the Task Store, whether that run was admitted (it holds the Task's lease and its plan is admitted), the Task's state when the command returned, and the command to run next: `af task wait ID` for an admitted run, `af task status ID` for one still starting, the Task's own next command or null for a run that ended. Version 2 adds `admitted` and `next_action`; version 1 claimed a run that was still starting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "run",
+    "pid",
+    "host",
+    "log",
+    "admitted",
+    "state",
+    "next_action"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-detached@2"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "run": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "\\S"
+    },
+    "log": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S"
+    },
+    "admitted": {
+      "type": "boolean"
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+    },
+    "next_action": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "admitted": {
+        "const": true
+      }
+    },
+    "required": [
+      "admitted"
+    ]
+  },
+  "then": {
+    "properties": {
+      "next_action": {
+        "type": "string"
+      }
+    }
+  }
+}

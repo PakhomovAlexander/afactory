@@ -1,0 +1,6 @@
+# Remote Checks (ADR-0140): the `kernel` check's remote form. Append to `.af/code-policy.toml`;
+# the job names are those a real pull-request run of this repository reported (RC2).
+[checks.kernel.remote]
+executor = "github-pr"
+workflow = ".github/workflows/ci.yml"
+required = ["validation / lint", "validation / check (ubuntu-latest)"]

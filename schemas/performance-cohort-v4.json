@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-cohort:4",
+  "title": "af.perf-cohort/4",
+  "description": "A predeclared calibration cohort: authority, policy digest, cases with N and K, health rule, CPU groups, schedule, target formulas and every member.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-cohort/4"
+    },
+    "cohort_id": {
+      "$ref": "#/$defs/id"
+    },
+    "authority_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "tier": {
+      "type": "string",
+      "enum": [
+        "quick",
+        "nightly",
+        "release"
+      ]
+    },
+    "environment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "criticality": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "advisory"
+            ]
+          },
+          "pairs": {
+            "type": "integer",
+            "minimum": 12,
+            "maximum": 200
+          }
+        },
+        "required": [
+          "instance_id",
+          "criticality",
+          "pairs"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "family_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "const": "sentinel_start_end_v1"
+        },
+        "workload": {
+          "$ref": "#/$defs/id"
+        },
+        "metric": {
+          "$ref": "#/$defs/id"
+        },
+        "unit": {
+          "const": "ms"
+        },
+        "batch_repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "start_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "end_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_median_shift": {
+          "$ref": "#/$defs/decimal"
+        },
+        "max_mad_ratio": {
+          "$ref": "#/$defs/decimal"
+        },
+        "denominator_floor": {
+          "$ref": "#/$defs/decimal"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "provisional",
+            "calibrated"
+          ]
+        },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "golden_canonical_digest",
+                "golden_cas_digest",
+                "golden_source_manifest",
+                "golden_semantic_projection",
+                "golden_authority_outcome",
+                "cli_version_and_usage_tokens",
+                "cli_task_outcome",
+                "cli_state_fields",
+                "persistence_round_trip"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "pending_native_oracle",
+                "pending_cli_fixture",
+                "available"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "state",
+            "description"
+          ]
+        }
+      },
+      "required": [
+        "rule",
+        "workload",
+        "metric",
+        "unit",
+        "batch_repetitions",
+        "start_pairs",
+        "end_pairs",
+        "max_median_shift",
+        "max_mad_ratio",
+        "denominator_floor",
+        "state",
+        "oracle"
+      ]
+    },
+    "allowed_cpu_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "$ref": "#/$defs/id"
+          },
+          "cpu_model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "image": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "group_id",
+          "cpu_model",
+          "image"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])$"
+        },
+        "minimum_days": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 365
+        },
+        "runners": {
+          "const": "fresh_hosted"
+        },
+        "order": {
+          "const": "aa, then preparation, then slowdown trials; the calibration parameters are sealed before the first trial"
+        }
+      },
+      "required": [
+        "start_date",
+        "minimum_days",
+        "runners",
+        "order"
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1099511627776
+        }
+      },
+      "required": [
+        "iterations"
+      ]
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "maxLength": 201,
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "workflow_path": {
+          "const": ".github/workflows/performance.yml"
+        },
+        "branch": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "run_name": {
+          "const": "af-perf calibration {cohort_digest} {member_id}"
+        },
+        "after_run_number": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "repository",
+        "workflow_path",
+        "branch",
+        "event",
+        "run_name",
+        "after_run_number"
+      ]
+    },
+    "target_formulas": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "efficiency": {
+          "const": "e = max(r, a/A0)"
+        },
+        "power": {
+          "const": "p = max(1/10, 2*e)"
+        },
+        "readiness": {
+          "const": "all 20 A/A within tolerance in every critical case, and at least 9 of the 10 power trials each a valid regression in every critical case"
+        },
+        "valid_injection": {
+          "const": "3/4 * p*A0 <= median measured injected time <= 5/4 * p*A0"
+        }
+      },
+      "required": [
+        "efficiency",
+        "power",
+        "readiness",
+        "valid_injection"
+      ]
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "$ref": "#/$defs/id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "aa",
+              "preparation",
+              "injection",
+              "power"
+            ]
+          },
+          "source_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "injection_percent": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            ]
+          },
+          "day": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 364
+          }
+        },
+        "required": [
+          "member_id",
+          "kind",
+          "source_sha",
+          "seed",
+          "injection_percent",
+          "day"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 256
+    }
+  },
+  "required": [
+    "schema",
+    "cohort_id",
+    "authority_sha",
+    "policy_digest",
+    "tier",
+    "environment_id",
+    "recipe_id",
+    "cases",
+    "family_size",
+    "health",
+    "allowed_cpu_groups",
+    "schedule",
+    "preparation",
+    "dispatch",
+    "target_formulas",
+    "members"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}
