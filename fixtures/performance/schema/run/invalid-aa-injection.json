@@ -1,0 +1,404 @@
+{
+  "schema": "af.perf-run/6",
+  "run_id": "gh7102_a1_primary",
+  "parent_run_id": null,
+  "scope": "calibration",
+  "tier": "quick",
+  "trigger": {
+    "kind": "manual",
+    "remeasure_of": null
+  },
+  "selectors": {
+    "base": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "head": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "control": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "authority": "e803ddc28c003fa8e47738218060d5e403dfc2d3"
+  },
+  "resolved": {
+    "baseline_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "candidate_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "control_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+    "authority_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3"
+  },
+  "build_inputs": {
+    "authority": {
+      "cargo_lock_sha256": "sha256:61fa5a8e542d9463fe6f56ae873a6313bae821c3207ba8d863366ef5b6d20dd9"
+    },
+    "baseline": {
+      "cargo_lock_sha256": "sha256:61fa5a8e542d9463fe6f56ae873a6313bae821c3207ba8d863366ef5b6d20dd9"
+    },
+    "candidate": {
+      "cargo_lock_sha256": "sha256:61fa5a8e542d9463fe6f56ae873a6313bae821c3207ba8d863366ef5b6d20dd9"
+    }
+  },
+  "authority": {
+    "suite_sha256": "sha256:9d6de2e3ccd26a9a7e5aed29a57283011ae074e18c4b176029cb629989287841",
+    "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+    "instrument_digest": "sha256:dd022124b8ff495caf7c5a9e5b0edc21d3eb9badca6140b452f64955f8b27c33",
+    "fixture_digest": "sha256:3520fe82656f3b3c4a64d816647f7bd07d89a4f075e1576d223e74a3a9004cf6",
+    "mode": "proposed",
+    "activation": null
+  },
+  "harness": {
+    "changed": false,
+    "paths": [],
+    "truncated": false
+  },
+  "profile": {
+    "environment_id": "linux_x86_64_gnu_hosted",
+    "environment_digest": "sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+    "environment": {
+      "description": "Hosted Linux x86_64 GNU for quick comparisons; affinity never claims exclusive CPUs.",
+      "os": "linux",
+      "arch": "x86_64",
+      "libc": "gnu",
+      "runner": "github_hosted",
+      "runner_label": "ubuntu-latest",
+      "containment": "linux_container",
+      "logical_cpus": 2,
+      "prefer_separate_physical_cores": true,
+      "memory_limit_bytes": 4294967296,
+      "pid_limit": 256,
+      "swap": "disabled",
+      "network": "disabled",
+      "cpu_quota": "none",
+      "scratch_limit_bytes": 2147483648,
+      "state": "not_yet_executable",
+      "pending": "p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+    },
+    "recipe_id": "linux_gnu_native_release",
+    "recipe_digest": "sha256:726e351bdfe74b156f9b99625a858e82c97569e24f1a8becd13e100dc354fd3b",
+    "recipe": {
+      "description": "Quick CI: native uninstrumented release build on the declared Linux GNU environment.",
+      "os": "linux",
+      "target": "x86_64-unknown-linux-gnu",
+      "toolchain": "1.88.0",
+      "profile": "release",
+      "builder": "cargo",
+      "linker": "system_cc",
+      "features": [],
+      "rustflags": [],
+      "instrumented": false,
+      "debug_symbols": false,
+      "frame_pointers": false,
+      "state": "not_yet_executable",
+      "pending": "p3a: pinned container image digest and authority-built worktree orchestration."
+    },
+    "build": {
+      "isolation": "container",
+      "image": "sha256:36f88bf1eedbc1d5683d37a7a406ce852bb483b547e32c3cd4055b4f75af972b",
+      "image_source": "configured"
+    },
+    "default": true
+  },
+  "verdict_policy": {
+    "algorithm": "paired_median_tolerance_v2",
+    "family_alpha": "1/20",
+    "advisory_alpha": "1/20",
+    "family_size": 2,
+    "case_alpha": "1/40"
+  },
+  "health": {
+    "rule": "sentinel_start_end_v1",
+    "workload": "sentinel_canonical",
+    "metric": "wall_ms",
+    "unit": "ms",
+    "batch_repetitions": 64,
+    "start_pairs": 5,
+    "end_pairs": 5,
+    "max_median_shift": "0.2",
+    "max_mad_ratio": "0.2",
+    "denominator_floor": "1",
+    "state": "provisional",
+    "oracle": {
+      "kind": "golden_canonical_digest",
+      "state": "pending_native_oracle",
+      "description": "The golden digest checks every repetition of the sentinel batch."
+    }
+  },
+  "limits": {
+    "sample_log_bytes": 262144,
+    "shard_bundle_bytes": 134217728,
+    "build_artifact_bytes": 1073741824,
+    "worktree_bytes": 42949672960,
+    "free_disk_floor_bytes": 10737418240,
+    "build_minutes": 20,
+    "shard_sampling_minutes": 15,
+    "run_total_minutes": 60,
+    "concurrent_jobs": 2,
+    "record_bytes": 65536
+  },
+  "seed": 235903023499961648,
+  "shards": [
+    {
+      "index": 0,
+      "instances": [
+        "synthetic_advisory",
+        "synthetic_process__size_1"
+      ]
+    },
+    {
+      "index": 1,
+      "instances": [
+        "synthetic_fast"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "instance_id": "synthetic_advisory",
+      "case_id": "synthetic_advisory",
+      "family": "synthetic",
+      "kind": "library",
+      "requires_linux_containment": false,
+      "parameters": {},
+      "criticality": "advisory",
+      "timing": {
+        "boundary": "library_region",
+        "region": "synthetic_region",
+        "setup_excluded": [],
+        "description": "Synthetic region."
+      },
+      "cache": {
+        "process": "fresh",
+        "store": "not_applicable",
+        "projection": "not_applicable",
+        "os_page_cache": "warm"
+      },
+      "oracle": {
+        "kind": "persistence_round_trip",
+        "state": "pending_native_oracle",
+        "description": "Synthetic."
+      },
+      "execution": {
+        "state": "not_yet_executable",
+        "pending": "Synthetic fixture; never executed."
+      },
+      "af_environment": {},
+      "primary_metric": {
+        "key": "wall_ms",
+        "unit": "ms",
+        "direction": "lower_is_better"
+      },
+      "optional_metrics": [],
+      "tolerance": {
+        "policy_id": "wall_time_default",
+        "relative": "0.05",
+        "absolute": "1",
+        "calibration": "initial"
+      },
+      "pairs": 12,
+      "warmup_pairs": 2,
+      "rank": 3,
+      "alpha": "1/20",
+      "tail_probability": "79/2048",
+      "exploratory": true,
+      "shard": 0,
+      "warmup_orders": [
+        "ab",
+        "ba"
+      ],
+      "measured_orders": [
+        "ab",
+        "ba",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ba",
+        "ab"
+      ],
+      "sample_timeout_ms": 30000,
+      "budgets": [],
+      "seed": null
+    },
+    {
+      "instance_id": "synthetic_fast",
+      "case_id": "synthetic_fast",
+      "family": "synthetic",
+      "kind": "library",
+      "requires_linux_containment": false,
+      "parameters": {},
+      "criticality": "critical",
+      "timing": {
+        "boundary": "library_region",
+        "region": "synthetic_region",
+        "setup_excluded": [],
+        "description": "Synthetic region."
+      },
+      "cache": {
+        "process": "fresh",
+        "store": "not_applicable",
+        "projection": "not_applicable",
+        "os_page_cache": "warm"
+      },
+      "oracle": {
+        "kind": "golden_canonical_digest",
+        "state": "pending_native_oracle",
+        "description": "Synthetic."
+      },
+      "execution": {
+        "state": "not_yet_executable",
+        "pending": "Synthetic fixture; never executed."
+      },
+      "af_environment": {},
+      "primary_metric": {
+        "key": "wall_ms",
+        "unit": "ms",
+        "direction": "lower_is_better"
+      },
+      "optional_metrics": [],
+      "tolerance": {
+        "policy_id": "wall_time_default",
+        "relative": "0.05",
+        "absolute": "1",
+        "calibration": "initial"
+      },
+      "pairs": 12,
+      "warmup_pairs": 2,
+      "rank": 2,
+      "alpha": "1/40",
+      "tail_probability": "13/2048",
+      "exploratory": false,
+      "shard": 1,
+      "warmup_orders": [
+        "ba",
+        "ab"
+      ],
+      "measured_orders": [
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ab",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ba"
+      ],
+      "sample_timeout_ms": 30000,
+      "budgets": [],
+      "seed": null
+    },
+    {
+      "instance_id": "synthetic_process__size_1",
+      "case_id": "synthetic_process",
+      "family": "synthetic",
+      "kind": "process",
+      "requires_linux_containment": false,
+      "parameters": {
+        "size": 1
+      },
+      "criticality": "critical",
+      "timing": {
+        "boundary": "child_process_lifetime",
+        "description": "Synthetic process lifetime."
+      },
+      "cache": {
+        "process": "fresh",
+        "store": "not_applicable",
+        "projection": "not_applicable",
+        "os_page_cache": "warm"
+      },
+      "oracle": {
+        "kind": "cli_version_and_usage_tokens",
+        "state": "pending_cli_fixture",
+        "description": "Synthetic."
+      },
+      "execution": {
+        "state": "not_yet_executable",
+        "pending": "Synthetic fixture; never executed."
+      },
+      "af_environment": {},
+      "primary_metric": {
+        "key": "wall_ms",
+        "unit": "ms",
+        "direction": "lower_is_better"
+      },
+      "optional_metrics": [
+        {
+          "key": "user_cpu_ms",
+          "unit": "ms",
+          "direction": "lower_is_better"
+        }
+      ],
+      "tolerance": {
+        "policy_id": "wall_time_default",
+        "relative": "0.05",
+        "absolute": "1",
+        "calibration": "initial"
+      },
+      "pairs": 12,
+      "warmup_pairs": 2,
+      "rank": 2,
+      "alpha": "1/40",
+      "tail_probability": "13/2048",
+      "exploratory": false,
+      "shard": 0,
+      "warmup_orders": [
+        "ba",
+        "ab"
+      ],
+      "measured_orders": [
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ab",
+        "ba",
+        "ba",
+        "ab",
+        "ba",
+        "ab",
+        "ab",
+        "ba"
+      ],
+      "sample_timeout_ms": 30000,
+      "budgets": [
+        {
+          "budget_id": "cli_discovery_under_50ms",
+          "metric": "wall_ms",
+          "limit": "50",
+          "unit": "ms",
+          "minimum_samples": 20,
+          "state": "pending_calibration",
+          "applicable": false
+        }
+      ],
+      "seed": null
+    }
+  ],
+  "cohort": {
+    "cohort_id": "synthetic_cohort",
+    "cohort_digest": "sha256:ac2892b2ca445993fb0978f1b76eaa029b935153684cc66acd568e47be7dfa2c",
+    "member_id": "aa_01",
+    "member_kind": "aa",
+    "injection": {
+      "feature": "perf-calibration",
+      "level": "preparation",
+      "calibration_digest": null,
+      "groups": [
+        {
+          "cpu_group": "hosted_x86",
+          "cpu_model": "Synthetic CPU @ 2.0GHz",
+          "image": "sha256:36f88bf1eedbc1d5683d37a7a406ce852bb483b547e32c3cd4055b4f75af972b",
+          "iterations": {
+            "synthetic_advisory": 1000000,
+            "synthetic_fast": 1000000,
+            "synthetic_process__size_1": 1000000
+          }
+        }
+      ]
+    }
+  },
+  "diagnostic": null,
+  "required_check_eligible": false,
+  "plan_digest": "sha256:0160bc8b96bdd99e535ce14ca2b7df279d2b1d0a9fb3c596242afea671547047"
+}

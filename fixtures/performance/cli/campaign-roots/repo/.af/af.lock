@@ -1,0 +1,8 @@
+# The fixture's lock. The pipeline pin is the content digest of .af/pipelines/review.toml,
+# which perflab.clicases.pipeline_problems computes by the independent reference encoding; a
+# laboratory test requires it to be exact.
+version = 1
+
+[pipelines.review]
+version = "1.0.0"
+digest = "sha256:a46cfc83e6bed621b421d3595e78cda1b28fd90513bf2559d05f6de9659241a7"

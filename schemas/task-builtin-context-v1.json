@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-builtin-context:1",
+  "title": "task-builtin-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "feedback_ids",
+    "policy_id"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "feedback_ids": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    }
+  },
+  "$comment": "Existing af/TaskBuiltinContext@1 payload for common code built-ins. Feedback bounds come from common Prepared/Reserved admission. Installed domain validation rederives exact invocation, policy and envelope bytes; names and digests alone grant no operation authority."
+}

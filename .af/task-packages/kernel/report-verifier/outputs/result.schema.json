@@ -1,0 +1,48 @@
+{
+  "required": [
+    "document_id",
+    "sources_id",
+    "requirements_id",
+    "check_receipt_id",
+    "source_snapshot_id",
+    "outcome",
+    "summary"
+  ],
+  "properties": {
+    "document_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sources_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "requirements_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "check_receipt_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "\\S"
+    }
+  },
+  "type": "object",
+  "additionalProperties": false
+}
