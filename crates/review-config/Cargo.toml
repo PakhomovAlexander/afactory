@@ -1,0 +1,33 @@
+[package]
+name = "review-config"
+description = "The pipeline definition format: a review that is configured rather than constructed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# No crate in this workspace has a doctest, and each empty rustdoc run still costs a
+# compile; the first doctest sets this back to true for its crate (ADR-0124).
+doctest = false
+
+[dependencies]
+review-attempt = { path = "../review-attempt" }
+review-check = { path = "../review-check" }
+review-core = { path = "../review-core" }
+review-runner = { path = "../review-runner" }
+review-graph = { path = "../review-graph" }
+review-store = { path = "../review-store" }
+review-source-git = { path = "../review-source-git" }
+semver = "1.0.27"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+toml = "1.1.6"
+
+[dev-dependencies]
+jsonschema = { version = "0.58.4", default-features = false }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
