@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-runs:1",
+  "title": "af/telemetry-runs@1",
+  "description": "`af telemetry runs --json` (design §5, §10; ADR-0153): every run the telemetry directory holds, newest activity first. A run is one kernel run id within one Store (`store_id`: SHA-256 of the Store directory's canonical path); `trace_id` derives from both. Each run lists its retained executions (one per process that worked on it, numbered by `af.execution.ordinal`), its active time (the union of the executions' `af.run` intervals, an overlap counted once), execution time (their sum, `af.execution.duration_sum`) and elapsed time (first start to last end), an interval with no recorded end ending at its segment's last record and marked `open`; `executions` holds the retained executions in full (`list`), the ordinals of the sealed ones (`sealed`) and, beside them, every open one (`open`: its segment is live or unsealed, or its `af.run` has no recorded end), never hidden behind the sealed prefix; the latest execution's own outcome, the latest being the execution with the greatest committed ordinal, never the latest start (absent while that execution's `af.run` has no recorded end, never an earlier execution's, and absent when no execution carries an ordinal); the Attempts' exact usage counters and charge, each Attempt's charge snapshot with the highest `af.usage.sequence` or, when none is retained, its span end (decimal strings, absent when not delivered, never zero for unknown; the sidecar series never enters them); failures; `coverage` (`complete` when every retained segment was sealed by its writer with nothing dropped); and `history`: `prefix:k` when executions 1 to k are retained with their seals and no ordinal between them is missing, `partial` with `missing_ordinals` otherwise — never complete; `retained` is the label every total carries: `retained executions 1–k` only when no retained execution is open, `retained executions 1–k, open: m…` (or `retained executions: none sealed, open: m…`) when some are, `partial (…)` otherwise; `totals_cover` names every execution the totals (active, execution and elapsed time, tokens, charge, Attempts, failures) cover, each open one marked `open`. Durations are microseconds; times are unix nanoseconds as decimal strings. Nothing here is evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "runs",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-runs@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "$ref": "#/$defs/index"
+    },
+    "since_unix_ns": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "kind": {
+      "enum": [
+        "task",
+        "review",
+        "optimize",
+        "measure"
+      ]
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "unreadable": {
+      "$ref": "#/$defs/unreadable"
+    }
+  },
+  "$defs": {
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "span_id",
+        "ordinal",
+        "start_unix_ns",
+        "end_unix_ns",
+        "open",
+        "wall_us",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "ordinal": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store_sequence_at_start": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "start_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "end_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "wall_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        },
+        "outcome": {
+          "type": "string"
+        }
+      }
+    },
+    "open_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        }
+      }
+    },
+    "executions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retained",
+        "sealed",
+        "open",
+        "list"
+      ],
+      "properties": {
+        "retained": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "open": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/open_execution"
+          }
+        },
+        "list": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution"
+          }
+        }
+      }
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "run_id",
+        "trace_id",
+        "executions",
+        "first_start_unix_ns",
+        "last_end_unix_ns",
+        "active_us",
+        "execution_us",
+        "elapsed_us",
+        "open",
+        "tokens",
+        "attempts",
+        "failures",
+        "coverage",
+        "history",
+        "missing_ordinals",
+        "retained",
+        "totals_cover"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "campaign": {
+          "type": "string"
+        },
+        "executions": {
+          "$ref": "#/$defs/executions"
+        },
+        "first_start_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "last_end_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "active_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "execution_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "input_tokens": {
+              "$ref": "#/$defs/decimal"
+            },
+            "output_tokens": {
+              "$ref": "#/$defs/decimal"
+            },
+            "cache_read_tokens": {
+              "$ref": "#/$defs/decimal"
+            },
+            "cache_write_tokens": {
+              "$ref": "#/$defs/decimal"
+            },
+            "reasoning_tokens": {
+              "$ref": "#/$defs/decimal"
+            }
+          }
+        },
+        "charge": {
+          "$ref": "#/$defs/decimal"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "history": {
+          "type": "string",
+          "pattern": "^(prefix:(0|[1-9][0-9]*)|partial)$"
+        },
+        "missing_ordinals": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "retained": {
+          "type": "string",
+          "minLength": 1
+        },
+        "totals_cover": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "execution_id",
+              "open"
+            ],
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ordinal": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "open": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

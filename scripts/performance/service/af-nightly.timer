@@ -1,0 +1,17 @@
+# The owner's nightly chain (ADR-0273, docs/nightly.md#the-nightly-chain): every evening at
+# 22:05 UTC this timer starts the build; each step hands over to the next itself
+# (af-nightly-build -> af-nightly-measure -> af-nightly-report -> af-nightly-publish).
+# Every step works on the night the build unit started (--night-of af-nightly-build.service:
+# the UTC date systemd started it), so a measurement that runs past midnight UTC still reports
+# and publishes that night. Persistent=true runs a night the machine slept through when it is up
+# again, as the night of the day it starts.
+[Unit]
+Description=Start the AF nightly chain (build, measure, report, publish)
+
+[Timer]
+OnCalendar=*-*-* 22:05:00 UTC
+Persistent=true
+Unit=af-nightly-build.service
+
+[Install]
+WantedBy=timers.target

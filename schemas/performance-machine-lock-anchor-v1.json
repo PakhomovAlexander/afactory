@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-machine-lock-anchor:1",
+  "title": "af.perf-machine-lock-anchor/1",
+  "description": "Independent performance executor: machine-lock-anchor (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-machine-lock-anchor/1"
+    },
+    "device": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "inode": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    }
+  },
+  "required": [
+    "schema",
+    "device",
+    "inode"
+  ]
+}

@@ -1,0 +1,21 @@
+"version" = 2
+
+["project"]
+"name" = "afactory"
+"min_af" = "0.2"
+
+["task"]
+
+["task"."defaults"]
+"pipeline" = "bugfix/light-kimi-terra-sol"
+"fallback" = "refuse"
+
+["task"."defaults"."limits"]
+"tokens" = 8000000
+"max_attempts" = 16
+"wall_ms" = 43200000
+
+["task"."defaults"."limits"."verification"]
+"tokens" = 2000000
+"attempts" = 9
+"wall_ms" = 18000000

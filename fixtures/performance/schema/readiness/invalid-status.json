@@ -1,0 +1,115 @@
+{
+  "schema": "af.perf-readiness/6",
+  "cohort_id": "synthetic_cohort",
+  "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
+  "calibration_digest": "sha256:b1baa203c2544a2edaf9beda2e5d99e4c32dcd9e69bcae82663d99597df3c0b6",
+  "recomputed_calibration_digest": "sha256:b1baa203c2544a2edaf9beda2e5d99e4c32dcd9e69bcae82663d99597df3c0b6",
+  "history": {
+    "after_run_number": 41,
+    "latest_run_number": 42,
+    "runs": 1
+  },
+  "members": [
+    {
+      "member_id": "aa_01",
+      "kind": "aa",
+      "status": "skipped",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7001,
+        "run_number": 42,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759989640000,
+        "attempt_updated_unix_ms": 1759989670000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7001_a1_primary",
+        "artifact_name": "af-perf-gh7001_a1_primary-run",
+        "artifact_id": 101,
+        "artifact_created_unix_ms": 1759989660000,
+        "plan_digest": "sha256:e9d273fa53bc01b8eb162a50e80bdae1b82ed78fe9c1d0564bce4dfc101ce5e2",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "verdict_sha256": "sha256:f2092bfc540490e21388e58fd410bd12269846e6b207f9692f18e9e10af6b4d4",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
+    }
+  ],
+  "refused_evidence": [],
+  "tallies": {
+    "aa_members": 20,
+    "aa_within_tolerance": 20,
+    "power_members": 10,
+    "power_qualifying": 10,
+    "power_by_case": {
+      "synthetic_fast": {
+        "detections": 10,
+        "valid_injections": 10
+      },
+      "synthetic_process__size_1": {
+        "detections": 10,
+        "valid_injections": 10
+      }
+    },
+    "power_by_group": {
+      "hosted_x86": {
+        "members": 10,
+        "qualifying": 10
+      }
+    },
+    "injection": {
+      "injection_2": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 10
+      },
+      "injection_5": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 10
+      },
+      "injection_10": {
+        "members": 10,
+        "regressions": 10,
+        "valid_injections": 10
+      }
+    }
+  },
+  "groups": {
+    "hosted_x86": {
+      "ready": true,
+      "unavailable": []
+    }
+  },
+  "ready": true,
+  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
+}

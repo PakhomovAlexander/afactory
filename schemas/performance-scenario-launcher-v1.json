@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-scenario-launcher:1",
+  "title": "af.perf-scenario-launcher/1",
+  "description": "Native Scenario lab integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-scenario-launcher/1"
+    },
+    "executable": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "required": [
+    "schema",
+    "executable",
+    "digest"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

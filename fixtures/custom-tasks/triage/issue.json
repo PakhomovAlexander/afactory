@@ -1,0 +1,37 @@
+{
+  "schema": "custom.issue/1",
+  "repository": "PakhomovAlexander/afactory",
+  "number": 432,
+  "title": "Attention view: group resource and input waits apart from approval",
+  "body": "Follow-up to #376, from the af review of step 10 of #384 (Task `ux-s10-attention-1`; the code is in PR #429). On 27 October 2026 the owner decided that only blockers are fixed before a tier merges. This finding is not a blocker. Line numbers are at commit 94bc0a83.\n\n## Finding\n\n**The attention view says a Task that needs resources or input is waiting for approval** (major; correctness reviewer; the evaluator passed the step).\n- `TaskAttentionV1::of` (`crates/review-core/src/task/state.rs:483`) puts every `planned` and `waiting` Task in the `approval` group, titled \"Waiting for approval\".\n- The refresh path also records `waiting` for a Task that needs resources (an infeasible selection) or input (missing facts) (`crates/af/src/task_execution/refresh.rs:250-283`).\n- Its next command is then `af task plan --file TASK_FILE --fit` or `af task show ID` (`crates/af/src/task_execution/state.rs:145-155`), not an approval.\n- The CLI (`af task list --attention`), the TUI's attention rows, the `af/task-attention@1` JSON group and the table in `docs/tasks.md:359` all show such a Task as awaiting approval.\n- Issue #376 asks for Tasks grouped by what they wait for.\n\nFix: give resource and input waits a group of their own, derived from the same state and next action. Keep `approval` for a plan to confirm or review. Change the CLI, TUI, schema, help and docs together. Add an execution-path test that produces a `NeedsResources` or `NeedsInput` Task and checks its text, JSON and TUI group.\n",
+  "labels": [
+    "class/bug",
+    "size/M",
+    "pipeline/default"
+  ],
+  "comments": [
+    {
+      "id": "checked-in-comment-1",
+      "body": "**Triage:** `class/bug` `size/M` \u2192 `pipeline/default`. Resource and input waits are labelled as approval, violating the stated behavior of grouping Tasks by what they wait for; bug takes precedence over agent and human experience. The rubric explicitly treats this additive group under af/task-attention@1 as M. PR #429 introduced the attention view but provides no explicit evidence that this correction shipped.\n**Resolution:** Astra open, Opus open (evidence: crates/review-core/src/task/state.rs:483, crates/af/src/task_execution/refresh.rs:250-283, crates/af/src/task_execution/state.rs:145-155, PR #429, docs/tasks.md:359).\n**Acceptance:** Resource and input waits appear in a group separate from plan confirmation or review across CLI text, TUI and af/task-attention@1 JSON, with matching schema, help and documentation and an execution-path test producing NeedsResources or NeedsInput and verifying all three views.\n\n<details><summary>af/issue-triage-merged@1</summary>\n\n```json\n{\n \"schema\": \"af/issue-triage-merged@1\",\n \"issue\": 432,\n \"verdict\": \"agreed\",\n \"body_sha256\": \"15df027abbdbd04730efeb9889d0084d5a86d0ee4a0332c165b01cc1dc5fddcb\",\n \"class\": \"bug\",\n \"size\": \"M\",\n \"pipeline\": \"default\",\n \"resolution\": {\n  \"state\": \"open\",\n  \"evidence\": [\n   \"crates/review-core/src/task/state.rs:483\",\n   \"crates/af/src/task_execution/refresh.rs:250-283\",\n   \"crates/af/src/task_execution/state.rs:145-155\"\n  ],\n  \"addressed\": [],\n  \"remaining\": [\n   \"Separate resource and input waits from approval using state and next action.\",\n   \"Update CLI, TUI, JSON schema, help and documentation consistently.\",\n   \"Add execution-path coverage checking text, JSON and TUI grouping.\"\n  ]\n },\n \"triagers\": {\n  \"A\": {\n   \"model\": \"gpt-6-astra/medium\",\n   \"schema\": \"af/issue-triage@1\",\n   \"issue\": 432,\n   \"cla",
+      "truncated": true,
+      "original_sha256": "sha256:0f7c2805252af45985fd1cbcead88fd78b8de59025e3c92459217637d9cc6bfe"
+    }
+  ],
+  "captured_identity": {
+    "revision": "body_sha256 15df027abbdbd04730efeb9889d0084d5a86d0ee4a0332c165b01cc1dc5fddcb",
+    "captured_at": "unknown (imported 2026-10-30 fixture)",
+    "body_sha256": "sha256:15df027abbdbd04730efeb9889d0084d5a86d0ee4a0332c165b01cc1dc5fddcb"
+  },
+  "evidence": [
+    {
+      "citation": "https://github.com/PakhomovAlexander/afactory/issues/432",
+      "text": "Imported from the checked-in 2026-10-30 issue capture. No repository code excerpts or live refresh have been supplied."
+    }
+  ],
+  "knowledge": {
+    "status": "absent",
+    "as_of": "2026-10-30T00:00:00Z",
+    "freshness": "unknown",
+    "entries": []
+  }
+}

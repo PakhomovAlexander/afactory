@@ -1,0 +1,74 @@
+schema = "af.worker/1"
+name = "builtin/optimization-light-diagnose"
+version = "1.0.0"
+
+[signature]
+effects = []
+roles = ["diagnose"]
+worker_input_type = "af/OptimizationDiagnosisInput@1"
+worker_output_type = "af/OptimizationDiagnostic@1"
+
+[signature.contract.inputs.profile]
+artifact_type = "af/OptimizationProfile@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.profile.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.configuration]
+artifact_type = "af/OptimizationWritableConfiguration@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.configuration.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.recipes]
+artifact_type = "af/OptimizationRecipeCatalog@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.recipes.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.economics]
+artifact_type = "af/OptimizationEconomics@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.economics.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.diagnostic]
+artifact_type = "af/OptimizationDiagnostic@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.diagnostic.affinity]
+kind = "unbound"
+
+[signature.evidence]
+[signature.retains]
+diagnostic = ["profile", "configuration", "recipes", "economics", "requirements"]
+[signature.attempt]
+tokens = 0
+wall_ms = 30000
+[runner]
+kind = "command"
+[runner.command]
+program = "/usr/bin/python3"
+[[runner.command.args]]
+value = "-B"
+provenance = "literal"
+[[runner.command.args]]
+value = "@package/worker.py"
+provenance = "literal"

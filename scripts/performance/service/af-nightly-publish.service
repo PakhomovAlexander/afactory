@@ -1,0 +1,38 @@
+# Step 4 of the nightly chain (ADR-0272, ADR-0273, docs/nightly.md#the-nightly-chain): publish
+# the night's pre-release with its newest report below /var/lib/af-nightly/reports, send the
+# digest and prune old nightlies; a skipped night sends one line. Started only by a composed
+# report.
+[Unit]
+Description=AF nightly: publish tonight's nightly (step 4 of 4)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=af-nightly
+Group=af-perf-readers
+# Read the root:af-nightly 0440 publish tokens.
+SupplementaryGroups=af-nightly
+UMask=0027
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The tokens are files the configuration names, never values here. Either keep them root-owned
+# and readable by af-nightly alone, or hold them as systemd credentials: uncomment these lines
+# and point [publish] github_token_file and telegram_token_file at
+# /run/credentials/af-nightly-publish.service/github-publish-token and .../telegram-token.
+#LoadCredential=github-publish-token:/etc/af-nightly/github-publish-token
+#LoadCredential=telegram-token:/etc/af-nightly/telegram-token
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/publish.py publish --config /etc/af-nightly/nightly.toml --night-of af-nightly-build.service --report-root /var/lib/af-nightly/reports
+# Above publish.py's own bounds: 60 s per GitHub request, the uploads and the pruning.
+TimeoutStartSec=1h
+TimeoutStopSec=120
+KillMode=control-group
+MemoryMax=2G
+TasksMax=64
+LimitNOFILE=1024
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/af-nightly/builds

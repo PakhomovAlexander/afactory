@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:document-verification:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "document_id",
+    "policy_id",
+    "check_receipt_id",
+    "outcome"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "check_receipt_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "evaluation_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-scenario-status:1",
+  "title": "af.perf-scenario-status/1",
+  "description": "Native Scenario lab integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-scenario-status/1"
+    },
+    "intent_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "refused",
+        "uncertain"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "intent_digest",
+    "state",
+    "detail"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

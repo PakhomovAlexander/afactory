@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Experimental probe only; byte bounds and cross-record joins are checked by scripts/task-wake-probe.py",
+  "required": [
+    "schema",
+    "run_id",
+    "host",
+    "session_id",
+    "probe_id",
+    "delivery_id",
+    "scenario",
+    "marker"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-probe@1"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "host": {
+      "type": "string",
+      "enum": [
+        "pi",
+        "codex",
+        "claude"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "probe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$(?![\\s\\S])"
+    },
+    "scenario": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "busy",
+        "reconnect",
+        "restart",
+        "duplicate",
+        "ambiguous"
+      ]
+    },
+    "marker": {
+      "type": "string",
+      "pattern": "^AF_WAKE_[a-f0-9]{16}$(?![\\s\\S])"
+    }
+  }
+}

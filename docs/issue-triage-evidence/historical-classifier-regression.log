@@ -1,0 +1,21 @@
+Production source reconstructed and verified against input SHA-256: 82f0e95021d03fd2c0f40156cdb30610f5341422667774a80bea70aec345b764
+test_captured_historical_completion_assertions_have_zero_sweep_effects (regression_tests.Sources) ... FAIL
+
+======================================================================
+FAIL: test_captured_historical_completion_assertions_have_zero_sweep_effects (regression_tests.Sources)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-66386-LfBpBd/tree/scripts/test-backlog-triage.py", line 389, in test_captured_historical_completion_assertions_have_zero_sweep_effects
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/historical.md:1[2157 chars]ae'}] != []
+
+First list contains 10 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/historical.md:1\nThe change that fixed #432 was reversed.', 'path': 'changelog.d/historical.md', 'line': 1, 'text_sha256': '86fcb2ac2c786c2287000878b2002df412482d63e8eab44bb07b33930c4fefa9'}
+
+Diff is 2511 characters long. Set self.maxDiff to None to see it.
+
+----------------------------------------------------------------------
+Ran 1 test in 0.226s
+
+FAILED (failures=1)

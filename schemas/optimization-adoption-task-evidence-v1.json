@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/optimization-adoption-task-evidence-v1.json",
+  "title": "Optimization adoption Task evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "adoption_receipt_id", "commit_snapshot_id", "observed_task_id",
+    "observed_task_revision_id", "observed_task_result_id", "observed_plan_id",
+    "outcome", "attempt_ids", "unsuccessful_attempt_ids", "usage_ids",
+    "runtime_evidence_ids", "binding_ids", "engine_id", "environment_id",
+    "missing_fields", "causal_claim"
+  ],
+  "properties": {
+    "schema": { "const": "af.optimization-adoption-task-evidence/1" },
+    "adoption_receipt_id": { "$ref": "#/$defs/digest" },
+    "commit_snapshot_id": { "$ref": "#/$defs/digest" },
+    "observed_task_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "observed_task_revision_id": { "$ref": "#/$defs/digest" },
+    "observed_task_result_id": { "$ref": "#/$defs/digest" },
+    "observed_plan_id": { "$ref": "#/$defs/digest" },
+    "outcome": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "attempt_ids": { "$ref": "#/$defs/identities" },
+    "unsuccessful_attempt_ids": { "$ref": "#/$defs/identities" },
+    "usage_ids": { "$ref": "#/$defs/digests" },
+    "runtime_evidence_ids": { "$ref": "#/$defs/digestsLarge" },
+    "binding_ids": { "$ref": "#/$defs/digests" },
+    "engine_id": { "$ref": "#/$defs/digest" },
+    "environment_id": { "$ref": "#/$defs/digest" },
+    "missing_fields": {
+      "type": "array", "maxItems": 1000, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$" }
+    },
+    "causal_claim": { "const": false }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "identities": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "digests": {
+      "type": "array", "maxItems": 1000, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "digestsLarge": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    }
+  }
+}
