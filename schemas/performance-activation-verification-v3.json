@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-activation-verification:3",
+  "title": "af.perf-activation-verification/3",
+  "description": "One verified activation (ADR-0183, ADR-0184): whether trusted control code fetched and recomputed the cohort's retained evidence or checked the reviewed records locally, the rehashed records, original runs and tallies, the calibrated and uncalibrated scope, an equivalent adapter's protected diff and verified execution evidence, and what only an owner can establish.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-activation-verification/3"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "fetched",
+        "reviewed"
+      ]
+    },
+    "revision": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "activation_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "admission": {
+      "type": "string",
+      "enum": [
+        "calibrated",
+        "equivalent_adapter"
+      ]
+    },
+    "authority_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "cohort_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cohort_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "calibration_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "readiness_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "members": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "original_runs": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4611686018427387904
+      },
+      "minItems": 1,
+      "maxItems": 256
+    },
+    "tallies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "aa_within_tolerance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "aa_members": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "power_qualifying": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "power_members": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "aa_within_tolerance",
+        "aa_members",
+        "power_qualifying",
+        "power_members"
+      ]
+    },
+    "environment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/id"
+    },
+    "calibrated_groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "uncalibrated_groups": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "recomputed": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "history_latest_run_number": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2147483647
+            },
+            "refused_evidence": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "history_latest_run_number",
+            "refused_evidence"
+          ]
+        }
+      ]
+    },
+    "equivalence": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "calibrated_activation_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "calibrated_authority_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "changed_paths": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/relative_path"
+              },
+              "minItems": 0,
+              "maxItems": 256,
+              "uniqueItems": true
+            },
+            "evidence_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "golden": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "actions_run_id": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4611686018427387904
+                },
+                "lab_run_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "plan_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "baseline_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "candidate_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "adapters": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseline": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "candidate": {
+                      "$ref": "#/$defs/id"
+                    }
+                  },
+                  "required": [
+                    "baseline",
+                    "candidate"
+                  ]
+                },
+                "provenance": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repository": {
+                          "type": "string",
+                          "maxLength": 201,
+                          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+                        },
+                        "workflow_path": {
+                          "const": ".github/workflows/performance.yml"
+                        },
+                        "event": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "run_attempt": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9999
+                        },
+                        "conclusion": {
+                          "const": "success"
+                        },
+                        "head_sha": {
+                          "$ref": "#/$defs/git_sha"
+                        },
+                        "control_sha": {
+                          "$ref": "#/$defs/git_sha"
+                        },
+                        "runner": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "runner_group": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "jobs": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 64
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "runner_group",
+                            "jobs"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "repository",
+                        "workflow_path",
+                        "event",
+                        "run_attempt",
+                        "conclusion",
+                        "head_sha",
+                        "control_sha",
+                        "runner"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "actions_run_id",
+                "lab_run_id",
+                "plan_digest",
+                "baseline_sha",
+                "candidate_sha",
+                "adapters",
+                "provenance"
+              ]
+            },
+            "post_merge_aa": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "actions_run_id": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4611686018427387904
+                },
+                "lab_run_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "plan_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "baseline_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "candidate_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "adapters": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseline": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "candidate": {
+                      "$ref": "#/$defs/id"
+                    }
+                  },
+                  "required": [
+                    "baseline",
+                    "candidate"
+                  ]
+                },
+                "provenance": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repository": {
+                          "type": "string",
+                          "maxLength": 201,
+                          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+                        },
+                        "workflow_path": {
+                          "const": ".github/workflows/performance.yml"
+                        },
+                        "event": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "run_attempt": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9999
+                        },
+                        "conclusion": {
+                          "const": "success"
+                        },
+                        "head_sha": {
+                          "$ref": "#/$defs/git_sha"
+                        },
+                        "control_sha": {
+                          "$ref": "#/$defs/git_sha"
+                        },
+                        "runner": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "runner_group": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "jobs": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 64
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "runner_group",
+                            "jobs"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "repository",
+                        "workflow_path",
+                        "event",
+                        "run_attempt",
+                        "conclusion",
+                        "head_sha",
+                        "control_sha",
+                        "runner"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "actions_run_id",
+                "lab_run_id",
+                "plan_digest",
+                "baseline_sha",
+                "candidate_sha",
+                "adapters",
+                "provenance"
+              ]
+            }
+          },
+          "required": [
+            "calibrated_activation_sha256",
+            "calibrated_authority_sha",
+            "changed_paths",
+            "evidence_sha256",
+            "golden",
+            "post_merge_aa"
+          ]
+        }
+      ]
+    },
+    "pending": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "owner_review_at_exact_head",
+          "semantic_equivalence_owner_approval"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "mode",
+    "revision",
+    "activation_sha256",
+    "admission",
+    "authority_sha",
+    "policy_digest",
+    "cohort_id",
+    "cohort_sha256",
+    "calibration_sha256",
+    "readiness_sha256",
+    "members",
+    "original_runs",
+    "tallies",
+    "environment_id",
+    "recipe_id",
+    "calibrated_groups",
+    "uncalibrated_groups",
+    "recomputed",
+    "equivalence",
+    "pending"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "ended_unix_ms": 1760000000076,
+  "expected_records": 76,
+  "failure": null,
+  "host": {
+    "cpu_model": {
+      "unknown": "schema fixture: not observed"
+    },
+    "cpu_topology": {
+      "unknown": "schema fixture: not observed"
+    },
+    "logical_cpus": {
+      "unknown": "schema fixture: not observed"
+    },
+    "kernel": {
+      "unknown": "schema fixture: not observed"
+    },
+    "os_image": {
+      "unknown": "schema fixture: not observed"
+    },
+    "libc": {
+      "unknown": "schema fixture: not observed"
+    },
+    "memory_bytes": {
+      "unknown": "schema fixture: not observed"
+    },
+    "virtualization": {
+      "value": "synthetic"
+    },
+    "microcode": {
+      "unknown": "schema fixture: not observed"
+    },
+    "container_runtime": {
+      "unknown": "schema fixture: not observed"
+    },
+    "affinity": {
+      "unknown": "schema fixture: not observed"
+    },
+    "cpu_quota": {
+      "unknown": "schema fixture: not observed"
+    },
+    "cache": {
+      "unknown": "schema fixture: not observed"
+    },
+    "aslr": {
+      "unknown": "schema fixture: not observed"
+    },
+    "python": {
+      "unknown": "schema fixture: not observed"
+    }
+  },
+  "execution": {
+    "mode": "synthetic",
+    "containment": "process_group",
+    "sample_image": null,
+    "supervisor_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "builds_sha256": null,
+    "sampling_deadline_ms": 900000,
+    "sample_cpus": null,
+    "coordination_lock": null,
+    "run": {
+      "started_unix_ms": 1759999940000,
+      "deadline_unix_ms": 1760003540000,
+      "total_minutes": 60
+    },
+    "caller_deadline_unix_ms": null,
+    "deadline_unix_ms": 1760000900000
+  },
+  "seeds": [],
+  "observations": {
+    "start": {
+      "load_average": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_steal": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "memory_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "io_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_throttling": {
+        "unknown": "schema fixture: not observed"
+      },
+      "memory_events": {
+        "unknown": "schema fixture: not observed"
+      }
+    },
+    "end": {
+      "load_average": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_steal": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "memory_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "io_pressure": {
+        "unknown": "schema fixture: not observed"
+      },
+      "cpu_throttling": {
+        "unknown": "schema fixture: not observed"
+      },
+      "memory_events": {
+        "unknown": "schema fixture: not observed"
+      }
+    }
+  },
+  "host_id": "sha256:77873c015119b5167e41d454547dd1c5efd9dd519ee001fbddc2bd190962709a",
+  "plan_digest": "sha256:3542f16125e66911f995901014e703d7fa29c2755002802db32d6c4c8504c24d",
+  "provenance": "synthetic",
+  "record_count": 75,
+  "run_id": "schema_fixture_run",
+  "samples_bytes": 71610,
+  "samples_sha256": "sha256:23b7492279f5717e3b345febd447c43cdef62b0b583ad4e8b11effb9e768e51e",
+  "schema": "af.perf-shard/4",
+  "shard": 0,
+  "started_unix_ms": 1760000000000,
+  "status": "complete",
+  "slots": {
+    "failed": 0,
+    "unstarted": 1
+  },
+  "logs_bytes": 0
+}

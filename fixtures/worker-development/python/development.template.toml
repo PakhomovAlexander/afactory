@@ -1,0 +1,25 @@
+schema = "af.worker-development/3"
+harness = "sh"
+binding_identity = "@BINDING_ID@"
+writable_roots = ["source", "state", "scratch", "build", "cache"]
+state = "attempt_private"
+cache = "attempt_private"
+knowledge = "disabled"
+dependencies = "available_only"
+network = "deny"
+
+[tools]
+sh = "@SH_ID@"
+python3 = "@PYTHON3_ID@"
+
+[environment]
+BUILD_ROOT = "${build}"
+PYTHONDONTWRITEBYTECODE = "1"
+
+[limits]
+wall_ms = 120000
+output_bytes = 65536
+cpu_millicores = 2000
+memory_bytes = 1073741824
+processes = 128
+disk_bytes = 268435456

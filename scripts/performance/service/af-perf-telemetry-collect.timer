@@ -1,0 +1,12 @@
+# Hourly telemetry collection (ADR-0215). An example for a future always-on Linux collection
+# host: nothing installs or enables it.
+[Unit]
+Description=Hourly AF performance telemetry collection
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

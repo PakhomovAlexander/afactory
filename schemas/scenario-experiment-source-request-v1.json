@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:scenario-experiment-source-request:1",
+  "title": "scenario-experiment-source-request v1",
+  "required": [
+    "schema",
+    "receipt",
+    "candidate_snapshot_id",
+    "control_sha",
+    "trusted_ref"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-experiment-source-request@1"
+    },
+    "receipt": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+    },
+    "baseline_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidate_snapshot_id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "control_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "trusted_ref": {
+      "type": "string",
+      "pattern": "^refs/heads/[A-Za-z0-9/._-]+$"
+    }
+  }
+}

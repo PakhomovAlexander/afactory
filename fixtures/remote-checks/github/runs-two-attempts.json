@@ -1,0 +1,25 @@
+{
+  "total_count": 1,
+  "workflow_runs": [
+    {
+      "id": 77,
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "event": "pull_request",
+      "head_sha": "@HEAD@",
+      "run_attempt": 2,
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/octo/gate/actions/runs/77",
+      "pull_requests": [
+        {
+          "number": 12,
+          "head": {
+            "ref": "af-gate/@TASK@/head",
+            "sha": "@HEAD@"
+          }
+        }
+      ]
+    }
+  ]
+}

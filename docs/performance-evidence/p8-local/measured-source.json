@@ -1,0 +1,65 @@
+{
+ "measured": {
+  "all_files_digest": "sha256:2757f220270ed731b47017026c306b26125fb256f98b56a491b70f2298ccd1ff",
+  "files": 1906,
+  "harness_digest": "sha256:d6c26e84e05c086e98238a71128c637051e4b38189180e6244622cce01bf8760",
+  "registry_and_probe_sha256": {
+   "Cargo.lock": "sha256:7ffe05d928f8f4c1b46f6d92e5e207d30a38768e05a1e7aa25401fc364b2939a",
+   "crates/review-pipeline/examples/perf-probe.rs": "sha256:11b231efb1ecb544501b64106deb0e92d1ab8282c13d255e907c9b0318b17b72",
+   "crates/review-process/examples/perf-supervisor.rs": "sha256:3c6435ac1e5fa7274ed654c15aee1effea0914472a3305d53c43cd4741da44ce",
+   "fixtures/performance/adapters.toml": "sha256:c64c8a2d2a6e33e0cf1ecb21cb72ab1c95582eaeff1c58826110f8bcf6bc51c1",
+   "fixtures/performance/cli.toml": "sha256:9735bc120f2704d69514c8a74be1d8d81af8309253777bf4b73c379e79d54d9b",
+   "fixtures/performance/diagnostics.toml": "sha256:8b45773be02dc52c881b30ba342e8a880a8461c65c40cfe1755841ed9e6c5cc6",
+   "fixtures/performance/golden/native.json": "sha256:bd4fd50dd1ac1597607fc4200b45fae8535280de1eb6d81fa03863920e2bf18a",
+   "fixtures/performance/suite.toml": "sha256:01e76840fd1dde080da95982898a2f34c3ed806664db5b95c616aebe809d68d7",
+   "rust-toolchain.toml": "sha256:980c9752cb40dca3265ce4e3e31de1c369b469c9837be059b806ea93fe76799d"
+  },
+  "top_level_digests": {
+   ".af": "sha256:48f48d84bb5a2379e85a86b8e7a5d69264b01fdb7eb0526ce11b52c0335e6d8b",
+   ".config": "sha256:35dfd5e2784845099322ef883a3e7e13a14b0cad31ad45044818e649baaacdbc",
+   ".github": "sha256:7fa5201f059974bb24c41c8b21ac0b5641fb6f2fe7f33fe501d8c14674635c8d",
+   ".gitignore": "sha256:dbae368f5c377887c18a61ddbfd4a384d8e689175c804a83d58eeefad62470fd",
+   ".markdownlint-cli2.jsonc": "sha256:51361adf757cd7f32de869c4bec4c765e7b60fb07c4b04ecf8ff88d0bde0c78d",
+   "AGENTS.md": "sha256:f07f150fe77fcd487b782af72f7e3e3956cf25121993e1015ed470953e34ffe6",
+   "CHANGELOG.md": "sha256:bae70ea237da17c08e81acc9add675bcc44fb6918f0c9d39a9e55984dc7ed6fc",
+   "CODE_OF_CONDUCT.md": "sha256:8841555d1210e33c4c3e90e25f0290e250b20561739dc61402c01661c15e3e8a",
+   "CONTEXT.md": "sha256:ba647aeae07f91c960b760fa575d9b35b61b755d5c7c7ccba9f619e2ed06bd8a",
+   "CONTRIBUTING.md": "sha256:153b1548207e4abf98e6570da4597e3fcb10e7f79f859f5c43f1cfb7f86c79d8",
+   "Cargo.lock": "sha256:42137555ea984929078c0c76fdda0d3e738f8a4a830c74ed2c5481e83440ed81",
+   "Cargo.toml": "sha256:ef6e6273ad3faf6fbff9c78cbc2c17110a16530f749b65ec877f04f32ea4f8fe",
+   "LICENSE": "sha256:7e7434c4e3da2ba2f0b020a7cb0399347cd7c69d13095f63f1dcb51ddb27bd5c",
+   "Makefile": "sha256:d3ecd13bf9190725ea8435ea6c6525ac0ae5b485c5bc51cac12f943385045d3f",
+   "NOTICE": "sha256:714ec806be0034dde8ecfa88d838ab1c65c83f46d67e92e9f37bc231074808ca",
+   "README.md": "sha256:a1aea88fb30e973da6f1d4459b58e502669af70c4f83245c89dd7249defddebf",
+   "SECURITY.md": "sha256:ea70a42d788af41f4ffa16667396cb2a8d23ea8fe1059b8ca36f416be22149ee",
+   "brand": "sha256:ca7308be49b9aa173be739e7da9c77927622143eb02943c58bfc4c478ebdb0e7",
+   "changelog.d": "sha256:7e92794c2e267ea5857071f7c067ccd741e366d89baefa0c9e0c76332636d829",
+   "crates": "sha256:7f162b38f2f3dd6774f7ea01ad7751190d55ac4349666e8d9d6e01e430a4967f",
+   "docs": "sha256:848be89f5e39dc6e3f431aca4f32a2a11394dbdaafc84f6f15d120e74ad61f5c",
+   "fixtures": "sha256:77691444c950745b7783420bb10f8d06c7e9760eac46af12a9c8c13de963dfd2",
+   "install.sh": "sha256:fca942ce639fca204f515888d7a675e36f1630440704f96d5334f8c1afc0db9f",
+   "rust-toolchain.toml": "sha256:670cccaa8d47d2abe8ff1b61aef700633f7d127b95fdb5287fe43a9a12283c5d",
+   "schemas": "sha256:17b31e256474e13c733cadcdc56e6af9dd9a6ba90a2a4c86fd8757d0c04e8fa7",
+   "scripts": "sha256:6ee0012ca990642a8404428464cc21175d51ffeffb29b6de44ca0de1881c8d56"
+  }
+ },
+ "measured_commit": "acc14e9a77ff69381a521eea1662e80b18b23574",
+ "measured_git_tree": "3d1c9c780f55ceda85361a916b7dbe229e1b3347",
+ "reconciliation": {
+  "changed_paths": [
+   {
+    "finalized": "12792 ba1edee0ea42855892aa18bcce6c9952d9170ef3402d1901c0e886b41fc1b1b0",
+    "measured": "11951 d613ce09ee55221221fab15950b399b6006e80f418fea50676c7189292e63656",
+    "path": "docs/adr/0172-bind-kernel-receipts-to-their-task-results-word-reports-by-what-was-admitted-and-retain-a-real-local-run.md"
+   },
+   {
+    "finalized": "13167 d0e4df8a92776a52e43ed7ee766a69f4463074316b52a37c2e01544c272dc813",
+    "measured": "12966 7ee725faa6d6c7c6a7e87fac224cf7e32b0464cded948d6c9ea6f2ae4789f336",
+    "path": "docs/performance-acceptance.md"
+   }
+  ],
+  "unchanged_files": 1904,
+  "unchanged_files_digest": "sha256:e1150626ed773460336209bdc436d4d3c2943b1674db55ba26a068ca1804b986"
+ },
+ "what": "fingerprints of the measured commit and its reconciliation with the tree this evidence was finalized in (tools/fingerprint.py; the README's Reconciling)"
+}

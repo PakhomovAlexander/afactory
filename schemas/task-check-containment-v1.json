@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-check-containment:1",
+  "title": "af/TaskCheckContainment@1",
+  "description": "Provider admission and observed execution for contained native Task checks, linked to the exact check receipt. Completion does not assert a passing check. Unconfirmed cleanup fails the Attempt without publishing this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_id",
+    "checks"
+  ],
+  "properties": {
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "isolation",
+          "image",
+          "admitted",
+          "execution"
+        ],
+        "properties": {
+          "isolation": {
+            "const": "container"
+          },
+          "image": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9./:_-]{0,255}@sha256:[0-9a-f]{64}$"
+          },
+          "admitted": {
+            "const": true
+          },
+          "execution": {
+            "enum": [
+              "not_started",
+              "refused",
+              "completed"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,521 @@
+{
+  "schema": "af/ant@5",
+  "id": "performance-native",
+  "scenario": {
+    "schema": "af/scenario-bundle@5",
+    "root": "performance",
+    "definitions": {
+      "performance": {
+        "schema": "af/scenario@5",
+        "admission": null,
+        "inputs": {},
+        "outputs": {
+          "research": "task",
+          "report": "task"
+        },
+        "steps": [
+          {
+            "id": "history",
+            "operation": {
+              "kind": "wait",
+              "grant": {
+                "adapter": "lab",
+                "operation": "observe",
+                "destination": "native:claw"
+              },
+              "condition": "bounded_evidence"
+            },
+            "inputs": {
+              "subject": {
+                "source": "literal",
+                "value": {
+                  "type": "text",
+                  "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                }
+              },
+              "revision": {
+                "source": "literal",
+                "value": {
+                  "type": "text",
+                  "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                }
+              }
+            },
+            "outputs": {
+              "result": "observation"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 86400000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "research",
+            "operation": {
+              "kind": "fresh_task",
+              "template": {
+                "schema": "af/scenario-task-template@1",
+                "repo": "/replace/project",
+                "state": "/replace/private-tasks",
+                "authority_commit": "0000000000000000000000000000000000000000",
+                "repository_id": "0000000000000000000000000000000000000000",
+                "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "authority_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "document": {
+                  "schema": "af.task-file/1",
+                  "task_id": "performance-research-template",
+                  "kind": "report",
+                  "goal": "Research this complete goal against scenario_evidence. Retain an independently verified report of bounded prior findings, diagnostic telemetry, negative/inconclusive comparisons and adopted fixes. For the no-worthwhile bundle prove there is no worthwhile optimization, with evidence, costs and remaining uncertainty; otherwise fail acceptance. For the candidate bundle identify one small worthwhile candidate and its native matched timing criterion.",
+                  "pipeline": {
+                    "name": "kernel/report",
+                    "fallback": "refuse"
+                  },
+                  "strategy": "reviewed",
+                  "limits": {
+                    "tokens": 5000000,
+                    "max_attempts": 32,
+                    "wall_ms": 86400000,
+                    "verification": {
+                      "tokens": 1500000,
+                      "attempts": 12,
+                      "wall_ms": 21600000
+                    }
+                  },
+                  "requirements": {
+                    "scenario_mode": "candidate"
+                  }
+                },
+                "bindings": null,
+                "max_tokens": 5000000
+              },
+              "bindings": {}
+            },
+            "inputs": {
+              "scenario_evidence": {
+                "source": "step",
+                "step": "history",
+                "port": "result"
+              }
+            },
+            "outputs": {
+              "result": "task"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 172800000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "candidate",
+            "operation": {
+              "kind": "fresh_task",
+              "template": {
+                "schema": "af/scenario-task-template@1",
+                "repo": "/replace/project",
+                "state": "/replace/private-tasks",
+                "authority_commit": "0000000000000000000000000000000000000000",
+                "repository_id": "0000000000000000000000000000000000000000",
+                "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "authority_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "document": {
+                  "schema": "af.task-file/1",
+                  "task_id": "performance-candidate-template",
+                  "kind": "implement",
+                  "goal": "Construct one small candidate for scenario_goal and independently verify code correctness and guardrails only. The complete Scenario owns later native performance comparison, independent performance verification and reporting; these are not acceptance claims of this construction Task. Do not claim measured improvement here. Both bugs and correctness reviewers and the evaluator are required; no advisory/default-light team. Consume the accepted research_report artifact, retain its recommendation and provenance, and explain any deviation.",
+                  "pipeline": {
+                    "name": "kernel/implementation-reviewed",
+                    "fallback": "refuse"
+                  },
+                  "strategy": "reviewed",
+                  "verification": "review",
+                  "limits": {
+                    "tokens": 8000000,
+                    "max_attempts": 32,
+                    "wall_ms": 172800000,
+                    "verification": {
+                      "tokens": 3000000,
+                      "attempts": 12,
+                      "wall_ms": 86400000
+                    }
+                  },
+                  "requirements": {
+                    "scenario_mode": "candidate"
+                  },
+                  "facts": {
+                    "standard": true
+                  }
+                },
+                "bindings": null,
+                "max_tokens": 8000000
+              },
+              "bindings": {
+                "research_report": {
+                  "port": "report",
+                  "artifact_type": "af/Document@1"
+                }
+              }
+            },
+            "inputs": {
+              "scenario_evidence": {
+                "source": "step",
+                "step": "history",
+                "port": "result"
+              },
+              "research_report": {
+                "source": "step",
+                "step": "research",
+                "port": "result"
+              }
+            },
+            "outputs": {
+              "result": "task"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 172800000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "experiment",
+            "operation": {
+              "kind": "action",
+              "grant": {
+                "adapter": "lab",
+                "operation": "experiment_submit_v1",
+                "destination": "native:claw"
+              },
+              "requires_decision": false,
+              "required_condition": null
+            },
+            "inputs": {
+              "subject": {
+                "source": "project",
+                "value": {
+                  "source": "step",
+                  "step": "candidate",
+                  "port": "result"
+                },
+                "projection": {
+                  "kind": "task_result_id"
+                }
+              },
+              "revision": {
+                "source": "project",
+                "value": {
+                  "source": "step",
+                  "step": "candidate",
+                  "port": "result"
+                },
+                "projection": {
+                  "kind": "task_output_snapshot",
+                  "port": "snapshot"
+                }
+              },
+              "body": {
+                "source": "literal",
+                "value": {
+                  "type": "text",
+                  "value": "{\"configuration_digest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer_digest\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"schema\":\"af.perf-scenario-experiment/1\",\"work\":\"core\"}"
+                }
+              },
+              "candidate": {
+                "source": "step",
+                "step": "candidate",
+                "port": "result"
+              }
+            },
+            "outputs": {
+              "result": "action"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 30000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "comparison",
+            "operation": {
+              "kind": "wait",
+              "grant": {
+                "adapter": "lab",
+                "operation": "observe",
+                "destination": "native:claw"
+              },
+              "condition": "native_verified"
+            },
+            "inputs": {
+              "subject": {
+                "source": "project",
+                "value": {
+                  "source": "step",
+                  "step": "experiment",
+                  "port": "result"
+                },
+                "projection": {
+                  "kind": "action_intent"
+                }
+              },
+              "revision": {
+                "source": "project",
+                "value": {
+                  "source": "step",
+                  "step": "candidate",
+                  "port": "result"
+                },
+                "projection": {
+                  "kind": "task_output_snapshot",
+                  "port": "snapshot"
+                }
+              }
+            },
+            "outputs": {
+              "result": "observation"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 86400000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "verification",
+            "operation": {
+              "kind": "fresh_task",
+              "template": {
+                "schema": "af/scenario-task-template@1",
+                "repo": "/replace/project",
+                "state": "/replace/private-tasks",
+                "authority_commit": "0000000000000000000000000000000000000000",
+                "repository_id": "0000000000000000000000000000000000000000",
+                "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "authority_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "document": {
+                  "schema": "af.task-file/1",
+                  "task_id": "performance-verification-template",
+                  "kind": "verification",
+                  "goal": "Independently verify this accepted candidate against scenario_goal and the exact native report in scenario_evidence. Use measured paired timing, preserve regressions and inconclusive results, and reject any changed source/producer/configuration. Read-only: no implementer.",
+                  "pipeline": {
+                    "name": "kernel/verification-reviewed",
+                    "fallback": "refuse"
+                  },
+                  "strategy": "reviewed",
+                  "limits": {
+                    "tokens": 5000000,
+                    "max_attempts": 32,
+                    "wall_ms": 86400000,
+                    "verification": {
+                      "tokens": 3000000,
+                      "attempts": 12,
+                      "wall_ms": 43200000
+                    }
+                  },
+                  "requirements": {
+                    "scenario_mode": "candidate"
+                  },
+                  "facts": {
+                    "standard": true
+                  }
+                },
+                "bindings": null,
+                "max_tokens": 5000000
+              },
+              "bindings": {
+                "source": {
+                  "port": "snapshot",
+                  "artifact_type": "af/SourceTree@1"
+                }
+              }
+            },
+            "inputs": {
+              "source": {
+                "source": "step",
+                "step": "candidate",
+                "port": "result"
+              },
+              "scenario_evidence": {
+                "source": "step",
+                "step": "comparison",
+                "port": "result"
+              }
+            },
+            "outputs": {
+              "result": "task"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 172800000,
+            "on_timeout": "fail"
+          },
+          {
+            "id": "report",
+            "operation": {
+              "kind": "fresh_task",
+              "template": {
+                "schema": "af/scenario-task-template@1",
+                "repo": "/replace/project",
+                "state": "/replace/private-tasks",
+                "authority_commit": "0000000000000000000000000000000000000000",
+                "repository_id": "0000000000000000000000000000000000000000",
+                "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "authority_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "document": {
+                  "schema": "af.task-file/1",
+                  "task_id": "performance-report-template",
+                  "kind": "report",
+                  "goal": "Write the final independently verified report for scenario_goal using the exact native report in scenario_evidence and verified source. Distinguish measured improvement from diagnostic telemetry, charges from reservations and unknown usage from zero; retain limitations and all source identities. Consume the accepted research_report artifact, retain its recommendation and provenance, and explain any deviation.",
+                  "pipeline": {
+                    "name": "kernel/report",
+                    "fallback": "refuse"
+                  },
+                  "strategy": "reviewed",
+                  "limits": {
+                    "tokens": 5000000,
+                    "max_attempts": 32,
+                    "wall_ms": 86400000,
+                    "verification": {
+                      "tokens": 1500000,
+                      "attempts": 12,
+                      "wall_ms": 21600000
+                    }
+                  },
+                  "requirements": {
+                    "scenario_mode": "candidate"
+                  }
+                },
+                "bindings": null,
+                "max_tokens": 5000000
+              },
+              "bindings": {
+                "source": {
+                  "port": "snapshot",
+                  "artifact_type": "af/SourceTree@1"
+                },
+                "research_report": {
+                  "port": "report",
+                  "artifact_type": "af/Document@1"
+                }
+              }
+            },
+            "inputs": {
+              "source": {
+                "source": "step",
+                "step": "verification",
+                "port": "result"
+              },
+              "scenario_evidence": {
+                "source": "step",
+                "step": "comparison",
+                "port": "result"
+              },
+              "research_report": {
+                "source": "step",
+                "step": "research",
+                "port": "result"
+              }
+            },
+            "outputs": {
+              "result": "task"
+            },
+            "when": null,
+            "max_attempts": 1,
+            "timeout_ms": 172800000,
+            "on_timeout": "fail"
+          }
+        ],
+        "result": {
+          "research": {
+            "source": "step",
+            "step": "research",
+            "port": "result"
+          },
+          "report": {
+            "source": "step",
+            "step": "report",
+            "port": "result"
+          }
+        },
+        "completion": [
+          {
+            "source": "equals",
+            "left": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "report",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "task_conclusion"
+              }
+            },
+            "right": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "verified"
+              }
+            }
+          },
+          {
+            "source": "project",
+            "value": {
+              "source": "step",
+              "step": "comparison",
+              "port": "result"
+            },
+            "projection": {
+              "kind": "observation_satisfied"
+            }
+          }
+        ],
+        "authority": {
+          "task_plans": [],
+          "task_templates": [
+            "sha256:2029089b3d2ff03beb82a382c94a5bbded5a11f71cbf15f7469148cd9f05b57a",
+            "sha256:74ea6b49be90cd3603c897b4fb18c0f2096333bde097bf1f1ad4f5386c0ecd8d",
+            "sha256:df70ca2a99233bc53cdd934bde89e7090a5eac34eb19502404d1e5e641e79a7a",
+            "sha256:f80a3b55fc371a14c3237e532a22c02acc1964fff591f91992a9cd4e88d1b00b"
+          ],
+          "grants": [
+            {
+              "adapter": "lab",
+              "operation": "experiment_submit_v1",
+              "destination": "native:claw"
+            },
+            {
+              "adapter": "lab",
+              "operation": "observe",
+              "destination": "native:claw"
+            }
+          ],
+          "decision_owners": []
+        },
+        "limits": {
+          "max_tokens": 32000000,
+          "max_wall_ms": 691200000,
+          "max_dispatches": 16
+        }
+      }
+    }
+  },
+  "inputs": {},
+  "schedule": {
+    "timezone": "UTC",
+    "hour": 3,
+    "minute": 0,
+    "start_unix_ms": 1793664000000
+  },
+  "owner": "performance-owner",
+  "notification": "local:performance-owner",
+  "execution": {
+    "overlap": "skip",
+    "missed": "skip",
+    "lateness_ms": 60000,
+    "per_run": {
+      "max_tokens": 32000000,
+      "max_wall_ms": 691200000,
+      "max_dispatches": 16
+    },
+    "rolling_tokens": 96000000,
+    "rolling_window_ms": 604800000
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "event": {
+    "kind": "pin",
+    "note": "release 0.12.0 budget demonstration",
+    "reason": "space",
+    "run_id": "fixture_run"
+  },
+  "schema": "af.perf-archive-event/1",
+  "sequence": 2,
+  "unix_ms": 1800000000000
+}
