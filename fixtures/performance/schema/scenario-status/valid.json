@@ -1,0 +1,6 @@
+{
+  "schema": "af.perf-scenario-status/1",
+  "intent_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "state": "refused",
+  "detail": "pinned producer unavailable"
+}

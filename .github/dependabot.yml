@@ -1,0 +1,23 @@
+# Dependabot keeps Cargo.lock and the pinned Actions current. Minor and patch updates arrive
+# as one grouped pull request per ecosystem so `make check` runs once per week per ecosystem;
+# major updates stay separate because they may need an ADR or a CHANGELOG line.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch

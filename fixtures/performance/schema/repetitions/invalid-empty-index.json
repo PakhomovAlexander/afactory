@@ -1,0 +1,10 @@
+{
+  "schema": "af.perf-repetitions/1",
+  "instance_id": "cli_discovery__command_help",
+  "side": "baseline",
+  "attempt": 1,
+  "tool": "perf",
+  "binary_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "boundary": "perf_exec_to_exit",
+  "repetitions": []
+}

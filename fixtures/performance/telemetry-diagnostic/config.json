@@ -1,0 +1,419 @@
+{
+  "schema": "af/TelemetryConfig@2",
+  "directory": "/scratch/sample/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "store_id": "06a451a38d60a1d1d0b4cfdfb36ae77460b5c5770c3e91774229c6398aee76c9",
+  "run_id": "task:sha256:adf065c4523c766823d902ab6414bef5aaaf18029a2646346bf0816ee987f773",
+  "execution_id": "1792675940832-85555-e2869ee3",
+  "run_span_id": "010d3191b3f09a44",
+  "ordinal": 1,
+  "state": "complete",
+  "sections": [
+    {
+      "section": "configuration",
+      "state": "complete",
+      "parts": 1,
+      "missing_parts": []
+    },
+    {
+      "section": "plan",
+      "state": "complete",
+      "parts": 1,
+      "missing_parts": []
+    },
+    {
+      "section": "machine",
+      "state": "complete",
+      "parts": 1,
+      "missing_parts": []
+    }
+  ],
+  "rows": [
+    {
+      "key": "version.version",
+      "value": "0.12.0-rc.5",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.commit",
+      "value": "unknown",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.target",
+      "value": "aarch64-apple-darwin",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.release_key",
+      "value": "[withheld]",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.dispatched_from",
+      "value": "null",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.receipt",
+      "value": "null",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "self.auto_update",
+      "value": "\"notify\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.channel",
+      "value": "\"stable\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.check_every",
+      "value": "\"24h\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.install_pins",
+      "value": "\"ask\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.keep_versions",
+      "value": "3",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.source",
+      "value": "\"PakhomovAlexander/afactory\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "self.update_check",
+      "value": "true",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.auto_gc",
+      "value": "false",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_campaigns",
+      "value": "20",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_days",
+      "value": "14",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_gate_pull_requests",
+      "value": "false",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_surveys",
+      "value": "50",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_tasks",
+      "value": "20",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.keep_worker_transcripts",
+      "value": "false",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.max_bytes",
+      "value": "\"20GiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "storage.min_free_bytes",
+      "value": "<env>",
+      "layer": "environment",
+      "origin": "AF_STORAGE__MIN_FREE_BYTES"
+    },
+    {
+      "key": "telemetry.content_attempt_max_bytes",
+      "value": "\"512MiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_index",
+      "value": "true",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_max_blob_bytes",
+      "value": "\"16MiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_model_bodies",
+      "value": "true",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_native_body_max_chars",
+      "value": "1048576",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_process_max_bytes",
+      "value": "\"64MiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_reasoning",
+      "value": "true",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.content_tool_io",
+      "value": "true",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.dir",
+      "value": "\"\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.flush_bytes",
+      "value": "\"64KiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.flush_latency_ms",
+      "value": "1000",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.harness_native",
+      "value": "false",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.level",
+      "value": "<env>",
+      "layer": "environment",
+      "origin": "AF_TELEMETRY__LEVEL"
+    },
+    {
+      "key": "telemetry.max_bytes",
+      "value": "\"4GiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.observer_queue_bytes",
+      "value": "\"4MiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.segment_max_bytes",
+      "value": "\"256MiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.sink",
+      "value": "\"none\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.sink_endpoint",
+      "value": "\"\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.sink_headers_file",
+      "value": "\"\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.sink_timeout_ms",
+      "value": "5000",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "af.af_toml.digest",
+      "value": "absent",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.af_lock.digest",
+      "value": "absent",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.policy_rev",
+      "value": "sha256:14959413084af4eadcb0506497fdb76b52e07010c2d0e85b1ef796f7d6c0b5ee",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline",
+      "value": "perf/check-true",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.digest",
+      "value": "sha256:2e96ccd74dffb5fbd414312c0c92e376dba40988b0763097de2ff8d3c6642156",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.node",
+      "value": "root.inputs root_inputs",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.node",
+      "value": "root.nodes.accept accept",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.node",
+      "value": "root.nodes.checks check",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.node",
+      "value": "root.nodes.evaluate verify",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.task_id",
+      "value": "perf-check-true",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.task.kind",
+      "value": "verification",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.task.pipeline",
+      "value": "perf/check-true",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.evaluate",
+      "value": "worker=perf/accept command",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "claude_code.managed_settings",
+      "value": "",
+      "layer": "harness",
+      "origin": null
+    },
+    {
+      "key": "host.os",
+      "value": "macos",
+      "layer": "host",
+      "origin": null
+    },
+    {
+      "key": "host.arch",
+      "value": "aarch64",
+      "layer": "host",
+      "origin": null
+    },
+    {
+      "key": "host.cpus",
+      "value": "14",
+      "layer": "host",
+      "origin": null
+    },
+    {
+      "key": "AF_SELF_OFFLINE",
+      "value": "",
+      "layer": "variable",
+      "origin": null
+    },
+    {
+      "key": "AF_STORAGE__MIN_FREE_BYTES",
+      "value": "",
+      "layer": "variable",
+      "origin": null
+    },
+    {
+      "key": "AF_TELEMETRY__LEVEL",
+      "value": "",
+      "layer": "variable",
+      "origin": null
+    }
+  ],
+  "texts": [
+    {
+      "kind": "pipeline",
+      "digest": "sha256:a5263d1017ed37b6a512be58d4fb0820594c1dece354c4d5a1aab6c99e9e208b",
+      "bytes": 2202
+    },
+    {
+      "kind": "task_file",
+      "digest": "sha256:a8bfd4779b031dfe6995ca41d11ffa3e1a2d0357b47fad66b5d7dacf7bb147bb",
+      "bytes": 391
+    }
+  ]
+}

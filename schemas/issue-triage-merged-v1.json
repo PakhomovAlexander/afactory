@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-triage-merged:1",
+  "title": "Merged issue triage af/issue-triage-merged@1",
+  "$comment": "The one record scripts/backlog-check-triage.py prints for one triage Task that is not held (docs/design/issue-triage.md §6.3, §6.5): the verdict of the merge rule, the agreed fields (null when the triagers did not agree, unless the owner's override names the value), the runner-namespace labels the verdict sets, the evidence references it checked, the generation key, the identities of the Task's documents, both triagers' af/issue-triage@1 documents and the owner's overrides. Every identity is required and never null. A hold is the separate private af/issue-triage-hold@1 (schemas/issue-triage-hold-v1.json), never this record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "issue",
+    "body_sha256",
+    "verdict",
+    "class",
+    "size",
+    "pipeline",
+    "adr",
+    "resolution",
+    "duplicates",
+    "needs_info",
+    "reasons",
+    "labels",
+    "evidence_check",
+    "generation",
+    "sources",
+    "author",
+    "verifier",
+    "owner_override"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/issue-triage-merged@1"
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "agreed",
+        "disputed",
+        "needs-info",
+        "duplicate"
+      ]
+    },
+    "class": {
+      "enum": [
+        "bug",
+        "perf",
+        "feature",
+        "aix",
+        "uix",
+        "sdlc",
+        "security",
+        "docs",
+        "research",
+        "decision",
+        null
+      ]
+    },
+    "size": {
+      "enum": [
+        "S",
+        "M",
+        "L",
+        "XL",
+        null
+      ]
+    },
+    "pipeline": {
+      "enum": [
+        "light",
+        "default",
+        "design",
+        "hand",
+        null
+      ]
+    },
+    "adr": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:issue-triage:1#/$defs/resolution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duplicates": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "needs_info": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000,
+        "pattern": "\\S"
+      }
+    },
+    "reasons": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000,
+        "pattern": "\\S"
+      }
+    },
+    "labels": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(class/(bug|perf|feature|aix|uix|sdlc|security|docs|research|decision)|size/(S|M|L|XL)|pipeline/(light|default|design|hand)|triage/(pending|needs-info|disputed|maybe-fixed|duplicate|held))$"
+      }
+    },
+    "evidence_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commits",
+        "pulls",
+        "unverified"
+      ],
+      "properties": {
+        "commits": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
+          }
+        },
+        "pulls": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "unverified": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issue",
+        "bundle_sha256",
+        "main_commit",
+        "policy_version",
+        "event_id"
+      ],
+      "properties": {
+        "issue": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "main_commit": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "document_id",
+        "evaluation_id"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "document_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "evaluation_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "author": {
+      "$ref": "urn:af:schema:issue-triage:1"
+    },
+    "verifier": {
+      "$ref": "urn:af:schema:issue-triage:1"
+    },
+    "owner_override": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "class": {
+              "type": "string",
+              "pattern": "^class/(bug|perf|feature|aix|uix|sdlc|security|docs|research|decision)$"
+            },
+            "size": {
+              "type": "string",
+              "pattern": "^size/(S|M|L|XL)$"
+            },
+            "pipeline": {
+              "type": "string",
+              "pattern": "^pipeline/(light|default|design|hand)$"
+            },
+            "triage": {
+              "type": "string",
+              "pattern": "^triage/(pending|needs-info|disputed|maybe-fixed|duplicate|held)$"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "telemetry-bench-dense",
+  "kind": "review",
+  "goal": "Review the captured source",
+  "pipeline": {
+    "name": "bench/dense",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "facts": {},
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 2,
+    "wall_ms": 600000,
+    "verification": {
+      "tokens": 0,
+      "attempts": 2,
+      "wall_ms": 300000
+    }
+  }
+}

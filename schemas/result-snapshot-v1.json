@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:result-snapshot:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "ant",
+    "occurrence",
+    "run",
+    "output",
+    "revision",
+    "observed_unix_ms",
+    "rendered_unix_ms",
+    "state",
+    "producer_status",
+    "freshness",
+    "error",
+    "document"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/result-snapshot@1"
+    },
+    "ant": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "occurrence": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "output": {
+      "type": "string"
+    },
+    "revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observed_unix_ms": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rendered_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8640000000000
+    },
+    "state": {
+      "enum": [
+        "partial",
+        "final",
+        "partial_empty",
+        "final_empty",
+        "unavailable",
+        "error"
+      ]
+    },
+    "producer_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "unavailable"
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "document": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "observed_unix_ms",
+            "stale_after_ms",
+            "blocks"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/result-document@1"
+            },
+            "observed_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            "stale_after_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            "blocks": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "content"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "markdown"
+                      },
+                      "content": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "title",
+                      "columns",
+                      "rows"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "table"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536
+                      },
+                      "columns": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 65536
+                        }
+                      },
+                      "rows": {
+                        "type": "array",
+                        "maxItems": 512,
+                        "items": {
+                          "type": "array",
+                          "maxItems": 32
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "result-snapshot v1"
+}

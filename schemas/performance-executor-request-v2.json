@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor-request:2",
+  "title": "af.perf-executor-request/2",
+  "description": "Independent performance executor: executor-request (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor-request/2"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id"
+    },
+    "backend": {
+      "type": "string",
+      "enum": [
+        "local",
+        "github_actions"
+      ]
+    },
+    "journal_id": {
+      "$ref": "#/$defs/id"
+    },
+    "machine_id": {
+      "$ref": "#/$defs/id"
+    },
+    "configuration_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "control_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "baseline_sha",
+        "candidate_sha",
+        "control_sha",
+        "authority_sha"
+      ]
+    },
+    "submission": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "calibration"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "main"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "manual"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "nightly"
+            },
+            "key": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^nightly:nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01]):(?:core|telemetry)$"
+            },
+            "tag": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01])$"
+            },
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "tag": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                    },
+                    "sha": {
+                      "$ref": "#/$defs/git_sha"
+                    }
+                  },
+                  "required": [
+                    "tag",
+                    "sha"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "tag",
+            "baseline"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pr"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "release"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ]
+        }
+      ]
+    },
+    "work": {
+      "type": "string",
+      "enum": [
+        "core",
+        "telemetry",
+        "profile"
+      ]
+    },
+    "created_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "producer_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "plan_sha256": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/digest"
+        }
+      ]
+    },
+    "cohort_digest": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/digest"
+        }
+      ]
+    },
+    "member_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/id"
+        }
+      ]
+    },
+    "parameters_sha256": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/digest"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "request_id",
+    "backend",
+    "journal_id",
+    "machine_id",
+    "configuration_digest",
+    "sources",
+    "submission",
+    "work",
+    "created_unix_ms",
+    "environment_digest",
+    "producer_digest",
+    "plan_sha256",
+    "cohort_digest",
+    "member_id",
+    "parameters_sha256"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

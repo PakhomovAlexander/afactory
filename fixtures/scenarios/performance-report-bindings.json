@@ -1,0 +1,11 @@
+{
+  "schema": "af.task-bindings/1",
+  "slots": {
+    "root.slots.author": "owner-default/report-author",
+    "root.slots.verifier": "kernel/report-verifier"
+  },
+  "providers": {
+    "owner-default/report-author": "codex-personal",
+    "kernel/report-verifier": "codex-personal"
+  }
+}

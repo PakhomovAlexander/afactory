@@ -1,0 +1,260 @@
+{
+  "schema": "af.perf-cost/3",
+  "status": "pending",
+  "reasons": [
+    "pr_cold: 1 of 5 completed measured executions (0 failed attempts)",
+    "pr_warm: 0 of 5 completed measured executions (0 failed attempts)",
+    "same_source_cold: 0 of 5 completed measured executions (1 failed attempts)",
+    "same_source_warm: 1 of 5 completed measured executions (0 failed attempts)"
+  ],
+  "runs_per_group": 5,
+  "runs": [
+    {
+      "run_id": "pr_cold_0",
+      "kind": "pr",
+      "cache": "lukewarm",
+      "cache_source": "observed",
+      "cache_identity": "sha256:478e7a5b786db7d61e87c60a026fb84787798c34cdc9a26369ff7aeb2860a7a8",
+      "dependency_fetch": "host_network",
+      "execution": "complete",
+      "provenance": "measured",
+      "environment_id": "linux_x86_64_gnu_hosted",
+      "recipe_id": "linux_gnu_native_release",
+      "result": "pass",
+      "identity": {
+        "baseline_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+        "candidate_sha": "b0edc305bbe0a04084c8a60efb191cb01198ade8",
+        "plan_digest": "sha256:68afef8bfad277cbdd4046b2dc5f6691eaf73aa6131998559e30b8875309f7bd",
+        "run_bundle": "sha256:abc8c01b868cdc608d07c46421f54b8b4eb94f3deb83fc89593cfa482eee5442",
+        "builds_sha256": "sha256:83bdf3702d9f2959cf61bd93abddadbb902bc47b620a84e40cac97ad8d9c3a49",
+        "binaries": {
+          "baseline": {
+            "af": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+            "probe": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8"
+          },
+          "candidate": {
+            "af": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+            "probe": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+          },
+          "supervisor": "sha256:c21ba98d72cc821d29a83788c82dd972d027d71eddfd90cd9c2c4cc3f1f4b877"
+        },
+        "shard_bundles": [
+          "sha256:8610fc961f6072c0c37c9af1c09dd794ed24944d56ffb9385721e9cb26f9f121",
+          "sha256:d25932165d0f26d9c3f42bc7dcf2d654971bdf9d6b191ce72bc7263f86f456de"
+        ]
+      },
+      "build_ms": 59000,
+      "priming_ms": null,
+      "shard_sampling_ms": [
+        76,
+        48
+      ],
+      "artifact_bytes": {
+        "build": 0,
+        "shards": 167060
+      },
+      "cases": {
+        "synthetic_advisory": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_fast": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_process__size_1": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        }
+      },
+      "failures": []
+    },
+    {
+      "run_id": "same_source_cold_0",
+      "kind": "same_source",
+      "cache": "cold",
+      "cache_source": "observed",
+      "cache_identity": "sha256:478e7a5b786db7d61e87c60a026fb84787798c34cdc9a26369ff7aeb2860a7a8",
+      "dependency_fetch": "host_network",
+      "execution": "failed",
+      "provenance": "measured",
+      "environment_id": "linux_x86_64_gnu_hosted",
+      "recipe_id": "linux_gnu_native_release",
+      "result": "pass",
+      "identity": {
+        "baseline_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+        "candidate_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+        "plan_digest": "sha256:25555e42944e5a8541ec143b87ba1126e49202fee5ee7e6f4cbdc3b483f9799d",
+        "run_bundle": "sha256:bb72577cd25fb69a9c9ed053efc869dbad0660054453792148cfd2a3b28ab48f",
+        "builds_sha256": "sha256:eed089612e9c9d416d8a9c9f02699be5ecc218eed86394b2ad4ebb6a5394896b",
+        "binaries": {
+          "baseline": {
+            "af": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+            "probe": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8"
+          },
+          "candidate": {
+            "af": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+            "probe": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+          },
+          "supervisor": "sha256:c21ba98d72cc821d29a83788c82dd972d027d71eddfd90cd9c2c4cc3f1f4b877"
+        },
+        "shard_bundles": [
+          "sha256:6497636fa3b4972cf7331cb79de71aa6aa3f4736c6565044f4acc95f2c373d15",
+          "sha256:20f40e307f4e6680d912baa0cabf7748c775483fe563e95a5467a5d2c598e493"
+        ]
+      },
+      "build_ms": 59000,
+      "priming_ms": null,
+      "shard_sampling_ms": [
+        76,
+        48
+      ],
+      "artifact_bytes": {
+        "build": 0,
+        "shards": 168147
+      },
+      "cases": {
+        "synthetic_advisory": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_fast": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_process__size_1": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        }
+      },
+      "failures": [
+        {
+          "where": "case synthetic_advisory",
+          "detail": "baseline measured sample of pair 1 failed: timeout"
+        }
+      ]
+    },
+    {
+      "run_id": "same_source_warm_0",
+      "kind": "same_source",
+      "cache": "warm",
+      "cache_source": "observed",
+      "cache_identity": "sha256:478e7a5b786db7d61e87c60a026fb84787798c34cdc9a26369ff7aeb2860a7a8",
+      "dependency_fetch": "host_network",
+      "execution": "complete",
+      "provenance": "measured",
+      "environment_id": "linux_x86_64_gnu_hosted",
+      "recipe_id": "linux_gnu_native_release",
+      "result": "pass",
+      "identity": {
+        "baseline_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+        "candidate_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+        "plan_digest": "sha256:600521546b0bf4f83c9967c32618a6d8c0d75e5e5b0f11173604436511b000fd",
+        "run_bundle": "sha256:7669d9faffc121da5c4964d13c5fdf4ede3e0b76a4923b381405e54658456b4f",
+        "builds_sha256": "sha256:4591b9b6066e55f583bf55a310a7e464e72814b35029d0ea9af0a237e08d378e",
+        "binaries": {
+          "baseline": {
+            "af": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+            "probe": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8"
+          },
+          "candidate": {
+            "af": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+            "probe": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+          },
+          "supervisor": "sha256:c21ba98d72cc821d29a83788c82dd972d027d71eddfd90cd9c2c4cc3f1f4b877"
+        },
+        "shard_bundles": [
+          "sha256:cfc0bde1152aa521755924067604815941244d7986f247b748b577f8d1d4a81a",
+          "sha256:3f344084cc7d485f3d07bf37d7ecdba2363013181199a324556442bb1fd34531"
+        ]
+      },
+      "build_ms": 39000,
+      "priming_ms": 20000,
+      "shard_sampling_ms": [
+        76,
+        48
+      ],
+      "artifact_bytes": {
+        "build": 0,
+        "shards": 168176
+      },
+      "cases": {
+        "synthetic_advisory": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_fast": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        },
+        "synthetic_process__size_1": {
+          "samples": 28,
+          "unmeasured": 28,
+          "sample_ms": null
+        }
+      },
+      "failures": []
+    }
+  ],
+  "groups": {
+    "pr_cold": {
+      "runs": 1,
+      "completed": 1,
+      "failed": 0,
+      "failures": 0,
+      "build_ms_median": "59000",
+      "build_ms_max": 59000,
+      "priming_ms_median": null,
+      "priming_ms_max": null,
+      "sampling_ms_median": "76",
+      "sampling_ms_max": 76
+    },
+    "pr_warm": {
+      "runs": 0,
+      "completed": 0,
+      "failed": 0,
+      "failures": 0,
+      "build_ms_median": null,
+      "build_ms_max": null,
+      "priming_ms_median": null,
+      "priming_ms_max": null,
+      "sampling_ms_median": null,
+      "sampling_ms_max": null
+    },
+    "same_source_cold": {
+      "runs": 1,
+      "completed": 0,
+      "failed": 1,
+      "failures": 1,
+      "build_ms_median": null,
+      "build_ms_max": null,
+      "priming_ms_median": null,
+      "priming_ms_max": null,
+      "sampling_ms_median": null,
+      "sampling_ms_max": null
+    },
+    "same_source_warm": {
+      "runs": 1,
+      "completed": 1,
+      "failed": 0,
+      "failures": 0,
+      "build_ms_median": "39000",
+      "build_ms_max": 39000,
+      "priming_ms_median": "20000",
+      "priming_ms_max": 20000,
+      "sampling_ms_median": "76",
+      "sampling_ms_max": 76
+    }
+  },
+  "failed_attempts": [
+    "same_source_cold_0"
+  ]
+}

@@ -1,0 +1,5 @@
+"schema" = "af.task-kind/3"
+"name" = "issue-internal/verification-kind"
+"version" = "1.0.0"
+"kind" = "verification"
+"profile" = "implementation"

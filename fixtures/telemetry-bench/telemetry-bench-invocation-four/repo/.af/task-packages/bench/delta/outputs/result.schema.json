@@ -1,0 +1,1 @@
+{"type":"object","required":["reports","benchmark_demands","dispositions"],"additionalProperties":false,"properties":{"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}}

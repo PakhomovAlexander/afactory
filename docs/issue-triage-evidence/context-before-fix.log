@@ -1,0 +1,310 @@
+Original production SHA-256: 83793a18d8fb7597b2e5f4b7b281552adbe8d4a9038b0a4a3e7b2481cbcba8c6
+Current tests SHA-256: 7ccf07013dcb41e788da5267f7b75bb51aa6c0afefe07f0a40abf2eb9d417889
+test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) ... 
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432: this was an incorrect claim.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[183 chars]dd'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:1\nFixed #432: this was an incorrect claim.', 'path': 'changelog.d/context-refusals.md', 'line': 1, 'text_sha256': '562e89d3dda9e75d92680adac7d2c1701d8f54b08fd13d9e2e04a8e075e086dd'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:1\n'
+-               'Fixed #432: this was an incorrect claim.',
+-   'line': 1,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '562e89d3dda9e75d92680adac7d2c1701d8f54b08fd13d9e2e04a8e075e086dd'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432: e.g. completed?')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[170 chars]2e'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:3\nFixed #432: e.g. completed?', 'path': 'changelog.d/context-refusals.md', 'line': 3, 'text_sha256': '6bca6f4438749e2ee90427c1aa8d5fe09f40f4cc1c0f7ed2a179997b94cb6d2e'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:3\nFixed #432: e.g. completed?',
+-   'line': 3,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '6bca6f4438749e2ee90427c1aa8d5fe09f40f4cc1c0f7ed2a179997b94cb6d2e'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='The report says:\n- Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[194 chars]a9'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:6\nThe report says: - Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 6, 'text_sha256': 'e33f6446747dde84ff8974523c0a2eb63e086ea3bc62021efd101140679e33a9'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:6\n'
+-               'The report says: - Status: #432 has been completed.',
+-   'line': 6,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'e33f6446747dde84ff8974523c0a2eb63e086ea3bc62021efd101140679e33a9'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432: i.e. completed? Other changes.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[185 chars]ec'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:8\nFixed #432: i.e. completed? Other changes.', 'path': 'changelog.d/context-refusals.md', 'line': 8, 'text_sha256': '07c200f7b01b1341fe9f21b044735802a13b738330894f928fa22588d97797ec'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:8\n'
+-               'Fixed #432: i.e. completed? Other changes.',
+-   'line': 8,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '07c200f7b01b1341fe9f21b044735802a13b738330894f928fa22588d97797ec'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432. Was that accurate?')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[175 chars]30'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:10\nFixed #432. Was that accurate?', 'path': 'changelog.d/context-refusals.md', 'line': 10, 'text_sha256': '5d1b507b726c1b9c932a641b433f116ad67e4af4c86bfefaa81e547b66aac130'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:10\n'
+-               'Fixed #432. Was that accurate?',
+-   'line': 10,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '5d1b507b726c1b9c932a641b433f116ad67e4af4c86bfefaa81e547b66aac130'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432. This was an inaccurate assertion.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[190 chars]53'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:12\nFixed #432. This was an inaccurate assertion.', 'path': 'changelog.d/context-refusals.md', 'line': 12, 'text_sha256': 'cb55f4c3a181eb5b5b939546c9b3c863837187b0c1df831b7185d5e8062df653'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:12\n'
+-               'Fixed #432. This was an inaccurate assertion.',
+-   'line': 12,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'cb55f4c3a181eb5b5b939546c9b3c863837187b0c1df831b7185d5e8062df653'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432: a false statement.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[175 chars]c7'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:14\nFixed #432: a false statement.', 'path': 'changelog.d/context-refusals.md', 'line': 14, 'text_sha256': 'f792d2ae7bd075b6fc9e0ad6ddb678b8df7f03e9f3aa1b8fa5c8abeda8d0d7c7'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:14\n'
+-               'Fixed #432: a false statement.',
+-   'line': 14,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'f792d2ae7bd075b6fc9e0ad6ddb678b8df7f03e9f3aa1b8fa5c8abeda8d0d7c7'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Fixed #432. That statement was mistaken.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[185 chars]64'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:18\nFixed #432. That statement was mistaken.', 'path': 'changelog.d/context-refusals.md', 'line': 18, 'text_sha256': '7c9a54b355cb298ac7791065e90abb505da4c40855339ee33b909cabf5537164'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:18\n'
+-               'Fixed #432. That statement was mistaken.',
+-   'line': 18,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '7c9a54b355cb298ac7791065e90abb505da4c40855339ee33b909cabf5537164'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='The report says. Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[194 chars]a1'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:20\nThe report says. Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 20, 'text_sha256': 'dd59382f5f435efb779416fc363522e38588ffcc8dc14691125449053d5e4da1'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:20\n'
+-               'The report says. Status: #432 has been completed.',
+-   'line': 20,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'dd59382f5f435efb779416fc363522e38588ffcc8dc14691125449053d5e4da1'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='The report says; Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[194 chars]5d'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:22\nThe report says; Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 22, 'text_sha256': '25930455e2bafb6c6af6d95eee4eae2c034162ce574c619eead77b660284315d'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:22\n'
+-               'The report says; Status: #432 has been completed.',
+-   'line': 22,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '25930455e2bafb6c6af6d95eee4eae2c034162ce574c619eead77b660284315d'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='According to the report:\n* Status:\n  #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[206 chars]51'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:26\nAccording to the report: * Status:   #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 26, 'text_sha256': '561d8072251f7638f7c0ee39869643a73755a80d43c8550b483ffff22de89b51'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:26\n'
+-               'According to the report: * Status:   #432 has been completed.',
+-   'line': 26,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '561d8072251f7638f7c0ee39869643a73755a80d43c8550b483ffff22de89b51'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Previously reported:\n1) Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[201 chars]40'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:29\nPreviously reported: 1) Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 29, 'text_sha256': 'e9a56df97291886424562d2f2f1a7bdca50d603e40edc21caa5bbe00aed63040'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:29\n'
+-               'Previously reported: 1) Status: #432 has been completed.',
+-   'line': 29,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'e9a56df97291886424562d2f2f1a7bdca50d603e40edc21caa5bbe00aed63040'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Quoted status:\n- Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[194 chars]88'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:32\nQuoted status: - Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 32, 'text_sha256': '38ae8787a1483115b32c4a6b2f4c46f3d058443ba5771579fd28c6b88a24c288'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:32\n'
+-               'Quoted status: - Status: #432 has been completed.',
+-   'line': 32,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '38ae8787a1483115b32c4a6b2f4c46f3d058443ba5771579fd28c6b88a24c288'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='The summary states:\n- Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[199 chars]13'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:35\nThe summary states: - Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 35, 'text_sha256': 'c5f2350914522e8602b25f486e9f476fd2ab6feed14e481b19c64806af672713'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:35\n'
+-               'The summary states: - Status: #432 has been completed.',
+-   'line': 35,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': 'c5f2350914522e8602b25f486e9f476fd2ab6feed14e481b19c64806af672713'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='Earlier release notes said; Status: #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[205 chars]64'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:37\nEarlier release notes said; Status: #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 37, 'text_sha256': '6df3da8a056b6d48ae1c8da3095100afa552b83d8ab19c9e1b1401a515c70464'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:37\n'
+-               'Earlier release notes said; Status: #432 has been completed.',
+-   'line': 37,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '6df3da8a056b6d48ae1c8da3095100afa552b83d8ab19c9e1b1401a515c70464'}]
+
+======================================================================
+FAIL: test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay (clause_tests.CompleteClauses) (text='> Status:\n- #432 has been completed.')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68196-ST2ZYa/tree/scripts/test-backlog-triage.py", line 442, in test_captured_paragraph_context_vetoes_claims_before_splitting_on_replay
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/context-refusal[181 chars]91'}] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/context-refusals.md:40\n> Status: - #432 has been completed.', 'path': 'changelog.d/context-refusals.md', 'line': 40, 'text_sha256': '40200e0e5e9aa9a682e535b1e7099612601468ac0c04ee389dfcfe84aad9dc91'}
+
++ []
+- [{'citation': 'changelog.d/context-refusals.md:40\n'
+-               '> Status: - #432 has been completed.',
+-   'line': 40,
+-   'path': 'changelog.d/context-refusals.md',
+-   'text_sha256': '40200e0e5e9aa9a682e535b1e7099612601468ac0c04ee389dfcfe84aad9dc91'}]
+
+----------------------------------------------------------------------
+Ran 1 test in 0.334s
+
+FAILED (failures=16)
