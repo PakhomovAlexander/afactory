@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor-preflight:1",
+  "title": "af.perf-executor-preflight/1",
+  "description": "Independent performance executor: executor-preflight (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor-preflight/1"
+    },
+    "work": {
+      "type": "string",
+      "enum": [
+        "core",
+        "telemetry",
+        "profile"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "refused"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "request": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "const": "af.perf-executor-request/3"
+            },
+            "request_id": {
+              "$ref": "#/$defs/id"
+            },
+            "backend": {
+              "type": "string",
+              "enum": [
+                "local",
+                "github_actions"
+              ]
+            },
+            "journal_id": {
+              "$ref": "#/$defs/id"
+            },
+            "machine_id": {
+              "$ref": "#/$defs/id"
+            },
+            "configuration_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "sources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "baseline_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "candidate_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "control_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "authority_sha": {
+                  "$ref": "#/$defs/git_sha"
+                }
+              },
+              "required": [
+                "baseline_sha",
+                "candidate_sha",
+                "control_sha",
+                "authority_sha"
+              ]
+            },
+            "submission": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "calibration"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "main"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "manual"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "nightly"
+                    },
+                    "key": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^nightly:nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01]):(?:core|telemetry)$"
+                    },
+                    "tag": {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01])$"
+                    },
+                    "baseline": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "tag": {
+                              "type": "string",
+                              "maxLength": 64,
+                              "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                            },
+                            "sha": {
+                              "$ref": "#/$defs/git_sha"
+                            }
+                          },
+                          "required": [
+                            "tag",
+                            "sha"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key",
+                    "tag",
+                    "baseline"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "pr"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "release"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                }
+              ]
+            },
+            "work": {
+              "type": "string",
+              "enum": [
+                "core",
+                "telemetry",
+                "profile"
+              ]
+            },
+            "created_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "environment_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "producer_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "plan_sha256": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "cohort_digest": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "member_id": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "parameters_sha256": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "parent": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "request_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "request_digest": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "result_sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "plan_sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "verdict_sha256": {
+                      "$ref": "#/$defs/digest"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "request_digest",
+                    "result_sha256",
+                    "plan_sha256",
+                    "verdict_sha256"
+                  ]
+                }
+              ]
+            },
+            "partition": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "comparison_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "comparison_digest": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 15
+                    },
+                    "shards": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                      },
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true
+                    },
+                    "build_from": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/$defs/id"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "comparison_id",
+                    "comparison_digest",
+                    "index",
+                    "shards",
+                    "build_from"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "schema",
+            "request_id",
+            "backend",
+            "journal_id",
+            "machine_id",
+            "configuration_digest",
+            "sources",
+            "submission",
+            "work",
+            "created_unix_ms",
+            "environment_digest",
+            "producer_digest",
+            "plan_sha256",
+            "cohort_digest",
+            "member_id",
+            "parameters_sha256",
+            "parent",
+            "partition"
+          ]
+        }
+      ]
+    },
+    "serial": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "const": "local_serial"
+            },
+            "shards": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256
+            },
+            "build_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "shard_sampling_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "finish_reserve_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "needed_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "run_total_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "run_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "available_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "fitting_shards": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "feasible": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "backend",
+            "shards",
+            "build_seconds",
+            "shard_sampling_seconds",
+            "finish_reserve_seconds",
+            "needed_seconds",
+            "run_total_seconds",
+            "run_seconds",
+            "available_seconds",
+            "fitting_shards",
+            "feasible"
+          ]
+        }
+      ]
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "detail"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 16
+    }
+  },
+  "required": [
+    "schema",
+    "work",
+    "status",
+    "detail",
+    "request",
+    "serial",
+    "tools"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema": "af.test-plan/2",
+  "profile": "fast",
+  "context": "gate",
+  "sha": null,
+  "version": null,
+  "labels": [
+    "release:fast"
+  ],
+  "selected": [
+    "functional",
+    "e2e",
+    "uix"
+  ],
+  "catalog_sha256": "7d4e583764cb0ea7cfeeaa111ccbd8e7e55c2f7e4df64c74d6d46eba1f58eeac",
+  "classes": {
+    "functional": {
+      "selected": true,
+      "reason": "profile default",
+      "state": "SELECTED"
+    },
+    "e2e": {
+      "selected": true,
+      "reason": "profile default",
+      "state": "SELECTED"
+    },
+    "uix": {
+      "selected": true,
+      "reason": "profile default",
+      "state": "SELECTED"
+    },
+    "perf": {
+      "selected": false,
+      "reason": "outside profile default",
+      "state": "NOT RUN"
+    }
+  }
+}
+python3 scripts/ci-step.py --stage build test-build cargo test --locked --no-run
+error: could not create home directory: '/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/.tmpXowdEu/home/.rustup': Operation not permitted (os error 1)
+[test-build] 0.010s, exit 1
+make: *** [test-build] Error 1
+gate step timings: /private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68062-c9EogJ/tree/target/nextest-reports/run-JloImJrD/ci-metrics.jsonl
+warning: no test-time report: nextest wrote no JUnit at /private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-68062-c9EogJ/tree/target/nextest-reports/run-JloImJrD/store/ci/junit.xml

@@ -1,0 +1,24 @@
+{
+  "required": [
+    "outcome",
+    "reason"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S"
+    }
+  },
+  "title": "task-evaluation@1",
+  "type": "object",
+  "additionalProperties": false
+}

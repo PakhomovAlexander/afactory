@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-triage:1",
+  "title": "Issue triage af/issue-triage@1",
+  "$comment": "One triager's classification of one GitHub issue (docs/design/issue-triage.md §6.3): the author's report carries it as the one fenced json block of its `Triage` section, the verifier's af/ReportEvaluation@1 summary as its one fenced json block. scripts/backlog-check-triage.py validates both against this schema before it applies the hard rules and the merge rule.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "issue",
+    "body_sha256",
+    "class",
+    "size",
+    "pipeline",
+    "adr",
+    "confidence",
+    "rationale",
+    "resolution",
+    "duplicates",
+    "needs_info",
+    "acceptance"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/issue-triage@1"
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "class": {
+      "enum": [
+        "bug",
+        "perf",
+        "feature",
+        "aix",
+        "uix",
+        "sdlc",
+        "security",
+        "docs",
+        "research",
+        "decision"
+      ]
+    },
+    "size": {
+      "enum": [
+        "S",
+        "M",
+        "L",
+        "XL"
+      ]
+    },
+    "pipeline": {
+      "enum": [
+        "light",
+        "default",
+        "design",
+        "hand"
+      ]
+    },
+    "adr": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "resolution": {
+      "$ref": "#/$defs/resolution"
+    },
+    "duplicates": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "needs_info": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000,
+        "pattern": "\\S"
+      }
+    },
+    "acceptance": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    }
+  },
+  "$defs": {
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "evidence",
+        "addressed",
+        "remaining"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "open",
+            "partial",
+            "fixed_candidate"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/items"
+        },
+        "addressed": {
+          "$ref": "#/$defs/items"
+        },
+        "remaining": {
+          "$ref": "#/$defs/items"
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000,
+        "pattern": "\\S"
+      }
+    }
+  }
+}

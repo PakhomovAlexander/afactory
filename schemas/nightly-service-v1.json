@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:nightly-service-v1",
+  "title": "nightly-service-v1",
+  "description": "Native nightly asynchronous service; admission binds exact provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/nightly-service@1"
+    },
+    "root": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/[A-Za-z0-9_./-]+$"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "nightly_config": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/[A-Za-z0-9_./-]+$"
+    },
+    "nightly_config_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "executor_config": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/[A-Za-z0-9_./-]+$"
+    },
+    "executor_config_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "max_jobs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365
+    },
+    "max_job_wall_ms": {
+      "type": "integer",
+      "minimum": 60000,
+      "maximum": 82800000
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 1125899906842624
+    }
+  },
+  "required": [
+    "schema",
+    "root",
+    "repository",
+    "nightly_config",
+    "nightly_config_digest",
+    "executor_config",
+    "executor_config_digest",
+    "max_jobs",
+    "max_job_wall_ms",
+    "max_bytes"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."bench/stream"]
+version = "1.0.0"
+digest = "sha256:f6cb148ddfc8240dbddc0077ea2e491a24a7f7695feefa52ddfb3ac28502d564"
+path = ".af/task-packages/bench/stream"
+
+[packages."bench/dense"]
+version = "1.0.1"
+digest = "sha256:7001fb80a40a430a5b47a2d26fcabfd039357e2bda8b3281008bb54fba066fe9"
+path = ".af/task-packages/bench/dense"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+stream = "required"

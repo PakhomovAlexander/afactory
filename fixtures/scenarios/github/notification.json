@@ -1,0 +1,10 @@
+{
+  "schema": "af/github-notify@1",
+  "publication": "github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0",
+  "reviewers": [
+    {
+      "id": 8,
+      "login": "owner"
+    }
+  ]
+}

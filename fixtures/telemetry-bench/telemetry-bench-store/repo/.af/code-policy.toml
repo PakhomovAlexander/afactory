@@ -1,0 +1,259 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 5000
+require_container = false
+
+[checks.check-00]
+name = "check-00"
+required = true
+
+[checks.check-00.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-01]
+name = "check-01"
+required = true
+
+[checks.check-01.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-02]
+name = "check-02"
+required = true
+
+[checks.check-02.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-03]
+name = "check-03"
+required = true
+
+[checks.check-03.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-04]
+name = "check-04"
+required = true
+
+[checks.check-04.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-05]
+name = "check-05"
+required = true
+
+[checks.check-05.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-06]
+name = "check-06"
+required = true
+
+[checks.check-06.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-07]
+name = "check-07"
+required = true
+
+[checks.check-07.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-08]
+name = "check-08"
+required = true
+
+[checks.check-08.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-09]
+name = "check-09"
+required = true
+
+[checks.check-09.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-10]
+name = "check-10"
+required = true
+
+[checks.check-10.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-11]
+name = "check-11"
+required = true
+
+[checks.check-11.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-12]
+name = "check-12"
+required = true
+
+[checks.check-12.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-13]
+name = "check-13"
+required = true
+
+[checks.check-13.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-14]
+name = "check-14"
+required = true
+
+[checks.check-14.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-15]
+name = "check-15"
+required = true
+
+[checks.check-15.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-16]
+name = "check-16"
+required = true
+
+[checks.check-16.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-17]
+name = "check-17"
+required = true
+
+[checks.check-17.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-18]
+name = "check-18"
+required = true
+
+[checks.check-18.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-19]
+name = "check-19"
+required = true
+
+[checks.check-19.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-20]
+name = "check-20"
+required = true
+
+[checks.check-20.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-21]
+name = "check-21"
+required = true
+
+[checks.check-21.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-22]
+name = "check-22"
+required = true
+
+[checks.check-22.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-23]
+name = "check-23"
+required = true
+
+[checks.check-23.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-24]
+name = "check-24"
+required = true
+
+[checks.check-24.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-25]
+name = "check-25"
+required = true
+
+[checks.check-25.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-26]
+name = "check-26"
+required = true
+
+[checks.check-26.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-27]
+name = "check-27"
+required = true
+
+[checks.check-27.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-28]
+name = "check-28"
+required = true
+
+[checks.check-28.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-29]
+name = "check-29"
+required = true
+
+[checks.check-29.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-30]
+name = "check-30"
+required = true
+
+[checks.check-30.command]
+program = "/usr/bin/true"
+args = []
+
+[checks.check-31]
+name = "check-31"
+required = true
+
+[checks.check-31.command]
+program = "/usr/bin/true"
+args = []
