@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-overhead:1",
+  "title": "af/telemetry-overhead@1",
+  "description": "`scripts/telemetry-overhead.py --json` (design §12, docs/telemetry.md \"Performance\"): Telemetry's overhead at `spans` against `off` on the pinned bench fixtures of `fixtures/telemetry-bench/`. Each pair is one command at each level on the same machine and fixture, in the recorded order, each in a fresh copy of the fixture with private homes; `wall_ms` runs from exec to exit. `difference_pct` is `(spans - off) / off` in percent; `median_pct` its median over the fixture's pairs and `interval_pct` the 95% percentile-bootstrap interval of that median (`protocol.resamples` resamples, seeded by `protocol.seed`). `drain` is the dense fixture's drain latency (the harness's last write to the supervisor's drain completion), `spans - off` per pair in milliseconds. The gate passes when every fixture's median is at most `median_bound_pct` and its interval's upper bound at most `upper_bound_pct`, and the drain latency's median difference at most `drain.bound_ms`; it is `not_judged` unless all three fixtures ran at scale `full` with at least 20 pairs and the drain latency was measured. Every figure and the verdict are recomputed from the pairs by `--judge`, which refuses a document whose bounds or resamples are not the protocol's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "af", "machine", "protocol", "fixtures", "drain", "gate"],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-overhead@1"
+    },
+    "af": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "description": "What `af --version` printed."
+        }
+      }
+    },
+    "machine": {
+      "$ref": "#/$defs/machine"
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pairs", "scale", "seed", "resamples", "median_bound_pct", "upper_bound_pct"],
+      "properties": {
+        "pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Pairs per fixture; the protocol's default is 20."
+        },
+        "scale": {
+          "enum": ["full", "smoke"],
+          "description": "`full`: the fixtures as pinned; `smoke`: the same commands over far less harness output (the one-pair smoke of `make check`)."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Seeds the order of each pair and every bootstrap."
+        },
+        "resamples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "median_bound_pct": {
+          "type": "number"
+        },
+        "upper_bound_pct": {
+          "type": "number"
+        }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "command", "store_events", "pairs", "median_pct", "interval_pct", "passed"],
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/fixture"
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The af command the fixture runs (`task start --execute`, `review run --pipeline`)."
+          },
+          "store_events": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Events in the last run's Store; null when it could not be read."
+          },
+          "pairs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["order", "off", "spans", "difference_pct"],
+              "properties": {
+                "order": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": ["off", "spans"]
+                  }
+                },
+                "off": {
+                  "$ref": "#/$defs/run"
+                },
+                "spans": {
+                  "$ref": "#/$defs/run"
+                },
+                "difference_pct": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "median_pct": {
+            "type": "number"
+          },
+          "interval_pct": {
+            "$ref": "#/$defs/interval"
+          },
+          "passed": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "drain": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fixture", "bound_ms", "pairs", "median_ms", "interval_ms", "passed"],
+          "properties": {
+            "fixture": {
+              "const": "telemetry-bench-dense"
+            },
+            "bound_ms": {
+              "type": "number"
+            },
+            "pairs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["off_ms", "spans_ms", "difference_ms"],
+                "properties": {
+                  "off_ms": {
+                    "type": "number"
+                  },
+                  "spans_ms": {
+                    "type": "number"
+                  },
+                  "difference_ms": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "median_ms": {
+              "type": "number"
+            },
+            "interval_ms": {
+              "$ref": "#/$defs/interval"
+            },
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "reasons"],
+      "properties": {
+        "verdict": {
+          "enum": ["pass", "fail", "not_judged"]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Why the gate was not judged, and every bound a figure exceeded; empty for `pass`."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "fixture": {
+      "enum": ["telemetry-bench-concurrent", "telemetry-bench-dense", "telemetry-bench-store"]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_ms", "exit_code", "peak_rss_bytes", "segments"],
+      "properties": {
+        "wall_ms": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "From exec to exit, in milliseconds."
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "peak_rss_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segments": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Telemetry segments the run left, sealed or not: 0 at `off`, where no telemetry directory may exist, at least 1 at `spans`."
+        }
+      }
+    },
+    "interval": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "number"
+      },
+      "description": "The 95% percentile-bootstrap interval of the median: lower, upper."
+    },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "cpus", "load1"],
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "cpus": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "load1": {
+          "type": ["number", "null"],
+          "description": "The one-minute load average when the measurement started."
+        }
+      }
+    }
+  }
+}

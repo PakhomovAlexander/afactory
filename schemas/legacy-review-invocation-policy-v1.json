@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-invocation-policy:1",
+  "title": "legacy-review-invocation-policy@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_policy_id",
+    "dependency_id",
+    "review_node",
+    "runner_digest",
+    "execution_policy_digest",
+    "execution",
+    "result_type",
+    "timeout_ms"
+  ],
+  "properties": {
+    "task_policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "dependency_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "review_node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runner_digest": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "execution_policy_digest": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "execution": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+    },
+    "result_type": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

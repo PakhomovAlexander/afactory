@@ -1,0 +1,377 @@
+# Whole-CLI workloads of the AF performance laboratory (ADR-0168 to ADR-0172).
+#
+# For every instance of a registry `process` case, each declared CLI adapter names the actual
+# AF binary's argv, the fixture setup that runs before it (untimed, under the same supervisor
+# and containment, in the sample's private scratch) and the independent oracle rules its output
+# must satisfy. The authority wrote every rule from the product's documented command surface
+# and the fixture it declares; none is learned from an observed execution. A rule checks the
+# side's own package version (read from that side's Cargo.lock in the plan's Git objects),
+# command-specific usage tokens, the expected Task outcome or selected state fields; it never
+# freezes whole help or report formatting, and empty output fails.
+#
+# An adapter applies to the AF package versions from `min_version` on. A side whose version no
+# adapter covers has no CLI coverage, and its instances are incomplete. A changed command
+# surface needs a new reviewed adapter that enumerates the accepted forms; nothing falls back.
+#
+# `stdout_contains` and `stdout_line` read the retained output, JSON rules need the whole document
+# retained, `stdout_count` counts a pattern over the entire output, retained or not, and the
+# `json_stream_*` rules judge declared fields of the entire output as one complete JSON document,
+# which the supervisor observes past any retained log (ADR-0172): member order, whitespace and
+# undeclared fields are free, and a value counts only at its declared path. A
+# declared fixture of numbered items is checked item by item (ADR-0170): `stdout_enumerates`
+# and `json_enumerates` require every item number of `first..last` exactly once, each with its
+# declared identity, status, severity and location, and `distinct` identities; `json_tally`
+# requires a summary's counts to be exactly those of the items it summarizes. Fields the
+# product documents but the fixture does not declare are never frozen.
+#
+# Placeholders: {af} the side's verified AF binary, {probe} the side's verified probe, {scratch}
+# the sample's private scratch, {package_version} the side's own package version. Setups:
+# `none`; `task_repository` (a fresh Git repository of cli/task-roots/repo and its Task file);
+# `task_started` (that repository with the Task captured by the side's own `af task start`);
+# `seed_copy` (a private copy, at {scratch}/seed, of the command's `seed`). `cli/setup.sh`
+# performs them.
+#
+# A seed is large state each side writes once per shard through its own writers, before the
+# first sample that needs it, under the same supervisor and containment (`cli/setup.sh` with the
+# seed's `writer`). The shard then hashes it, keeps it read-only and checks it is unchanged
+# around every sample, and every sample copies it into its own scratch: no sample shares a
+# mutable Store, a side's state or a cached projection with another, and the copy is setup.
+
+schema = "af.perf-cli/5"
+description = "Whole-CLI commands, fixture setups and independent oracle rules, per CLI adapter."
+setup_script = "cli/setup.sh"
+
+[task_fixture]
+directory = "cli/task-roots"
+task_id = "perf-check-true"
+description = "A Git repository whose one Task runs RootInputs, check(`true`), a command evaluator and acceptance; no model runs."
+
+[seeds.task_state]
+writer = "seed_task_state"
+case_id = "cli_state_fixture"
+contract_id = "cli_state_fixture_v1"
+parameters = { state = "cli_state_10000" }
+probe_scratch = "seed"
+events = 10000
+description = "Exactly 10,000 valid relevant events in the Task log of perf-probe-task, written by the side's own probe through that side's public Store writer; task show reads seed/probe-work."
+
+[seeds.campaign_state]
+writer = "seed_campaign_state"
+case_id = "cli_campaign_fixture"
+contract_id = "cli_campaign_fixture_v1"
+parameters = { state = "cli_state_10000" }
+probe_scratch = "seed/campaign-probe"
+events = 10000
+description = "The Campaign perf-campaign: the side's own af review run of cli/campaign-roots/repo reports 100 minor Findings in one light Round, then the side's own probe tops the Campaign log up to exactly 10,000 events through that side's public Findings Ledger writer, leaving the Ledger as the review left it; review ledger and review report read seed/campaign."
+
+[adapters.af_cli_v1]
+description = "The AF command surface of the implementation base 0.12.0-rc.3 and the releases after it that keep these commands."
+priority = 2
+min_version = "0.12.0-rc.3"
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_discovery"
+parameters = { command = "version" }
+setup = "none"
+argv = ["{af}", "--version"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_lines", value = 1 },
+  { kind = "stdout_line", index = 0, equals = "af {package_version}" },
+]
+description = "The version line names the side's own package version."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_discovery"
+parameters = { command = "help" }
+setup = "none"
+argv = ["{af}", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af [OPTIONS] [COMMAND]" },
+  { kind = "stdout_contains", value = "\nCommands:\n" },
+  { kind = "stdout_contains", value = "  review " },
+  { kind = "stdout_contains", value = "  task " },
+  { kind = "stdout_contains", value = "--version" },
+]
+description = "Top-level usage with its command list."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_discovery"
+parameters = { command = "task_help" }
+setup = "none"
+argv = ["{af}", "task", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af task <COMMAND>" },
+  { kind = "stdout_contains", value = "  start " },
+  { kind = "stdout_contains", value = "  run " },
+  { kind = "stdout_contains", value = "  show " },
+]
+description = "The task namespace's usage and its start, run and show commands."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_discovery"
+parameters = { command = "review_run_help" }
+setup = "none"
+argv = ["{af}", "review", "run", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af review run" },
+  { kind = "stdout_contains", value = "--campaign <NAME>" },
+  { kind = "stdout_contains", value = "--policy-rev <REV>" },
+]
+description = "review run's usage and its Campaign and policy selectors."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_task_start"
+parameters = { task = "cli_task_roots" }
+setup = "task_repository"
+argv = ["{af}", "task", "start", "--file", "{scratch}/task.json", "--repo", "{scratch}/repo", "--json"]
+cwd = "{scratch}/repo"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "task_id", value = "perf-check-true" },
+  { kind = "json_equals", path = "phase.kind", value = "ready" },
+  { kind = "json_matches", path = "plan_id", pattern = "^sha256:[0-9a-f]{64}$" },
+  { kind = "json_equals", path = "attempts", value = 0 },
+  { kind = "json_any", path = "history.*.transition.change", where = { kind = "plan_proposed" } },
+]
+description = "The Task is captured with its plan proposed and nothing executed."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_task_run_check"
+parameters = { task = "cli_task_roots" }
+setup = "task_started"
+argv = ["{af}", "task", "run", "perf-check-true", "--execute", "--repo", "{scratch}/repo", "--json"]
+cwd = "{scratch}/repo"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "task_id", value = "perf-check-true" },
+  { kind = "json_equals", path = "phase.kind", value = "finished" },
+  { kind = "json_equals", path = "result.execution", value = "completed" },
+  { kind = "json_equals", path = "result.acceptance", value = "satisfied" },
+  { kind = "json_equals", path = "result.domain_conclusion", value = "verified" },
+  { kind = "json_any", path = "run_reports.*.report.nodes", where = { node = "root.nodes.checks", "outcome.kind" = "completed" } },
+  { kind = "json_any", path = "runtime_observations.*.record.spans", where = { kind = "check", label = "truth" } },
+  { kind = "json_any", path = "runtime_observations.*.record", where = { node = "root.nodes.checks" } },
+]
+description = "The Task finishes verified, and the check span recorded for node root.nodes.checks proves check(`true`) executed."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_state_read"
+parameters = { command = "task_show", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "task_state"
+argv = ["{af}", "task", "show", "perf-probe-task", "--state", "{scratch}/seed/probe-work", "--json"]
+cwd = "{scratch}"
+# The document is about 1.6 MB, more than any retained log. The supervisor observes all of it
+# as one JSON document, which must be complete: its task_id is exactly the fixture Task's, every
+# entry of its history holds one plain integer sequence, numbered exactly 0..9999 once each and
+# in order, and exactly 9,997 of those entries' transitions are lease renewals.
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_stream_equals", path = "task_id", value = "perf-probe-task" },
+  { kind = "json_stream_sequence", path = "history.*.sequence", first = 0, last = 9999 },
+  { kind = "json_stream_count", path = "history.*.transition.change.kind", value = "lease_renewed", count = 9997 },
+]
+description = "task show reads every one of the fixture Task's 10,000 events, numbered 0..9999 once each and in order."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_state_read"
+parameters = { command = "review_ledger", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "campaign_state"
+argv = ["{af}", "review", "ledger", "--campaign", "perf-campaign", "--state", "{scratch}/seed/campaign"]
+cwd = "{scratch}"
+# review ledger prints one tab-separated line per Finding view: key, severity, status,
+# convergence scope, convergence severity, file:line and title. It has no --json flag. Each of
+# the fixture's 100 Findings is one line: its own distinct key, minor, open, ungrouped, at the
+# line its title numbers.
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_lines", value = 100 },
+  { kind = "stdout_enumerates", pattern = '(?P<key>sha256:[0-9a-f]{64})\tminor\topen\tin\tminor\tsrc/fixture\.txt:(?P<n>[0-9]+)\tFixture finding (?P=n)', first = 1, last = 100, distinct = ["key"] },
+]
+description = "review ledger folds all 10,000 Campaign events and lists each of the fixture's 100 open minor Findings exactly once, ungrouped."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_state_read"
+parameters = { command = "review_report", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "campaign_state"
+argv = ["{af}", "review", "report", "--campaign", "perf-campaign", "--state", "{scratch}/seed/campaign", "--format", "json"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af/review-report@4" },
+  { kind = "json_equals", path = "campaign", value = "perf-campaign" },
+  { kind = "json_equals", path = "runs_recorded", value = 1 },
+  { kind = "json_equals", path = "ledger_round", value = 1 },
+  { kind = "json_equals", path = "findings_summary.open", value = 100 },
+  { kind = "json_count", path = "findings", value = 100 },
+  { kind = "json_enumerates", path = "findings", first = 1, last = 100, where = { title = "Fixture finding {n}", status = "open", severity = "minor", file = "src/fixture.txt" }, numbered = ["line"], distinct = ["key"] },
+  { kind = "json_tally", path = "findings", field = "status", counts = "findings_summary" },
+]
+description = "review report --format json folds all 10,000 Campaign events: one recorded run, Ledger round 1, each of the fixture's 100 Findings exactly once with its own key, open, minor and at its line, and a findings summary that tallies them."
+
+# Higher priority selects the published 0.13 prerelease surface too; older supported
+# versions retain the explicit v1 command surface above. No output-driven fallback.
+[adapters.af_cli_v2]
+description = "The AF command surface from published 0.13.0-rc.1, whose first-run command heading was introduced by 5ea4aedf."
+priority = 1
+min_version = "0.13.0-rc.1"
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_discovery"
+parameters = { command = "version" }
+setup = "none"
+argv = ["{af}", "--version"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_lines", value = 1 },
+  { kind = "stdout_line", index = 0, equals = "af {package_version}" },
+]
+description = "The version line names the side's own package version."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_discovery"
+parameters = { command = "help" }
+setup = "none"
+argv = ["{af}", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af [OPTIONS] [COMMAND]" },
+  { kind = "stdout_contains", value = "\nCommands, in the order a first run needs them:\n" },
+  { kind = "stdout_contains", value = "  review " },
+  { kind = "stdout_contains", value = "  task " },
+  { kind = "stdout_contains", value = "--version" },
+]
+description = "Top-level usage with its command list."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_discovery"
+parameters = { command = "task_help" }
+setup = "none"
+argv = ["{af}", "task", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af task <COMMAND>" },
+  { kind = "stdout_contains", value = "  start " },
+  { kind = "stdout_contains", value = "  run " },
+  { kind = "stdout_contains", value = "  show " },
+]
+description = "The task namespace's usage and its start, run and show commands."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_discovery"
+parameters = { command = "review_run_help" }
+setup = "none"
+argv = ["{af}", "review", "run", "--help"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_contains", value = "Usage: af review run" },
+  { kind = "stdout_contains", value = "--campaign <NAME>" },
+  { kind = "stdout_contains", value = "--policy-rev <REV>" },
+]
+description = "review run's usage and its Campaign and policy selectors."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_task_start"
+parameters = { task = "cli_task_roots" }
+setup = "task_repository"
+argv = ["{af}", "task", "start", "--file", "{scratch}/task.json", "--repo", "{scratch}/repo", "--json"]
+cwd = "{scratch}/repo"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "task_id", value = "perf-check-true" },
+  { kind = "json_equals", path = "phase.kind", value = "ready" },
+  { kind = "json_matches", path = "plan_id", pattern = "^sha256:[0-9a-f]{64}$" },
+  { kind = "json_equals", path = "attempts", value = 0 },
+  { kind = "json_any", path = "history.*.transition.change", where = { kind = "plan_proposed" } },
+]
+description = "The Task is captured with its plan proposed and nothing executed."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_task_run_check"
+parameters = { task = "cli_task_roots" }
+setup = "task_started"
+argv = ["{af}", "task", "run", "perf-check-true", "--execute", "--repo", "{scratch}/repo", "--json"]
+cwd = "{scratch}/repo"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "task_id", value = "perf-check-true" },
+  { kind = "json_equals", path = "phase.kind", value = "finished" },
+  { kind = "json_equals", path = "result.execution", value = "completed" },
+  { kind = "json_equals", path = "result.acceptance", value = "satisfied" },
+  { kind = "json_equals", path = "result.domain_conclusion", value = "verified" },
+  { kind = "json_any", path = "run_reports.*.report.nodes", where = { node = "root.nodes.checks", "outcome.kind" = "completed" } },
+  { kind = "json_any", path = "runtime_observations.*.record.spans", where = { kind = "check", label = "truth" } },
+  { kind = "json_any", path = "runtime_observations.*.record", where = { node = "root.nodes.checks" } },
+]
+description = "The Task finishes verified, and the check span recorded for node root.nodes.checks proves check(`true`) executed."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_state_read"
+parameters = { command = "task_show", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "task_state"
+argv = ["{af}", "task", "show", "perf-probe-task", "--state", "{scratch}/seed/probe-work", "--json"]
+cwd = "{scratch}"
+# The document is about 1.6 MB, more than any retained log. The supervisor observes all of it
+# as one JSON document, which must be complete: its task_id is exactly the fixture Task's, every
+# entry of its history holds one plain integer sequence, numbered exactly 0..9999 once each and
+# in order, and exactly 9,997 of those entries' transitions are lease renewals.
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_stream_equals", path = "task_id", value = "perf-probe-task" },
+  { kind = "json_stream_sequence", path = "history.*.sequence", first = 0, last = 9999 },
+  { kind = "json_stream_count", path = "history.*.transition.change.kind", value = "lease_renewed", count = 9997 },
+]
+description = "task show reads every one of the fixture Task's 10,000 events, numbered 0..9999 once each and in order."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_state_read"
+parameters = { command = "review_ledger", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "campaign_state"
+argv = ["{af}", "review", "ledger", "--campaign", "perf-campaign", "--state", "{scratch}/seed/campaign"]
+cwd = "{scratch}"
+# review ledger prints one tab-separated line per Finding view: key, severity, status,
+# convergence scope, convergence severity, file:line and title. It has no --json flag. Each of
+# the fixture's 100 Findings is one line: its own distinct key, minor, open, ungrouped, at the
+# line its title numbers.
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_lines", value = 100 },
+  { kind = "stdout_enumerates", pattern = '(?P<key>sha256:[0-9a-f]{64})\tminor\topen\tin\tminor\tsrc/fixture\.txt:(?P<n>[0-9]+)\tFixture finding (?P=n)', first = 1, last = 100, distinct = ["key"] },
+]
+description = "review ledger folds all 10,000 Campaign events and lists each of the fixture's 100 open minor Findings exactly once, ungrouped."
+
+[[adapters.af_cli_v2.commands]]
+case_id = "cli_state_read"
+parameters = { command = "review_report", state = "cli_state_10000" }
+setup = "seed_copy"
+seed = "campaign_state"
+argv = ["{af}", "review", "report", "--campaign", "perf-campaign", "--state", "{scratch}/seed/campaign", "--format", "json"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af/review-report@4" },
+  { kind = "json_equals", path = "campaign", value = "perf-campaign" },
+  { kind = "json_equals", path = "runs_recorded", value = 1 },
+  { kind = "json_equals", path = "ledger_round", value = 1 },
+  { kind = "json_equals", path = "findings_summary.open", value = 100 },
+  { kind = "json_count", path = "findings", value = 100 },
+  { kind = "json_enumerates", path = "findings", first = 1, last = 100, where = { title = "Fixture finding {n}", status = "open", severity = "minor", file = "src/fixture.txt" }, numbered = ["line"], distinct = ["key"] },
+  { kind = "json_tally", path = "findings", field = "status", counts = "findings_summary" },
+]
+description = "review report --format json folds all 10,000 Campaign events: one recorded run, Ledger round 1, each of the fixture's 100 Findings exactly once with its own key, open, minor and at its line, and a findings summary that tallies them."

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-collection-position:1",
+  "title": "af.perf-telemetry-collection-position/1",
+  "description": "A bounded telemetry scheduling position in a locked history root: rotate after this attempted run ID up to a fixed upper run ID, wrap at the end, and retry all outcomes within lookback without new arrivals extending a rotation. Bound to one repository and workflow; never evidence of collection success.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-collection-position/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "workflow_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740992
+    },
+    "after_run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740992
+    },
+    "through_run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740992
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "workflow_id",
+    "after_run_id",
+    "through_run_id"
+  ]
+}

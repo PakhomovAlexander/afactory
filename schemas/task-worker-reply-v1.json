@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-worker-reply:1",
+  "title": "task-worker-reply@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outputs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-reply/1"
+    },
+    "outputs": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 1024,
+        "items": {}
+      }
+    }
+  }
+}

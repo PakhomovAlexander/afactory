@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-plan-refusal:1",
+  "title": "af.perf-plan-refusal/1",
+  "description": "Why `plan` froze nothing: invalid input (exit 2) or an unavailable baseline, authority or reference (exit 4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-plan-refusal/1"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "invalid",
+        "unavailable"
+      ]
+    },
+    "reason": {
+      "$ref": "#/$defs/id"
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "reason",
+    "detail"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+  "execution": "completed",
+  "acceptance": "satisfied",
+  "domain_conclusion": "Document verified",
+  "outputs": {
+    "document": {
+      "artifact_ids": [
+        "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+      ],
+      "artifact_type": "af/CheckedDocument@1",
+      "cardinality": "one"
+    }
+  },
+  "evidence": [
+    "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+  ],
+  "missing_obligations": []
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:diff-subject:1",
+  "title": "Diff Subject af/diff-subject@1",
+  "$comment": "The change a Worker that judges a candidate without writing it reads beside its tree, at ../diff-subject.json, next to the tree before the change, read-only, at ../base (ADR-0212). Written by the kernel from two Snapshots it recorded: the base is a sealed candidate's parent, or, for a bound and re-rooted tree, the parent of the tree it was bound from. Every path whose content or mode differs, sorted, with its content digest on each side that holds it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "base_snapshot_id",
+    "snapshot_id",
+    "base",
+    "changes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/diff-subject@1"
+    },
+    "base_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "base": {
+      "const": "../base"
+    },
+    "changes": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "before"
+            ]
+          },
+          {
+            "required": [
+              "after"
+            ]
+          }
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "before": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "after": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      }
+    }
+  }
+}

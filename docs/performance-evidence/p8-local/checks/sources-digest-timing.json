@@ -1,0 +1,25 @@
+{
+  "what": "kernelmeasure.sources_digest over a git archive export of the measured commit",
+  "files": 1906,
+  "bytes": 21285119,
+  "digest": "sha256:fc0df78483e390d9596602644765fdb1d11758f681bc99fa5ac55cd950878c59",
+  "repetitions_ms": [
+    112.2,
+    121.6,
+    107.8,
+    117.4,
+    146.3
+  ],
+  "median_ms": 117.4,
+  "load_average_before": [
+    26.1,
+    27.14,
+    30.83
+  ],
+  "load_average_after": [
+    26.1,
+    27.14,
+    30.83
+  ],
+  "host": "Apple M3 Max, macOS 27.0.1, APFS, Python 3.9.6"
+}
