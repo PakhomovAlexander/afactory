@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/PakhomovAlexander/afactory/discussions
+    about: Ask how to configure a pipeline, a provider, or a sandbox; bug reports and feature requests use the templates.
+  - name: Security vulnerability
+    url: https://github.com/PakhomovAlexander/afactory/security/advisories/new
+    about: Report a vulnerability privately; never open a public issue for one (see SECURITY.md).

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-auth:1",
+  "title": "Private host Provider authentication status@1",
+  "description": "Non-secret local recovery status. Host deadline is not provider expiry. Login never proves inference usability or authorizes Task continuation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "recovery_id", "provider", "kind", "state", "created_at", "host_deadline", "challenge_delivered", "registered", "verified", "continuation", "exit_code"],
+  "properties": {
+    "schema": {"const": "af/provider-auth@1"},
+    "recovery_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "provider": {"type": "string"},
+    "kind": {"enum": ["claude", "codex"]},
+    "state": {"enum": ["awaiting_permission", "starting", "awaiting_user", "completing", "authenticated_unverified", "cancelled", "cancellation_requested", "expired", "interrupted", "permission_denied", "private_route_unavailable", "unsupported", "provider_cli_missing", "authentication_failed", "authentication_invalid_token_response", "authentication_proxy_configuration_failed", "authentication_tls_configuration_failed", "authentication_rejected", "authentication_transport_failed", "invalid_challenge", "invalid_response", "context_changed", "registry_conflict"]},
+    "created_at": {"type": "integer", "minimum": 0},
+    "host_deadline": {"type": "integer", "minimum": 0},
+    "challenge_delivered": {"type": "boolean"},
+    "registered": {"type": "boolean"},
+    "verified": {"const": false},
+    "continuation": {"const": "not_authorized_by_login"},
+    "exit_code": {"enum": [0, 3, 4, 5, 6]}
+  }
+}

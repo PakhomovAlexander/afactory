@@ -1,0 +1,3627 @@
+//! Task-file adapter. All new-format dispatch is delegated to TaskRuntime; this module owns
+//! source normalization, trusted policy capture and CLI presentation, never Worker execution.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use review_config::task::catalog::*;
+use review_config::task::kind::TaskKindProfile;
+use review_core::task::plan::*;
+use review_core::task::review::{TASK_REVIEW_ROUND_V1, TaskReviewRoundV1};
+use review_core::task::verification::VERIFICATION_RESULT_V1;
+use review_core::task::*;
+use review_core::{ArtifactEnvelope, PortCardinality, Producer};
+use review_graph::task::CompiledTask;
+use review_pipeline::task::TaskRuntime;
+use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
+use review_pipeline::task::document::{
+    DocumentTaskDomain, DocumentTaskPolicy, document_signatures,
+};
+use review_pipeline::task::host::{
+    CapturedTaskAuthority, CapturedTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
+};
+use review_pipeline::task::optimization::{
+    OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
+};
+use review_pipeline::task::provider::ProviderTaskDomain;
+use review_pipeline::task::report_task::{ReportTaskDomain, ReportTaskPolicy, report_signatures};
+use review_pipeline::task::review::{
+    REVIEW_TASK_POLICY_SCHEMA, ReviewTaskDomain, ReviewTaskPolicy, review_signatures,
+};
+use review_pipeline::task::source::SnapshotTaskEnvironment;
+use review_source_git::task::{SOURCE_TREE_V1, capture_snapshot, source_tree};
+use review_source_git::{Capture, EntryKind, Manifest, Repo};
+use review_store::store::task::{TaskLease, TaskProjection};
+use review_store::{Cas, EventStore, validate_envelope};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+mod bindings;
+pub(crate) mod catalog;
+pub(crate) mod collection;
+pub(super) mod developer;
+pub(crate) mod domain;
+pub(super) mod export;
+mod input_bindings;
+mod input_file;
+mod inspection;
+mod issue;
+mod planning;
+mod preview;
+mod provider_admission;
+pub(super) mod refresh;
+mod selection;
+pub(crate) mod starter;
+mod task_file_home;
+
+pub(super) struct StartOptions {
+    pub file: PathBuf,
+    pub bindings: Option<PathBuf>,
+    pub source_bindings: Option<PathBuf>,
+    pub repo: PathBuf,
+    pub state: Option<PathBuf>,
+    pub authority: String,
+    pub uncommitted: bool,
+    pub json: bool,
+    pub plan_only: bool,
+    pub timeout_secs: Option<u64>,
+    /// Pre-captured by the token-free `self optimize` adapter. Ordinary Task files leave this
+    /// absent and may instead name a project-contained deterministic fixture.
+    pub optimization_history: Option<review_core::task::optimization::OptimizationHistoryV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskFile {
+    schema: String,
+    task_id: String,
+    kind: String,
+    goal: String,
+    /// Optional machine-readable business specification, captured as input data only.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    requirements: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Root input ports bound to a recorded Task's output or to an exact artifact in the same
+    /// Store, instead of being constructed by this adapter (ADR-0117), or — for any other root
+    /// input the selected Pipeline declares — to one or several recorded outputs (ADR-0134). Absent by default, and
+    /// absent on round-trip, so a Task file written before this decision keeps its exact
+    /// revision, plan and `--json` documents.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    inputs: Option<BTreeMap<String, input_bindings::TaskInputRefV1>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_sources: Option<String>,
+    /// A report Task's captured sources, in the `af.document-sources/1` file shape. Absent,
+    /// the report reads the empty set (ADR-0133).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    report_sources: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    optimization_history: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    issue: Option<issue::IssueSource>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pipeline: Option<PipelineChoiceV1>,
+    strategy: String,
+    /// The requested acceptance profile is Task input, captured before selecting a Pipeline.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    verification: Option<FileVerification>,
+    #[serde(default)]
+    facts: BTreeMap<String, TaskFactV1>,
+    limits: FileLimits,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileVerification {
+    #[default]
+    Evaluation,
+    Review,
+    ReviewOrTargetedFixes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileLimits {
+    tokens: u64,
+    max_attempts: u32,
+    wall_ms: u64,
+    verification: VerificationReserveV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskCatalog {
+    schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    code_policy: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_policy: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    report_policy: Option<String>,
+    /// Lower numbers win within a strategy; missing entries have equal last priority.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    selection: BTreeMap<String, BTreeMap<String, u32>>,
+    #[serde(default)]
+    no_match: review_config::task::selection::NoMatchPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    developers: Option<developer::DeveloperPolicy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    planner: Option<review_config::task::catalog::planning::PlannerSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    review: Option<ReviewSettings>,
+    packages: BTreeMap<String, TaskPackagePin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    kinds: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    imports: BTreeSet<String>,
+    independence: IndependencePolicyV1,
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewSettings {
+    /// Task Review has one generation. Omitted or `2`, it selects that generation.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    generation: Option<u32>,
+    reviewers: BTreeMap<String, review_core::DemandRequirement>,
+    gate: review_core::Severity,
+    clean_rounds: u32,
+    max_rounds: u32,
+    #[serde(default)]
+    allow_targeted_repairs: bool,
+}
+
+impl ReviewSettings {
+    fn check_generation(&self) -> Result<(), String> {
+        match self.generation {
+            None | Some(2) => Ok(()),
+            Some(_) => Err("Review generation must be omitted or 2".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturedPackage {
+    digest: String,
+    artifact_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunAuthority {
+    schema: String,
+    provider_admission: review_graph::task::OperatorAttemptCost,
+    engine_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    code_policy_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_policy_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    report_policy_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    review_policy_id: Option<String>,
+    catalog_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    selection: BTreeMap<String, BTreeMap<String, u32>>,
+    #[serde(default)]
+    no_match: review_config::task::selection::NoMatchPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    developers: Option<developer::DeveloperPolicy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    planner: Option<review_config::task::catalog::planning::PlannerSettings>,
+    packages: BTreeMap<String, CapturedPackage>,
+    independence: IndependencePolicyV1,
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    local_bindings_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    slot_workers: BTreeMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    kind_package: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    import_locks: BTreeSet<String>,
+    /// What delivery does about `.af/` paths the declared layout does not name, as the project
+    /// declared it at plan time. Part of the captured project policy identity, so editing
+    /// `.af/af.toml` afterwards cannot change what an admitted plan agreed to. The default is
+    /// not written down: a project that never heard of the knob keeps its exact policy ID.
+    #[serde(
+        default,
+        skip_serializing_if = "review_config::layout::UndeclaredAfPathsPolicy::is_default"
+    )]
+    delivery_undeclared_af_paths: review_config::layout::UndeclaredAfPathsPolicy,
+}
+
+/// The captured delivery policy for undeclared `.af/` paths, read back from one recorded project
+/// policy artifact — never from `.af/af.toml` on disk, which is what makes a later edit unable to
+/// change an admitted plan. Records written before the policy existed, and every project that
+/// keeps the default, declare nothing and get the default.
+pub(crate) fn captured_undeclared_af_paths(
+    cas: &Cas,
+    policy_id: &str,
+) -> Result<review_config::layout::UndeclaredAfPathsPolicy, String> {
+    let recorded = cas.get_json(policy_id).map_err(|e| e.to_string())?;
+    let declared = recorded.get("delivery_undeclared_af_paths").is_some();
+    match serde_json::from_value::<RunAuthority>(recorded) {
+        Ok(authority) => Ok(authority.delivery_undeclared_af_paths),
+        // A recorded policy that is not this kernel's run authority declares no delivery
+        // policy at all; one that names the field has to be readable exactly.
+        Err(error) if declared => Err(format!("captured delivery policy: {error}")),
+        Err(_) => Ok(Default::default()),
+    }
+}
+
+/// The bindings a recorded Task revision kept, for the one consumer outside this module:
+/// delivery names where this Task's source came from, and only the current revision's record
+/// says that (ADR-0117).
+pub(crate) fn recorded_input_bindings(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<review_core::task::input_bindings::TaskInputBindingsV1>, String> {
+    input_bindings::recorded(cas, revision)
+}
+
+impl RunAuthority {
+    fn invocation_policy_id(&self) -> Result<&str, String> {
+        match (
+            &self.code_policy_id,
+            &self.document_policy_id,
+            &self.report_policy_id,
+        ) {
+            (Some(id), None, None) | (None, Some(id), None) | (None, None, Some(id)) => Ok(id),
+            _ => Err("Task requires one captured domain policy".into()),
+        }
+    }
+    fn code_policy_id(&self) -> Result<&str, String> {
+        self.code_policy_id
+            .as_deref()
+            .ok_or_else(|| "Task has no captured code policy".into())
+    }
+}
+
+fn clock() -> Result<u64, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64)
+}
+/// The recorded undeclared `.af/` paths of a Task whose profile has no `source` port.
+const UNDECLARED_AF_PATHS_V1: &str = "af/UndeclaredAfPaths@1";
+
+fn producer() -> Producer {
+    Producer::KernelOperation {
+        run_id: "task-file-adapter-v1".into(),
+        node_id: None,
+        operation_id: "capture@1".into(),
+    }
+}
+
+fn parse<T: serde::de::DeserializeOwned>(path: &Path, bytes: &[u8]) -> Result<T, String> {
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("Task configuration exceeds capture bounds".into());
+    }
+    if path.extension().is_some_and(|e| e == "json") {
+        serde_json::from_slice(bytes).map_err(|e| format!("{}: {e}", path.display()))
+    } else {
+        toml::from_str(std::str::from_utf8(bytes).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+fn captured_file(cas: &Cas, manifest: &Manifest, path: &str) -> Result<Vec<u8>, String> {
+    if path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err("Task policy paths must be repository-relative captured files".into());
+    }
+    let entry = manifest
+        .get(path)
+        .ok_or_else(|| format!("Task authority Snapshot lacks {path}"))?;
+    if entry.kind == EntryKind::Symlink {
+        return Err("Task authority cannot follow a policy symlink".into());
+    }
+    cas.get_bounded(&entry.content, 16 * 1024 * 1024)
+        .map_err(|e| e.to_string())
+}
+
+pub(super) fn engine(cas: &Cas) -> Result<String, String> {
+    // Process-local only: every fresh process proves its running engine bytes. Reconstructing
+    // the compiler within one capture must not reread a large debug executable a second time.
+    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    let digest = DIGEST
+        .get_or_init(|| {
+            let executable =
+                std::fs::File::open(std::env::current_exe().map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            review_source_git::digest_reader_with_buffer(executable, &mut vec![0; 64 * 1024])
+                .map(|(digest, _)| digest)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
+}
+
+/// Where every repository's default Task state lives under an XDG state root.
+pub(crate) fn local_task_states(xdg_state: &Path) -> PathBuf {
+    xdg_state.join("af/task/local")
+}
+
+/// The Task state `af task` reads and writes for a canonical repository path when no `--state`
+/// is given: one opaque directory per repository under [`local_task_states`].
+pub(crate) fn default_task_state(xdg_state: &Path, repo: &Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let identity = Sha256::digest(repo.as_os_str().as_encoded_bytes());
+    super::normalize_absolute(
+        &local_task_states(xdg_state).join(&review_core::hex::encode(&identity)[..16]),
+    )
+}
+
+pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
+    let repo = std::fs::canonicalize(repo).map_err(|e| e.to_string())?;
+    let state = match state {
+        Some(path) => super::resolve_filesystem_path(path)?,
+        None => default_task_state(&super::xdg_state_root()?, &repo)?,
+    };
+    if state.starts_with(&repo) {
+        return Err("Task state must be outside the repository".into());
+    }
+    Ok((repo, state))
+}
+
+fn artifact<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> Result<T, String> {
+    let value: ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    validate_envelope(&value)?;
+    if value.artifact_id != id || value.artifact_type != kind {
+        return Err(format!("Expected exact {kind} artifact"));
+    }
+    serde_json::from_value(value.payload).map_err(|e| e.to_string())
+}
+
+/// The project's delivery policy for undeclared `.af/` paths, read out of the Authority
+/// Snapshot. A project without `.af/af.toml`, or without the table, keeps the default.
+fn captured_delivery_policy(
+    cas: &Cas,
+    manifest: &Manifest,
+) -> Result<review_config::layout::UndeclaredAfPathsPolicy, String> {
+    if manifest.get(".af/af.toml").is_none() {
+        return Ok(Default::default());
+    }
+    let bytes = captured_file(cas, manifest, ".af/af.toml")?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| format!(".af/af.toml: {e}"))?;
+    crate::project::ProjectFile::parse_delivery(text)
+}
+
+fn capture_authority(
+    cas: &Cas,
+    manifest: &Manifest,
+    local: Option<&Path>,
+    task_kind: &str,
+    delivery_undeclared_af_paths: review_config::layout::UndeclaredAfPathsPolicy,
+) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
+    let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
+    let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
+    let provider_admission = provider_admission::catalog_cost(&catalog)?;
+    let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
+    if catalog.packages.is_empty()
+        || catalog.packages.len() > 128
+        || catalog.kinds.len() > 128
+        || catalog
+            .kinds
+            .iter()
+            .any(|(kind, name)| !is_package_name(kind) || !is_package_name(name))
+    {
+        return Err("Task catalog requires one to 128 exactly pinned packages".into());
+    }
+    let code_policy_id = domain::capture_policy::<CodeTaskPolicy>(
+        cas,
+        manifest,
+        catalog.code_policy.as_deref(),
+        CodeTaskPolicy::validate,
+    )?;
+    let document_policy_id = domain::capture_policy::<DocumentTaskPolicy>(
+        cas,
+        manifest,
+        catalog.document_policy.as_deref(),
+        DocumentTaskPolicy::validate,
+    )?;
+    let report_policy_id = domain::capture_policy::<ReportTaskPolicy>(
+        cas,
+        manifest,
+        catalog.report_policy.as_deref(),
+        ReportTaskPolicy::validate,
+    )?;
+    let initial_policy = code_policy_id
+        .as_ref()
+        .or(document_policy_id.as_ref())
+        .or(report_policy_id.as_ref())
+        .ok_or("Catalog has no installed domain policy")?;
+    let engine_id = engine(cas)?;
+    // Package capture does not compile a Task or choose its business acceptance profile.
+    let mut capture = TaskPlanCompiler::new(
+        engine_id.clone(),
+        initial_policy.clone(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        catalog.independence,
+    )?;
+    let mut packages = BTreeMap::new();
+    let mut total = 0usize;
+    for (name, pin) in &catalog.packages {
+        let prefix = format!("{}/", pin.path);
+        let mut files = BTreeMap::new();
+        for entry in &manifest.entries {
+            if entry.path.starts_with(&prefix) {
+                let bytes = captured_file(cas, manifest, &entry.path)?;
+                total = total
+                    .checked_add(bytes.len())
+                    .ok_or("Task catalog byte count overflow")?;
+                if total > 64 * 1024 * 1024 {
+                    return Err("Task catalog exceeds 64 MiB captured closure bound".into());
+                }
+                files.insert(entry.path.clone(), bytes);
+            }
+        }
+        let artifact_id = capture.capture_package(cas, name, pin, &files)?;
+        packages.insert(
+            name.clone(),
+            CapturedPackage {
+                digest: pin.digest.clone(),
+                artifact_id,
+            },
+        );
+    }
+    for (kind, package) in &catalog.kinds {
+        if capture
+            .task_kind(package)
+            .is_none_or(|definition| &definition.kind != kind)
+        {
+            return Err(format!(
+                "Task kind {kind} has no matching captured kind package"
+            ));
+        }
+    }
+    if catalog.selection.len() > 32
+        || catalog.selection.iter().any(|(strategy, priorities)| {
+            !is_name(strategy)
+                || priorities.len() > 128
+                || priorities
+                    .keys()
+                    .any(|name| !capture.pipelines().contains_key(name))
+        })
+    {
+        return Err(
+            "Selection priorities require bounded strategies and captured Pipelines".into(),
+        );
+    }
+    if let Some(developers) = &catalog.developers {
+        developers.validate()?;
+    }
+    if let Some(planner) = &catalog.planner {
+        planner.validate()?;
+        if catalog.developers.is_none() || capture.worker(&planner.worker).is_none() {
+            return Err(
+                "Planning requires a captured Planner Worker and developer signing keys".into(),
+            );
+        }
+    }
+    let local = local.map(bindings::read).transpose()?;
+    let local_bindings_id = local
+        .as_ref()
+        .map(|local| {
+            cas.put_json(&serde_json::to_value(&local.definition).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    let mut providers = catalog.providers;
+    let mut slot_workers = BTreeMap::new();
+    if let Some(local) = local {
+        if packages.len() + local.definition.packages.len() > 128
+            || total + local.files.values().map(Vec::len).sum::<usize>() > 64 * 1024 * 1024
+        {
+            return Err("Combined Task catalog exceeds capture bounds".into());
+        }
+        for (name, pin) in &local.definition.packages {
+            if packages.contains_key(name) {
+                return Err(format!("Local package {name} shadows a captured package"));
+            }
+            let artifact_id = capture.capture_package(cas, name, pin, &local.files)?;
+            if capture.worker(name).is_none() {
+                return Err("Local bindings can add Worker packages only".into());
+            }
+            packages.insert(
+                name.clone(),
+                CapturedPackage {
+                    digest: pin.digest.clone(),
+                    artifact_id,
+                },
+            );
+        }
+        providers.extend(local.definition.providers);
+        slot_workers = local.definition.slots;
+    }
+    let kind_profile = catalog
+        .kinds
+        .get(task_kind)
+        .and_then(|name| capture.task_kind(name))
+        .map(|kind| kind.profile);
+    let is_document = kind_profile.map_or(task_kind == "document", |profile| {
+        profile == TaskKindProfile::Document
+    });
+    let is_report = kind_profile.map_or(task_kind == "report", |profile| {
+        profile == TaskKindProfile::Report
+    });
+    let (code_policy_id, document_policy_id, report_policy_id) = if is_document {
+        (
+            None,
+            Some(document_policy_id.ok_or("Document Task requires a captured document policy")?),
+            None,
+        )
+    } else if is_report {
+        (
+            None,
+            None,
+            Some(report_policy_id.ok_or(
+                "Report Task requires a captured report policy: name it as report_policy in .af/task-catalog.toml",
+            )?),
+        )
+    } else {
+        (
+            Some(code_policy_id.ok_or("Code/Review Task requires a captured code policy")?),
+            None,
+            None,
+        )
+    };
+    let data_only = is_document || is_report;
+    let authority = RunAuthority {
+        schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
+        provider_admission,
+        engine_id,
+        code_policy_id: code_policy_id.clone(),
+        document_policy_id,
+        report_policy_id,
+        review_policy_id: if data_only {
+            None
+        } else {
+            catalog
+                .review
+                .map(|review| {
+                    review.check_generation()?;
+                    let review = ReviewTaskPolicy {
+                        schema: REVIEW_TASK_POLICY_SCHEMA.into(),
+                        check_policy_id: code_policy_id
+                            .clone()
+                            .ok_or("Review requires code checks")?,
+                        reviewers: review.reviewers,
+                        gate: review.gate,
+                        clean_rounds: review.clean_rounds,
+                        max_rounds: review.max_rounds,
+                        allow_targeted_repairs: review.allow_targeted_repairs,
+                    };
+                    review.validate()?;
+                    cas.put_json(&serde_json::to_value(review).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()?
+        },
+        catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
+        selection: catalog.selection,
+        no_match: catalog.no_match,
+        developers: catalog.developers,
+        planner: catalog.planner,
+        packages,
+        independence: catalog.independence,
+        providers,
+        local_bindings_id,
+        slot_workers,
+        kind_package: catalog.kinds.get(task_kind).cloned(),
+        import_locks,
+        delivery_undeclared_af_paths,
+    };
+    let id = cas
+        .put_json(&serde_json::to_value(&authority).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let compiler = restore_compiler(cas, &id, &authority)?;
+    Ok((id, authority, compiler))
+}
+
+fn restore_compiler(
+    cas: &Cas,
+    id: &str,
+    authority: &RunAuthority,
+) -> Result<TaskPlanCompiler, String> {
+    if authority.engine_id != engine(cas)? {
+        return Err(
+            "Task requires the exact recorded compatible engine; inspect remains available".into(),
+        );
+    }
+    cas.verify(&authority.catalog_id)
+        .map_err(|e| e.to_string())?;
+    let admission_cost = provider_admission::restore_cost(cas, authority)?;
+    if let Some(local) = &authority.local_bindings_id {
+        cas.verify(local).map_err(|e| e.to_string())?;
+    }
+    for lock in &authority.import_locks {
+        cas.verify(lock).map_err(|e| e.to_string())?;
+    }
+    authority.invocation_policy_id()?;
+    let (mut signatures, mut coverage) = if let Some(id) = &authority.document_policy_id {
+        let policy: DocumentTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            document_signatures(id, &policy)?,
+            BTreeMap::from([("verified".into(), "document".into())]),
+        )
+    } else if let Some(id) = &authority.report_policy_id {
+        let policy: ReportTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            report_signatures(id, &policy)?,
+            BTreeMap::from([("verified".into(), "report".into())]),
+        )
+    } else {
+        let id = authority.code_policy_id()?;
+        let policy: CodeTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            {
+                let mut signatures = code_signatures(id, &policy)?;
+                signatures.extend(optimization_signatures(id)?);
+                signatures
+            },
+            BTreeMap::from([
+                ("verified".into(), "snapshot".into()),
+                ("goal".into(), "snapshot".into()),
+                ("analysis".into(), "report".into()),
+                ("experiment".into(), "comparison".into()),
+            ]),
+        )
+    };
+    if let Some(id) = &authority.review_policy_id {
+        let review: ReviewTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if review.check_policy_id != authority.code_policy_id()? {
+            return Err("Review policy changed its captured checks".into());
+        }
+        signatures.extend(review_signatures(id, &review)?);
+        coverage.insert("reviewed".into(), "review".into());
+    }
+    let mut compiler = TaskPlanCompiler::new(
+        authority.engine_id.clone(),
+        id.into(),
+        signatures,
+        coverage,
+        authority.independence,
+    )?;
+    if authority.document_policy_id.is_some() {
+        compiler = compiler.with_authored_artifacts(BTreeSet::from([
+            review_core::task::document::DOCUMENT_DRAFT_V1.into(),
+        ]))?;
+    }
+    // A report's author is whoever returns a draft of either version, whatever it declares,
+    // so no Pipeline can make the author its own verifier.
+    if authority.report_policy_id.is_some() {
+        compiler = compiler.with_authored_artifacts(BTreeSet::from([
+            review_core::task::document::DOCUMENT_DRAFT_V1.into(),
+            review_core::task::document::DOCUMENT_DRAFT_V2.into(),
+        ]))?;
+    }
+    for (name, package) in &authority.packages {
+        compiler.restore_package(cas, name, &package.digest, &package.artifact_id)?;
+    }
+    compiler.replace_slot_workers(authority.slot_workers.clone())?;
+    if let Some(kind) = &authority.kind_package {
+        compiler.select_task_kind(kind)?;
+    }
+    for name in authority.packages.keys() {
+        if let Some(worker) = compiler.worker(name) {
+            if !matches!(worker.runner, TaskWorkerRunner::Command { .. }) {
+                continue;
+            }
+            compiler.bind_worker(
+                name,
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV1::Command {},
+                    invocation_policy_id: authority.invocation_policy_id()?.into(),
+                },
+            )?;
+        }
+    }
+    Ok(compiler.with_provider_admission(admission_cost))
+}
+
+fn bind_models(
+    cas: &Cas,
+    compiler: &mut TaskPlanCompiler,
+    authority: &RunAuthority,
+    revision_id: &str,
+    root: &str,
+) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
+    let required = compiler.required_worker_packages(cas, revision_id, root)?;
+    bind_named_models(compiler, authority, required)
+}
+
+fn bind_named_models(
+    compiler: &mut TaskPlanCompiler,
+    authority: &RunAuthority,
+    required: BTreeSet<String>,
+) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
+    let mut identities = BTreeMap::new();
+    let mut adapters = BTreeMap::new();
+    for name in required {
+        let worker = compiler.worker(&name).ok_or("Required Worker is absent")?;
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            continue;
+        };
+        let alias = authority.providers.get(&name).ok_or_else(||format!("Worker {name} requires an explicit local Provider binding in the catalog providers table"))?;
+        if !identities.contains_key(alias) {
+            identities.insert(
+                alias.clone(),
+                super::providers::task::TaskProviderIdentity::probe(alias, provider_kind)?,
+            );
+        }
+        let identity = &identities[alias];
+        let execution = identity.execution(model, effort)?;
+        if !matches!(&execution,WorkerExecutionV1::Model {provider_kind:kind,..} if kind==provider_kind)
+        {
+            return Err("Worker and Provider implementation families differ".into());
+        }
+        adapters.insert(name.clone(), identity.adapter(&execution)?);
+        compiler.bind_worker(
+            &name,
+            AdmittedWorkerSettings {
+                execution,
+                invocation_policy_id: authority.invocation_policy_id()?.into(),
+            },
+        )?;
+    }
+    Ok(adapters)
+}
+
+fn model_bindings<'a>(
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+    adapters: &'a BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
+) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
+    plan.bindings
+        .iter()
+        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV1::Model { .. }))
+        .map(|(slot, binding)| {
+            let name = &graph
+                .slots
+                .get(slot)
+                .ok_or("Captured Model slot is absent")?
+                .worker;
+            let adapter = adapters
+                .get(name)
+                .ok_or("Captured Model adapter is absent")?;
+            Ok((
+                slot.clone(),
+                TaskModelBinding {
+                    binding: binding.clone(),
+                    adapter: adapter.as_ref(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// How a started Task is reported: printed, as every CLI command does, or not at all, for the
+/// browser's Pipelines pane, which renders the recorded plan itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    Print,
+    Silent,
+}
+
+pub(super) fn start(options: StartOptions) -> Result<i32, String> {
+    start_kind(options, None, Presentation::Print)
+}
+
+pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
+    start_kind(options, Some("review"), Presentation::Print)
+}
+
+/// A plan preview as `af task explain --tree` prints it, and the Worker binding of every line
+/// that names a slot, keyed by line index.
+pub(crate) struct TreePreview {
+    pub(crate) text: String,
+    pub(crate) slots: BTreeMap<usize, String>,
+}
+
+/// The `--tree` preview of the plan `af task plan --file FILE` captures, compiled the same way
+/// into a scratch Store that is discarded on return. No `--state` or XDG Store is written,
+/// nothing is admitted, no Worker runs, and nothing is printed; the policy comes from the
+/// committed authority, exactly as `af task plan --authority` takes it.
+/// `authority` is the selector the plan compiles: a commit id binds the preview to the exact
+/// commit whose declarations a caller shows, however `HEAD` moves meanwhile.
+pub(crate) fn plan_tree_preview_at(
+    file: &Path,
+    repo: &Path,
+    authority: &str,
+) -> Result<TreePreview, String> {
+    let bytes = input_file::read(file, 16 * 1024 * 1024)?;
+    let task: TaskFile = parse(file, &bytes)?;
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let state = scratch.path().join("state");
+    let options = StartOptions {
+        file: file.to_path_buf(),
+        bindings: None,
+        source_bindings: None,
+        repo: repo.to_path_buf(),
+        state: Some(state.clone()),
+        authority: authority.into(),
+        uncommitted: false,
+        json: false,
+        plan_only: true,
+        timeout_secs: None,
+        optimization_history: None,
+    };
+    start_kind(options, None, Presentation::Silent)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let projection = store
+        .task_projection(&cas, &task.task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("The preview recorded no Task")?;
+    let (text, slots) = preview::current_marked(&cas, &projection, true)?;
+    Ok(TreePreview {
+        text,
+        slots: slots.into_iter().collect(),
+    })
+}
+
+fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
+    if file_wall_ms == 0 || timeout_secs == Some(0) {
+        return Err("Task wall_ms and --timeout-secs must be positive".into());
+    }
+    let timeout_ms = timeout_secs
+        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
+        .transpose()?;
+    Ok(timeout_ms.map_or(file_wall_ms, |limit| limit.min(file_wall_ms)))
+}
+
+fn start_kind(
+    options: StartOptions,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
+    let started = clock()?;
+    let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
+    let file: TaskFile = parse(&options.file, &bytes)?;
+    if file.schema != "af.task-file/1"
+        || !is_name(&file.task_id)
+        || !is_package_name(&file.kind)
+        || file.goal.trim().is_empty()
+    {
+        return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
+    }
+    if let Some(specification) = &file.requirements {
+        if specification.is_empty()
+            || serde_json::to_vec(specification)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 65536
+        {
+            return Err("Structured requirements must be nonempty and at most 64 KiB".into());
+        }
+    }
+    // Reject invalid duration before creating state, capturing authority or occupying an ID.
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
+    started.checked_add(wall).ok_or("Task deadline overflow")?;
+    let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
+    std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .task_projection(&cas, &file.task_id)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!(
+            "Task {} already exists; use af task run {} or a new Task ID",
+            file.task_id, file.task_id
+        ));
+    }
+    let git_home = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let source_repo = Repo::open(&repo, git_home.path());
+    let policy_source = Capture::new(&source_repo, &cas)
+        .committed(&options.authority)
+        .map_err(|e| e.to_string())?;
+    let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
+    let authority = capture_authority(
+        &cas,
+        &policy_source.manifest,
+        options.bindings.as_deref(),
+        &file.kind,
+        delivery,
+    )?;
+    if expected_kind.is_some()
+        && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
+            != TaskKindProfile::Review
+    {
+        return Err("af review --file requires a Review Task profile".into());
+    }
+    let binds_source = file
+        .inputs
+        .as_ref()
+        .is_some_and(|inputs| inputs.contains_key("source"));
+    if options.uncommitted && binds_source {
+        return Err(
+            "--uncommitted captures the invoking checkout, which a bound `source` \
+                    replaces; plan from the checkout or drop the binding"
+                .into(),
+        );
+    }
+    let source = if options.uncommitted {
+        Capture::new(&source_repo, &cas)
+            .dirty()
+            .map_err(|e| e.to_string())?
+    } else {
+        policy_source
+    };
+    start_captured(
+        options,
+        file,
+        bytes,
+        started,
+        cas,
+        store,
+        source,
+        authority,
+        presentation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_captured(
+    options: StartOptions,
+    file: TaskFile,
+    bytes: Vec<u8>,
+    started: u64,
+    cas: Cas,
+    mut store: EventStore,
+    source: review_source_git::Snapshot,
+    (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
+    presentation: Presentation,
+) -> Result<i32, String> {
+    let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
+    let (_, state) = state_path(&options.repo, options.state.as_deref())?;
+    // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
+    // any Provider admitted. A bound port replaces this adapter's construction of it and
+    // nothing else changes (ADR-0117).
+    let declared = file.inputs.as_ref().map(|_| {
+        let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
+        input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named)
+    });
+    let bound = file
+        .inputs
+        .as_ref()
+        .zip(declared.as_ref())
+        .map(|(references, declared)| {
+            input_bindings::resolve(&cas, &store, profile, declared, references)
+        })
+        .transpose()?;
+    let bound_ports = bound
+        .as_ref()
+        .map(|bound| bound.ports.clone())
+        .unwrap_or_default();
+    if bound_ports.contains_key("sources") && file.document_sources.is_some() {
+        return Err("A bound sources port and document_sources claim one input".into());
+    }
+    if bound_ports.contains_key("sources") && file.report_sources.is_some() {
+        return Err("A bound sources port and report_sources claim one input".into());
+    }
+    if file.report_sources.is_some() && profile != TaskKindProfile::Report {
+        return Err("report_sources is only valid for a report Task".into());
+    }
+    if bound_ports.contains_key("history")
+        && (file.optimization_history.is_some() || options.optimization_history.is_some())
+    {
+        return Err("A bound history port and a history file claim one port".into());
+    }
+    // What the declared layout says about the Snapshot this Task will read. A pure function of
+    // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
+    // is whatever the capture already made it. The result is advice here and a receipt field
+    // later. A bound `source` reads the bound tree, so that is the tree classified.
+    let read = match bound.as_ref() {
+        Some(bound) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
+        None => &source.manifest,
+    };
+    let undeclared = review_config::layout::classify_manifest(read).undeclared;
+    if presentation == Presentation::Print {
+        super::af_paths::warn(&undeclared);
+    }
+    let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
+    let source_port = if matches!(
+        profile,
+        TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+    ) {
+        None
+    } else {
+        if file.document_sources.is_some() {
+            return Err("Document source input is only valid for a document Task".into());
+        }
+        // A bound `source` captures no Git tree from the invoking checkout.
+        match bound_ports.get("source") {
+            Some(port) => Some(port.clone()),
+            None => {
+                let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
+                Some(source_tree(
+                    &cas,
+                    producer(),
+                    &snapshot,
+                    vec![origin.clone()],
+                )?)
+            }
+        }
+    };
+    // A profile without a `source` port records nothing a later presentation could classify
+    // again, so the observation itself is kept: one typed artifact, referenced from the
+    // revision's provenance, and only when there is something to report, so a Task over a
+    // fully declared tree keeps the revision identity it always had.
+    let undeclared_record = if source_port.is_none() && !undeclared.is_empty() {
+        let (id, _) = cas
+            .put_artifact(
+                UNDECLARED_AF_PATHS_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&undeclared).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        Some(id)
+    } else {
+        None
+    };
+    let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
+    let deadline = started.checked_add(wall).ok_or("Task deadline overflow")?;
+    let issue = file
+        .issue
+        .as_ref()
+        .map(|selected| {
+            issue::capture(
+                &cas,
+                &source.manifest,
+                selected,
+                options.source_bindings.as_deref(),
+                file.requirements.clone(),
+                deadline,
+            )
+        })
+        .transpose()?;
+    let mut requirements_payload = json!({"text":file.goal});
+    if let Some(specification) = &file.requirements {
+        requirements_payload["specification"] = json!(specification);
+    }
+    let mut input_refs = vec![input_file.clone()];
+    if let Some(issue) = &issue {
+        requirements_payload =
+            serde_json::to_value(&issue.requirements).map_err(|e| e.to_string())?;
+        input_refs.push(issue.capture_id.clone());
+    }
+    let requirements = cas
+        .put_artifact(
+            "af/Requirements@1",
+            producer(),
+            input_refs,
+            None,
+            requirements_payload,
+        )
+        .map_err(|e| e.to_string())?
+        .0;
+    let mut adapter = json!({"schema":"af.task-file-adapter/1","source_file_id":input_file});
+    if let Some(issue) = &issue {
+        adapter["source_capture_id"] = json!(issue.capture_id);
+    }
+    let adapter = cas.put_json(&adapter).map_err(|e| e.to_string())?;
+    let goal = match &issue {
+        Some(issue) => format!("{}\n\n{}", file.goal, issue.requirements.text),
+        None => file.goal.clone(),
+    };
+    let optimization_finalize = file.facts.get("finalize") == Some(&TaskFactV1::Boolean(true));
+    let mut revision=TaskRevisionV1 {
+        task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal,
+        inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
+        required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
+        acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
+        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).collect()},
+        authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
+        limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:deadline,verification:file.limits.verification},
+        strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
+    };
+    if let Some(source_port) = source_port {
+        revision.inputs.insert("source".into(), source_port);
+    }
+    if profile == TaskKindProfile::Report {
+        use review_core::task::report_task::*;
+        // A bound `sources` port replaces this construction. Without `report_sources` the
+        // report reads the empty set, so every report names the exact sources it was checked
+        // against.
+        if !bound_ports.contains_key("sources") {
+            let (sources, refs) = match file.report_sources.as_deref() {
+                Some(path) => {
+                    if !review_config::task::shared::safe_relative_path(path) {
+                        return Err("Report source path must be project-relative".into());
+                    }
+                    let bytes = captured_file(&cas, &source.manifest, path)?;
+                    // The file's own bytes first: identities and text together, before parsing.
+                    if bytes.len() > MAX_REPORT_SOURCES_FILE_BYTES {
+                        return Err(format!(
+                            "{path}: report sources file is {} bytes, over its {} KiB bound",
+                            bytes.len(),
+                            MAX_REPORT_SOURCES_FILE_BYTES / 1024
+                        ));
+                    }
+                    let sources: ReportSourcesV1 = parse(Path::new(path), &bytes)?;
+                    sources
+                        .validate()
+                        .map_err(|error| format!("{path}: {error}"))?;
+                    let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                    (sources, vec![raw, origin.clone()])
+                }
+                None => (ReportSourcesV1::empty(), vec![origin.clone()]),
+            };
+            let id = cas
+                .put_artifact(
+                    REPORT_SOURCES_V1,
+                    producer(),
+                    refs,
+                    None,
+                    serde_json::to_value(sources).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.inputs.insert(
+                "sources".into(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![id.clone()],
+                    artifact_type: REPORT_SOURCES_V1.into(),
+                    cardinality: PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
+            revision.provenance.input_artifact_ids.push(id);
+            revision.provenance.input_artifact_ids.sort();
+        }
+        // An author reads the source and may run commands in a clone that seals nothing back;
+        // nothing in a report Task may write source, so `af task deliver` has nothing to place.
+        revision.authority.allowed_effects =
+            BTreeSet::from(["read-source".into(), "execute-checks".into()]);
+        revision.required_outputs = serde_json::from_value(json!({"report":{"artifact_type":review_core::task::document::DOCUMENT_V1,"cardinality":"one"},"verification":{"artifact_type":REPORT_VERIFICATION_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: REPORT_VERIFICATION_V1.into(),
+                verifier_policy: authority.invocation_policy_id()?.into(),
+            },
+        )]);
+    }
+    if profile == TaskKindProfile::Document {
+        use review_core::task::document::*;
+        // A bound `sources` port replaces this construction, which is what makes
+        // `document_sources` — and the exported file it names — unnecessary.
+        if !bound_ports.contains_key("sources") {
+            let declared = file.document_sources.as_deref();
+            let path =
+                declared.ok_or("Document Task needs document_sources or a bound sources port")?;
+            if !review_config::task::shared::safe_relative_path(path) {
+                return Err("Document source path must be project-relative".into());
+            }
+            let bytes = captured_file(&cas, &source.manifest, path)?;
+            let sources: DocumentSourcesV1 = parse(Path::new(path), &bytes)?;
+            sources.validate()?;
+            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+            let id = cas
+                .put_artifact(
+                    DOCUMENT_SOURCES_V1,
+                    producer(),
+                    vec![raw, origin.clone()],
+                    None,
+                    serde_json::to_value(sources).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.inputs.insert(
+                "sources".into(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![id.clone()],
+                    artifact_type: DOCUMENT_SOURCES_V1.into(),
+                    cardinality: PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
+            revision.provenance.input_artifact_ids.push(id);
+            revision.provenance.input_artifact_ids.sort();
+        }
+        revision.authority.allowed_effects.clear();
+        revision.required_outputs = serde_json::from_value(json!({"document":{"artifact_type":DOCUMENT_V1,"cardinality":"one"},"verification":{"artifact_type":DOCUMENT_VERIFICATION_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: DOCUMENT_VERIFICATION_V1.into(),
+                verifier_policy: authority.invocation_policy_id()?.into(),
+            },
+        )]);
+    }
+    if matches!(
+        profile,
+        TaskKindProfile::OptimizationAnalysis | TaskKindProfile::OptimizationCandidate
+    ) {
+        use review_core::task::optimization::*;
+        if file.document_sources.is_some() {
+            return Err("Document source input is not valid for an Optimization Task".into());
+        }
+        // A bound `history` replaces the captured or pre-captured construction below; the
+        // bound port itself is installed with every other binding, after this block.
+        let history_port = if bound_ports.contains_key("history") {
+            None
+        } else {
+            let (history, raw) = if let Some(history) = options.optimization_history.clone() {
+                let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
+                let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                (history, raw)
+            } else {
+                let path = file.optimization_history.as_deref().ok_or(
+                    "Optimization Task needs captured history or an optimization_history fixture",
+                )?;
+                if !review_config::task::shared::safe_relative_path(path) {
+                    return Err("Optimization history path must be project-relative".into());
+                }
+                let bytes = captured_file(&cas, &source.manifest, path)?;
+                let history: OptimizationHistoryV1 = parse(Path::new(path), &bytes)?;
+                let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                (history, raw)
+            };
+            history.validate()?;
+            let mut refs = vec![raw, origin.clone()];
+            if let Some(previous) = &history.previous_capture_id {
+                cas.verify(previous).map_err(|_| {
+                    "Optimization history predecessor is not retained in this Task Store"
+                        .to_string()
+                })?;
+                refs.push(previous.clone());
+            }
+            let id = cas
+                .put_artifact(
+                    OPTIMIZATION_HISTORY_V1,
+                    producer(),
+                    refs,
+                    None,
+                    serde_json::to_value(history).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.provenance.input_artifact_ids.push(id.clone());
+            revision.provenance.input_artifact_ids.sort();
+            Some(ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: OPTIMIZATION_HISTORY_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: None,
+            })
+        };
+        if profile == TaskKindProfile::OptimizationAnalysis {
+            revision.inputs.clear();
+        }
+        if let Some(history_port) = history_port {
+            revision.inputs.insert("history".into(), history_port);
+        }
+        revision.authority.allowed_effects.clear();
+        revision.required_outputs = if profile == TaskKindProfile::OptimizationAnalysis {
+            serde_json::from_value(json!({
+                "economics":{"artifact_type":OPTIMIZATION_ECONOMICS_V1,"cardinality":"one"},
+                "report":{"artifact_type":OPTIMIZATION_REPORT_V1,"cardinality":"one"}
+            }))
+        } else {
+            serde_json::from_value(json!({
+                "comparison":{"artifact_type":review_core::task::optimization_experiment::EXPERIMENT_COMPARISON_V1,"cardinality":"one"}
+            }))
+        }
+        .map_err(|e| e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            if profile == TaskKindProfile::OptimizationAnalysis {
+                "analysis".into()
+            } else {
+                "experiment".into()
+            },
+            AcceptanceObligationV1 {
+                evidence_type: if profile == TaskKindProfile::OptimizationAnalysis {
+                    OPTIMIZATION_REPORT_V1.into()
+                } else {
+                    review_core::task::optimization_experiment::EXPERIMENT_COMPARISON_V1.into()
+                },
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        )]);
+    }
+    if profile == TaskKindProfile::OptimizationCandidate
+        && (file
+            .requirements
+            .as_ref()
+            .is_some_and(|v| v.get("candidate").is_some())
+            || optimization_finalize)
+    {
+        revision.required_outputs.insert(
+            "snapshot".into(),
+            serde_json::from_value(json!({"artifact_type":"af/SourceTree@1","cardinality":"one"}))
+                .map_err(|e| e.to_string())?,
+        );
+        revision.required_outputs.insert(
+            "verification".into(),
+            serde_json::from_value(
+                json!({"artifact_type":"af/OptimizationVerification@1","cardinality":"one"}),
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        revision.acceptance.insert(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: "af/OptimizationVerification@1".into(),
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        );
+    }
+    if profile == TaskKindProfile::Review {
+        if file.requirements.is_none() && file.issue.is_none() {
+            revision.inputs.remove("requirements");
+        }
+        revision.authority.allowed_effects.remove("write-source");
+        revision.required_outputs = serde_json::from_value(json!({"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "reviewed".into(),
+            AcceptanceObligationV1 {
+                evidence_type: TASK_REVIEW_ROUND_V1.into(),
+                verifier_policy: authority
+                    .review_policy_id
+                    .clone()
+                    .ok_or("Review Task requires configured Review policy")?,
+            },
+        )]);
+    } else if matches!(
+        profile,
+        TaskKindProfile::ReviewedImplementation | TaskKindProfile::RepairAllowedImplementation
+    ) {
+        use review_core::task::verification::{
+            REPAIR_ALLOWED_IMPLEMENTATION_V1, REVIEWED_IMPLEMENTATION_V1,
+        };
+        let evidence_type = if profile == TaskKindProfile::RepairAllowedImplementation {
+            REPAIR_ALLOWED_IMPLEMENTATION_V1
+        } else {
+            REVIEWED_IMPLEMENTATION_V1
+        };
+        revision
+            .required_outputs
+            .get_mut("verification")
+            .expect("implementation output")
+            .artifact_type = evidence_type.into();
+        revision.required_outputs.insert(
+            "evaluation".into(),
+            revision.required_outputs["verification"].clone(),
+        );
+        revision
+            .required_outputs
+            .get_mut("evaluation")
+            .unwrap()
+            .artifact_type = VERIFICATION_RESULT_V1.into();
+        revision.acceptance.insert(
+            "goal".into(),
+            AcceptanceObligationV1 {
+                evidence_type: VERIFICATION_RESULT_V1.into(),
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        );
+        revision.acceptance.insert(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: evidence_type.into(),
+                verifier_policy: authority
+                    .review_policy_id
+                    .clone()
+                    .ok_or("Review acceptance requires configured Review policy")?,
+            },
+        );
+    }
+    // Installed last, so a profile that rebuilds its own input set cannot drop a bound port,
+    // and recorded once as `af/TaskInputBindings@1` in the revision's provenance — written only
+    // when the Task file carried an `inputs` table, so a Task without bindings keeps the exact
+    // revision identity it has today.
+    for (port, input) in &bound_ports {
+        revision.inputs.insert(port.clone(), input.clone());
+    }
+    if let Some(bound) = &bound {
+        let ids = &mut revision.provenance.input_artifact_ids;
+        ids.push(bound.record_id.clone());
+        ids.sort();
+        ids.dedup();
+    }
+    let prepared = match presentation {
+        Presentation::Print => {
+            selection::prepare(&cas, &authority, &compiler, revision, options.json)?
+        }
+        Presentation::Silent => silent_selection(&cas, &authority, &compiler, revision)?,
+    };
+    let Some(selected) = prepared else {
+        return Ok(1);
+    };
+    let selected = match selected {
+        selection::PreparedSelection::Selected(selected) => selected,
+        selection::PreparedSelection::Generation { .. } if presentation == Presentation::Silent => {
+            return Err(
+                "A generated plan needs developer review; preview it with af task plan".into(),
+            );
+        }
+        selection::PreparedSelection::Generation {
+            revision,
+            revision_id,
+        } => {
+            return planning::start(
+                options,
+                cas,
+                store,
+                authority,
+                compiler,
+                *revision,
+                revision_id,
+                undeclared,
+            );
+        }
+    };
+    let selection::SelectedTask {
+        revision,
+        revision_id,
+        compiler: selected_compiler,
+        adapters,
+        mut plan,
+        mut graph,
+    } = *selected;
+    compiler = selected_compiler;
+    if profile == TaskKindProfile::OptimizationCandidate {
+        (compiler, plan, graph) = install_candidate_experiment(
+            &cas,
+            compiler,
+            &authority,
+            &revision,
+            &revision_id,
+            &graph,
+            &plan,
+        )?;
+    }
+    if plan.task_revision_id != revision_id
+        || plan.authority != revision.authority
+        || plan.limits != revision.limits
+        || plan.inputs != revision.inputs
+    {
+        return Err("Optimization plan recompilation changed captured Task authority".into());
+    }
+    let plan_id = cas
+        .put_artifact(
+            EXECUTION_PLAN_V1,
+            producer(),
+            vec![revision_id.clone()],
+            None,
+            serde_json::to_value(&plan).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .0;
+    let inner = captured_domain(
+        &cas,
+        &authority,
+        profile,
+        graph.clone(),
+        &plan,
+        &compiler,
+        &state,
+    )?;
+    let models = model_bindings(&plan, &graph, &adapters)?;
+    let domain = ProviderTaskDomain {
+        graph: &graph,
+        models: &models,
+        inner: inner.as_ref(),
+    };
+    let environment = domain::environment(&cas, &authority, profile)?;
+    let host = CapturedTaskHost::capture_with_models(
+        &cas,
+        &compiler,
+        &revision,
+        &plan,
+        graph.clone(),
+        environment.as_ref(),
+        &domain,
+        &models,
+    )?;
+    let developer = developer::host(&cas, &authority, None);
+    let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
+    let lease = store
+        .open_task(
+            &cas,
+            &revision_id,
+            // The opening writer is what makes one Store's Task distinguishable from another
+            // Store's Task of the same file (ADR-0140 derives the gate owner from this
+            // transition), so it carries 64 bits from the operating system, not the PID alone.
+            &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
+            15_000,
+        )
+        .map_err(|e| e.to_string())?;
+    let outcome = (|| {
+        store
+            .propose_task_plan(&cas, &lease, &plan_id, &trusted)
+            .map_err(|e| e.to_string())?;
+        if options.plan_only {
+            return Ok(());
+        }
+        store
+            .admit_task_plan(&cas, &lease, &trusted)
+            .map_err(|e| e.to_string())?;
+        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        Ok(())
+    })();
+    release(&cas, &mut store, &lease, outcome)?;
+    if presentation == Presentation::Silent {
+        return Ok(0);
+    }
+    let presented = present_with_advisory(
+        &cas,
+        &store,
+        &revision.task_id,
+        options.json,
+        options.plan_only,
+        &undeclared,
+    );
+    // The request is in the Store, so a copy the repository would carry is redundant. Advice
+    // only, and given last: the Task deadline was derived and the plan compiled, recorded and
+    // presented before this runs, so a slow `git check-ignore` can neither shorten the Task's
+    // remaining wall nor change the exit code or the `--json` document already written.
+    task_file_home::warn_if_captured_from_the_repository(&options.file, &options.repo);
+    presented
+}
+
+/// Selection for a silent preview: a refused selection is an error to show, not a document to
+/// print.
+fn silent_selection(
+    cas: &Cas,
+    authority: &RunAuthority,
+    compiler: &TaskPlanCompiler,
+    revision: TaskRevisionV1,
+) -> Result<Option<selection::PreparedSelection>, String> {
+    match selection::assess(cas, authority, compiler, revision, None)? {
+        selection::SelectionAssessment::Prepared(prepared) => Ok(Some(prepared)),
+        selection::SelectionAssessment::Refused { decision, .. } => {
+            let decision = serde_json::to_string(&decision).map_err(|e| e.to_string())?;
+            Err(format!("No Pipeline selected: {decision}"))
+        }
+    }
+}
+
+fn release(
+    cas: &Cas,
+    store: &mut EventStore,
+    lease: &TaskLease,
+    outcome: Result<(), String>,
+) -> Result<(), String> {
+    let released = store
+        .release_task_lease(cas, lease)
+        .map_err(|e| e.to_string());
+    match outcome {
+        Err(error) => Err(error),
+        Ok(()) => {
+            released?;
+            Ok(())
+        }
+    }
+}
+
+fn selected_profile(
+    compiler: &TaskPlanCompiler,
+    authority: &RunAuthority,
+    kind: &str,
+    verification: Option<FileVerification>,
+) -> Result<TaskKindProfile, String> {
+    let profile = if let Some(name) = &authority.kind_package {
+        let definition = compiler
+            .task_kind(name)
+            .ok_or("Captured Task-kind package is absent")?;
+        if definition.kind != kind {
+            return Err("Task-kind mapping changed its business kind".into());
+        }
+        definition.profile
+    } else {
+        match kind {
+            "implement" if verification == Some(FileVerification::Review) => {
+                TaskKindProfile::ReviewedImplementation
+            }
+            "implement" if verification == Some(FileVerification::ReviewOrTargetedFixes) => {
+                TaskKindProfile::RepairAllowedImplementation
+            }
+            "implement" => TaskKindProfile::Implementation,
+            "review" => TaskKindProfile::Review,
+            "document" => TaskKindProfile::Document,
+            "report" => TaskKindProfile::Report,
+            "optimize" => TaskKindProfile::OptimizationAnalysis,
+            _ => return Err("Task requires a configured kind package".into()),
+        }
+    };
+    if verification.is_some_and(|requested| {
+        !matches!(
+            (profile, requested),
+            (
+                TaskKindProfile::Implementation,
+                FileVerification::Evaluation
+            ) | (
+                TaskKindProfile::ReviewedImplementation,
+                FileVerification::Review
+            ) | (
+                TaskKindProfile::RepairAllowedImplementation,
+                FileVerification::ReviewOrTargetedFixes
+            )
+        )
+    }) {
+        return Err("Task verification request contradicts its captured kind profile".into());
+    }
+    Ok(profile)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_candidate_experiment(
+    cas: &Cas,
+    compiler: TaskPlanCompiler,
+    authority: &RunAuthority,
+    revision: &TaskRevisionV1,
+    revision_id: &str,
+    graph: &CompiledTask,
+    plan: &ExecutionPlanV1,
+) -> Result<(TaskPlanCompiler, ExecutionPlanV1, CompiledTask), String> {
+    use review_core::task::optimization_experiment::{
+        EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentalSlotV2,
+    };
+    use review_graph::task::ExperimentalSlotTemplateV1;
+
+    let coordinators = graph
+        .nodes
+        .iter()
+        .filter_map(|(name, node)| match &node.operator {
+            review_graph::task::CompiledOperator::Primitive {
+                operator:
+                    pipeline::TaskOperatorV1::OptimizationExperiment {
+                        baseline_slot,
+                        candidate_slot,
+                    },
+                ..
+            } => Some((name.clone(), baseline_slot.clone(), candidate_slot.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [(parent, baseline_local, candidate_local)] = coordinators.as_slice() else {
+        return Err(
+            "Candidate Optimization Pipeline needs exactly one installed experiment coordinator"
+                .into(),
+        );
+    };
+    let scope = parent
+        .split_once(".nodes.")
+        .map(|(scope, _)| scope)
+        .ok_or("Optimization coordinator has no compiled scope")?;
+    let qualify = |slot: &str| {
+        if graph.slots.contains_key(slot) {
+            slot.to_owned()
+        } else {
+            format!("{scope}.slots.{slot}")
+        }
+    };
+    let baseline_slot = qualify(baseline_local);
+    let candidate_slot = qualify(candidate_local);
+    let slots = [&baseline_slot, &candidate_slot];
+    let mut packages = BTreeSet::new();
+    let mut package_ids = BTreeSet::new();
+    let mut effects = BTreeSet::new();
+    let mut efforts = BTreeSet::new();
+    for slot in slots {
+        let package = &graph
+            .slots
+            .get(slot)
+            .ok_or("Optimization experiment lost a declared Worker slot")?
+            .worker;
+        let worker = compiler
+            .worker(package)
+            .ok_or("Optimization experiment Worker package is absent")?;
+        let binding = plan
+            .bindings
+            .get(slot)
+            .ok_or("Optimization experiment Worker has no exact binding")?;
+        efforts.insert(match &binding.execution {
+            WorkerExecutionV1::Command {} => "command".into(),
+            WorkerExecutionV1::Model { effort, .. } => effort.clone(),
+        });
+        packages.insert(package.clone());
+        package_ids.insert(binding.package_artifact_id.clone());
+        effects.extend(worker.signature.effects.iter().cloned());
+        worker
+            .signature
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.wall_ms > 0)
+            .ok_or("Optimization experiment Worker has no Attempt bound")?;
+    }
+    if packages.len() != 2 || package_ids.len() != 2 {
+        return Err("Baseline and candidate must be separate captured Worker packages".into());
+    }
+    let policy_id = authority.code_policy_id()?.to_owned();
+    let oracle_id = revision
+        .inputs
+        .get("requirements")
+        .and_then(|port| port.artifact_ids.first())
+        .cloned()
+        .ok_or("Candidate Optimization lacks captured Requirements")?;
+    let binding_id =
+        review_store::content_id(&json!([revision_id, policy_id, "optimization-experiment"]))
+            .map_err(|error| error.to_string())?;
+    let slot = ExperimentalSlotV2 {
+        schema: "af.experimental-slot/2".into(),
+        slot: "optimization-experiment".into(),
+        outer_plan_binding_id: binding_id,
+        policy_id: policy_id.clone(),
+        protected_oracle_id: oracle_id.clone(),
+        allowed_task_kinds: BTreeSet::from(["optimize".into()]),
+        allowed_packages: packages,
+        allowed_worker_package_ids: package_ids,
+        allowed_efforts: efforts,
+        allowed_effects: effects,
+        max_children: revision.limits.max_attempts.min(4096),
+        max_depth: 8,
+        max_concurrency: 1,
+        max_development_candidates: 1,
+        allowance: ExperimentAllowanceV1 {
+            tokens: revision.limits.tokens,
+            attempts: revision.limits.max_attempts,
+            wall_ms: revision.limits.deadline_unix_ms,
+        },
+    };
+    slot.validate()?;
+    let slot_id = cas
+        .put_artifact(
+            EXPERIMENTAL_SLOT_V2,
+            producer(),
+            vec![revision_id.into(), policy_id, oracle_id],
+            None,
+            serde_json::to_value(slot).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+        .0;
+    let compiler = compiler.with_experimental_slot(
+        parent.clone(),
+        ExperimentalSlotTemplateV1 {
+            slot_id,
+            max_concurrency: 1,
+        },
+    )?;
+    let root = &graph
+        .calls
+        .get("root")
+        .ok_or("Optimization plan has no root Pipeline")?
+        .pipeline;
+    let (plan, graph) = compiler.compile(cas, revision_id, root)?;
+    Ok((compiler, plan, graph))
+}
+
+pub(super) fn restore_experimental_slots(
+    mut compiler: TaskPlanCompiler,
+    graph: &CompiledTask,
+) -> Result<TaskPlanCompiler, String> {
+    for (parent, slot) in &graph.experimental_slots {
+        compiler = compiler.with_experimental_slot(parent.clone(), slot.clone())?;
+    }
+    Ok(compiler)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn captured_domain(
+    cas: &Cas,
+    authority: &RunAuthority,
+    profile: TaskKindProfile,
+    graph: CompiledTask,
+    plan: &ExecutionPlanV1,
+    compiler: &TaskPlanCompiler,
+    state: &Path,
+) -> Result<Box<dyn TaskDomain>, String> {
+    match profile {
+        TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
+            domain::code_domain(cas, authority.code_policy_id()?, graph, state)?
+                .with_cache_source_resolver(crate::caches::resolve_kind),
+        )),
+        TaskKindProfile::Review
+        | TaskKindProfile::Implementation
+        | TaskKindProfile::ReviewedImplementation
+        | TaskKindProfile::RepairAllowedImplementation => Ok(Box::new(
+            ReviewTaskDomain::captured(
+                cas,
+                authority
+                    .review_policy_id
+                    .as_deref()
+                    .ok_or("Review Task lost its captured policy")?,
+                graph,
+            )?
+            .with_rust_toolchain_mapping(
+                std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
+            )
+            .with_remote_checks(domain::remote_checks(state)?)
+            .with_review_task(profile == TaskKindProfile::Review)
+            .with_cache_source_resolver(crate::caches::resolve_kind),
+        )),
+        TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(
+            cas,
+            authority
+                .document_policy_id
+                .as_deref()
+                .ok_or("Task lost its document policy")?,
+            graph,
+        )?)),
+        TaskKindProfile::Report => Ok(Box::new(ReportTaskDomain::captured(
+            cas,
+            authority
+                .report_policy_id
+                .as_deref()
+                .ok_or("Task lost its report policy")?,
+            graph,
+        )?)),
+        TaskKindProfile::OptimizationAnalysis => Ok(Box::new(OptimizationTaskDomain::captured(
+            authority.code_policy_id()?,
+            graph,
+        )?)),
+        TaskKindProfile::OptimizationCandidate => Ok(Box::new(
+            OptimizationCandidateTaskDomain::captured(graph, plan.clone(), compiler)?,
+        )),
+    }
+}
+
+fn execute(
+    cas: &Cas,
+    store: &mut EventStore,
+    lease: &TaskLease,
+    authority: &CapturedTaskAuthority<'_>,
+    host: &CapturedTaskHost<'_>,
+    domain: &dyn TaskDomain,
+) -> Result<(), String> {
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
+        .with_cancellation(&cancellation);
+    crate::interrupt::note_task(lease.task_id());
+    let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
+    // Interrupted work is neither assembled nor finished: the lease is released and the Task
+    // stays resumable with `af task run` (ADR-0129).
+    crate::interrupt::check()?;
+    let report = report?;
+    let projection = runtime.projection()?;
+    if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {
+        return Ok(());
+    }
+    let result = domain.assemble_result(cas, &projection, &report)?;
+    let result_id = cas
+        .put_artifact(
+            TASK_RESULT_V1,
+            producer(),
+            vec![result.task_revision_id.clone()],
+            None,
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .0;
+    runtime.finish(&result_id)
+}
+
+fn confirm_current_plan(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let current = store
+        .task_projection(cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Unknown Task")?;
+    if current.plan_id.as_deref() != expected {
+        return Err(
+            "Captured plan changed before execution; inspect and confirm the new plan".into(),
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn run(
+    id: &str,
+    repo: &Path,
+    state: Option<&Path>,
+    json: bool,
+    confirm_plan: Option<&str>,
+    execute_now: bool,
+) -> Result<i32, String> {
+    let (_, state) = state_path(repo, state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    if !state.join("events.sqlite").is_file() {
+        return Err("No common Task Store exists".into());
+    }
+    let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let projection = store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Unknown Task")?;
+    if let Some(expected) = confirm_plan {
+        if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
+            return Err(
+                "Plan confirmation differs from the current captured plan; inspect it again".into(),
+            );
+        }
+    }
+    if !execute_now
+        && confirm_plan.is_none()
+        && !projection.admitted
+        && !matches!(projection.phase, TaskPhaseV1::Finished { .. })
+        && projection.plan_id.is_some()
+    {
+        if !json {
+            present(&cas, &store, id, false, true)?;
+        }
+        return Err("Confirm the captured plan with --confirm-plan PLAN_ID (or explicitly opt into --execute automation)".into());
+    }
+    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
+        return present(&cas, &store, id, json, false);
+    }
+    if projection.plan_id.is_none() {
+        present(&cas, &store, id, json, true)?;
+        return Ok(4);
+    }
+    let authority: RunAuthority = serde_json::from_value(
+        cas.get_json(&projection.revision.authority.policy_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut compiler = planning::restore(&cas, &projection, &authority)?;
+    let plan: ExecutionPlanV1 = artifact(
+        &cas,
+        projection
+            .plan_id
+            .as_deref()
+            .ok_or("Task has no captured plan")?,
+        EXECUTION_PLAN_V1,
+    )?;
+    let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    compiler = restore_experimental_slots(compiler, &graph)?;
+    if plan.preparation.is_some() {
+        return planning::resume(
+            cas, store, authority, compiler, projection, plan, graph, json,
+        );
+    }
+    let adapters = bind_models(
+        &cas,
+        &mut compiler,
+        &authority,
+        &projection.revision_id,
+        &graph
+            .calls
+            .get("root")
+            .ok_or("Task has no captured root Pipeline")?
+            .pipeline,
+    )?;
+    compiler.validate_plan(&cas, &projection.revision, &plan)?;
+    let verification = projection
+        .revision
+        .acceptance
+        .values()
+        .any(|a| a.evidence_type == review_core::task::verification::REVIEWED_IMPLEMENTATION_V1)
+        .then_some(FileVerification::Review)
+        .or_else(|| {
+            projection
+                .revision
+                .acceptance
+                .values()
+                .any(|a| {
+                    a.evidence_type
+                        == review_core::task::verification::REPAIR_ALLOWED_IMPLEMENTATION_V1
+                })
+                .then_some(FileVerification::ReviewOrTargetedFixes)
+        });
+    let profile = selected_profile(
+        &compiler,
+        &authority,
+        &projection.revision.kind,
+        verification,
+    )?;
+    let inner = captured_domain(
+        &cas,
+        &authority,
+        profile,
+        graph.clone(),
+        &plan,
+        &compiler,
+        &state,
+    )?;
+    let models = model_bindings(&plan, &graph, &adapters)?;
+    let domain = ProviderTaskDomain {
+        graph: &graph,
+        models: &models,
+        inner: inner.as_ref(),
+    };
+    let environment = domain::environment(&cas, &authority, profile)?;
+    let host = CapturedTaskHost::capture_with_models(
+        &cas,
+        &compiler,
+        &projection.revision,
+        &plan,
+        graph.clone(),
+        environment.as_ref(),
+        &domain,
+        &models,
+    )?;
+    let developer = developer::host(&cas, &authority, None);
+    let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
+    let lease = store
+        .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
+        .map_err(|e| e.to_string())?;
+    let outcome = (|| {
+        confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
+        store
+            .recover_task_attempts(&cas, &lease)
+            .map_err(|e| e.to_string())?;
+        if projection
+            .waiting_for_domain_publication(&cas)
+            .map_err(|e| e.to_string())?
+        {
+            store
+                .resume_task(&cas, &lease, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
+        if !projection.admitted {
+            store
+                .admit_task_plan(&cas, &lease, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
+        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        Ok(())
+    })();
+    release(&cas, &mut store, &lease, outcome)?;
+    present(&cas, &store, id, json, false)
+}
+
+pub(super) fn explain(
+    id: &str,
+    repo: &Path,
+    state: Option<&Path>,
+    json: bool,
+    plan: Option<&str>,
+    tree: bool,
+) -> Result<i32, String> {
+    let (_, state) = state_path(repo, state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if let Some(plan_id) = plan {
+        return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
+    }
+    present_with_format(&cas, &store, id, json, true, tree, None)
+}
+
+pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool, String> {
+    if !state.join("events.sqlite").is_file() {
+        return Ok(false);
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    // A collected Task shows its retained summary; its projection stops at the tombstone.
+    if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
+        collection::present(&collected, json)?;
+        return Ok(true);
+    }
+    if store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Ok(false);
+    }
+    present(&cas, &store, id, json, false)?;
+    Ok(true)
+}
+
+/// Whether a Task state directory holds a Store. Only a missing `events.sqlite` means none;
+/// a permission or any other error reading it is the caller's error, never an empty Store.
+pub(crate) fn store_present(state: &Path) -> Result<bool, String> {
+    let path = state.join("events.sqlite");
+    match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(format!("{} is not a file", path.display())),
+        // A link whose target is gone is a Store that cannot be read, not a missing one.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => Err(format!("{} is a link to nothing", path.display())),
+                Err(_) => Ok(false),
+            }
+        }
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String> {
+    if !store_present(state)? {
+        return Ok(vec![]);
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    // Uncollected Tasks are projected first and the tombstones read after: a Task that
+    // `gc --apply` collects between the two is skipped by the projection and listed from its
+    // tombstone, so no Task the log retains is ever omitted (ADR-0135).
+    let mut entries = store.map_tasks(&cas, |task| {
+        let result: Option<TaskResultV1> = match &task.phase {
+            TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
+            _ => None,
+        };
+        Ok(json!({"schema":"af/task-list-entry@2","task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+            "outcome":result.as_ref().map(|r| &r.domain_conclusion),
+            "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
+            "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
+            "delivery":delivery_view(&cas, &task)?}))
+    }).map_err(|e| e.to_string())?.into_iter().collect::<Result<Vec<_>, String>>()?;
+    let collected = store
+        .collected_tasks()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(collection::list_entry)
+        .collect::<Vec<_>>();
+    // A Task collected after its projection above appears in both reads: the tombstone wins,
+    // so no Task is listed twice or in two states.
+    let tombstoned: BTreeSet<&str> = collected
+        .iter()
+        .filter_map(|entry| entry["task_id"].as_str())
+        .collect();
+    entries.retain(|entry| {
+        entry["task_id"]
+            .as_str()
+            .is_none_or(|id| !tombstoned.contains(id))
+    });
+    // Collected Tasks keep their place in label order, with their retained summary.
+    entries.extend(collected);
+    entries.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
+    Ok(entries)
+}
+
+/// `af task list --sizes`: the Store's totals and each uncollected Task's CAS footprint. The
+/// same reachability walk `af task gc` sweeps by (ADR-0135). Nothing is written.
+pub(super) fn list_sizes(
+    state: &Path,
+) -> Result<(serde_json::Value, BTreeMap<String, serde_json::Value>), String> {
+    if !store_present(state)? {
+        return Ok((
+            json!({"objects":0,"bytes":0,"unreachable_objects":0,"unreachable_bytes":0}),
+            BTreeMap::new(),
+        ));
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let inventory = store.store_inventory(&cas).map_err(|e| e.to_string())?;
+    let totals = &inventory.totals;
+    Ok((
+        json!({
+            "objects": totals.objects,
+            "bytes": totals.bytes,
+            "unreachable_objects": totals.unreachable_objects,
+            "unreachable_bytes": totals.unreachable_bytes,
+        }),
+        inventory
+            .tasks
+            .iter()
+            .map(|(task_id, footprint)| (task_id.clone(), collection::footprint(footprint)))
+            .collect(),
+    ))
+}
+
+fn present(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json_output: bool,
+    explain: bool,
+) -> Result<i32, String> {
+    present_with_format(cas, store, id, json_output, explain, false, None)
+}
+
+/// Present a Task that was just planned or started, carrying the undeclared `.af/` paths of the
+/// Snapshot it captured. Inspection commands derive the same group from the recorded source
+/// Snapshot, so every document of one Task carries the same field.
+fn present_with_advisory(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json: bool,
+    explain: bool,
+    undeclared: &review_config::layout::PathGroup,
+) -> Result<i32, String> {
+    let group = Some(undeclared);
+    present_with_format(cas, store, id, json, explain, false, group)
+}
+
+/// The undeclared `.af/` paths of a recorded Task's source Snapshot, read back from the Store:
+/// the `source` input's Snapshot receipt names its Manifest, and the Manifest is classified
+/// exactly as it was at capture. `None` for a Task without a source Snapshot (a Document
+/// Task) or one whose source predates Snapshot receipts.
+fn recorded_undeclared_af_paths(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<review_config::layout::PathGroup>, String> {
+    let Some(source) = revision.inputs.get("source") else {
+        // A source-less profile kept the observation as a typed artifact in its provenance.
+        for id in &revision.provenance.input_artifact_ids {
+            let envelope = cas.get_json(id).map_err(|e| e.to_string())?;
+            if envelope.get("type").and_then(serde_json::Value::as_str)
+                == Some(UNDECLARED_AF_PATHS_V1)
+                && let Some(payload) = envelope.get("payload")
+            {
+                let group: review_config::layout::PathGroup =
+                    serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?;
+                return Ok(Some(group));
+            }
+        }
+        return Ok(None);
+    };
+    let port = serde_json::to_value(source).map_err(|e| e.to_string())?;
+    let Some(snapshot_id) = port.get("snapshot_id").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let receipt = cas.get_json(snapshot_id).map_err(|e| e.to_string())?;
+    // A Task source Snapshot (`af.task-snapshot/1`) names its Manifest as `manifest_id`; a
+    // Review Snapshot receipt (`af/snapshot@1`) as `manifest_artifact_id`.
+    let Some(manifest_id) = ["manifest_id", "manifest_artifact_id"]
+        .into_iter()
+        .find_map(|key| receipt.get(key).and_then(serde_json::Value::as_str))
+    else {
+        return Ok(None);
+    };
+    let manifest: Manifest =
+        serde_json::from_value(cas.get_json(manifest_id).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("reading source Snapshot Manifest: {e}"))?;
+    Ok(Some(
+        review_config::layout::classify_manifest(&manifest).undeclared,
+    ))
+}
+
+/// The document `af task show --json` prints for a Task, or `af task explain --json` with
+/// `explain`, read from `state` with the same default resolution those commands use: the
+/// `--json` document, byte for byte, as a value. `None` when the Store holds no such Task.
+/// Nothing is written.
+pub(crate) fn inspection_document(
+    state: &Path,
+    id: &str,
+    explain: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    if !store_present(state)? {
+        return Ok(None);
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(inspection(&cas, &store, id, explain, None)?.value))
+}
+
+/// One recorded artifact of a Task state directory, as the Store holds it: the envelope an
+/// inspection document names by ID. Nothing is written.
+pub(crate) fn recorded_artifact(state: &Path, id: &str) -> Result<serde_json::Value, String> {
+    if !review_core::is_digest(id) {
+        return Err(format!("{id} is not an artifact ID"));
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    cas.get_json(id).map_err(|e| e.to_string())
+}
+
+/// `af task start --execute` without printing: a test records a real Task this way.
+#[cfg(test)]
+pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32, String> {
+    let options = StartOptions {
+        file: file.to_path_buf(),
+        bindings: None,
+        source_bindings: None,
+        repo: repo.to_path_buf(),
+        state: Some(state.to_path_buf()),
+        authority: "HEAD".into(),
+        uncommitted: false,
+        json: false,
+        plan_only: false,
+        timeout_secs: None,
+        optimization_history: None,
+    };
+    start_kind(options, None, Presentation::Silent)
+}
+
+/// The inspection document of one Task, and what its text form needs besides.
+struct Inspection {
+    value: serde_json::Value,
+    state: TaskProjection,
+    result: Option<TaskResultV1>,
+    bindings: Option<review_core::task::input_bindings::TaskInputBindingsV1>,
+    reports: Vec<serde_json::Value>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn present_with_format(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json_output: bool,
+    explain: bool,
+    tree: bool,
+    undeclared: Option<&review_config::layout::PathGroup>,
+) -> Result<i32, String> {
+    let Inspection {
+        value,
+        state,
+        result,
+        bindings,
+        reports,
+    } = inspection(cas, store, id, explain, undeclared)?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&value).map_err(|e| e.to_string())?
+        );
+    } else if explain && state.plan_id.is_some() {
+        print!("{}", preview::current(cas, &state, tree)?);
+    } else {
+        println!(
+            "Task {}: {}",
+            state.task_id,
+            result.as_ref().map_or(
+                match &state.phase {
+                    TaskPhaseV1::Waiting { reason } => match reason {
+                        TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
+                        TaskWaitingReasonV1::NeedsResources => "needs-resources",
+                        TaskWaitingReasonV1::NeedsInput => "needs-input",
+                        TaskWaitingReasonV1::NeedsHuman => "needs-human",
+                    },
+                    _ => "planned",
+                },
+                |r| r.domain_conclusion.as_str()
+            )
+        );
+        if let Some(id) = &state.plan_id {
+            println!("Plan {id}");
+        }
+        // One line per bound output, through the same sanitizer the preview uses: a referenced
+        // Task ID is untrusted display data wherever it is printed. A port bound from several
+        // outputs prints one line per output (ADR-0134).
+        let bound = bindings.iter().flat_map(|record| &record.bindings);
+        let bound = bound.flat_map(|(port, binding)| {
+            preview::bound_outputs(binding).map(move |output| (port, output))
+        });
+        for (port, binding) in bound {
+            match &binding.task {
+                Some(task) => println!(
+                    "bound {} <- task {}/{} ({})",
+                    preview::text(port),
+                    preview::text(&task.task_id),
+                    preview::text(&task.port),
+                    preview::acceptance_name(task.acceptance)
+                ),
+                None => println!(
+                    "bound {} <- artifact {}",
+                    preview::text(port),
+                    preview::text(&binding.artifact_id)
+                ),
+            }
+        }
+        for line in check_cache_lines(&value) {
+            println!("{line}");
+        }
+        for line in remote_check_lines(&value) {
+            println!("{line}");
+        }
+        for line in measurement_lines(cas, &state)? {
+            println!("{line}");
+        }
+        for line in report_lines(cas, result.as_ref())? {
+            println!("{line}");
+        }
+        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
+            for (node, diagnostic) in last {
+                if let Some(message) = diagnostic["message"].as_str() {
+                    println!("{node}: {message}");
+                }
+            }
+        }
+        if explain {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
+            );
+        }
+    }
+    if result.as_ref().is_some_and(|r| {
+        matches!(
+            r.domain_conclusion.as_str(),
+            "pass" | "changes_requested" | "convergence_exhausted" | "incomplete"
+        )
+    }) {
+        return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
+            "pass" => 0,
+            "changes_requested" | "convergence_exhausted" => 3,
+            _ => 4,
+        }));
+    }
+    let pending = if state.phase
+        == (TaskPhaseV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsHuman,
+        }) {
+        4
+    } else {
+        0
+    };
+    Ok(result.map_or(pending, |r| match r.acceptance {
+        TaskAcceptanceV1::Satisfied => 0,
+        TaskAcceptanceV1::Unsatisfied => 3,
+        TaskAcceptanceV1::Inconclusive => 4,
+    }))
+}
+
+/// One line per recorded Measurement and per recorded comparison (ADR-0132), in node order: a
+/// measurement's median elapsed time, or the repetition and reason it failed at, and a
+/// comparison's conclusion on its objective's metric. A Task without either prints nothing.
+fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, String> {
+    use review_core::task::measurement::*;
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    let mut lines = Vec::new();
+    let Some(execution) = &state.execution else {
+        return Ok(lines);
+    };
+    for (node, (_, output)) in &execution.outputs {
+        for (port, value) in &output.outputs {
+            let [id] = value.artifact_ids.as_slice() else {
+                continue;
+            };
+            if value.artifact_type == MEASUREMENT_V1 {
+                let measurement: MeasurementV1 = artifact(cas, id, MEASUREMENT_V1)?;
+                let detail = match (&measurement.failure, measurement.metric(ELAPSED_MS)) {
+                    (Some(failure), _) => format!(
+                        "failed at repetition {} of {}: {}",
+                        failure.repetition,
+                        measurement.repetitions,
+                        failure.reason.as_str()
+                    ),
+                    (None, Some(elapsed)) => format!(
+                        "median elapsed {} ms over {} repetitions{}",
+                        elapsed.median,
+                        elapsed.n,
+                        cache_condition(&measurement)
+                    ),
+                    (None, None) => "passed".into(),
+                };
+                lines.push(format!(
+                    "measurement {} {}: {detail}",
+                    preview::text(node),
+                    preview::text(port)
+                ));
+            } else if value.artifact_type == MEASUREMENT_COMPARISON_V1 {
+                let comparison: MeasurementComparisonV1 =
+                    artifact(cas, id, MEASUREMENT_COMPARISON_V1)?;
+                let row = comparison
+                    .metrics
+                    .get(&comparison.metric)
+                    .ok_or("Comparison lacks its objective's metric")?;
+                lines.push(format!(
+                    "comparison {} {}: {} on {} ({} → {}), {}",
+                    preview::text(node),
+                    preview::text(&comparison.objective),
+                    row.conclusion.as_str(),
+                    preview::text(&comparison.metric),
+                    row.baseline_median
+                        .as_ref()
+                        .map_or_else(|| "—".to_string(), ToString::to_string),
+                    row.candidate_median
+                        .as_ref()
+                        .map_or_else(|| "—".to_string(), ToString::to_string),
+                    match comparison.outcome {
+                        ReceiptOutcomeV1::Passed => "passed",
+                        ReceiptOutcomeV1::Failed => "failed",
+                        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+                    }
+                ));
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// A report Task's title, its verifier's outcome and the source Snapshot its citations were
+/// checked against (ADR-0133), from the recorded public acceptance receipt. Any other Task, and
+/// a report Task with no result yet, prints nothing.
+fn report_lines(cas: &Cas, result: Option<&TaskResultV1>) -> Result<Vec<String>, String> {
+    use review_core::task::document::{DOCUMENT_V1, DocumentV1};
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::report_task::*;
+    let Some(verification) = result.and_then(|result| {
+        result
+            .outputs
+            .get("verification")
+            .filter(|port| port.artifact_type == REPORT_VERIFICATION_V1)
+    }) else {
+        return Ok(Vec::new());
+    };
+    let [id] = verification.artifact_ids.as_slice() else {
+        return Ok(Vec::new());
+    };
+    let name = |outcome: ReceiptOutcomeV1| match outcome {
+        ReceiptOutcomeV1::Passed => "passed",
+        ReceiptOutcomeV1::Failed => "failed",
+        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    };
+    let receipt: ReportVerificationV1 = artifact(cas, id, REPORT_VERIFICATION_V1)?;
+    let document: DocumentV1 = artifact(cas, &receipt.document_id, DOCUMENT_V1)?;
+    let draft = cas
+        .get_artifact(&document.draft_id)
+        .map_err(|e| e.to_string())?;
+    let title = draft.payload["title"]
+        .as_str()
+        .ok_or("Report draft has no title")?;
+    let verifier = match &receipt.evaluation_id {
+        Some(id) => {
+            let evaluation: ReportEvaluationV1 = artifact(cas, id, REPORT_EVALUATION_V1)?;
+            name(evaluation.outcome).to_owned()
+        }
+        None => format!("not run (report acceptance {})", name(receipt.outcome)),
+    };
+    Ok(vec![
+        format!("report: {}", preview::text(title)),
+        format!("report verifier: {verifier}"),
+        format!("report Snapshot: {}", receipt.source_snapshot_id),
+    ])
+}
+
+/// The cache condition a warm measure's repetitions actually ran under: `, warm` when every one
+/// had the Warm Check Cache, `, cold (<reason>)` when none did, `, warm N of M` when they differ.
+/// A measure that did not ask for the cache adds nothing.
+fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) -> String {
+    if !measurement.warm {
+        return String::new();
+    }
+    let total = measurement.runs.len();
+    let warm = measurement
+        .runs
+        .iter()
+        .filter(|run| run.cache.as_ref().is_some_and(|cache| cache.warm))
+        .count();
+    if warm == total {
+        ", warm".into()
+    } else if warm == 0 {
+        let reason = measurement
+            .runs
+            .iter()
+            .find_map(|run| run.cache.as_ref().and_then(|cache| cache.reason.clone()))
+            .unwrap_or_else(|| "unbound".into());
+        format!(", cold ({reason})")
+    } else {
+        format!(", warm {warm} of {total}")
+    }
+}
+
+/// Every remote check result of the Task's current check receipts (ADR-0140), in node and
+/// check order, with the evidence document it derives from. Replay reads only the Store.
+fn remote_check_records(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> Result<Vec<serde_json::Value>, String> {
+    use review_core::task::remote_check::{REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1};
+    use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+    let mut records = Vec::new();
+    let Some(execution) = &state.execution else {
+        return Ok(records);
+    };
+    for (node, (_, output)) in &execution.outputs {
+        for value in output.outputs.values() {
+            if value.artifact_type != TASK_CHECK_RECEIPT_V1 {
+                continue;
+            }
+            for id in &value.artifact_ids {
+                let receipt: TaskCheckReceiptV1 = artifact(cas, id, TASK_CHECK_RECEIPT_V1)?;
+                for (check, result_id) in &receipt.checks {
+                    // The result's second shape names its evidence; a local result has none.
+                    let result = cas.get_json(result_id).map_err(|e| e.to_string())?;
+                    let Some(evidence_id) = result["remote"].as_str() else {
+                        continue;
+                    };
+                    let evidence: RemoteCheckEvidenceV1 =
+                        artifact(cas, evidence_id, REMOTE_CHECK_EVIDENCE_V1)?;
+                    evidence.validate()?;
+                    let mut record = json!({
+                        "node": node,
+                        "check": check,
+                        "status": result["status"],
+                        "artifact_id": evidence_id,
+                        "artifact_type": REMOTE_CHECK_EVIDENCE_V1,
+                        "record": evidence,
+                    });
+                    // The kept log excerpt of the jobs that did not succeed, when there is one.
+                    if let Some(log) = result["stdout"].as_str() {
+                        record["log_id"] = json!(log);
+                    }
+                    records.push(record);
+                }
+            }
+        }
+    }
+    Ok(records)
+}
+
+/// 64 bits from the operating system's random source, through the standard library's
+/// per-process hash keys. It is the only entropy a Task's opening transition carries, and it is
+/// journaled there: replay reads it back and never draws it again.
+fn opening_nonce() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
+/// Whole seconds since the epoch of an evidence timestamp (`YYYY-MM-DDTHH:MM:SS[.f]Z`).
+fn evidence_seconds(text: &str) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    // Days from the civil date (proleptic Gregorian), after Howard Hinnant's algorithm.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let of_cycle = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
+    let days = era * 146_097 + of_cycle - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// The text `af task show` prints for each remote check (ADR-0140): the executor and pull
+/// request, the run and its attempt, each required job with its conclusion and duration, the
+/// unsuccessful steps, the kept log excerpt, the refusal reason, and the two commands that clean
+/// up after the gate.
+fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cleanups = BTreeSet::new();
+    for entry in inspection["remote_checks"].as_array().into_iter().flatten() {
+        let record = &entry["record"];
+        let name = preview::text(entry["check"].as_str().unwrap_or_default());
+        let status = preview::text(entry["status"].as_str().unwrap_or("not_run"));
+        let executor = preview::text(record["executor"].as_str().unwrap_or_default());
+        let github = preview::text(record["github"].as_str().unwrap_or_default());
+        let mut line = format!("remote check {name}: {status} by {executor} on {github}");
+        if let Some(url) = record["pull_request"]["url"].as_str() {
+            line.push_str(&format!(", pull request {}", preview::text(url)));
+        }
+        if let (Some(id), Some(attempt)) = (
+            record["run"]["id"].as_u64(),
+            record["run"]["attempt"].as_u64(),
+        ) {
+            line.push_str(&format!(", run {id} attempt {attempt}"));
+        }
+        lines.push(line);
+        for job in record["jobs"].as_array().into_iter().flatten() {
+            let duration = match (
+                job["started_at"].as_str().and_then(evidence_seconds),
+                job["completed_at"].as_str().and_then(evidence_seconds),
+            ) {
+                (Some(start), Some(end)) if end >= start => format!(" in {} s", end - start),
+                _ => String::new(),
+            };
+            let mut text = format!(
+                "  job {}: {}{duration}",
+                preview::text(job["name"].as_str().unwrap_or_default()),
+                preview::text(job["conclusion"].as_str().unwrap_or_default())
+            );
+            let steps = job["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|step| {
+                    format!(
+                        "{} ({})",
+                        preview::text(step["name"].as_str().unwrap_or_default()),
+                        preview::text(step["conclusion"].as_str().unwrap_or_default())
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !steps.is_empty() {
+                text.push_str(&format!("; unsuccessful steps: {}", steps.join(", ")));
+            }
+            if job["conclusion"] != "success"
+                && let Some(url) = job["url"].as_str()
+            {
+                text.push_str(&format!("; log at {}", preview::text(url)));
+            }
+            lines.push(text);
+        }
+        if let Some(log) = entry["log_id"].as_str() {
+            lines.push(format!(
+                "  log excerpt of the unsuccessful jobs: CAS object {}",
+                preview::text(log)
+            ));
+        }
+        if let Some(reason) = record["reason"].as_str() {
+            lines.push(format!("  reason: {}", preview::text(reason)));
+        }
+        if let Some(diagnostic) = record["diagnostic"].as_str() {
+            lines.push(format!(
+                "  diagnostic: {}",
+                preview::text(&diagnostic.replace('\n', " | "))
+            ));
+        }
+        if record["state"] != "refused" {
+            cleanups.insert((
+                github.clone(),
+                record["pull_request"]["number"].as_u64(),
+                preview::text(inspection["task_id"].as_str().unwrap_or_default()),
+            ));
+        }
+    }
+    for (github, number, task_id) in cleanups {
+        lines.push(format!(
+            "gate branches af-gate/{task_id}/base and af-gate/{task_id}/head stay until you remove them:"
+        ));
+        if let Some(number) = number {
+            lines.push(format!("  gh pr close {number} --repo {github}"));
+        }
+        lines.push(format!(
+            "  git push <push-url> --delete af-gate/{task_id}/base af-gate/{task_id}/head"
+        ));
+    }
+    lines
+}
+
+/// One line per warm check (ADR-0131), named by its evidence group's check binding: its outcome,
+/// its host-observed elapsed time, or that it never started or was run remotely, and, per
+/// declared kind,
+/// `warm <bytes>` or `cold <reason>`. A check without observations prints nothing, so a Task
+/// whose policy has no `[warm]` reads as before, and no line is ever printed without a name.
+fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    for observation in inspection["runtime_observations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let record = &observation["record"];
+        let Some(caches) = record["caches"].as_array().filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        let checks = record["spans"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|span| span["kind"] == "check")
+            .collect::<Vec<_>>();
+        let span = match checks.as_slice() {
+            [] => None,
+            [check] => Some(check),
+            _ => continue,
+        };
+        let binding = &record["check"];
+        let Some(name) = binding["name"]
+            .as_str()
+            .or_else(|| span.and_then(|check| check["label"].as_str()))
+        else {
+            continue;
+        };
+        let timing = match (span, binding["outcome"].as_str()) {
+            (Some(check), Some(outcome)) => {
+                format!("{} in {} ms", preview::text(outcome), check["elapsed_ms"])
+            }
+            (Some(check), None) => format!("{} ms", check["elapsed_ms"]),
+            // A remote check ran nothing here: every declared kind was skipped as `remote`
+            // (ADR-0140), and its own `remote check` lines say what ran and where.
+            (None, outcome)
+                if caches.iter().all(|cache| {
+                    cache["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.ends_with(":remote"))
+                }) =>
+            {
+                format!(
+                    "{}, run remotely",
+                    preview::text(outcome.unwrap_or("not_run"))
+                )
+            }
+            (None, outcome) => format!(
+                "{}, never started",
+                preview::text(outcome.unwrap_or("not_run"))
+            ),
+        };
+        lines.push(format!(
+            "check {}: {timing}, {}",
+            preview::text(name),
+            cache_states(caches)
+        ));
+    }
+    lines
+}
+
+/// Why a warm directory was removed after its check, and which byte bound acted when one did:
+/// `bound_exceeded max_bytes` for an eviction whose check's result stood, `bound_exceeded
+/// hard_max_bytes` for a check the bound ended (ADR-0135).
+fn eviction(cache: &serde_json::Value) -> String {
+    let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
+    match cache["bound"].as_str() {
+        Some(bound) => format!("{} {}", preview::text(why), preview::text(bound)),
+        None => preview::text(why),
+    }
+}
+
+fn cache_states(caches: &[serde_json::Value]) -> String {
+    let mut seen = BTreeSet::new();
+    caches
+        .iter()
+        .map(|cache| {
+            let kind = cache["kind"].as_str().unwrap_or_default();
+            let (base, reason) = kind.split_once(':').unwrap_or((kind, ""));
+            let bytes = &cache["bytes_available"];
+            let first = seen.insert(base.to_owned());
+            let base = preview::text(base);
+            let reason = preview::text(reason);
+            if cache["eligible"] == true {
+                let state = if bytes.as_u64().is_some_and(|bytes| bytes > 0) {
+                    format!("{base} warm {bytes}")
+                } else {
+                    format!("{base} cold empty")
+                };
+                match cache["evicted_bytes"].as_u64() {
+                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    None => state,
+                }
+            } else {
+                let state = if first {
+                    format!("{base} cold {reason}")
+                } else {
+                    format!("{base} removed {bytes} ({reason})")
+                };
+                match cache["evicted_bytes"].as_u64() {
+                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    None => state,
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Build the inspection document every `af task` presentation of one Task prints.
+fn inspection(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    explain: bool,
+    undeclared: Option<&review_config::layout::PathGroup>,
+) -> Result<Inspection, String> {
+    let state: TaskProjection = store
+        .task_projection(cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Unknown Task")?;
+    let result: Option<TaskResultV1> = match &state.phase {
+        TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
+        _ => None,
+    };
+    let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+        "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    if let Some(selection) = selection::recorded(cas, &state.revision)? {
+        value["selection"] = selection;
+    }
+    if let Some(proof) = &state.planning {
+        value["planning"] = json!({"bootstrap_plan_id":proof.bootstrap_plan_id(), "proposal_id":proof.proposal_id(), "request_revision_id":proof.revision_id()});
+    }
+    let events = store
+        .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let mut history = Vec::new();
+    let mut execution = Vec::new();
+    let mut owned_child_sets = Vec::new();
+    let mut experiments = Vec::new();
+    let mut runtime_observations = Vec::new();
+    let mut runtime_attempt_ids = BTreeSet::new();
+    let mut decisions = Vec::new();
+    for event in events {
+        let transition =
+            review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
+        if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+            &transition.change
+        {
+            let decoded =
+                review_store::store::task::execution::read_execution_record(cas, record_id)
+                    .map_err(|error| error.to_string())?;
+            let mut entry = json!({"artifact_id":record_id,"artifact_type":decoded.envelope.artifact_type,"record":decoded.envelope.payload});
+            let record = decoded.record;
+            if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                attempt_id,
+                raw_artifact_ids,
+                ..
+            } = &record
+            {
+                for id in raw_artifact_ids {
+                    // Raw Worker/provider captures deliberately share this list with typed
+                    // sidecars and may use a provider-native identity rather than a CAS blob
+                    // digest. Only successfully decoded envelopes can be public observations.
+                    let Ok(artifact) = cas.get_artifact(id) else {
+                        continue;
+                    };
+                    if artifact.artifact_type
+                        == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    {
+                        let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+                            serde_json::from_value(artifact.payload.clone())
+                                .map_err(|e| e.to_string())?;
+                        evidence.validate()?;
+                        if evidence.task_id != state.task_id
+                            || evidence.attempt_id != *attempt_id
+                            || artifact.producer
+                                != (review_core::Producer::Attempt {
+                                    run_id: review_store::store::task::task_run_id(&state.task_id)
+                                        .map_err(|e| e.to_string())?,
+                                    node_id: evidence.node.clone(),
+                                    attempt_id: attempt_id.clone(),
+                                })
+                        {
+                            return Err(
+                                "Task runtime evidence contradicts its settled Attempt".into()
+                            );
+                        }
+                        runtime_attempt_ids.insert(attempt_id.clone());
+                        runtime_observations.push(json!({
+                            "artifact_id": id,
+                            "artifact_type": artifact.artifact_type,
+                            "record": evidence,
+                        }));
+                    }
+                }
+            }
+            if let review_core::task::execution::TaskExecutionRecordV1::OwnedChildrenRegistered {
+                child_set_id,
+            } = &record
+            {
+                let set = review_store::store::task::execution::owned::read_task_owned_children(
+                    cas,
+                    child_set_id,
+                )
+                .map_err(|e| e.to_string())?;
+                owned_child_sets.push(json!({"artifact_id":child_set_id,"artifact_type":review_core::task::owned_children::TASK_OWNED_CHILD_SET_V1,"record":set}));
+            }
+            match &record {
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentPrepared { prepared_id } => {
+                    let prepared = cas.get_artifact(prepared_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"prepared","artifact_id":prepared_id,"artifact_type":prepared.artifact_type,"record":prepared.payload}));
+                }
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentPlanDecided { prepared_id, decision_id } => {
+                    let decision = cas.get_artifact(decision_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"decision","prepared_id":prepared_id,"artifact_id":decision_id,"artifact_type":decision.artifact_type,"record":decision.payload}));
+                }
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentChildrenRegistered { prepared_id, decision_id, child_plan_id } => {
+                    let plan = cas.get_artifact(child_plan_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"registered","prepared_id":prepared_id,"decision_id":decision_id,"artifact_id":child_plan_id,"artifact_type":plan.artifact_type,"record":plan.payload}));
+                }
+                _ => {}
+            }
+            if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                result:
+                    review_core::task::execution::TaskAttemptResultV1::Failed { diagnostic_id, .. },
+                ..
+            } = &record
+            {
+                entry["diagnostic"] = cas.get_json(diagnostic_id).map_err(|e| e.to_string())?;
+            }
+            execution.push(entry);
+        }
+        if let review_core::task::event::TaskChangeV1::PlanDecided {
+            decision_id,
+            valid_until_unix_ms,
+        } = &transition.change
+        {
+            let decision: PlanDecisionV1 = artifact(cas, decision_id, PLAN_DECISION_V1)?;
+            decisions.push(json!({"artifact_id":decision_id, "decision":decision, "valid_until_unix_ms":valid_until_unix_ms}));
+        }
+        history.push(json!({"sequence":event.sequence,"transition":event.payload}));
+    }
+    if !decisions.is_empty() {
+        value["plan_decisions"] = json!(decisions);
+    }
+    value["history"] = json!(history);
+    value["execution_records"] = json!(execution);
+    if !runtime_observations.is_empty() {
+        let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
+        let walls = store
+            .task_attempt_wall(&run_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|wall| runtime_attempt_ids.contains(&wall.attempt_id))
+            .collect::<Vec<_>>();
+        value["attempt_walls"] = serde_json::to_value(walls).map_err(|e| e.to_string())?;
+        value["runtime_observations"] = json!(runtime_observations);
+    }
+    let remote_checks = remote_check_records(cas, &state)?;
+    if !remote_checks.is_empty() {
+        value["remote_checks"] = json!(remote_checks);
+    }
+    if !owned_child_sets.is_empty() {
+        value["owned_child_sets"] = json!(owned_child_sets);
+    }
+    if !experiments.is_empty() {
+        value["experiments"] = json!(experiments);
+    }
+    if !state.review_handoffs.is_empty() {
+        let mut handoffs = Vec::new();
+        for (id, _) in &state.review_handoffs {
+            // The checked projection normalizes both generations. Keep the original
+            // payload: an integrated handoff must never be re-encoded as generation one.
+            let recorded = cas.get_artifact(id).map_err(|e| e.to_string())?;
+            handoffs.push(json!({"artifact_id":id,"artifact_type":recorded.artifact_type,"record":recorded.payload}));
+        }
+        value["review_handoffs"] = json!(handoffs);
+    }
+    if let Some(execution) = &state.execution {
+        let phases = execution.review_integrations();
+        if !phases.is_empty() {
+            value["review_integrations"] = json!(phases.iter().map(|phase| json!({
+                "artifact_id":phase.phase_id(),
+                "artifact_type":review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
+                "record":phase.phase(),
+                "node":phase.node(),
+                "requires_checks":phase.requires_checks(),
+                "finished":phase.finished(),
+                "report_id":phase.report_id(),
+                "integration_committed_event_id":phase.integration_committed_event_id(),
+            })).collect::<Vec<_>>());
+        }
+    }
+    let mut reports = Vec::new();
+    for id in &state.run_reports {
+        use review_core::task::report::*;
+        let report =
+            review_store::store::task::read_task_run_report(cas, id).map_err(|e| e.to_string())?;
+        let mut diagnostics = BTreeMap::new();
+        for node in &report.nodes {
+            if let TaskNodeOutcomeV1::Failed { diagnostic_id, .. } = &node.outcome {
+                let diagnostic: TaskDiagnosticV1 =
+                    artifact(cas, diagnostic_id, TASK_DIAGNOSTIC_V1)?;
+                diagnostic.validate()?;
+                diagnostics.insert(node.node.clone(), diagnostic);
+            }
+        }
+        let report = serde_json::to_value(report).map_err(|e| e.to_string())?;
+        reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
+    }
+    value["run_reports"] = json!(reports);
+    if !state.adoption_observations.is_empty() {
+        use review_core::task::optimization_light::{
+            OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1, OptimizationAdoptionTaskEvidenceV1,
+        };
+        let mut observations = Vec::new();
+        for (observation_id, observation) in &state.adoption_observations {
+            let envelope = cas
+                .get_artifact(observation_id)
+                .map_err(|error| error.to_string())?;
+            let mut task_evidence = Vec::new();
+            for id in &envelope.input_artifacts {
+                let Some(candidate) = cas
+                    .get_optional_artifact(id)
+                    .map_err(|error| error.to_string())?
+                else {
+                    continue;
+                };
+                if candidate.artifact_type != OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1 {
+                    continue;
+                }
+                let evidence: OptimizationAdoptionTaskEvidenceV1 =
+                    serde_json::from_value(candidate.payload).map_err(|error| error.to_string())?;
+                evidence.validate()?;
+                if evidence.adoption_receipt_id != observation.adoption_receipt_id
+                    || evidence.commit_snapshot_id != observation.commit_snapshot_id
+                {
+                    return Err("adoption Task evidence contradicts its observation".into());
+                }
+                task_evidence.push(json!({"artifact_id":id,"record":evidence}));
+            }
+            observations.push(json!({
+                "artifact_id": observation_id,
+                "record": observation,
+                "task_evidence": task_evidence,
+            }));
+        }
+        value["adoption_observations"] = json!(observations);
+    }
+    // Present only when the Task file carried an `inputs` table, so a Task without bindings
+    // emits neither the field nor the new generation and keeps the document it has today.
+    let bindings = input_bindings::recorded(cas, &state.revision)?;
+    if let Some(record) = &bindings {
+        value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
+    }
+    if let Some(delivery) = delivery_view(cas, &state)? {
+        value["delivery"] = delivery;
+    }
+    if let Some(result) = &result {
+        value["result"] = serde_json::to_value(result).map_err(|e| e.to_string())?;
+        if let TaskPhaseV1::Finished { result_id } = &state.phase {
+            let envelope: ArtifactEnvelope =
+                serde_json::from_value(cas.get_json(result_id).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            for id in &envelope.input_artifacts {
+                let diagnostic = cas.get_json(id).map_err(|e| e.to_string())?;
+                if diagnostic["schema"] == "af.planning-diagnostic/1" {
+                    value["planning_diagnostic"] = diagnostic;
+                }
+            }
+        }
+        if let Some(execution) = &state.execution {
+            let rounds: Vec<_> = execution
+                .outputs
+                .values()
+                .flat_map(|(_, output)| output.outputs.values())
+                .filter(|p| p.artifact_type == TASK_REVIEW_ROUND_V1)
+                .flat_map(|p| p.artifact_ids.iter())
+                .map(|id| artifact::<TaskReviewRoundV1>(cas, id, TASK_REVIEW_ROUND_V1))
+                .collect::<Result<_, _>>()?;
+            let repairs: Vec<_> = execution
+                .outputs
+                .values()
+                .flat_map(|(_, output)| output.outputs.values())
+                .filter(|p| p.artifact_type == REPAIR_ASSESSMENT_V1)
+                .flat_map(|p| p.artifact_ids.iter())
+                .map(|id| {
+                    artifact::<review_core::task::review::RepairAssessmentV1>(
+                        cas,
+                        id,
+                        REPAIR_ASSESSMENT_V1,
+                    )
+                })
+                .collect::<Result<_, _>>()?;
+            if !repairs.is_empty() {
+                value["repair_assessments"] =
+                    serde_json::to_value(repairs).map_err(|e| e.to_string())?;
+            }
+            if state.revision.kind == "review" || !rounds.is_empty() {
+                value["review_rounds"] = serde_json::to_value(rounds).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    // The whole list the one-line advisory could only summarize. A presentation that did not
+    // just classify the captured manifest derives the same group from the recorded source
+    // Snapshot, so `start`, `run` and `show` documents of one Task agree. Present only when
+    // the Snapshot actually carries undeclared paths, so a document that had no such field
+    // still has none.
+    let derived = match undeclared {
+        Some(group) => Some(group.clone()),
+        None => recorded_undeclared_af_paths(cas, &state.revision)?,
+    };
+    if let Some(group) = derived.filter(|group| !group.is_empty()) {
+        value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
+    }
+    if explain && let Some(id) = &state.plan_id {
+        let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
+        value["graph"] = serde_json::to_value(artifact::<CompiledTask>(
+            cas,
+            &plan.compiled_graph_id,
+            COMPILED_TASK_V1,
+        )?)
+        .map_err(|e| e.to_string())?;
+        value["plan"] = serde_json::to_value(plan).map_err(|e| e.to_string())?;
+    }
+    Ok(Inspection {
+        value,
+        state,
+        result,
+        bindings,
+        reports,
+    })
+}
+
+fn delivery_view(cas: &Cas, task: &TaskProjection) -> Result<Option<serde_json::Value>, String> {
+    let TaskPhaseV1::Finished { result_id } = &task.phase else {
+        return Ok(None);
+    };
+    task.deliveries
+        .iter()
+        .rev()
+        .find(|(_, delivery)| &delivery.result_id == result_id)
+        .map(|(_, record)| {
+            let value = cas
+                .get_json(&record.receipt_id)
+                .map_err(|e| e.to_string())?;
+            super::task::validate_delivery_view(&value)?;
+            Ok(value)
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod review_generation_tests {
+    use super::*;
+
+    #[test]
+    fn review_generation_is_omitted_or_two() {
+        let value = serde_json::json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2,"allow_targeted_repairs":false});
+        let settings: ReviewSettings = serde_json::from_value(value.clone()).unwrap();
+        settings.check_generation().unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), value);
+        let mut explicit = value;
+        explicit["generation"] = serde_json::json!(2);
+        let settings: ReviewSettings = serde_json::from_value(explicit.clone()).unwrap();
+        settings.check_generation().unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), explicit);
+        for invalid in [
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(3),
+            serde_json::json!(null),
+            serde_json::json!("2"),
+            serde_json::json!(4294967296_u64),
+        ] {
+            explicit["generation"] = invalid;
+            assert!(
+                serde_json::from_value::<ReviewSettings>(explicit.clone())
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| v.check_generation())
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tree_preview_tests {
+    use super::*;
+    use crate::tui::panes::pipelines::{PREVIEW_TASK_ID, preview_task};
+    use crate::tui::tests::{hub_repo, stable_lines};
+
+    #[test]
+    fn the_silent_tree_preview_is_what_task_explain_tree_prints() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = hub_repo(&root);
+        let task = preview_task("fixture/implementation", "implement", 3);
+        let file = root.join("preview.json");
+        std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+        // `af task plan --file` records the Task, and `af task explain --tree` prints this.
+        let state = root.join("state");
+        let options = StartOptions {
+            file: file.clone(),
+            bindings: None,
+            source_bindings: None,
+            repo: repo.clone(),
+            state: Some(state.clone()),
+            authority: "HEAD".into(),
+            uncommitted: false,
+            json: false,
+            plan_only: true,
+            timeout_secs: None,
+            optimization_history: None,
+        };
+        start(options).unwrap();
+        let cas = Cas::open_existing(state.join("cas")).unwrap();
+        let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let projection = store.task_projection(&cas, PREVIEW_TASK_ID).unwrap();
+        let printed = preview::current(&cas, &projection.unwrap(), true).unwrap();
+        let silent = plan_tree_preview_at(&file, &repo, "HEAD").unwrap();
+        assert_eq!(stable_lines(&silent.text), stable_lines(&printed));
+        let text = &silent.text;
+        assert!(
+            text.contains("PIPE  fixture/implementation@1.0.0  [configured]"),
+            "{text}"
+        );
+        // Every Worker row carries its slot's binding, keyed by the row's line.
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(!silent.slots.is_empty(), "{text}");
+        for (line, binding) in &silent.slots {
+            assert!(binding.contains(" -> command Worker"), "{binding}");
+            let row = lines[*line];
+            assert!(row.contains("command Worker"), "{row}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod check_cache_line_tests {
+    use super::*;
+
+    fn group(record: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"runtime_observations": [{"record": record}]})
+    }
+
+    #[test]
+    fn every_warm_line_is_named_by_its_check_binding() {
+        let span = serde_json::json!({"kind": "check", "label": "kernel", "elapsed_ms": 812});
+        let warm =
+            serde_json::json!({"kind": "cargo_target", "eligible": true, "bytes_available": 4096});
+        let started = group(serde_json::json!({
+            "check": {"name": "kernel", "outcome": "passed", "rustup_home": "kernel_home"},
+            "spans": [span],
+            "caches": [warm, {"kind": "cargo_home", "eligible": true, "bytes_available": 0}],
+        }));
+        assert_eq!(
+            check_cache_lines(&started),
+            ["check kernel: passed in 812 ms, cargo_target warm 4096, cargo_home cold empty"]
+        );
+        let skipped = group(serde_json::json!({
+            "check": {"name": "markdownlint", "outcome": "not_run", "rustup_home": "kernel_home"},
+            "caches": [
+                {"kind": "cargo_target:deadline_exhausted", "eligible": false, "bytes_available": 0},
+                {"kind": "cargo_home:deadline_exhausted", "eligible": false, "bytes_available": 0},
+            ],
+        }));
+        assert_eq!(
+            check_cache_lines(&skipped),
+            [
+                "check markdownlint: not_run, never started, cargo_target cold deadline_exhausted, \
+              cargo_home cold deadline_exhausted"
+            ]
+        );
+        // A remote check ran nothing here, and its line says so rather than "never started".
+        let remote = group(serde_json::json!({
+            "check": {"name": "kernel", "outcome": "passed", "rustup_home": "kernel_home"},
+            "caches": [
+                {"kind": "cargo_target:remote", "eligible": false, "bytes_available": 0},
+                {"kind": "cargo_home:remote", "eligible": false, "bytes_available": 0},
+            ],
+        }));
+        assert_eq!(
+            check_cache_lines(&remote),
+            [
+                "check kernel: passed, run remotely, cargo_target cold remote, cargo_home cold remote"
+            ]
+        );
+        // A group that names no check prints nothing rather than an unnamed line.
+        let unnamed = group(serde_json::json!({
+            "caches": [{"kind": "cargo_target:busy", "eligible": false, "bytes_available": 0}],
+        }));
+        assert!(check_cache_lines(&unnamed).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod remote_check_line_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> serde_json::Value {
+        let path = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("fixtures/remote-checks/evidence")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn entry(check: &str, status: &str, record: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"node": "root.nodes.check", "check": check, "status": status,
+            "artifact_id": format!("sha256:{}", "e".repeat(64)),
+            "artifact_type": "af/RemoteCheckEvidence@1", "record": record})
+    }
+
+    #[test]
+    fn a_remote_check_prints_its_pull_request_run_jobs_steps_and_cleanup() {
+        let mut failed = entry("kernel", "failed", fixture("observed-failed.json"));
+        failed["log_id"] = serde_json::json!(format!("sha256:{}", "a".repeat(64)));
+        let inspection = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            failed,
+            entry("docs", "not_run", fixture("published-check-missing.json")),
+        ]});
+        let lines = remote_check_lines(&inspection);
+        assert_eq!(
+            lines,
+            [
+                "remote check kernel: failed by github-pr on octo/gate, pull request \
+                 https://github.com/octo/gate/pull/12, run 77 attempt 2",
+                "  job validation / lint: success in 750 s",
+                "  job validation / check (ubuntu-latest): failure in 750 s; unsuccessful steps: \
+                 Run make check (failure), Upload report (skipped); log at \
+                 https://github.com/octo/gate/actions/runs/77/job/1002",
+                &format!(
+                    "  log excerpt of the unsuccessful jobs: CAS object sha256:{}",
+                    "a".repeat(64)
+                ),
+                "remote check docs: not_run by github-pr on octo/gate, pull request \
+                 https://github.com/octo/gate/pull/12",
+                "  reason: remote_check_missing",
+                "gate branches af-gate/rc1/base and af-gate/rc1/head stay until you remove them:",
+                "  gh pr close 12 --repo octo/gate",
+                "  git push <push-url> --delete af-gate/rc1/base af-gate/rc1/head",
+            ]
+        );
+        // A refusal published nothing, so it prints no cleanup; its redacted diagnostic shows.
+        let refused = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            entry("kernel", "not_run", fixture("refused-push-refused.json")),
+        ]});
+        let lines = remote_check_lines(&refused);
+        assert_eq!(
+            lines[0],
+            "remote check kernel: not_run by github-pr on octo/gate"
+        );
+        assert_eq!(lines[1], "  reason: remote_push_refused");
+        assert!(
+            lines[2].starts_with("  diagnostic: To <push-url> | "),
+            "{}",
+            lines[2]
+        );
+        assert_eq!(lines.len(), 3);
+        assert!(remote_check_lines(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn evidence_times_are_whole_seconds_since_the_epoch() {
+        assert_eq!(evidence_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(evidence_seconds("2000-03-01T00:00:01Z"), Some(951_868_801));
+        assert_eq!(
+            evidence_seconds("2026-10-04T10:12:30.5Z"),
+            Some(1_791_108_750)
+        );
+        assert_eq!(evidence_seconds("not a time"), None);
+    }
+
+    #[test]
+    fn the_task_owner_survives_rereading_and_differs_between_stores() {
+        use crate::tui::panes::pipelines::{PREVIEW_TASK_ID, preview_task};
+        use crate::tui::tests::hub_repo;
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = hub_repo(&root);
+        let file = root.join("task.json");
+        let task = preview_task("fixture/implementation", "implement", 3);
+        std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+        let owner = |state: &Path| {
+            start(StartOptions {
+                file: file.clone(),
+                bindings: None,
+                source_bindings: None,
+                repo: repo.clone(),
+                state: Some(state.to_path_buf()),
+                authority: "HEAD".into(),
+                uncommitted: false,
+                json: false,
+                plan_only: true,
+                timeout_secs: None,
+                optimization_history: None,
+            })
+            .unwrap();
+            let host = domain::remote_checks(state).unwrap();
+            let resolve = host.owner.unwrap();
+            let first = resolve(PREVIEW_TASK_ID).unwrap();
+            assert_eq!(resolve(PREVIEW_TASK_ID).unwrap(), first, "stable on resume");
+            assert!(review_core::is_digest(&first));
+            assert!(resolve("no-such-task").is_err());
+            first
+        };
+        // No pause between the two: the opening writer's nonce, not the clock, tells the
+        // Stores apart, even for one process opening both.
+        let one = owner(&root.join("state-one"));
+        let two = owner(&root.join("state-two"));
+        assert_ne!(
+            one, two,
+            "the same Task ID in another Store has another owner"
+        );
+    }
+
+    #[test]
+    fn the_opening_writer_carries_a_fresh_nonce_and_stays_a_name() {
+        let (first, second) = (opening_nonce(), opening_nonce());
+        assert_ne!(first, second);
+        let writer = format!("cli-{}-{first:016x}", std::process::id());
+        assert!(review_core::task::is_name(&writer), "{writer}");
+    }
+}

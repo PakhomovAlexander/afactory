@@ -1,0 +1,27 @@
+[profile.ci]
+# One test per process, scheduled across every test binary at once (ADR-0124). The thread
+# count comes from `make test` (`TEST_THREADS`): four on a four-core CI runner, half the
+# cores on a developer machine. These tests spawn real process trees, so the host CPU count
+# itself is not a suitable bound.
+test-threads = 4
+retries = 0
+fail-fast = false
+slow-timeout = { period = "120s" }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Tests that assert against a fixed real-time budget (the 5 s provider probe, a 3 s observer
+# window, a 5 s worker deadline) or measure real elapsed time run alone: nothing else is
+# scheduled while they hold every test thread. That keeps them honest under any thread count
+# instead of throttling the whole suite to protect them. Highest priority runs them first.
+[[profile.ci.overrides]]
+filter = '''
+test(/::identity_rechecks_cancel_an_inflight_status_process$/)
+| test(/::codex_subscription_probe_reaps_descendants_after_an_early_exit$/)
+| test(/setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask$/)
+| test(/typed_reply_never_falls_back_and_failed_outputs_keep_accounting$/)
+| test(/light_strategy_generates_one_candidate_without_exposing_source_to_author_workers$/)
+'''
+threads-required = "num-test-threads"
+priority = 100
