@@ -1,0 +1,30 @@
+~/hub                      |TASK  pagination-cli  implement: "Implement this Jira ticket: offset/l~"
+v hub  (project)           |PLAN  ########  configured  STATE done  started hh:mm:ssZ  elapsed  <t>
+  v providers/             |SNAP  source ########  derived ########  policy ########
+      claude-main          |
+      codex-ambient        |PROGRESS  6 / 6 stages
+  v workers/               |  [ok]  inputs
+  v pipelines/             |  [ok]  implement                         0 tok
+      review               |  [ok]  seal
+      fixture/implementatio|  [ok]  check  <t>        0 tok
+  v tasks/                 |  [ok]  evaluate                          0 tok
+    v done/ (1)            |  [ok]  accept
+        pagination-c~  100%|
+    v failed/ (1)          |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
+        pagination-u~  100%|TIME  wall  <t>  checks  <t>  dependency prep -
+                           |
+                           |HISTORY  (af task show)
+                           |     0  opened                              ########
+                           |     1  plan_proposed                       ########
+                           |     2  plan_admitted                       ########
+                           |     3  execution_recorded invocation       ########
+                           |     4  execution_recorded published        ########
+                           |     5  execution_recorded invocation       ########
+                           |     6  execution_recorded reserved         ########
+                           |     7  execution_recorded context_bound    ########
+                           |     8  execution_recorded started          ########
+                           |     9  execution_recorded usage_observed   ########
+                           |    10  execution_recorded settled          ########
+                           |    11  execution_recorded published        ########
+                           |    12  execution_recorded invocation       ########
+NORMAL  tasks/pagination-cli                j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

@@ -1,0 +1,94 @@
+schema = "af.code-task-policy/1"
+# The kernel's own gate. verify.sh runs `make check` with a stable external target dir.
+check_wall_ms = 3600000
+require_container = false
+
+[checks.kernel]
+name = "kernel"
+required = true
+
+[checks.kernel.command]
+program = "bash"
+
+[[checks.kernel.command.args]]
+value = "scripts/verify.sh"
+provenance = "literal"
+
+# The same check, run by this repository's CI for a machine whose operator maps it
+# (docs/task-execution/remote-checks.md). Job names are the ones the Actions jobs API reports for
+# the pull_request run of ci.yml; container-probes is not part of the local `make check`.
+[checks.kernel.remote]
+executor = "github-pr"
+workflow = ".github/workflows/ci.yml"
+required = ["validation / lint", "validation / check (ubuntu-latest)"]
+
+[checks.markdownlint]
+name = "markdownlint"
+required = true
+
+[checks.markdownlint.command]
+program = "npx"
+
+[[checks.markdownlint.command.args]]
+value = "--yes"
+provenance = "literal"
+
+[[checks.markdownlint.command.args]]
+value = "markdownlint-cli2@0.22.1"
+provenance = "literal"
+
+[[checks.markdownlint.command.args]]
+value = "**/*.md"
+provenance = "literal"
+
+# Optional native seed: absent machine mapping preserves cold rustup setup.
+# Only private copies enter these checks; host Cargo/Rustup homes are never passed through.
+[rust_toolchain]
+version = "1.88.0"
+host = "native"
+components = ["clippy", "rustfmt"]
+checks = ["kernel"]
+
+# A full `make check` of this workspace leaves about 8.6 GB of debug and test output, and cargo
+# keeps every earlier revision's artifacts beside it, so a directory that has served several Tasks
+# holds 13 GB before a candidate that touches review-core adds another 5 GB while it compiles.
+# The default 8 GiB bound evicted a warm directory 35 s into the first warm gate; 16 GiB ended
+# the R2 candidate's gate 61 s in, before a reviewer saw it. The bound is a disk safety, not a
+# budget: 32 GiB against 98 GiB free.
+[warm]
+build_cache = ["cargo_target", "cargo_home"]
+# Eviction bound: a directory above it is removed after the check, whose result stands (R5).
+max_bytes = 17179869184
+# The only bound that ends a running check: a disk safety, twice the eviction bound.
+hard_max_bytes = 34359738368
+
+# ADR-0132. The release build, cold, three
+# times: each repetition builds into a fresh CARGO_TARGET_DIR inside its runtime directory
+# (`warm = false`) while `[warm]`'s `cargo_home` keeps Cargo's registry warm. Three repetitions
+# of 20 minutes fit the 60-minute check_wall_ms of one measure Attempt.
+[measures.release_build]
+repetitions = 3
+warm = false
+wall_ms = 1200000
+
+[measures.release_build.command]
+program = "bash"
+
+[[measures.release_build.command.args]]
+value = "scripts/measure-release.sh"
+provenance = "literal"
+
+[[measures.release_build.metrics]]
+key = "target_bytes"
+unit = "bytes"
+
+[[measures.release_build.metrics]]
+key = "binary_bytes"
+unit = "bytes"
+
+[objectives.release_build_time]
+measure = "release_build"
+metric = "elapsed_ms"
+direction = "lower"
+min_improvement_ratio = "0.1"
+min_repetitions = 3

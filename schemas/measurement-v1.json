@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:measurement:1",
+  "title": "af/Measurement@1",
+  "description": "One declared measure of the captured code policy, run by the installed `measure` operator against a read-only Snapshot (ADR-0132). Every value is the kernel's observation, except the metrics the command reported on its last stdout line, admitted only with the declared keys and units. A passed measurement records every repetition and a summary per metric; a failed one ends at the repetition that failed and carries no summary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "policy_id",
+    "snapshot_id",
+    "measure",
+    "command_id",
+    "warm",
+    "repetitions",
+    "wall_ms",
+    "metrics",
+    "outcome",
+    "runs",
+    "summary"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "measure": {
+      "$ref": "#/$defs/name"
+    },
+    "command_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "toolchain_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "warm": {
+      "type": "boolean"
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "wall_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600000
+    },
+    "metrics": {
+      "description": "The declared metrics and units, without the built-in elapsed_ms.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/name",
+        "not": {
+          "const": "elapsed_ms"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/unit"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "failure": {
+      "$ref": "#/$defs/failure"
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "maxProperties": 33,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/summary"
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "failed"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "failure"
+    ],
+    "properties": {
+      "summary": {
+        "maxProperties": 0
+      }
+    }
+  },
+  "else": {
+    "not": {
+      "required": [
+        "failure"
+      ]
+    },
+    "properties": {
+      "summary": {
+        "required": [
+          "elapsed_ms"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "unit": {
+      "enum": [
+        "ms",
+        "bytes",
+        "count",
+        "ratio"
+      ]
+    },
+    "decimal": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+    },
+    "reported": {
+      "description": "A reported value: a canonical decimal of at most 38 significant digits.",
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^(0|0\\.0*[1-9]([0-9]{0,36}[1-9])?|[1-9][0-9]{0,37}|(?=[0-9.]{3,39}$)[1-9][0-9]*\\.[0-9]*[1-9])$"
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repetition",
+        "reason",
+        "detail"
+      ],
+      "properties": {
+        "repetition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "reason": {
+          "enum": [
+            "exit",
+            "timeout",
+            "deadline",
+            "malformed_report",
+            "unit_mismatch",
+            "source_mutated"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_unix_ms",
+        "elapsed_ms",
+        "metrics"
+      ],
+      "properties": {
+        "started_unix_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "stdout_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "stderr_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "warm",
+            "bytes"
+          ],
+          "properties": {
+            "warm": {
+              "type": "boolean"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value",
+              "unit"
+            ],
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/reported"
+              },
+              "unit": {
+                "$ref": "#/$defs/unit"
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "description": "The exact median (the mean of the two middle values of an even sample), minimum, maximum and sample size.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "median",
+        "min",
+        "max",
+        "n"
+      ],
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/unit"
+        },
+        "median": {
+          "$ref": "#/$defs/decimal"
+        },
+        "min": {
+          "$ref": "#/$defs/decimal"
+        },
+        "max": {
+          "$ref": "#/$defs/decimal"
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        }
+      }
+    }
+  }
+}

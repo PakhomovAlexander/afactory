@@ -1,0 +1,477 @@
+[
+  {
+    "contract": "task-revision",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:951c5aceedd418c5194b33d3e3952011634b20895eabcc825b74055334d25178"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:d10b19ec526ada9d4903a91d949df8e296960158643a44ade4c362d91c24f792"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:ea5015a19b0d8791b276e99a1a34c3bdee3d300be3ff4a77e5d6d02a75c1d947"
+  },
+  {
+    "contract": "plan-decision",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:aa7c29aca836d96685c565d1de904cecf0c3c256f29e0441396dc35eb36ce85c"
+  },
+  {
+    "contract": "task-result",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:cd26ba6038d21965749ba84241dfd5544a1476c40e4321eab6cbed0466efcc22"
+  },
+  {
+    "contract": "task-phase",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:8a59d5c88ef95ae1856ca3fd9350da7b7dc8fad2c7472fa909d5ba79c8938442"
+  },
+  {
+    "contract": "review-history",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:e70b1b3bf64d0de9cced5cfc07dc8e02732f455fdc3569aab1566fc61f5f06f1"
+  },
+  {
+    "contract": "verification-continuation",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:9daef27465f5ba3158989ac25caf2b021a6904b30eebd03c8cc30afab466b02f"
+  },
+  {
+    "contract": "repair-assessment",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/invented",
+    "op": "add",
+    "value": true,
+    "expected_content_id": "sha256:6a2893894091497410e67bf057c2c170a5ae4238c0804c89997e14626165e503"
+  },
+  {
+    "contract": "task-revision",
+    "why": "unsafe integer cannot enter plan hashing",
+    "layer": "shape",
+    "pointer": "/facts/count",
+    "op": "add",
+    "value": 9007199254740992,
+    "expected_content_id": "sha256:3e8c6868f44be4ae86d789524917a50c5aa10c55072fee1c4ff8c3ea01c0c55a"
+  },
+  {
+    "contract": "task-revision",
+    "why": "required outputs are explicit",
+    "layer": "shape",
+    "pointer": "/required_outputs/document",
+    "op": "remove",
+    "expected_content_id": "sha256:72e78f61a10f5d5866523f2f099677d26b7d7b87fd1484083dae4becaac6d68a"
+  },
+  {
+    "contract": "task-revision",
+    "why": "acceptance cannot be removed",
+    "layer": "shape",
+    "pointer": "/acceptance/checked",
+    "op": "remove",
+    "expected_content_id": "sha256:b64a007183633be18e675345590774d18ef0674dadce88d2eb292967c6808c32"
+  },
+  {
+    "contract": "task-revision",
+    "why": "later revisions retain predecessor",
+    "layer": "shape",
+    "pointer": "/revision",
+    "op": "replace",
+    "value": 2,
+    "expected_content_id": "sha256:ee24cabd78333ee1837f2a497a6c283f2e64b0a0f74778fa87e0abee9f76f827"
+  },
+  {
+    "contract": "task-revision",
+    "why": "first revision cannot have predecessor",
+    "layer": "shape",
+    "pointer": "/previous_revision_id",
+    "op": "add",
+    "value": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+    "expected_content_id": "sha256:c67c8988d2b447c98bc70fa71e241f11b9bf76e5e5e3c64e27f4aa86ef98e4e6"
+  },
+  {
+    "contract": "task-revision",
+    "why": "input name is not an artifact type",
+    "layer": "shape",
+    "pointer": "/inputs/requirements/artifact_type",
+    "op": "replace",
+    "value": "input:issue",
+    "expected_content_id": "sha256:7e92afbdb03619174d16e3781795abdd92cfc291e4c2c009e375a90714db6096"
+  },
+  {
+    "contract": "task-revision",
+    "why": "one requires exactly one artifact",
+    "layer": "shape",
+    "pointer": "/inputs/requirements/artifact_ids",
+    "op": "replace",
+    "value": [],
+    "expected_content_id": "sha256:5c472fa7148f24a83c5abe8b1587914f9726210720b34931a4103c13ac13a9f3"
+  },
+  {
+    "contract": "task-revision",
+    "why": "duplicate input IDs are forbidden",
+    "layer": "shape",
+    "pointer": "/inputs/requirements/artifact_ids",
+    "op": "replace",
+    "value": [
+      "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ],
+    "expected_content_id": "sha256:d793c84e65bb4a1983642875360230ad18e34c34faca215285aa77ae1be53174"
+  },
+  {
+    "contract": "task-revision",
+    "why": "duplicate authority entries cannot collapse",
+    "layer": "shape",
+    "pointer": "/authority/allowed_effects",
+    "op": "replace",
+    "value": [
+      "read-source",
+      "read-source"
+    ],
+    "expected_content_id": "sha256:35fb23ca16cd6c8db0c68333fc9afdf028b73c9ba7849bd246e2b7e6709004bb"
+  },
+  {
+    "contract": "task-revision",
+    "why": "verifier Attempts cannot exceed total",
+    "layer": "semantic",
+    "pointer": "/limits/verification/attempts",
+    "op": "replace",
+    "value": 5,
+    "expected_content_id": "sha256:ca2934fc085148ed2102c73efdbeaed047f9748822c5e3f47e4ceef4e93de987"
+  },
+  {
+    "contract": "task-result",
+    "why": "incomplete execution cannot be accepted",
+    "layer": "shape",
+    "pointer": "/execution",
+    "op": "replace",
+    "value": "incomplete",
+    "expected_content_id": "sha256:e8c798d505097aee16319cfce019ca638fd56a8d71bc70ea3a8e2ae11c6e1d46"
+  },
+  {
+    "contract": "task-result",
+    "why": "satisfied result requires evidence",
+    "layer": "shape",
+    "pointer": "/evidence",
+    "op": "replace",
+    "value": [],
+    "expected_content_id": "sha256:f7c230213b3057447f1b76e246499f9a432b87847a714a38afc879e61fdae1f4"
+  },
+  {
+    "contract": "task-result",
+    "why": "missing obligations prevent acceptance",
+    "layer": "shape",
+    "pointer": "/missing_obligations",
+    "op": "replace",
+    "value": [
+      "checked"
+    ],
+    "expected_content_id": "sha256:649bfbc46282483785937c08cb567c7a0865a84099063b2ba73d9d4153f42a15"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "port types must be versioned",
+    "layer": "shape",
+    "pointer": "/contract/inputs/requirements/artifact_type",
+    "op": "replace",
+    "value": "requirements",
+    "expected_content_id": "sha256:80b69bd445a024a926bf79cf78a95113bcf467e9c49427a2d21b15461f2f4c0e"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "output cannot synthesize root default",
+    "layer": "shape",
+    "pointer": "/contract/outputs/document/root_default",
+    "op": "add",
+    "value": "empty_review_history",
+    "expected_content_id": "sha256:d5e9bf6730acedda1d06e798bead91b3c5607ba646f673dc0f45605595212933"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "root defaults are closed",
+    "layer": "shape",
+    "pointer": "/contract/inputs/requirements/root_default",
+    "op": "add",
+    "value": "invent_source",
+    "expected_content_id": "sha256:191f6be08c948617d98bc2644c03921322d5ab174a4833348d37ec10f39c3947"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "public coverage needs internal binding",
+    "layer": "semantic",
+    "pointer": "/coverage/checked",
+    "op": "remove",
+    "expected_content_id": "sha256:8c1e8148820d555c89b3e3803630b0394c0ada7b35353df9038ebbaad79f0560"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "duplicate node identity is forbidden",
+    "layer": "shape",
+    "pointer": "/nodes",
+    "op": "replace",
+    "value": [
+      {
+        "id": "write",
+        "operator": {
+          "op": "worker",
+          "slot": "author"
+        },
+        "inputs": {
+          "input": {
+            "kind": "input",
+            "port": "requirements"
+          }
+        }
+      },
+      {
+        "id": "write",
+        "operator": {
+          "op": "worker",
+          "slot": "author"
+        },
+        "inputs": {
+          "input": {
+            "kind": "input",
+            "port": "requirements"
+          }
+        }
+      }
+    ],
+    "expected_content_id": "sha256:8be5ba739772119eb5ada54b02593ec5ae0b9a44a7a62aac001651c43386fb68"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unknown producer is forbidden",
+    "layer": "semantic",
+    "pointer": "/outputs/document/node",
+    "op": "replace",
+    "value": "missing",
+    "expected_content_id": "sha256:4b668db46f5d6a50cfac297381c9f91313567248b68bd84c08f345b99f4c96e8"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unbounded operator is forbidden",
+    "layer": "shape",
+    "pointer": "/nodes/0/operator",
+    "op": "replace",
+    "value": {
+      "op": "while"
+    },
+    "expected_content_id": "sha256:82ac59efe6ef8c75fa4b2dc9a5711fce21716012749f52abf0a4003dc9a99cf1"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "reservation must fit",
+    "layer": "shape",
+    "pointer": "/max_attempts",
+    "op": "replace",
+    "value": 0,
+    "expected_content_id": "sha256:be191be90002beb035828dbebefbe387b712d240928f9fa2ca8f6a5822c624e7"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "closure must retain root pipeline",
+    "layer": "semantic",
+    "pointer": "/dependencies/builtin~1document",
+    "op": "remove",
+    "expected_content_id": "sha256:891e4eb2b15c3888c4575d5fb0952824fb80f2c8baac2fc1b7248060ea6e27b9"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "generated origin must be in closure",
+    "layer": "semantic",
+    "pointer": "/generated_origins/0/pipeline_id",
+    "op": "replace",
+    "value": "sha256:0000000000000000000000000000000000000000000000000000000000000063",
+    "expected_content_id": "sha256:cccaa4b11df07bc1cc1ac4834fa1ca50cdad93ccc57d5c0b19206e47e3a78581"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "generated origins cannot repeat",
+    "layer": "shape",
+    "pointer": "/generated_origins",
+    "op": "replace",
+    "value": [
+      {
+        "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+        "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+        "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+      },
+      {
+        "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+        "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+        "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+      }
+    ],
+    "expected_content_id": "sha256:a2e673bf10a97cec32960d3982db45e3a7a75789b55799337e93a41da64004c8"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "acceptance producers cannot repeat",
+    "layer": "shape",
+    "pointer": "/acceptance/checked",
+    "op": "replace",
+    "value": [
+      "write.output",
+      "write.output"
+    ],
+    "expected_content_id": "sha256:c5d87b323db5a2716438c0776de5c4f9f267e06dff26336f6ce73d9474e1ce92"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "command binding cannot carry model strings",
+    "layer": "shape",
+    "pointer": "/bindings/author/execution/model",
+    "op": "add",
+    "value": "pretend",
+    "expected_content_id": "sha256:35a03755d166bffd5a1cab49518b79a8372a1288af67726956e1bd701eb40752"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "unknown principals cannot establish independence",
+    "layer": "shape",
+    "pointer": "/bindings/author/execution",
+    "op": "replace",
+    "value": {
+      "kind": "model",
+      "provider": "personal",
+      "provider_kind": "claude",
+      "principal_id": "",
+      "model": "fable",
+      "effort": "high"
+    },
+    "expected_content_id": "sha256:31dd781de37ecac0c958fd596626cec604b33da3d351705f38c4acb4e2d3b5fa"
+  },
+  {
+    "contract": "plan-decision",
+    "why": "decision binds immutable exact plan",
+    "layer": "shape",
+    "pointer": "/plan_id",
+    "op": "replace",
+    "value": "HEAD",
+    "expected_content_id": "sha256:5502abb52f9208b46ae760bfaea86c6f7381baf07a0d9672e32e9340ea83f0f2"
+  },
+  {
+    "contract": "review-history",
+    "why": "empty history cannot hide persisted state",
+    "layer": "shape",
+    "pointer": "/kind",
+    "op": "replace",
+    "value": "empty",
+    "expected_content_id": "sha256:ecb1c5206c7caedf50dfac6b1bc50371a690d210f968bc3b42761084b5e02a83"
+  },
+  {
+    "contract": "verification-continuation",
+    "why": "continuation advances subject",
+    "layer": "semantic",
+    "pointer": "/current_subject_id",
+    "op": "replace",
+    "value": "sha256:0000000000000000000000000000000000000000000000000000000000000021",
+    "expected_content_id": "sha256:cc86c6748c88b646b25407aadf3b94c121c8d5a65ada0652b4ea5ce5e0eaf250"
+  },
+  {
+    "contract": "repair-assessment",
+    "why": "targeted verification cannot claim full review",
+    "layer": "shape",
+    "pointer": "/scope",
+    "op": "replace",
+    "value": "whole_snapshot",
+    "expected_content_id": "sha256:e0304551e53dc465533e90553de940ced91230e11ad4e0c6c3b45d64ac9cd1cc"
+  },
+  {
+    "contract": "task-revision",
+    "why": "set wire order is canonical",
+    "layer": "semantic",
+    "pointer": "/authority/allowed_effects",
+    "op": "replace",
+    "value": [
+      "write-source",
+      "read-source"
+    ],
+    "expected_content_id": "sha256:cd643d99c126ca0834de931c0dc239a45c5b3708a7bbdb5d7c5e60d20c706b7f"
+  },
+  {
+    "contract": "execution-plan",
+    "why": "acceptance producer order is canonical",
+    "layer": "semantic",
+    "pointer": "/acceptance/checked",
+    "op": "replace",
+    "value": [
+      "write.summary",
+      "write.output"
+    ],
+    "expected_content_id": "sha256:3f3b32088b5c3abfdf5c97de8e144c64dd796bc1ad904897e464b495ba2716a2"
+  },
+  {
+    "contract": "task-result",
+    "why": "a present required output cannot contain zero artifacts",
+    "layer": "shape",
+    "pointer": "/outputs/document",
+    "op": "replace",
+    "value": {
+      "artifact_ids": [],
+      "artifact_type": "af/CheckedDocument@1",
+      "cardinality": "many"
+    },
+    "expected_content_id": "sha256:8701ee3ef88b5f56dee793af4a64a8cdd327e62b4903224d0007d5f8e3350092"
+  },
+  {
+    "contract": "task-result",
+    "why": "satisfied acceptance requires output artifacts",
+    "layer": "shape",
+    "pointer": "/outputs/document",
+    "op": "remove",
+    "expected_content_id": "sha256:9a6cf3464a51462d1f737361a794c8d87ab39ba4bc21ecb916502d98d1a50ada"
+  },
+  {
+    "contract": "task-revision",
+    "why": "canonical wire defaults must be explicit",
+    "layer": "shape",
+    "pointer": "/facts",
+    "op": "remove",
+    "expected_content_id": "sha256:913f5e04a17da2080860310cdcd88e99befb14b200c15b5578052e3f3718f3f6"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "canonical wire defaults must be explicit",
+    "layer": "shape",
+    "pointer": "/contract/inputs/requirements/covers",
+    "op": "remove",
+    "expected_content_id": "sha256:fa3ca2cea2084fcfb023abf8262ff821f60a0444a6a5bbf8badf9406ba99e466"
+  }
+]
