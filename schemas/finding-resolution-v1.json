@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:finding-resolution:1",
+  "title": "FindingResolution@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "expected_finding_view_id", "subject_id", "outcome", "actor", "policy_revision", "reason", "evidence_ids"],
+  "properties": {
+    "finding_id": {"type": "string", "minLength": 1},
+    "expected_finding_view_id": {"$ref": "#/$defs/id"},
+    "subject_id": {"$ref": "#/$defs/id"},
+    "outcome": {"enum": ["fixed", "rejected", "wontfix_tracked"]},
+    "actor": {"type": "string", "minLength": 1},
+    "policy_revision": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}},
+    "verification_id": {"$ref": "#/$defs/id"},
+    "max_accepted_severity": {"enum": ["minor", "major", "blocker"]},
+    "tracking_reference": {"type": "string", "minLength": 1},
+    "expires_at_policy_time": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

@@ -1,0 +1,75 @@
+{
+  "schema": "af/telemetry-reasoning@1",
+  "directory": "<root>",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "6767676767676767676767676767676767676767676767676767676767676767",
+    "run_id": "task:sha256:9898989898989898989898989898989898989898989898989898989898989898",
+    "trace_id": "<trace>",
+    "kind": "task",
+    "history": "prefix:1",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–1"
+  },
+  "attempt": "golden-content-attempt-1",
+  "state": "captured",
+  "harnesses": [
+    {
+      "span_id": "315110a4b7933623",
+      "segment_id": "1700000400000-4246-2b3c4d5e",
+      "level": "content",
+      "state": "captured"
+    }
+  ],
+  "thoughts": [
+    {
+      "ordinal": 1,
+      "kind": "thinking",
+      "harness_span_id": "315110a4b7933623",
+      "turn_span_id": "f0c45f66f904584b",
+      "turn_ordinal": 1,
+      "part": {
+        "event": "af.content.reasoning",
+        "span_id": "f0c45f66f904584b",
+        "segment_id": "1700000400000-4246-2b3c4d5e",
+        "seq": 24,
+        "time_unix_ns": "1700000400011000000",
+        "occurrence_id": "1700000400000-4246-2b3c4d5e:23",
+        "digest": "sha256:32d64e047d7f51687cee7449f2c03743e1f17a2e0729807b6b28bf829bf4e8eb",
+        "source_digest": "sha256:32d64e047d7f51687cee7449f2c03743e1f17a2e0729807b6b28bf829bf4e8eb",
+        "original_bytes": 32,
+        "retained_bytes": 32,
+        "truncated": false,
+        "media_type": "text/plain; charset=utf-8",
+        "state": "stored",
+        "content": "The keeper logs the lamp hourly."
+      }
+    },
+    {
+      "ordinal": 2,
+      "kind": "thinking",
+      "harness_span_id": "315110a4b7933623",
+      "turn_span_id": "cd041af7452bf2a6",
+      "turn_ordinal": 2,
+      "part": {
+        "event": "af.content.reasoning",
+        "span_id": "cd041af7452bf2a6",
+        "segment_id": "1700000400000-4246-2b3c4d5e",
+        "seq": 33,
+        "time_unix_ns": "1700000400014000000",
+        "occurrence_id": "1700000400000-4246-2b3c4d5e:32",
+        "digest": "sha256:f46c20b3554c1a4a46ead3ae85819f43fef891942870075180ec1d2fd76b4b90",
+        "source_digest": "sha256:f46c20b3554c1a4a46ead3ae85819f43fef891942870075180ec1d2fd76b4b90",
+        "original_bytes": 35,
+        "retained_bytes": 35,
+        "truncated": false,
+        "media_type": "text/plain; charset=utf-8",
+        "state": "stored",
+        "content": "The lamp is lit; nothing to report."
+      }
+    }
+  ],
+  "unreadable": []
+}

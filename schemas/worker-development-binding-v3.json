@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "https://afactory.dev/schemas/worker-development-binding-v3.json",
+  "required": [
+    "schema",
+    "runtime",
+    "image",
+    "checksum_program",
+    "tools",
+    "limits",
+    "probe_shell",
+    "storage"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-development-binding/3"
+    },
+    "runtime": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\u0000-\\u001f]+$"
+    },
+    "image": {
+      "type": "string",
+      "pattern": "^[^\\s@-][^\\s@]*@sha256:[0-9a-f]{64}$"
+    },
+    "checksum_program": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\u0000-\\u001f]+$"
+    },
+    "tools": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "program",
+          "identity"
+        ],
+        "properties": {
+          "program": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 4096,
+            "pattern": "^/[^\\u0000-\\u001f]+$"
+          },
+          "identity": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "output_bytes",
+        "cpu_millicores",
+        "memory_bytes",
+        "processes",
+        "disk_bytes"
+      ],
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14400000
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "cpu_millicores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "disk_bytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 8589934592,
+          "multipleOf": 4096
+        },
+        "processes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "probe_shell": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\u0000-\\u001f]+$"
+    },
+    "dependency_sources": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "cache_limits": {
+      "description": "The limits the capture applied: bytes, traversed filesystem entries (directories included), directory depth and portable path length.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_bytes",
+        "max_entries",
+        "max_depth",
+        "max_path_bytes"
+      ],
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500000
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_path_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "storage": {
+      "const": "tmpfs_volume"
+    }
+  }
+}

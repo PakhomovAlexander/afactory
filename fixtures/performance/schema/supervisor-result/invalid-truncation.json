@@ -1,0 +1,83 @@
+{
+  "schema": "af.perf-supervisor-result/5",
+  "supervisor": {
+    "platform": "linux",
+    "arch": "aarch64",
+    "namespace_init": true,
+    "containment": "pid_namespace"
+  },
+  "termination": {
+    "kind": "exited",
+    "code": 0,
+    "signal": null,
+    "detail": ""
+  },
+  "timing": {
+    "child_wall_ns": "22854875",
+    "exit_observation": "unreaped",
+    "before_launch_ns": "3284375",
+    "cleanup_ns": "6092542",
+    "after_exit_ns": "6243333"
+  },
+  "stdout": {
+    "retained": 6,
+    "total": 10,
+    "truncated": 0
+  },
+  "stderr": {
+    "retained": 0,
+    "total": 0,
+    "truncated": 0
+  },
+  "stdout_pattern_counts": [],
+  "stdout_json": null,
+  "lifecycle": {
+    "observation": "pid_namespace_scan",
+    "descendants_at_exit": 2,
+    "remaining_after_cleanup": 0,
+    "pipes_held": false,
+    "status": "unexpected_descendants",
+    "detail": "2 live descendant(s) outlived the child; they were killed and their termination verified"
+  },
+  "setup": null,
+  "scratch": {
+    "status": "cleared",
+    "detail": "cleared from inside the verified-empty PID namespace"
+  },
+  "rusage": {
+    "scope": "reaped_child_and_its_waited_descendants",
+    "user_cpu_ns": "3139000",
+    "system_cpu_ns": "3382000",
+    "maxrss_bytes": 1531904,
+    "minor_faults": 225,
+    "major_faults": 21,
+    "voluntary_switches": 52,
+    "involuntary_switches": 0
+  },
+  "rusage_unavailable": null,
+  "observations": {
+    "before": {
+      "cgroup/cpu.max": {
+        "value": "max 100000\n"
+      },
+      "cgroup/memory.max": {
+        "value": "268435456\n"
+      },
+      "cgroup/memory.swap.max": {
+        "value": "0\n"
+      },
+      "cgroup/pids.max": {
+        "value": "64\n"
+      },
+      "cgroup/memory.peak": {
+        "unavailable": "/sys/fs/cgroup/memory.peak: No such file or directory (os error 2)"
+      }
+    },
+    "after": {
+      "cgroup/memory.peak": {
+        "value": "6909952\n"
+      }
+    },
+    "unavailable": null
+  }
+}

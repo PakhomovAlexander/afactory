@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:optimization-adoption-receipt:1","type":"object","additionalProperties":false,
+  "required":["schema","task_id","result_id","source_snapshot_id","delivered_snapshot_id","delivery_record_id","delivered_tree_id"],
+  "properties":{"schema":{"const":"af.optimization-adoption-receipt/1"},"task_id":{"$ref":"#/$defs/name"},"result_id":{"$ref":"#/$defs/id"},"source_snapshot_id":{"$ref":"#/$defs/id"},"delivered_snapshot_id":{"$ref":"#/$defs/id"},"delivery_record_id":{"$ref":"#/$defs/id"},"delivered_tree_id":{"$ref":"#/$defs/id"}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"name":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}}
+}

@@ -1,0 +1,511 @@
+# Contributing to Afactory
+
+Thanks for helping. This file is the short version of how changes land; `AGENTS.md` and
+`CONTEXT.md` hold the domain language and the working agreements in full, and `docs/adr/`
+holds every design decision. Read the ADR that covers the area you are touching before you
+change it.
+
+## First: check this machine
+
+```sh
+make prereqs
+```
+
+It prints one line per prerequisite, `ok` with what it found or `missing` with the command that
+installs it: python3, git 2.30 or later, the toolchain `rust-toolchain.toml` pins (through
+rustup), cargo-nextest, a C compiler (`cc`), Node >=22.19 (for the token-free Pi host fixtures),
+npx (for `markdownlint-cli2`), minisign, and 30 GiB
+free on the volume `target/` builds on. It installs and changes nothing,
+and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
+
+## Toolchain
+
+`rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`
+installs it on the first `cargo` invocation, so there is nothing to choose. Edition 2024,
+workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
+daemon.
+
+`af` supports Linux and macOS only. A `compile_error!` at the root of `af-contracts` and
+`af-process` refuses every other target: every crate with platform-specific code is one of
+them or depends on `af-contracts`, so the guard fails the build before any unix-only call does.
+Write unix code directly: do not add `#[cfg(unix)]` gates or `#[cfg(not(unix))]` fallbacks.
+Where Linux and macOS differ, split on `target_os`.
+
+## Before every pull request
+
+For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
+for the tests it touched and repeats that selection after its last edit. The Task gate runs
+the fast profile (functional, e2e, uix; ADR-0251), and every pull request defaults to the same
+fast selection (ADR-0239); the full check remains in `make check`, main validation and unbound
+releases. Before a pull request, run the full local check:
+
+```sh
+make check
+```
+
+That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+`cargo nextest run --profile ci` over every test binary except the tests
+`.config/test-quarantine.json` lists (ADR-0268), and the release-selection check
+(`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
+This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
+CI uses the selected classes described below; the default PR omits perf. A local pass alone
+does not establish the outcome of separate CI/container work.
+Clippy warnings are errors; fix them rather than allowing them.
+
+Full `make check` keeps lightweight policy, source-integrity, catalog/schema checks and lint
+before the Rust test build. `cargo test --locked --no-run` must succeed before `ci-step.py`
+emits its genuine `stage=build` receipt. The ordinary Rust suite then runs, followed by
+`perf-python-tests` (`scripts/test-performance.py`) with `stage=tests`, feature-on tests and
+release checks. The Python laboratory suite executes tests and belongs under the test deadline;
+putting it in preflight consumed the build allowance before Rust compilation even began.
+Neither allowance changes. Standalone `make test` still builds and runs only the Rust suite,
+with either nextest or `TEST_RUNNER=cargo`. Selected class execution retains its own ordering
+and timing evidence. The focused regression in `scripts/test-test-classes.py` exercises the
+native wrapper, real Make recipes and receipt writer with command stand-ins, including a
+failed build that prevents both Rust and Python test execution.
+
+The gate runs one test per process and schedules tests across every test binary at once
+([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
+`TEST_THREADS` bounds how many tests `make test` runs at a time: four on a four-core CI runner, half
+the cores on a developer machine. A bare `cargo nextest run` uses the default profile's four
+threads. Native-provider fixtures spawn several processes per test, so the host CPU count
+itself is not a suitable bound. The few tests that assert against a fixed real-time budget
+are listed in `.config/nextest.toml` under the default profile and run alone in both default
+and `ci`; add a test there when its assertion depends on wall-clock, never by raising the
+budget it asserts.
+
+The runner is the pinned, checksum-verified binary that `scripts/install-nextest.sh` installs
+into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
+machine). `make check TEST_RUNNER=cargo` keeps the sequential libtest path for comparison.
+
+If you touch `crates/af-sandbox`, also run the live probes:
+
+```sh
+make review-kernel-container-probes
+```
+
+They need a usable Docker daemon and stay outside `make check` because a missing daemon must
+fail loudly there, never skip.
+
+## Flaky tests and the isolation rerun
+
+A gate run reruns the tests that failed in its parallel run before it fails
+([ADR-0205](docs/adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+each failed test runs again on its own, one at a time, with no other test alive. A test that
+passes alone does not fail the step; one that fails both times does, with nextest's exit status.
+More than 25 failed tests are not rerun, and reruns stop after 15 minutes; either way the step
+fails with the whole list. The step's output ends with what happened:
+
+```text
+isolation rerun: 2 failed in the parallel run; each runs again alone
+flaky: af::it task_heavy::heavy_review_cannot_erase_stale_claims
+failed twice: af::it cli_surface::help_topics_and_command_paths
+```
+
+`flaky:` names the tests that failed beside other tests and passed alone, and `failed twice:` the
+ones that are broken. A Task check records the same in its check report, `af/TaskCheckReport@1`,
+beside its receipt: under `checks.<name>.tests`, `flaky` lists each such test with both outcomes
+(`"parallel": "failed", "isolated": "passed"`), `failed` the tests that failed twice,
+`test_threads` the parallel run's thread count and `rerun` what the rerun did (`not_needed`,
+`isolated`, `over_bound`, `not_run`); `checks.<name>.host` holds the 1-minute load average at
+the check's start and end and the CPUs available to af. `af task show TASK_ID` prints
+`check kernel flaky: …` and `check kernel failed twice: …` on their own lines, and
+`check kernel host: load … at start, … at end, … CPUs, … test threads` beside a check that did
+not pass or had flaky tests. A Task whose gate failed ends with
+`next: af task run TASK_ID --retry-gate`, which runs that gate again on the same candidate.
+
+A flaky test is still a defect: fix it at its cause and keep its name. The usual causes are a
+fixture wall or lease a loaded host exceeds (give a fixture whose subject is not a deadline the
+load-safe wall, ADR-0114, or wait on the observable state the test reads instead of sleeping),
+and an assertion on a whole document where one field is under test (assert that field; assert
+that no Attempt's usage is unknown on its own, so a lease lost under load fails with its own
+message). Prove the fix by running the test 20 times in a row under load — with a second
+`cargo build --tests` of another worktree running — through the gate's own scheduling:
+
+```sh
+make test-repeat NEXTEST_FILTER='test(/::heavy_review_cannot_erase_/)'
+# or with any nextest arguments:
+python3 scripts/nextest-gate.py --repeat 20 --profile ci --test-threads 7 \
+  -E 'package(af) & binary(it) & test(/^task_heavy::/)'
+```
+
+`--repeat N` (`NEXTEST_REPEAT` for `make test-repeat`, 20 by default) runs the whole selection N
+times and stops at the first run that fails, naming its failed tests; it never reruns anything.
+
+The recurring load flakes of issue #331 have a stress proof of their own that brings its load
+with it, so anyone can repeat it on any machine:
+
+```sh
+make stress-proof                    # 20 runs; STRESS_RUNS, STRESS_LOAD, STRESS_SPAWN change it
+python3 -I scripts/stress-proof.py --runs 5 \
+  --test task_repair::interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt
+```
+
+It runs every named test (by default the seven families it lists) N times through the gate's
+profile and scheduling, `--profile ci`, never stopping early and never rerunning a failure.
+Beside the runs it starts one CPU-bound worker per CPU (`--load-workers`) and two workers that
+spawn and reap `/usr/bin/true` without pause (`--spawn-workers`), so process IDs are recycled
+within minutes as on a shared gate host. It starts each worker itself and kills only those
+pids, on a normal end, an error, Ctrl-C, SIGTERM or SIGHUP; a worker whose parent is gone, even
+after a SIGKILL of the driver, exits by itself. It ends with one row per test: the passes, the
+range of the 1-minute load average sampled while the test ran, and the wall time (minimum,
+median, maximum). The JUnit of a run with a failure stays below `target/stress-proof/` with the
+failure's output, and the exit status is 0 only when every test passed every one of the N runs
+under the whole load: a skipped case and a run nextest ended nonzero count as not passed, and a
+load worker that ends on its own (its exit status and the end of its stderr are printed, its
+stderr kept below `target/stress-proof/`) ends the proof unproven, without counting the run it
+ended in.
+
+A test signals only processes it holds as its own unreaped children. `Child::kill` is exact
+because the test is the parent and has not reaped the child: a zombie keeps its ID and its
+process group reserved. A process the test only read the ID of — a detached run, a Worker af
+started, a fixture that wrote its pid to a marker — can be reaped by its own parent at any time,
+and on a gate host that ID soon names another process; nextest makes every test the leader of
+its own process group, so a `killpg` of a stale ID can end a whole sibling test with its children
+(issue #331 item 7). Checking the ID first does not help: between the last look and the signal
+the process can end, be reaped and its ID be reused, which no start time can rule out. So such a
+process is never signalled. A test ends what it holds (an `af` it holds ends the Worker groups
+that `af` holds); a fixture it does not hold ends by itself, a Worker or a parked `git` once the
+process that started it is gone, a fixture's escaped child when the test asks it to; and what the
+test recorded is only watched through `crate::common::recorded` (`Recorded::now`,
+`Recorded::from_marker`, `Recorded::ended_within`, the `Leftovers` guard, which reports what is
+still running and signals nothing; `crates/af-process/tests/support/recorded.rs`), or in the
+performance laboratory's Python tests `tests.support.held_child_argv` and
+`tests.support.release_recorded`. The laboratory's docker stand-in ends a container from the
+init process that started it, never from `docker rm` by a recorded ID. A holder's signal can
+still find the group already gone (`ProcessLookupError`): that group has ended, and its leader is
+still reaped. A holder that reaps its child forgets it first, with the signal that would use it
+blocked, as the fake supervisor's cancellation does (`tests.support.FAKE_SUPERVISOR_EXECUTE`).
+
+A test whose assertion depends on wall-clock time cannot be made deterministic: split it into
+the deterministic part, which keeps the name and runs in parallel, and a part that keeps the
+real-time assertions and is listed in the exclusive override of `.config/nextest.toml` with the
+reason beside it (ADR-0124). Nothing else runs while it does. Never widen the budget it asserts.
+
+## Portable fixtures
+
+The gate runs on macOS and on Linux hosts with another umask and other coreutils than yours:
+
+- A fixture that asserts a file mode sets that mode itself (`chmod`, `set_permissions`) instead
+  of taking it from the umask; a host with umask 0077 creates 0700 directories. A test that
+  depends on the umask runs the code under test in a child process with the umask it names.
+- A test about a system tool resolves it by its real path (`realpath $(command -v ls)`) and
+  accepts every prefix the policy under test lists: `/bin/ls` is `/usr/bin/ls` with GNU
+  coreutils and the multicall `/usr/lib/cargo/bin/coreutils` with Rust coreutils.
+- A test that builds Rust for real finds the C linker where rustup's host toolchain does: `CC`,
+  then the sanitized `PATH`, then `~/.local/bin`.
+- The protected harness pin (`python3 -I scripts/performance/cli.py harness-digest --write`)
+  ignores the author's own `HOME` and Cargo state below the tree (`.cargo/.package-cache`,
+  `.cargo/registry/`) and, outside a Git work tree, what the root `.gitignore` ignores
+  (`/target`), so a pin made in a Worker sandbox after a build there equals one made in a
+  checkout. Re-pin whenever you change `Cargo.toml`, `Cargo.lock`, a build script or anything
+  under `scripts/performance/` or `fixtures/performance/`.
+- A test that writes a script and starts it at once writes it through
+  `crate::common::executable`, whose single-threaded writer process keeps the file from being
+  `Text file busy` under `cargo test`, and installs `af` through `common::install_private_af`.
+
+## Tests and fixtures
+
+- Unit tests live next to the code; integration tests live in `crates/<crate>/tests/`, one
+  file per subject (`capture.rs`, `crash_replay.rs`, `container_probes.rs`, …), with shared
+  helpers under `tests/support/` or `tests/common/`. In the larger crates the subject files
+  sit under `tests/it/` and `tests/it/main.rs` lists them as modules, so the crate links its
+  test dependencies once instead of once per file
+  ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)); a new
+  subject there is a new file plus one `mod` line.
+- A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
+
+## Test time
+
+After every nextest run, passing or failing, `make test` prints a summary of the JUnit report
+nextest just wrote. Each run writes it into a private run directory under `nextest-reports/`
+(below `target/`, or the gate's target when `scripts/verify.sh` runs it), so two `make test`
+runs in one checkout, even overlapping ones, each report their own tests. A plain `make test`
+then copies its JUnit to `target/nextest/ci/junit.xml`, replacing the file in one rename, and
+removes its run directory. Before nextest starts, the JUnit an earlier run left there is
+removed, and a run that writes none removes it again when it ends. Runs take turns on that path,
+so it holds the JUnit of the run that finished last, or nothing if that run wrote none. CI also
+adds the summary to the step summary, and a Task gate's output ends with it. The report never
+changes the step's exit status: if the JUnit is missing or unreadable, or its testcases do not
+add up to the `tests`, `failures` and `errors` counts nextest declared, you get a warning
+instead. Read it top down:
+
+- **Wall (nextest)** and **Tests** are nextest's own run time and test count, exactly as its
+  `Summary` line prints them.
+- **Test-seconds (summed)** adds up every test's own time. **Achieved parallelism** is that sum
+  divided by the wall time: how many tests were running on average. If it is well below
+  `TEST_THREADS`, the time goes to the long tail or the exclusive block.
+- **Exclusive block** is the summed time of the tests matched by the `test(/.../)` filters of
+  the override in `.config/nextest.toml` that takes every test thread. Nothing else runs while
+  they do, so the whole block adds to the wall time.
+- The duration histogram counts tests per bucket (`<0.1`, `0.1-1`, `1-3`, `3-10`, `10-30`,
+  `30-60`, `>=60` seconds; lower edge inclusive), with their seconds and their share of the
+  summed test-seconds. The slowest tests (`--top N`, 20 by default) follow with their test
+  binary, then any failed tests.
+
+`python3 scripts/test-time-report.py summary JUNIT` prints the same summary for any report;
+`--format json` emits it as an `af.test-time-summary/1` document instead.
+
+For a pull request that changes test time, measure before and after on the same machine with
+the same `TEST_THREADS`, keep a copy of each run's JUnit, then compare them:
+
+```sh
+git switch main && make test && cp target/nextest/ci/junit.xml /tmp/base-1.xml
+# ...repeat for /tmp/base-2.xml and /tmp/base-3.xml, then on your branch:
+make test && cp target/nextest/ci/junit.xml /tmp/head-1.xml
+# ...repeat for /tmp/head-2.xml and /tmp/head-3.xml, then compare with each side's config:
+git show main:.config/nextest.toml > /tmp/base-nextest.toml
+python3 scripts/test-time-report.py compare \
+  --base-nextest-config /tmp/base-nextest.toml --head-nextest-config .config/nextest.toml \
+  /tmp/base-*.xml -- /tmp/head-*.xml
+```
+
+Each side's exclusive block is computed from its own config, so a change that adds a test to
+the exclusive override or splits one out of it is measured with the list each side ran under;
+when the two configs differ, the output names both. `--nextest-config PATH` alone still sets the
+config of both sides, and each per-side option defaults to it.
+
+Run times vary between runs, so use three runs per side. The comparison takes the median of
+each total per side and prints the delta and percent change. It also lists every test whose
+median time moved by at least 1 s, plus tests that were added or removed, as a Markdown table.
+Paste that table into the pull request description, next to the `af task report` block.
+
+## Design changes and ADRs
+
+A change to a contract, a wire shape, a gate, a budget, a sandbox boundary, or the release
+train is a design change and gets an ADR in `docs/adr/`. `docs/adr/README.md` is the
+authority on identity, shape and lifecycle. Add the decision's own file as
+`YYYY-MM-DD-descriptive-topic.md`, with a unique, specific topic and a stable date-topic identity.
+There is no sequence allocation or per-decision index edit. Discover decisions with
+`python3 -I scripts/adr.py list` or GitHub directory browsing, as the guide documents.
+Open with status and date, state context, list rejected options and reasons, record the decision,
+and end with consequences. Acceptance makes the identity and body immutable; a changed decision
+uses a new ADR with explicit supersession and status-only notes under the guide's lifecycle.
+Legacy identities and historical numbering exceptions remain unchanged.
+
+A change never adds a reader, migration, alias or fallback for state, configuration or flags an
+earlier release wrote. A change to a persisted typed shape gives it a new version and changes its
+writers, readers, Store validation, JSON Schema and parity tests together; the old version fails
+closed (ADR-0145). Look
+at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference
+the ADR from the PR and from its change note.
+
+## Commit messages
+
+Imperative subject, under about 72 characters, describing the change rather than the activity.
+The history mixes conventional prefixes with a scope (`fix(task): preserve validated Review
+result number semantics`, `docs(task): record integrated fixes`, `perf(task): …`, `test: …`)
+and plain imperative subjects (`Record Task retry output admission in a new ADR`).
+Either is fine; the prefixes are used but not required. Domain terms keep their capitalisation
+(`Task`, `Review`, `Snapshot`, `Gate`) as in `CONTEXT.md`.
+
+## Pull requests
+
+- Every change is made through af Tasks: an implementation pipeline makes it and a
+  verification pipeline checks it. The pull request description carries the `af task report`
+  of those Tasks
+  ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)): run
+  `af task report TASK_ID...` from the repository (with the same `--state` if you used one)
+  and paste its whole output, both markers included, into the template's `af task report`
+  section. It is read-only and names Providers only by kind and model. The `PR report`
+  workflow refuses a description without exactly one well-formed block; Dependabot and
+  `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
+  runs the same check locally.
+- The description states additions and deletions per area in the template's `Lines added`
+  section ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  `python3 scripts/pr-lines.py` prints the title and one `Area`/`Changes`/`+`/`−`/`Share of additions`
+  table. Root rows partition both `git diff --numstat BASE...HEAD` counts by actual first path
+  component; root files keep their names except for collision labels described below. Rename
+  changes belong to the destination. Binary, pure-rename 0/0 and other 0/0 entries contribute
+  no numeric rows.
+  `crates` includes all crate tests without a duplicate global test bucket. Crate children have
+  lowercase `main`, `tests`, `other` leaves; direct files remain file children. Rust paths inside
+  any `tests` directory within the crate, or named `tests.rs`, `test_*.rs`, `*_test.rs`, count as
+  tests. Remaining Rust under `src/` is main; everything else is other, including non-Rust test
+  fixtures, manifests, `build.rs` and ordinary examples. Inline `#[cfg(test)]` modules and
+  common/shared source remain main: this classifies paths, not Rust syntax.
+  Every parent reconciles additions and deletions independently with its children. Roots
+  reconcile with both PR totals; repeated subtotals are not additional lines. Nodes with either
+  count positive appear. Siblings sort by descending additions, descending deletions, raw name.
+  All root rows and crate parents are bold across all nonempty cells; terminal children are plain.
+  Children use four `&nbsp;` entities per depth, without arrows or directory suffixes.
+  For a file/directory sibling collision after removing slashes, the directory keeps its name
+  and only the file gets `name (file)`, then `(file2)`, `(file3)`, etc. until unique. Allocation
+  follows raw identity order and reserves all literal bare sibling names and allocated labels.
+  This display projection leaves exact JSON identities and both counters unchanged.
+  Literal Markdown/HTML syntax, whitespace and tree arrows in names are numeric entities,
+  with visible quotes around names containing whitespace, so filenames cannot spoof bold or
+  indentation (literal `&nbsp;` becomes `&#38;nbsp;`).
+  Separate `+` and `−` bar columns share one scale per sibling group: the largest exact
+  added or deleted count among those siblings. Children use their own sibling scale, not
+  their ancestor's scale. Bars have at most twelve full cells, with Unicode eighth blocks
+  (`▏▎▍▌▋▊▉█`) rounded half up using integers. Positive counts have at least a `▏` sliver;
+  zero counts have blank cells, including bold parent rows. Deletion-only rows have a blank
+  `+` cell and a visible `−` bar. Bars are presentation only and never appear in JSON.
+  Changes use compact `+382/−10` syntax. Figures are exact below 1000, rounded half up to 0.1k
+  below 10k and 1k thereafter. Shares use immediate parent additions (PR additions for roots),
+  rounded half up; positive shares below 0.5% show `<1%`. A zero child of a positive parent is
+  `0%`; a zero parent denominator is undefined, shown as `—`.
+  Deletion-only reports retain the table and `**Lines added: 0**` title. Only a diff with both
+  totals zero prints `**Lines added: none**` alone.
+  `--json` emits only `af/PrLines@4` (`schemas/pr-lines-v4.json`): exact `added`, `deleted`
+  totals and ordered `rows`, each with raw `name` (including internal directory suffix), exact
+  `added`, `deleted` and `children` (empty for leaves).
+  Earlier JSON shapes are refused, without aliases. The `af-pr-lines:v1` markers remain the
+  refresh container; there is no second table or schema heading. See the
+  [crate-report decision](docs/adr/2026-11-09-split-pr-additions-by-crate-and-code-kind.md).
+  Shape parsing checks parents, unique paths, valid kinds and bounded bar glyphs, including
+  blank zero bars and nonblank positive bars. It refuses the previous three-column human
+  format and never sums rounded figures. The checker regenerates the complete hierarchy
+  from exact commits to judge numeric correctness and each bar length independently.
+  CI maintains the block
+  ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
+  workflow renders it again from the pull request's commits on every opening, edit and push,
+  and when the description's block is missing or differs it writes the block into the
+  description itself, changing nothing outside the block's markers (without them, it inserts
+  the block right after the `af task report` block). So you may leave the template's markers
+  empty, or run the command from the repository on your branch, with its base fetched
+  (`--base REF` for a base other than `origin/main`), and paste its whole output, both markers
+  included; a push or a merge from main needs no edit for it. The workflow refuses the
+  description, printing the block to paste, only when it cannot write it: two blocks, a marker
+  without its pair, or a write GitHub refuses. The `af task report` block is still yours to
+  paste and keep.
+  `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
+  comparison locally; with `--refresh-into OUT` it writes the description with the block
+  refreshed to `OUT`.
+- A pull request that adds entries to `.config/test-quarantine.json` also names the tests it
+  quarantines
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)):
+  run `python3 scripts/pr-quarantine.py` (`--base REF` as above) and paste its whole output, both
+  markers included, into the template's `Test quarantine` section: the title
+  `**Quarantined tests added: N**` and a table of each test, its state, its expiry and why.
+  When the script says no block is needed, delete that section. The `PR report` workflow renders
+  the block again from the pull request's commits and refuses a description whose block is
+  missing or differs, printing the block to paste, and one that holds a block when no
+  quarantined test is added; the same `--diff` run checks it locally.
+- One topic per PR. Split unrelated fixes even when they are small.
+- Run full `make check` before the PR and say so in the PR template checklist. The local Task
+  gate and every pull request run the fast profile; `make check`, main validation and unbound
+  releases provide full validation.
+- A user-visible change adds its own note, `changelog.d/<topic>.md` (see
+  [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
+  pull request means two open pull requests never conflict on the changelog. The release
+  script collects the notes into the release's section and removes them.
+- A design change links its ADR.
+- Never weaken a contract, a fixture, a gate, a budget, or a sandbox boundary to make a test
+  pass. If a test is wrong, say why in the PR; if the boundary is wrong, that is an ADR.
+- Keep generated artifacts (fixtures, schemas) in sync in the same PR that changes their
+  source.
+
+## What does not belong here
+
+This repository is the kernel and the `af` CLI. Project-specific pipelines, reviewer packages,
+prompts, and provider bindings belong in the consuming repository's `.af/` tree; `af onboard`
+and `af self` are how a consumer picks them up. A change that only one project needs is a
+policy change there, not a code change here.
+
+## Licence
+
+Afactory is licensed under the Apache License, Version 2.0 (`LICENSE`). By contributing you
+agree that your contributions are licensed under the same terms; there is no CLA and no
+sign-off requirement.
+
+## Security
+
+Vulnerabilities go through private reporting, never a public issue: see `SECURITY.md`.
+
+## Selecting validation classes
+
+`make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
+which records the shared `test-build` receipt before functional, e2e and uix class tests;
+every pull request defaults to the same fast selection (ADR-0239), and the full check remains
+in `make check`, main validation and unbound releases. For
+selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
+including perf), or `make test-plan TEST_LABEL_FILE=event.json`
+then `make check-classes`. The JSON file has the GitHub event shape
+`{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
+Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
+
+Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
+`test:functional`, `test:e2e`, `test:uix`, `test:perf`
+labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
+exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
+classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
+`test:perf` opts into it. Label changes rerun both workflows and cancel earlier PR work. Choose classes
+based on the whole change and record the coverage decision for reviewers.
+
+Every integration module/binary and Python test script needs a reviewed entry in
+`.config/test-classes.json`; new internal modules of registered unit binaries follow their documented
+component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
+belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
+A test listed in `.config/test-quarantine.json` classifies as `quarantine`, which no plan selects,
+until a fix removes its entry or the entry expires
+([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+`scripts/test-quarantine.py scan` proposes those entries from af Tasks' gate flaky lists and adds
+them only with `--write` (`docs/test-classes.md`, "Quarantine"); its `confirm` and `apply` settle
+them after 50 runs under load (`docs/test-quarantine-claw.md`).
+
+The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
+Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored
+manual measurement: run `make perf-kernel-measure` before a pull request changing
+`scripts/performance/`, `crates/af-runtime/examples/perf-probe/`,
+`crates/af-runtime/build.rs`, the experiment runtime or kernel receipts
+([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
+
+`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
+then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
+Release preparation checks the profile label exists before changing source, committing or pushing.
+Changing release PR labels directly reruns selected CI; no policy file or metadata commit is required.
+When creating the absent tag, the resolver captures labels from the single exact merged release PR
+associated with that commit (matching SHA, main base and release/version head). It freezes the source
+PR provenance and plan in the annotated tag, bound to commit/version/catalog. First creation captures
+then-current labels; an unlabeled matching release PR retains the fast default. Every later
+retry/tag run uses the annotation and ignores moving labels.
+`release:full` forces all classes and rejects partial/excluded
+selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
+architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
+The post-publication Performance measurement is asynchronous, not a publication gate.
+
+Every validation profile, including fast and `no-perf`, runs the cheap offline
+`python3 -I scripts/release-contract.py` in `release-check`/`base-check`. Release preparation
+runs it after changing the workspace version and before committing or publishing its PR.
+Declare that exact version under the compatible telemetry fixture contract in
+`scripts/telemetry-overhead.py` with source/fixture evidence; unknown versions are refused.
+Lab schema parity excludes only the four exact Rust publication schemas, and still refuses
+missing, stale and retired lab schemas. This is contract validation, not a performance measurement.
+
+After the release PR merges and publication succeeds, the release workflow opens one pin-only
+PR from `release/pin-vVERSION` to `main`. **Review its CI and merge that PR too**: publication
+alone does not pin this repository. The pin binds every target's exact signed archive digest;
+only `.af/af.lock`'s `[af]` and `[af.digests]` may change. No release automation pushes to main.
+See the [binding release decision](docs/adr/2026-11-09-review-release-contracts-and-pins-before-merge.md).
+
+Provision the repository Actions secret **`RELEASE_PIN_TOKEN`** with a fine-grained PAT restricted
+to this repository, owned by an account with repository write access. Grant **Contents: read and
+write** and **Pull requests: read and write**; Metadata read is implicit. Do not grant
+Administration, Actions, Workflows or a ruleset bypass. This credential starts normal push/PR CI;
+`GITHUB_TOKEN` cannot substitute for it. Checkout persists no credentials. Missing/expired tokens,
+branch push refusal or PR creation refusal fail the pin job without claiming main is pinned.
+Rotate by replacing the secret with a newly provisioned token, then revoke the old token.
+Remove the retired `PIN_DEPLOY_KEY` secret and write deploy key, and remove deploy-key bypass
+from `main-protect` in repository settings; the source change does not alter those settings.
+
+Rerun `scripts/pin-release.sh VERSION --pr` with `RELEASE_PIN_TOKEN` and `GH_REPO=OWNER/REPO`
+to reuse the same open PR, or a pin-only branch left after PR creation failed. The checkout's
+`origin` must be `https://github.com/OWNER/REPO` (optionally ending in `.git`), matching
+`GH_REPO`. SSH, embedded credentials, other repositories, URL rewrites and scoped credential
+helpers/HTTP settings are refused before Git network operations. Fetches and pushes use the explicit
+credential-free HTTPS URL with only the PAT helper; interactive authentication and redirects are
+disabled. Use a clean checkout if local credential configuration is refused. Reuse requires
+current main as parent and exact equality to a fresh signed release refresh. Closed or divergent
+PRs are refused, never recreated. Main moving before branch creation restarts preparation up to
+three times; an existing branch on older main, or main moving after branch publication, requires
+human review/rebase of the one PR. The script never force-pushes. If main already has the complete
+pin, rerunning is a no-op; a newer main pin is never downgraded. Without `--pr`, `scripts/pin-release.sh VERSION` prepares the lock in a
+clean checkout for a manual PR; it does not publish. Merge the pin PR before another release would
+put the lock more than one non-yanked release behind (`scripts/af-pin.py --check`).
+
+See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
+and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
+summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.

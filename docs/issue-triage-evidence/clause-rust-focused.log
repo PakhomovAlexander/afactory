@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+────────────
+ Nextest run ID 66965960-b680-4699-9564-0734d3c07e1a with nextest profile: ci
+    Starting 6 tests across 61 binaries (4009 tests skipped)
+        PASS [   0.131s] (1/6) af::bin/af shipped_schemas::tests::every_shipped_schema_describes_the_document_of_its_id
+        PASS [   0.139s] (2/6) af::bin/af shipped_schemas::tests::an_unshipped_id_names_the_versions_that_are_shipped
+        PASS [   0.081s] (3/6) af::bin/af shipped_schemas::tests::schema_listing_names_provider_status_v5_and_its_sdk_host_scope
+        PASS [   0.073s] (4/6) af::bin/af shipped_schemas::tests::the_shipped_schemas_are_exactly_the_documents_af_help_json_lists
+        PASS [   0.890s] (5/6) af::it task_triage::the_check_reads_the_triage_block_from_the_report_renderers_bytes
+        PASS [   8.644s] (6/6) af::it task_triage::the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_example_task
+────────────
+     Summary [   8.655s] 6 tests run: 6 passed, 4009 skipped

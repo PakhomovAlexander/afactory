@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:semantic-closure:1",
+  "title": "SemanticClosure@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subject_id", "required_artifact_ids", "dispositions"],
+  "properties": {
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "required_artifact_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
+    "dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact_id", "sink"],
+        "properties": {
+          "artifact_id": { "$ref": "#/$defs/digest" },
+          "sink": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "closeout_result_id": { "$ref": "#/$defs/digest" },
+    "closeout_waiver_policy_id": { "$ref": "#/$defs/digest" }
+  },
+  "oneOf": [
+    { "required": ["closeout_result_id"], "not": { "required": ["closeout_waiver_policy_id"] } },
+    { "required": ["closeout_waiver_policy_id"], "not": { "required": ["closeout_result_id"] } }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

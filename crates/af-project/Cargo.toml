@@ -1,0 +1,33 @@
+[package]
+name = "af-project"
+description = "Project identity, Workspaces, Surveys and Brief services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# No doctests; enable when the first runnable example is added (ADR-0124).
+doctest = false
+
+[dependencies]
+af-contracts = { path = "../af-contracts" }
+af-graph = { path = "../af-graph" }
+af-pipeline-config = { path = "../af-pipeline-config" }
+af-process = { path = "../af-process" }
+af-source-git = { path = "../af-source-git" }
+af-store = { path = "../af-store" }
+af-sandbox = { path = "../af-sandbox" }
+af-runtime = { path = "../af-runtime" }
+af-runner = { path = "../af-runner" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+toml = "1.1.6"
+rustix = { version = "1.1.4", features = ["fs"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-conclusion:1",
+  "title": "TaskReviewConclusion@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_revision_id",
+    "plan_id",
+    "task_report_id",
+    "through_sequence",
+    "cumulative_chargeable_tokens",
+    "begun_attempts",
+    "round_ids",
+    "conclusion"
+  ],
+  "properties": {
+    "task_revision_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "task_report_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "through_sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "cumulative_chargeable_tokens": {
+      "$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"
+    },
+    "begun_attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "round_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 0,
+      "maxItems": 64,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      }
+    },
+    "conclusion": {
+      "enum": [
+        "pass",
+        "changes_requested",
+        "convergence_exhausted",
+        "incomplete"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "not": {
+              "const": "incomplete"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "round_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,1026 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-kernel-receipts:3",
+  "title": "af.perf-kernel-receipts/3",
+  "description": "What the guarded kernel experiments' native integration exports (ADR-0186, ADR-0187): each Task's exit code and typed kernel result, which must name exactly the retained outputs, every output's complete typed envelope whose content and artifact IDs the reader recomputes with the kernel's canonical JSON and domains, and the public stdout and stderr of every measured repetition with its content ID, SHA-256 and size, whole (its ID recomputed) or as its first and last 32 KiB (its ID and hash the exporter's, the omitted middle never rehashed). Evidence for inspection, never a decision input.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-kernel-receipts/3"
+    },
+    "harness_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "instance": {
+      "$ref": "#/$defs/id"
+    },
+    "measure": {
+      "$ref": "#/$defs/id"
+    },
+    "objective": {
+      "$ref": "#/$defs/id"
+    },
+    "slowdown_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "exit_code": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "task_revision_id": {
+                "$ref": "#/$defs/digest"
+              },
+              "execution": {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "incomplete",
+                  "exhausted"
+                ]
+              },
+              "acceptance": {
+                "type": "string",
+                "enum": [
+                  "satisfied",
+                  "unsatisfied",
+                  "inconclusive"
+                ]
+              },
+              "domain_conclusion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "outputs": {
+                "type": "object",
+                "minProperties": 0,
+                "maxProperties": 256,
+                "patternProperties": {
+                  "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "artifact_ids": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "minItems": 0,
+                        "maxItems": 4096,
+                        "uniqueItems": true
+                      },
+                      "artifact_type": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "pattern": "^[a-z][a-z0-9.]*/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$"
+                      },
+                      "cardinality": {
+                        "type": "string",
+                        "enum": [
+                          "one",
+                          "many"
+                        ]
+                      },
+                      "snapshot_id": {
+                        "$ref": "#/$defs/digest"
+                      }
+                    },
+                    "required": [
+                      "artifact_ids",
+                      "artifact_type",
+                      "cardinality"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/digest"
+                },
+                "minItems": 0,
+                "maxItems": 4096,
+                "uniqueItems": true
+              },
+              "missing_obligations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+                },
+                "minItems": 0,
+                "maxItems": 256,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "task_revision_id",
+              "execution",
+              "acceptance",
+              "domain_conclusion",
+              "outputs",
+              "evidence",
+              "missing_obligations"
+            ]
+          },
+          "outputs": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseline": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "af/Measurement@1",
+                      "af/MeasurementComparison@1"
+                    ]
+                  },
+                  "snapshot_id": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  },
+                  "envelope": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "af/Measurement@1",
+                          "af/MeasurementComparison@1"
+                        ]
+                      },
+                      "artifact_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "content_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "producer": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "attempt"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "attempt_id": {
+                                "type": "string",
+                                "maxLength": 26,
+                                "pattern": "^[0-9a-z]{26}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "node_id",
+                              "attempt_id"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "kernel_operation"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "operation_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "operation_id"
+                            ]
+                          }
+                        ]
+                      },
+                      "input_artifacts": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "minItems": 0,
+                        "maxItems": 4096
+                      },
+                      "subject_snapshot_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "payload": {
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "artifact_id",
+                      "content_id",
+                      "producer",
+                      "input_artifacts",
+                      "payload"
+                    ]
+                  },
+                  "streams": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repetition": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000
+                        },
+                        "stdout": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        },
+                        "stderr": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "repetition",
+                        "stdout",
+                        "stderr"
+                      ]
+                    },
+                    "minItems": 0,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "artifact_id",
+                  "type",
+                  "snapshot_id",
+                  "envelope",
+                  "streams"
+                ]
+              },
+              "candidate": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "af/Measurement@1",
+                      "af/MeasurementComparison@1"
+                    ]
+                  },
+                  "snapshot_id": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  },
+                  "envelope": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "af/Measurement@1",
+                          "af/MeasurementComparison@1"
+                        ]
+                      },
+                      "artifact_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "content_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "producer": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "attempt"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "attempt_id": {
+                                "type": "string",
+                                "maxLength": 26,
+                                "pattern": "^[0-9a-z]{26}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "node_id",
+                              "attempt_id"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "kernel_operation"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "operation_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "operation_id"
+                            ]
+                          }
+                        ]
+                      },
+                      "input_artifacts": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "minItems": 0,
+                        "maxItems": 4096
+                      },
+                      "subject_snapshot_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "payload": {
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "artifact_id",
+                      "content_id",
+                      "producer",
+                      "input_artifacts",
+                      "payload"
+                    ]
+                  },
+                  "streams": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repetition": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000
+                        },
+                        "stdout": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        },
+                        "stderr": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "repetition",
+                        "stdout",
+                        "stderr"
+                      ]
+                    },
+                    "minItems": 0,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "artifact_id",
+                  "type",
+                  "snapshot_id",
+                  "envelope",
+                  "streams"
+                ]
+              },
+              "comparison": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "af/Measurement@1",
+                      "af/MeasurementComparison@1"
+                    ]
+                  },
+                  "snapshot_id": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  },
+                  "envelope": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "af/Measurement@1",
+                          "af/MeasurementComparison@1"
+                        ]
+                      },
+                      "artifact_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "content_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "producer": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "attempt"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "attempt_id": {
+                                "type": "string",
+                                "maxLength": 26,
+                                "pattern": "^[0-9a-z]{26}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "node_id",
+                              "attempt_id"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "kernel_operation"
+                              },
+                              "run_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "node_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              },
+                              "operation_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "run_id",
+                              "operation_id"
+                            ]
+                          }
+                        ]
+                      },
+                      "input_artifacts": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "minItems": 0,
+                        "maxItems": 4096
+                      },
+                      "subject_snapshot_id": {
+                        "$ref": "#/$defs/digest"
+                      },
+                      "payload": {
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "artifact_id",
+                      "content_id",
+                      "producer",
+                      "input_artifacts",
+                      "payload"
+                    ]
+                  },
+                  "streams": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "repetition": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000
+                        },
+                        "stdout": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        },
+                        "stderr": {
+                          "anyOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "sha256": {
+                                  "$ref": "#/$defs/digest"
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                },
+                                "retained": {
+                                  "type": "string",
+                                  "enum": [
+                                    "whole",
+                                    "head_and_tail"
+                                  ]
+                                },
+                                "encoding": {
+                                  "type": "string",
+                                  "enum": [
+                                    "utf-8",
+                                    "base64"
+                                  ]
+                                },
+                                "head": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "tail": {
+                                  "type": "string",
+                                  "maxLength": 43692
+                                },
+                                "omitted_bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9223372036854775807
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "sha256",
+                                "bytes",
+                                "retained",
+                                "encoding",
+                                "head",
+                                "tail",
+                                "omitted_bytes"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "repetition",
+                        "stdout",
+                        "stderr"
+                      ]
+                    },
+                    "minItems": 0,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "artifact_id",
+                  "type",
+                  "snapshot_id",
+                  "envelope",
+                  "streams"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "task_id",
+          "exit_code",
+          "result",
+          "outputs"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 64
+    }
+  },
+  "required": [
+    "schema",
+    "harness_digest",
+    "instance",
+    "measure",
+    "objective",
+    "slowdown_ms",
+    "tasks"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 5000
+require_container = false
+
+[checks.pagination]
+name = "pagination"
+required = true
+
+[checks.pagination.command]
+program = "/usr/bin/python3"
+
+[[checks.pagination.command.args]]
+value = "-B"
+provenance = "literal"
+
+[[checks.pagination.command.args]]
+value = "-c"
+provenance = "literal"
+
+[[checks.pagination.command.args]]
+value = "import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]"
+provenance = "literal"

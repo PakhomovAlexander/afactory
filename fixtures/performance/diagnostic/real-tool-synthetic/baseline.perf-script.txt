@@ -1,0 +1,16 @@
+stack-fixture    16/16      989.306600: task-clock:u: 
+	             988 leaf_work (/fixture/stack-fixture)
+	             9c3 old_work (/fixture/stack-fixture)
+	             810 main (/fixture/stack-fixture)
+	           27740 [unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	           27818 __libc_start_main (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	             870 _start (/fixture/stack-fixture)
+
+stack-fixture    16/16      989.311595: task-clock:u: 
+	             988 leaf_work (/fixture/stack-fixture)
+	             a23 shared_work (/fixture/stack-fixture)
+	             81c main (/fixture/stack-fixture)
+	           27740 [unknown] (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	           27818 __libc_start_main (/usr/lib/aarch64-linux-gnu/libc.so.6)
+	             870 _start (/fixture/stack-fixture)
+

@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-status:1",
+  "title": "af/telemetry-status@1",
+  "description": "`af telemetry status --json` (ADR-0153): the configured level, the telemetry directory read, its bytes in total and per entry against `[telemetry] max_bytes` (the allocated bytes of the regular files, a file several hard links reach once, directories and links counting nothing, on every file system: ADR-0159 clause 13), its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "level",
+    "perturbing",
+    "directory",
+    "exists",
+    "bytes",
+    "segments",
+    "runs",
+    "withheld_attempts",
+    "missing_blobs",
+    "blob_verification",
+    "index",
+    "problems",
+    "unreadable",
+    "registered"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-status@1"
+    },
+    "level": {
+      "enum": [
+        "off",
+        "metrics",
+        "spans",
+        "content"
+      ]
+    },
+    "perturbing": {
+      "type": "boolean",
+      "description": "`content`: blobs of what Workers saw and did are kept."
+    },
+    "directory": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The telemetry directory read. Like every path of this document it is written as the text output writes it: a path under the home directory as `~/…`."
+    },
+    "exists": {
+      "type": "boolean"
+    },
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "max_bytes",
+        "entries"
+      ],
+      "properties": {
+        "total": {
+          "$ref": "#/$defs/count"
+        },
+        "max_bytes": {
+          "$ref": "#/$defs/count",
+          "description": "`[telemetry] max_bytes`: the Storage Budget's sweep evicts sealed segments to meet it; `status` warns on stderr when `total` is over it that the next sweep evicts."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name",
+              "bytes"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "segment",
+                  "blobs",
+                  "index",
+                  "temporary",
+                  "locks",
+                  "unrecognized"
+                ],
+                "description": "`locks` carries the lock files; `blobs` only the digest-named objects and publishers' temporary files in the two-hex prefix directories of `v1/blobs/`; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of the regular files beneath the root; a directory or a link counts nothing."
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "state": {
+                "enum": [
+                  "live",
+                  "unsealed",
+                  "sealed",
+                  "corrupt"
+                ]
+              },
+              "exit": {
+                "enum": [
+                  "ok",
+                  "error",
+                  "signal",
+                  "recovered"
+                ],
+                "description": "For a sealed segment the index read: its seal's `exit`. A segment a reader recovered says `recovered`, never a clean exit."
+              },
+              "capture": {
+                "type": "string",
+                "minLength": 1,
+                "description": "For a sealed segment the index read: `complete` (a writer's seal, nothing dropped), or why the capture is incomplete, such as `recovered, drops unknown` (recovered without the writer's seal: its drop counters are unknown), `recovered, 3 dropped` or `12 dropped`."
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "For `unrecognized`: how many paths beneath the root match no known kind."
+              },
+              "names": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "For `unrecognized`: the first 16 of those paths, relative to the root, sorted."
+              },
+              "bytes": {
+                "$ref": "#/$defs/count"
+              }
+            }
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "live",
+        "unsealed",
+        "sealed",
+        "corrupt"
+      ],
+      "properties": {
+        "live": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsealed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "corrupt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "withheld_attempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "missing_blobs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Stored occurrences whose blob file is missing, looked for under `gc.lock` shared; 0 when `blob_verification` is `deferred`."
+    },
+    "blob_verification": {
+      "enum": [
+        "verified",
+        "deferred"
+      ],
+      "description": "`verified`: blob files were looked at under `gc.lock` held shared; `deferred`: the lock was not had within 2 s (a sweep holds it), no blob file was looked at and `missing_blobs` says nothing."
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "ingested_segments",
+        "ingested_records",
+        "ingested_bytes"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ingested_segments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingested_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingested_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "what",
+          "reason",
+          "segments"
+        ],
+        "properties": {
+          "what": {
+            "enum": [
+              "write",
+              "blob",
+              "receiver",
+              "budget",
+              "redaction",
+              "sink",
+              "observer",
+              "registry"
+            ],
+            "description": "The problem kind segments recorded, or `registry` (with `segments` 0) when this command could not read the Store registry and every overlap check is `unknown`."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "segments": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "registered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "exists",
+          "current",
+          "first_use_unix_ms",
+          "last_use_unix_ms",
+          "overlap"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "first_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "overlap": {
+            "enum": [
+              "none",
+              "overlapping",
+              "unknown"
+            ],
+            "description": "The overlap check, rechecked by this command: `none`, `overlapping`, or `unknown` when the directories the storage inventory accounts could not all be read (the Store registry is unreadable or of another version; `problems` names it), so no directory is presented as standing alone."
+          },
+          "overlapping": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why this registered directory overlaps another telemetry root or a directory the storage inventory accounts on its own. Under `overlap = unknown`, an overlap found among what could be read."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "af.task-bindings/1",
+  "slots": {
+    "root.slots.implementer": "owner-default/implementer",
+    "root.slots.bugs": "owner-default/bugs",
+    "root.slots.correctness": "owner-default/correctness",
+    "root.slots.evaluator": "owner-default/evaluator"
+  },
+  "providers": {
+    "owner-default/implementer": "codex-personal",
+    "owner-default/bugs": "codex-personal",
+    "owner-default/correctness": "codex-personal",
+    "owner-default/evaluator": "codex-personal"
+  }
+}
