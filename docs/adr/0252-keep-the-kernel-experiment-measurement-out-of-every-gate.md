@@ -23,17 +23,20 @@ step. Nextest reserved every test thread for this test, leaving the other thread
 
 ## Decision
 
-Split the integration into an ordinary perf-class test for the guarded refusals and an ignored
-`manual-measurement` test for one judged sample comparison. Run the latter with
+Split the integration into an ordinary perf-class test in which every tampered harness is
+refused by the kernel as a baseline, with no build, and an ignored `manual-measurement` test
+for the judged comparison plus tampered-candidate refusals after a measured baseline. Run the
+latter with
 `make perf-kernel-measure` before a pull request changing `scripts/performance/`,
 `crates/review-pipeline/examples/perf-probe/`, `crates/review-pipeline/build.rs`, the experiment
-runtime or kernel receipts. The refusal test does not need suite exclusivity. Preserve the existing
-assertions, measurement budgets, deadlines and repetition count.
+runtime or kernel receipts. The build-free refusal test does not need suite exclusivity. Preserve
+the existing assertions, measurement budgets, deadlines and repetition count.
 
 ## Consequences
 
 The measurement's own regression is caught by the manual run and by Performance workflows that
-measure releases, not by a pull request gate. The refusal paths remain in the perf gate. The gate
-pull request and `make check-full` are expected to be about 16 to 19 minutes shorter, based on
+measure releases, not by a pull request gate. The build-free baseline refusal paths remain in the
+perf gate; the measured candidate refusals run manually. The gate pull request and
+`make check-full` are expected to be about 16 to 19 minutes shorter, based on
 the observed runtime of the former combined test; this is an estimate, not a new measured result.
 No persisted or printed contract changes.
