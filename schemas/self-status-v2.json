@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:self-status:2",
+  "title": "af/self-status@2",
+  "description": "`af self status --json`: the running binary, its receipt, the default and every installed version, the pin that applies in the current directory and the pinned projects this machine has seen, the last release check and the `[self]` policy. `last_check` is when a release check last answered and `last_attempt` when one was last attempted, `last_error` why that attempt failed (null once one succeeds); `latest` is the newest release on the configured channel and `latest_prerelease` the newest pre-release, asked for while the running af is a pre-release or the channel is `rc`. `check_stalled_since` is set when a release check has held the check lock for more than an hour: it is no check, and `rm` of the lock file clears it; `check_lock` is then that file. `next_action` is the one command the text status names: `rm <check_lock>` for a stalled check, else `af self update --rc` while a pre-release newer than the running af is known, else null. Times are UTC, `YYYY-MM-DDTHH:MM:SSZ`. Version 2 adds `check_lock` and `next_action` to version 1, which is neither printed nor read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "target",
+    "commit",
+    "release_key",
+    "running",
+    "receipt",
+    "default",
+    "default_status",
+    "installed",
+    "pin",
+    "pinned_projects",
+    "last_check",
+    "last_attempt",
+    "last_error",
+    "latest",
+    "latest_prerelease",
+    "check_stalled_since",
+    "check_lock",
+    "next_action",
+    "policy",
+    "paths"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/self-status@2"
+    },
+    "version": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "release_key": {
+      "enum": [
+        "embedded",
+        "environment",
+        "none",
+        "malformed"
+      ]
+    },
+    "running": {
+      "type": "string"
+    },
+    "receipt": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "target",
+            "source",
+            "asset",
+            "sha256",
+            "verified_by",
+            "installed_at"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "asset": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "verified_by": {
+              "type": "string"
+            },
+            "installed_at": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "default": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "default_status": {
+      "type": "string"
+    },
+    "installed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pin": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "lock",
+            "installed",
+            "digest"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "lock": {
+              "type": "string"
+            },
+            "installed": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "pinned_projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lock",
+          "version",
+          "seen"
+        ],
+        "properties": {
+          "lock": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "seen": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "last_check": {
+      "$ref": "#/$defs/time"
+    },
+    "last_attempt": {
+      "$ref": "#/$defs/time"
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 512
+    },
+    "latest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "latest_prerelease": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "check_stalled_since": {
+      "$ref": "#/$defs/time"
+    },
+    "check_lock": {
+      "description": "The check lock's file while a release check has held it for more than an hour; null otherwise.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
+    },
+    "next_action": {
+      "description": "The one command the text status names: `rm <check_lock>` for a stalled check, `af self update --rc` while a pre-release newer than the running af is known; null otherwise.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "update_check",
+        "check_every_secs",
+        "auto_update",
+        "channel",
+        "install_pins",
+        "keep_versions",
+        "source"
+      ],
+      "properties": {
+        "update_check": {
+          "type": "boolean"
+        },
+        "check_every_secs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "auto_update": {
+          "enum": [
+            "notify",
+            "always",
+            "never"
+          ]
+        },
+        "channel": {
+          "enum": [
+            "stable",
+            "rc"
+          ]
+        },
+        "install_pins": {
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ]
+        },
+        "keep_versions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "versions",
+        "default",
+        "state",
+        "cache"
+      ],
+      "properties": {
+        "versions": {
+          "type": "string"
+        },
+        "default": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "cache": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "time": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      ]
+    }
+  }
+}

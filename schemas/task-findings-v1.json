@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-findings:1",
+  "title": "Task findings af/task-findings@1",
+  "$comment": "What `af task findings ID --json` prints (ADR-0211): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence and proposed fix — and its counts by severity, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "state",
+    "rounds",
+    "round",
+    "evaluation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-findings@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+    },
+    "rounds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "round": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/round"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evaluation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/evaluation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "severity",
+        "status",
+        "confidence",
+        "title",
+        "file",
+        "line",
+        "evidence",
+        "fix"
+      ],
+      "properties": {
+        "finding_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "severity": {
+          "enum": [
+            "minor",
+            "major",
+            "blocker"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "fix": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$comment": "One finding as its reviewer reported it. `finding_id` and `status` are the Finding Set's, null for a report of an incomplete round."
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blocker",
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "blocker": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "major": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewer",
+        "result_id",
+        "findings"
+      ],
+      "properties": {
+        "reviewer": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "result_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        }
+      }
+    },
+    "round": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "round",
+        "snapshot_id",
+        "conclusion",
+        "complete",
+        "missing_reviewers",
+        "counts",
+        "reviewers"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "conclusion": {
+          "enum": [
+            "pass",
+            "changes_requested",
+            "convergence_exhausted",
+            "incomplete"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "missing_reviewers": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          }
+        },
+        "counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reviewer"
+          }
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "artifact_id",
+        "outcome",
+        "reason"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "inconclusive"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        }
+      }
+    }
+  }
+}

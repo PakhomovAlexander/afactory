@@ -1,0 +1,69 @@
+{
+  "schema": "af.perf-kernel-inventory/1",
+  "harness_digest": "sha256:a67771d39f8992d1d8b2991cedf1b84c1ac00f8fad7c94bfe4e6274ccb738c80",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "size": 16,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "path": "Cargo.toml",
+      "size": 17,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    {
+      "path": "crates/review-core/src/perf_calibration.rs",
+      "size": 18,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    {
+      "path": "crates/review-core/src/perf_trace.rs",
+      "size": 19,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000004"
+    },
+    {
+      "path": "crates/review-pipeline/Cargo.toml",
+      "size": 20,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+    },
+    {
+      "path": "crates/review-pipeline/examples/perf-probe.rs",
+      "size": 21,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+    },
+    {
+      "path": "crates/review-process/examples/perf-supervisor.rs",
+      "size": 22,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    {
+      "path": "fixtures/performance/adapters.toml",
+      "size": 23,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+    },
+    {
+      "path": "fixtures/performance/golden/native.json",
+      "size": 24,
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000009"
+    },
+    {
+      "path": "fixtures/performance/suite.toml",
+      "size": 25,
+      "sha256": "sha256:000000000000000000000000000000000000000000000000000000000000000a"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "size": 26,
+      "sha256": "sha256:000000000000000000000000000000000000000000000000000000000000000b"
+    },
+    {
+      "path": "scripts/performance/cli.py",
+      "size": 27,
+      "sha256": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+    }
+  ],
+  "objective_metric": "elapsed_ms",
+  "inner_metric": "pending",
+  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it"
+}

@@ -1,0 +1,4 @@
+task Task golden  run task:sha256:7777777777777777777777777777777777777777777777777777777777777777  store 555555555555
+  executions 2 (retained executions 1–2; history prefix:2)  first start 2023-11-14T22:13:20.003Z
+  active 36.000 ms · execution 36.000 ms · elapsed 100.018 s · outcome finished
+  charge 2400 over 6 Attempts · failures 2 · coverage complete

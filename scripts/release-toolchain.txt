@@ -1,0 +1,29 @@
+# The Python packages that link the static Linux release binaries (release.yml), installed with
+# `pip install --require-hashes --only-binary=:all:`: every wheel PyPI publishes for these
+# versions, by its sha256, so whatever wheel pip picks for the runner must be one of these bytes.
+# To move a version, change it here and take the hashes of its wheels from PyPI's JSON API:
+#   curl -s https://pypi.org/pypi/ziglang/0.15.2/json | python3 -c 'import json, sys
+#   [print(u["digests"]["sha256"]) for u in json.load(sys.stdin)["urls"] if u["packagetype"] == "bdist_wheel"]'
+
+cargo-zigbuild==0.23.4 \
+    --hash=sha256:bc39e63ec1b4a34784b9bfcea90b11f42f8cc0b9f31b14e77522bc45dbb72430 \
+    --hash=sha256:9f848addf9ca16e8df52b4a86eb41f7555bb4205aea117ad521f501a307129f5 \
+    --hash=sha256:cf6e5fd1cf702a49022fe43f4b7c0e7f420311d3d52e47cb5701922ad1578f98 \
+    --hash=sha256:ff63a2722bd831aec0c4bd5b8f39a15f075125c70ecbde0c9b5bcb5086ef932e \
+    --hash=sha256:0a149a2a07b9513d422efa9cc23e1add9741f08abe86845fa418eaeb4cca7931 \
+    --hash=sha256:06cefee95650a110c123b078e1f7047ffe30f58337f9d0d1e1cd6a47c3294cf4 \
+    --hash=sha256:7ef07b534e4c8fd5147d90e1a39170f32174e2147381c6631477d00ef41420d7 \
+    --hash=sha256:ede52ff6ffe4b6295d3f0b4265e3aac84a1d0f09609e401ebeb74fc0f37519be
+ziglang==0.15.2 \
+    --hash=sha256:acae2a9ce67ed249ad68d42c21bc73b5f9d51a33ba5ea42f609f78683e8d9bb7 \
+    --hash=sha256:47af4f85e3e59bd672126cc026d3a01b516cad24b9a9ea075abfe8532f4c6bc1 \
+    --hash=sha256:04eb9c4135ef431487b920c73312cd3a5e754019839024eeed3521772d1585a2 \
+    --hash=sha256:806316453d1ede7174ed3fefb8e5348154629089c3bb5fe812dfd0e172fac130 \
+    --hash=sha256:edc0aa60ec964a4cf462d40f68d7de242ddf37fd9a80f2afaee6397059463230 \
+    --hash=sha256:ad43a4692311512ab55cc918596c814ff44fb811b1299fa9a57cc4e2bf315c6b \
+    --hash=sha256:85faefbd4cfe420de92aaa8f8300bec2b9afe8d1f1d8c5abf71bf92754682536 \
+    --hash=sha256:978ebcc3c6c9624cbc999dd8dcb65427e7474650d9709a889aace8e325705ce2 \
+    --hash=sha256:d3fe40825e18238e986b305cbf3a4d93a50461b893339e31c81b0d6c73f33937 \
+    --hash=sha256:b174f7ebb9d1f2210d32d1420333120f6117ebee3de8b3e221e6ebb0c3beec4b \
+    --hash=sha256:ca80dc9c70dbdfdd9ee51d000de3501a95d33d9782ab9ab9b56f700484ebcd83 \
+    --hash=sha256:a81ebfc61e1b7aa43a33add23f93b98954d757434f894eb21bd40b176b6688aa

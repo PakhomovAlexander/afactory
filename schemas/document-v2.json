@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:document:2",
+  "title": "af/Document@1 payload, render version af.document/2",
+  "description": "A rendered Document: its draft and sources by identity and the canonical Markdown they render to, escaping only what is Markdown markup where it stands. The af.document/1 rendering, which escaped every ASCII punctuation character, is neither written nor read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "draft_id",
+    "sources_id",
+    "format",
+    "text"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.document/2"
+    },
+    "draft_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sources_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "format": {
+      "const": "markdown"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1048576,
+      "pattern": "\\S"
+    }
+  }
+}
