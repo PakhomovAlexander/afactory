@@ -1,0 +1,1 @@
+{"container":"af-perf-telemetry-fixture-01","control":[7,101],"filesystem_pending":false,"image":"/synthetic/telemetry-owner/scratch.img","image_bytes":67108864,"image_identity":[7,103],"launches":2,"lock":[7,102],"mount":"/synthetic/telemetry-owner/scratch-fs","mount_identity":[8,2],"owner_uid":1000,"phase":"stopped","schema":"af.perf-telemetry-owner/1"}

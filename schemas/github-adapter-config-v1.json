@@ -1,0 +1,184 @@
+{
+  "$id": "urn:af:schema:github-adapter-config:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "GitHub Scenario adapter v1. Semantic validation also binds exact identities, scope and durable state.",
+  "properties": {
+    "actor": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "login": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\\[bot\\])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login"
+      ],
+      "type": "object"
+    },
+    "heads": {
+      "additionalProperties": {
+        "maxLength": 65536,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+        "type": "string"
+      },
+      "maxProperties": 32,
+      "minProperties": 1,
+      "propertyNames": {
+        "maxLength": 65536,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "operations": {
+      "items": {
+        "enum": [
+          "publish_pr",
+          "followup",
+          "notify",
+          "observe"
+        ]
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "repository": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$",
+      "type": "string"
+    },
+    "repository_id": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "required_checks": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "app_id": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "check"
+              },
+              "name": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "app_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "creator_id": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "status"
+              }
+            },
+            "required": [
+              "kind",
+              "context",
+              "creator_id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "reviewers": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "login": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\\[bot\\])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "login"
+        ],
+        "type": "object"
+      },
+      "maxItems": 15,
+      "minItems": 0,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema": {
+      "const": "af/github-adapter-config@1"
+    },
+    "state_dir": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^/.*$",
+      "type": "string"
+    },
+    "token_file": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^/.*$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "repository_id",
+    "actor",
+    "token_file",
+    "state_dir",
+    "heads",
+    "required_checks",
+    "reviewers",
+    "operations"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-tui-open:1",
+  "title": "af.perf-tui-open/1",
+  "description": "The PTY driver's one-line report: launch-to-browser and launch-to-first-output intervals in milliseconds and the child exit code.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-tui-open/1"
+    },
+    "browser_ms": {
+      "$ref": "#/$defs/decimal"
+    },
+    "splash_ms": {
+      "$ref": "#/$defs/decimal"
+    },
+    "exit_code": {
+      "const": 0
+    }
+  },
+  "required": [
+    "schema",
+    "browser_ms",
+    "splash_ms",
+    "exit_code"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    }
+  }
+}

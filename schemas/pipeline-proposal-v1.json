@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pipeline-proposal:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "root",
+    "definitions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.pipeline-proposal/1"
+    },
+    "root": {
+      "type": "string",
+      "pattern": "^generated/[A-Za-z0-9][A-Za-z0-9_/-]*$",
+      "maxLength": 256
+    },
+    "definitions": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^generated/[A-Za-z0-9][A-Za-z0-9_/-]*$",
+        "maxLength": 256
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 262144
+      }
+    }
+  },
+  "$comment": "Semantic admission requires the root definition, valid package segments and a total UTF-8 TOML bound of 1 MiB; the compiler parses exact TOML, validates installed references and bounds expanded nodes."
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "af/task-diff@1",
+  "task_id": "preflight-example",
+  "base_snapshot_id": "sha256:b695722934a3996438a3940444d175e77bd3cdc353a290e70174b864609af7bc",
+  "snapshot_id": "sha256:23a7a6089d447be18c836c87a5a77e692906d02bcdd8e3fa7cf891ba0e1fae22",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "Makefile",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "docs/README.md",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "docs/task-execution/preflight.md",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "scripts/task-preflight.py",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    },
+    {
+      "path": "scripts/test-task-preflight.py",
+      "status": "modified",
+      "old_path": null,
+      "added": 1,
+      "deleted": 0
+    }
+  ],
+  "patch": "diff --git a/scripts/task-preflight.py b/scripts/task-preflight.py\n--- a/scripts/task-preflight.py\n+++ b/scripts/task-preflight.py\n@@ -0,0 +1 @@\n+# supplied advisory example\n"
+}

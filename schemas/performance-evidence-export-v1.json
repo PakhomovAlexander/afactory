@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-evidence-export:1",
+  "title": "af.perf-evidence-export/1",
+  "description": "Native Scenario lab integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-evidence-export/1"
+    },
+    "index": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "index_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "packet": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    }
+  },
+  "required": [
+    "schema",
+    "index",
+    "index_digest",
+    "packet"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$id": "urn:af:schema:git-workspace-content:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "body": {
+      "maxLength": 48000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema": {
+      "const": "af/git-workspace-content@1"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "title",
+    "body"
+  ],
+  "title": "git-workspace-content v1",
+  "type": "object"
+}

@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-reasoning:1",
+  "title": "af/telemetry-reasoning@1",
+  "description": "`af telemetry reasoning RUN ATTEMPT --json` (design §7.3, §8, §10; ADR-0153): one Attempt's Claude `thinking` blocks and Codex `reasoning` items in the order they arrived. Each harness process of the Attempt (`harnesses`) is listed with the level its execution recorded at and its state: `captured` (released at `content` with `content_reasoning` on), `not_captured` (below `content`, or `content_reasoning = false`), `withheld` (Telemetry's release decision found login-challenge material, or the adapter replaced the streams, and nothing of the process was kept) or `open` (its stream has not been released). The document's `state` is `captured` when one harness captured, else the first harness's, or `unavailable` when the Attempt recorded no harness. Each thought names its harness, its turn and that turn's ordinal, and its content occurrence (`af.content.reasoning`). Every byte shown is a blob's retained bytes, redacted whole (credential-looking lines and values withheld, grant values and the home prefix replaced) before any truncation when it was kept, read under `gc.lock` shared and verified against its digest; a content that cannot be shown says why (`reason`). The run carries its history (`prefix:k` or `partial`, never complete) and the label of the executions retained. Telemetry ids carry no authority, and no Worker ever reads this content (ADR-0153).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "run",
+    "attempt",
+    "state",
+    "harnesses",
+    "thoughts",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-reasoning@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "run_id",
+        "trace_id",
+        "history",
+        "missing_ordinals",
+        "retained"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "history": {
+          "type": "string",
+          "pattern": "^(prefix:(0|[1-9][0-9]*)|partial)$"
+        },
+        "missing_ordinals": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "retained": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    },
+    "attempt": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "captured",
+        "not_captured",
+        "withheld",
+        "open",
+        "unavailable"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "harnesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "span_id",
+          "segment_id",
+          "level",
+          "state"
+        ],
+        "properties": {
+          "span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "segment_id": {
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "metrics",
+              "spans",
+              "content",
+              "unknown"
+            ]
+          },
+          "state": {
+            "enum": [
+              "captured",
+              "not_captured",
+              "withheld",
+              "open"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "thoughts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ordinal",
+          "kind",
+          "harness_span_id",
+          "part"
+        ],
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "enum": [
+              "thinking",
+              "reasoning"
+            ]
+          },
+          "harness_span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "turn_span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "turn_ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "part": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event",
+              "span_id",
+              "segment_id",
+              "seq",
+              "time_unix_ns",
+              "truncated",
+              "state"
+            ],
+            "properties": {
+              "event": {
+                "type": "string"
+              },
+              "span_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "time_unix_ns": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "occurrence_id": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "source_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "original_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "retained_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "stored",
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

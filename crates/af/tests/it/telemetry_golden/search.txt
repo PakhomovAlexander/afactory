@@ -1,0 +1,5 @@
+2 blob(s) hold "lighthouse"
+sha256:735a7d3d98e961ed6b22fb107cc132cb9fc0755cb56d20a65edab8f3ccc5bd7b  {"schema":"af.worker-request/1","instructions":"Review the lighthouse.","inputs":{"source":[{"artifact_id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_type":"af/SourceTree@1","snapshot_id":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb…
+    1700000400000-4246-2b3c4d5e:8  gen_ai.content.input  2023-11-14T22:20:00.007Z  run task:sha256:9898989898989898989898989898989898989898989898989898989898989898  attempt golden-content-attempt-1  af.command > af.run > af.node > af.attempt > af.context.compose
+sha256:73f17eee3a3d55939e6c86cb93cb026c1f3d51d9886d47008f365c79c9eacdf4  No findings: the periwinkle lighthouse is lit.
+    1700000400000-4246-2b3c4d5e:35  gen_ai.content.output  2023-11-14T22:20:00.015Z  run task:sha256:9898989898989898989898989898989898989898989898989898989898989898  attempt golden-content-attempt-1  af.command > af.run > af.node > af.attempt > af.harness > af.turn
