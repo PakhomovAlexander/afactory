@@ -1,0 +1,190 @@
+# Diagnostic registry of the AF performance laboratory (docs/design/continuous-performance.md §9,
+# ADR-0174).
+#
+# Diagnostics are separate child runs of a comparison: `python3 scripts/performance/cli.py
+# profile --plan RUN_JSON (--case ID ... | --verdict VERDICT_JSON)`. They never measure a verdict
+# sample and never change one. Everything here is bounded by the hard maxima of design §14; a
+# host that lacks a configured capability reports it unavailable with its reason, reproduction
+# command and the provisioning below. Nothing here grants a privilege, changes a kernel setting,
+# installs, signs, opens a browser or uploads.
+
+schema = "af.perf-diagnostics/1"
+description = "Separate bounded CPU profiles, phase traces and counters of a comparison's cases."
+
+[selection]
+default_cases = 3
+max_cases = 8
+order = "regressed_then_inconclusive_by_instance_id"
+description = "Automatic selection: regressed cases, then inconclusive ones, each class by stable instance ID; explicit --case selects exactly the named cases."
+
+[capture]
+frequency_hz = 997
+duration_seconds = 10
+# Hardware cycle counters are often unavailable in virtual machines and containers (`cycles:u`
+# reports <not supported> there). The declared event is the software task clock in user space,
+# and no other event is ever substituted for it.
+event = "task-clock:u"
+dwarf_stack_bytes = 32768
+extra_dwarf_captures_per_side = 1
+# A frame-pointer capture whose unknown-frame ratio is above this takes the one DWARF capture.
+dwarf_when_unknown_ratio_above = "0.25"
+# Fewer samples than this attribute nothing: such a capture is kept with its reason, and no
+# flamegraph is drawn from it.
+minimum_samples = 200
+# One profiled process repeats on fresh declared state (its scratch and seed copy replaced
+# between repetitions) until the probe-measured region time reaches the capture's duration, this
+# cap or the diagnostic deadline; recording stops when its enabled time reaches the duration.
+max_repetitions = 2000
+handshake_timeout_seconds = 30
+description = "997 Hz for 10 s of region per side, frame pointers first, at most one 32-KiB DWARF capture per side."
+
+[trace]
+overhead_target = "0.02"
+overhead_pairs = 12
+description = "Trace-on/off overhead per native case: the median of paired relative overheads; above the target a trace is labelled perturbing."
+
+[counters]
+seconds = 120
+cases = [
+  "canonical_serialize_small__package_small_envelope",
+  "canonical_validate_small__package_small_envelope",
+  "cas_raw_get_small__package_small_envelope",
+  "cas_typed_get_small__package_small_envelope",
+]
+description = "Callgrind instructions of the bracketed region and DHAT allocations of the whole process, for small library cases only; explanatory proxies, never wall-time evidence."
+
+[limits]
+total_minutes = 15
+profile_bytes = 134217728
+builds = 4
+tool_output_bytes = 67108864
+tool_seconds = 120
+
+# Diagnostic recipes: a verdict recipe of the suite with only what diagnosis needs added. ------
+
+[recipes.linux_gnu_cpu_profile]
+description = "Linux GNU release build with debug symbols and frame pointers, and the probe's region handshake."
+kind = "cpu_profile"
+base_recipe = "linux_gnu_native_release"
+features = ["perf-control"]
+debug_symbols = true
+frame_pointers = true
+tools = ["perf", "inferno_collapse_perf", "inferno_diff_folded", "inferno_flamegraph"]
+
+[recipes.linux_gnu_trace]
+description = "Linux GNU release build with the default-off perf-trace phase spans."
+kind = "trace"
+base_recipe = "linux_gnu_native_release"
+features = ["perf-trace"]
+debug_symbols = false
+frame_pointers = false
+tools = []
+
+[recipes.linux_gnu_counters]
+description = "Linux GNU release build with debug symbols, frame pointers and the region handshake, for Callgrind and DHAT."
+kind = "counters"
+base_recipe = "linux_gnu_native_release"
+features = ["perf-control"]
+debug_symbols = true
+frame_pointers = true
+tools = ["valgrind", "callgrind_control"]
+
+[recipes.linux_musl_cpu_profile]
+description = "The Linux musl shipping build, in its pinned image with cargo-zigbuild and Zig, with debug symbols, frame pointers and the probe's region handshake."
+kind = "cpu_profile"
+base_recipe = "linux_musl_shipping"
+features = ["perf-control"]
+debug_symbols = true
+frame_pointers = true
+tools = ["perf", "inferno_collapse_perf", "inferno_diff_folded", "inferno_flamegraph"]
+
+[recipes.linux_musl_trace]
+description = "The Linux musl shipping build, in its pinned image with cargo-zigbuild and Zig, with the default-off perf-trace phase spans."
+kind = "trace"
+base_recipe = "linux_musl_shipping"
+features = ["perf-trace"]
+debug_symbols = false
+frame_pointers = false
+tools = []
+
+[recipes.macos_arm64_samply]
+description = "Local macOS arm64 release build with debug symbols and frame pointers, for samply's whole-process capture."
+kind = "cpu_profile"
+base_recipe = "macos_arm64_native_release"
+features = []
+debug_symbols = true
+frame_pointers = true
+tools = ["samply"]
+
+[recipes.macos_arm64_trace]
+description = "Local macOS arm64 release build with the default-off perf-trace phase spans."
+kind = "trace"
+base_recipe = "macos_arm64_native_release"
+features = ["perf-trace"]
+debug_symbols = false
+frame_pointers = false
+tools = []
+
+# External tools: configured executables, never installed by the laboratory. --------------------
+
+[tools.perf]
+description = "Linux perf: the configured executor's kernel-matched perf, probed by an actual acknowledged capture of the declared event."
+executable = "perf"
+os = ["linux"]
+package = "linux-perf, matched to the executor's kernel"
+version_argv = ["--version"]
+provisioning = "Install the distribution's perf for the running kernel on a dedicated executor (Debian: apt-get install linux-perf) and allow user-space sampling there by the operator's own policy (perf_event_paranoid); the laboratory never changes kernel settings. Fork pull requests use only ephemeral hosted runners."
+
+[tools.inferno_collapse_perf]
+description = "inferno's perf-script collapser."
+executable = "inferno-collapse-perf"
+os = ["linux", "macos"]
+package = "inferno"
+version = "0.12.8"
+source_sha256 = "0c460d4fa06223667240720ab69a8045133755ae6dfbe100cf481b95e3a014f1"
+source_url = "https://crates.io/api/v1/crates/inferno/0.12.8/download"
+provisioning = "cargo install --locked --version 0.12.8 inferno --root DIR, from the crate whose SHA-256 is source_sha256; pass --inferno-bin DIR/bin. Its binaries refuse --version, so the pin and each executable's SHA-256 identify them."
+
+[tools.inferno_diff_folded]
+description = "inferno's normalized differential of two collapsed stack files."
+executable = "inferno-diff-folded"
+os = ["linux", "macos"]
+package = "inferno"
+version = "0.12.8"
+source_sha256 = "0c460d4fa06223667240720ab69a8045133755ae6dfbe100cf481b95e3a014f1"
+source_url = "https://crates.io/api/v1/crates/inferno/0.12.8/download"
+provisioning = "Installed with inferno_collapse_perf from the same pinned crate."
+
+[tools.inferno_flamegraph]
+description = "inferno's flamegraph renderer, run deterministic and without its JavaScript; its SVG is still sanitized before embedding."
+executable = "inferno-flamegraph"
+os = ["linux", "macos"]
+package = "inferno"
+version = "0.12.8"
+source_sha256 = "0c460d4fa06223667240720ab69a8045133755ae6dfbe100cf481b95e3a014f1"
+source_url = "https://crates.io/api/v1/crates/inferno/0.12.8/download"
+provisioning = "Installed with inferno_collapse_perf from the same pinned crate."
+
+[tools.samply]
+description = "samply's optional local macOS capture of a self-built executable, saved without a viewer."
+executable = "samply"
+os = ["macos"]
+package = "samply"
+version_argv = ["--version"]
+provisioning = "Optional and unpinned: install samply yourself (cargo install --locked samply) and pass --samply PATH. The laboratory records its reported version and SHA-256, refuses system-protected or hardened targets, and never signs, installs, changes privileges, opens a browser or uploads."
+
+[tools.valgrind]
+description = "Valgrind for the optional Callgrind instruction and DHAT allocation counters."
+executable = "valgrind"
+os = ["linux"]
+package = "valgrind"
+version_argv = ["--version"]
+provisioning = "Optional and unpinned: install the distribution's valgrind on the executor (Debian: apt-get install valgrind) and pass --valgrind-bin DIR."
+
+[tools.callgrind_control]
+description = "Valgrind's callgrind_control, which switches Callgrind's instrumentation on and off around the bracketed region."
+executable = "callgrind_control"
+os = ["linux"]
+package = "valgrind"
+version_argv = ["--version"]
+provisioning = "Installed with valgrind."

@@ -1,0 +1,37 @@
+{
+  "schema": "af.perf-archive-collection/1",
+  "sequence": 2,
+  "started_unix_ms": 1800000000000,
+  "ended_unix_ms": 1800000005000,
+  "source": {
+    "kind": "actions",
+    "repository": "example/af",
+    "actions_run_id": 4242,
+    "artifacts": [
+      {
+        "id": 1001,
+        "name": "af-perf-run_bundle",
+        "size": 4096,
+        "created_unix_ms": 1799913600000,
+        "expires_unix_ms": 1807689600000,
+        "state": "refused",
+        "sha256": null
+      },
+      {
+        "id": 1002,
+        "name": "af-perf-shard_bundle-0",
+        "size": 8192,
+        "created_unix_ms": 1799913600000,
+        "expires_unix_ms": 1807689600000,
+        "state": "not_collected",
+        "sha256": null
+      }
+    ]
+  },
+  "status": "transport_failed",
+  "run_id": null,
+  "run_ended_unix_ms": null,
+  "needed_bytes": null,
+  "available_bytes": null,
+  "detail": "the transport was refused: the artifact is not a ZIP container"
+}

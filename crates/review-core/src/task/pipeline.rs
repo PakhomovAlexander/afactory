@@ -1,0 +1,546 @@
+//! Reusable Pipeline definition contracts, independent of parser and scheduler implementations.
+
+use super::{REVIEW_HISTORY_V1, TaskFactV1, is_name, is_package_name, require};
+use crate::{PortCardinality, is_artifact_type};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// An optional set that, when written, names at least one entry: an empty `remote_checks`
+/// would be a second spelling of an absent one.
+fn present_unique_set<'de, D>(deserializer: D) -> Result<BTreeSet<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let set = super::unique_set(deserializer)?;
+    if set.is_empty() {
+        return Err(serde::de::Error::custom(
+            "a check node's `remote_checks`, when present, names at least one check: name \
+             one, or remove the key",
+        ));
+    }
+    Ok(set)
+}
+
+/// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/2`
+/// is the shape whose contract declares a Project Brief port (ADR-0160), and every other
+/// pipeline is `af.pipeline/1`, which declares none, so no pipeline has two spellings and a
+/// version-1 pipeline that carries the port is refused rather than read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PipelineSchema {
+    #[serde(rename = "af.pipeline/1")]
+    V1,
+    #[serde(rename = "af.pipeline/2")]
+    V2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PortAffinityV1 {
+    Unbound {},
+    SameAs { input: String },
+    DerivedFrom { input: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootDefaultV1 {
+    EmptyReviewHistory,
+    /// The Project Brief the port's `brief` variant renders from the Survey the Task's initial
+    /// capture pinned (ADR-0160).
+    ProjectBrief,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelinePortV1 {
+    pub artifact_type: String,
+    pub cardinality: PortCardinality,
+    pub optional: bool,
+    pub affinity: PortAffinityV1,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub root_default: Option<RootDefaultV1>,
+    /// The `[brief.<name>]` variant a `project_brief` root default renders; allowed only with
+    /// it (ADR-0160).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub brief: Option<String>,
+    #[serde(deserialize_with = "super::unique_set")]
+    pub covers: BTreeSet<String>,
+}
+
+impl PipelinePortV1 {
+    /// Whether this declaration uses what only `af.pipeline/2` admits: the `project_brief` root
+    /// default or a `brief` variant.
+    pub fn declares_brief(&self) -> bool {
+        self.root_default == Some(RootDefaultV1::ProjectBrief) || self.brief.is_some()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_artifact_type(&self.artifact_type),
+            "Pipeline port requires a versioned artifact type",
+        )?;
+        match &self.affinity {
+            PortAffinityV1::Unbound {} => {}
+            PortAffinityV1::SameAs { input } | PortAffinityV1::DerivedFrom { input } => {
+                require(is_name(input), "Invalid port affinity input")?;
+            }
+        }
+        require(
+            self.covers.iter().all(|s| is_name(s)),
+            "Invalid public coverage name",
+        )?;
+        match self.root_default {
+            Some(RootDefaultV1::EmptyReviewHistory) => require(
+                self.artifact_type == REVIEW_HISTORY_V1 && self.cardinality == PortCardinality::One,
+                "Empty review history is only a default for a single ReviewHistory port",
+            )?,
+            Some(RootDefaultV1::ProjectBrief) => require(
+                self.artifact_type == super::project_brief::PROJECT_BRIEF_V1
+                    && self.cardinality == PortCardinality::One
+                    && self.optional
+                    && self.affinity == PortAffinityV1::Unbound {}
+                    && self.brief.as_deref().is_some_and(is_name),
+                "A project_brief root default is one optional unbound af/ProjectBrief@1 port \
+                 naming its variant in `brief`",
+            )?,
+            None => {}
+        }
+        require(
+            self.brief.is_none() || self.root_default == Some(RootDefaultV1::ProjectBrief),
+            "A port names a `brief` variant only with root_default = \"project_brief\"",
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineContractV1 {
+    pub inputs: BTreeMap<String, PipelinePortV1>,
+    pub outputs: BTreeMap<String, PipelinePortV1>,
+}
+
+impl PipelineContractV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            !self.outputs.is_empty(),
+            "Pipeline must declare public outputs",
+        )?;
+        for (is_input, name, port) in self
+            .inputs
+            .iter()
+            .map(|(n, p)| (true, n, p))
+            .chain(self.outputs.iter().map(|(n, p)| (false, n, p)))
+        {
+            require(is_name(name), "Invalid Pipeline port name")?;
+            port.validate()?;
+            match &port.affinity {
+                PortAffinityV1::SameAs { input } | PortAffinityV1::DerivedFrom { input } => {
+                    require(
+                        self.inputs.contains_key(input) && (!is_input || input != name),
+                        "Port affinity must reference another declared public input",
+                    )?;
+                }
+                PortAffinityV1::Unbound {} => {}
+            }
+        }
+        require(
+            self.outputs.values().all(|p| p.root_default.is_none()),
+            "Public outputs cannot have root defaults",
+        )?;
+        require(
+            self.inputs.values().all(|p| p.covers.is_empty()),
+            "Only public outputs declare coverage",
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ValueRefV1 {
+    Input { port: String },
+    Node { node: String, port: String },
+}
+
+impl ValueRefV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        let valid = match self {
+            Self::Input { port } => is_name(port),
+            Self::Node { node, port } => is_name(node) && is_name(port),
+        };
+        require(valid, "Invalid named Pipeline reference")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerSlotV1 {
+    pub worker: String,
+    pub role: String,
+    pub input_type: String,
+    pub output_type: String,
+    pub min_attempts: u32,
+    pub max_attempts: u32,
+    pub allow_local_replacement: bool,
+    #[serde(deserialize_with = "super::unique_set")]
+    pub independent_from: BTreeSet<String>,
+}
+
+impl WorkerSlotV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_package_name(&self.worker) && is_name(&self.role),
+            "Invalid Worker slot identity",
+        )?;
+        require(
+            is_artifact_type(&self.input_type) && is_artifact_type(&self.output_type),
+            "Worker slot needs typed input/output contracts",
+        )?;
+        require(
+            self.max_attempts > 0 && self.min_attempts <= self.max_attempts,
+            "Worker slot Attempt bounds are invalid",
+        )?;
+        require(
+            self.independent_from.iter().all(|s| is_name(s)),
+            "Invalid independent slot reference",
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskOperatorV1 {
+    Worker {
+        slot: String,
+    },
+    /// Fixed bootstrap context constructed from captured Task and installed signatures.
+    PlanningContext {},
+    DocumentSeal {},
+    DocumentCheck {},
+    DocumentAccept {},
+    /// The report profile's renderer: the Document renderer over a report draft, bound to the
+    /// exact source Snapshot the draft was written against.
+    ReportSeal {},
+    /// The Document checks plus every repository citation resolved against the source
+    /// Snapshot's exact Manifest; one protected Attempt, never a Provider.
+    ReportCheck {},
+    /// Report acceptance assembly from current checks and the independent evaluation.
+    ReportAccept {},
+    /// Deterministic M1 history fold and typed report rendering; never invokes a Provider.
+    OptimizationProject {},
+    /// Deterministic aggregate development view and installed light-recipe catalog. The output
+    /// is data-only and intentionally omits protected case bodies and a SourceTree handle.
+    OptimizationProfile {},
+    OptimizationPrepare {},
+    OptimizationFinalize {},
+    /// Installed coordinator for one bounded, separately approved experiment.
+    OptimizationExperiment {
+        baseline_slot: String,
+        candidate_slot: String,
+    },
+    Seal {},
+    /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
+    /// conditional evaluator, and admits success only from current independent evidence.
+    Accept {},
+    /// The node's checks: `checks` run on this machine, then `remote_checks` run by each
+    /// check's declared remote executor (ADR-0140). A node without `remote_checks` serializes
+    /// exactly as it did before the field existed.
+    Check {
+        #[serde(deserialize_with = "super::unique_set")]
+        checks: BTreeSet<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "BTreeSet::is_empty",
+            deserialize_with = "present_unique_set"
+        )]
+        remote_checks: BTreeSet<String>,
+    },
+    Verify {
+        slot: String,
+    },
+    Call {
+        pipeline: String,
+        bindings: BTreeMap<String, String>,
+    },
+    ReviewBind {},
+    /// One atomic gather/reducer barrier over the captured set of required reviewers.
+    ReviewReduce {},
+    /// Accept implementation only from the embedded current-Snapshot Review and its checks.
+    ReviewAccept {},
+    AttestFixes {},
+    RepairAccept {},
+    ReviewContinue {},
+    FixVerify {
+        slot: String,
+    },
+    Select {},
+    /// Kernel measurement of a source Snapshot: one `af/Measurement@1` per named measure of the
+    /// captured code policy, each an outcome receipt. Never invokes a Provider (ADR-0132).
+    Measure {
+        #[serde(deserialize_with = "super::unique_set")]
+        measures: BTreeSet<String>,
+    },
+    /// Deterministic fold of a baseline and a candidate Measurement under one captured
+    /// objective into an `af/MeasurementComparison@1` outcome receipt.
+    Compare {
+        objective: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptOutcomeV1 {
+    Passed,
+    Failed,
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeConditionV1 {
+    pub node: String,
+    pub outcome: ReceiptOutcomeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskNodeV1 {
+    pub id: String,
+    pub operator: TaskOperatorV1,
+    pub inputs: BTreeMap<String, ValueRefV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub when: Option<NodeConditionV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineApplicabilityV1 {
+    #[serde(deserialize_with = "super::unique_set")]
+    pub kinds: BTreeSet<String>,
+    pub required_facts: BTreeMap<String, TaskFactV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineDefinitionV1 {
+    pub schema: PipelineSchema,
+    pub name: String,
+    pub version: String,
+    pub contract: PipelineContractV1,
+    pub accepts: PipelineApplicabilityV1,
+    pub slots: BTreeMap<String, WorkerSlotV1>,
+    pub nodes: Vec<TaskNodeV1>,
+    pub outputs: BTreeMap<String, ValueRefV1>,
+    pub coverage: BTreeMap<String, ValueRefV1>,
+    pub max_attempts: u32,
+    pub max_parallel: u32,
+}
+
+impl PipelineDefinitionV1 {
+    /// Whether the contract declares a Project Brief port: what makes a pipeline
+    /// `af.pipeline/2`.
+    pub fn declares_brief(&self) -> bool {
+        self.contract
+            .inputs
+            .values()
+            .chain(self.contract.outputs.values())
+            .any(PipelinePortV1::declares_brief)
+    }
+
+    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160): the port is
+    /// `af.pipeline/2`'s alone, and `af.pipeline/2` is the shape of a pipeline that declares it.
+    fn validate_version(&self) -> Result<(), String> {
+        let briefed = self
+            .contract
+            .inputs
+            .iter()
+            .chain(&self.contract.outputs)
+            .find(|(_, port)| port.declares_brief())
+            .map(|(name, _)| name);
+        match (self.schema, briefed) {
+            (PipelineSchema::V1, Some(port)) => Err(format!(
+                "Pipeline {} declares the Project Brief port {port} under af.pipeline/1, which \
+                 has no Brief port: a pipeline with a `project_brief` port declares schema = \
+                 \"af.pipeline/2\"",
+                self.name
+            )),
+            (PipelineSchema::V2, None) => Err(format!(
+                "Pipeline {} is af.pipeline/2 but declares no `project_brief` port: \
+                 af.pipeline/2 is the shape of a pipeline with a Project Brief port, and every \
+                 other pipeline declares schema = \"af.pipeline/1\"",
+                self.name
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_package_name(&self.name) && !self.version.trim().is_empty(),
+            "Invalid Pipeline name/version",
+        )?;
+        self.contract.validate()?;
+        self.validate_version()?;
+        require(
+            !self.nodes.is_empty() && self.nodes.len() <= 64,
+            "Pipeline must contain one to 64 static nodes",
+        )?;
+        require(
+            self.max_attempts > 0 && (1..=16).contains(&self.max_parallel),
+            "Invalid Pipeline execution bounds",
+        )?;
+        require(
+            !self.accepts.kinds.is_empty() && self.accepts.kinds.iter().all(|s| is_package_name(s)),
+            "Invalid Pipeline root applicability",
+        )?;
+        for (name, fact) in &self.accepts.required_facts {
+            require(is_name(name), "Invalid applicability fact")?;
+            fact.validate()?;
+        }
+        require(
+            self.outputs.keys().eq(self.contract.outputs.keys()),
+            "Every public output must have exactly one binding",
+        )?;
+        let mut ids = BTreeSet::new();
+        for node in &self.nodes {
+            require(
+                is_name(&node.id) && ids.insert(node.id.clone()),
+                "Duplicate or invalid Pipeline node ID",
+            )?;
+            for (port, input) in &node.inputs {
+                require(is_name(port), "Invalid operator input name")?;
+                input.validate()?;
+            }
+            match &node.operator {
+                TaskOperatorV1::Worker { slot }
+                | TaskOperatorV1::Verify { slot }
+                | TaskOperatorV1::FixVerify { slot } => {
+                    require(
+                        self.slots.contains_key(slot),
+                        "Operator refers to an unknown Worker slot",
+                    )?;
+                }
+                TaskOperatorV1::OptimizationExperiment {
+                    baseline_slot,
+                    candidate_slot,
+                } => require(
+                    baseline_slot != candidate_slot
+                        && self.slots.contains_key(baseline_slot)
+                        && self.slots.contains_key(candidate_slot),
+                    "Optimization experiment needs distinct captured baseline/candidate slots",
+                )?,
+                TaskOperatorV1::Check {
+                    checks,
+                    remote_checks,
+                } => {
+                    require(
+                        checks.iter().chain(remote_checks).all(|s| is_name(s)),
+                        "Check operator needs named trusted checks",
+                    )?;
+                    if checks.is_empty() && remote_checks.is_empty() {
+                        return Err(format!(
+                            "Pipeline {} node {} names no check: list at least one check in \
+                             `checks` or `remote_checks`",
+                            self.name, node.id
+                        ));
+                    }
+                    if let Some(check) = checks.intersection(remote_checks).next() {
+                        return Err(format!(
+                            "Pipeline {} node {} lists check {check} in both `checks` and \
+                             `remote_checks`; a check runs in one place, so keep it in one list",
+                            self.name, node.id
+                        ));
+                    }
+                }
+                TaskOperatorV1::Measure { measures } => require(
+                    !measures.is_empty()
+                        && measures.len() <= 16
+                        && measures.iter().all(|s| is_name(s)),
+                    "Measure operator needs one to 16 named measures",
+                )?,
+                TaskOperatorV1::Compare { objective } => require(
+                    is_name(objective),
+                    "Compare operator needs a named objective",
+                )?,
+                TaskOperatorV1::Call { pipeline, bindings } => {
+                    require(
+                        is_package_name(pipeline),
+                        "Invalid child Pipeline reference",
+                    )?;
+                    require(
+                        bindings.iter().all(|(child, parent)| {
+                            is_name(child) && self.slots.contains_key(parent)
+                        }),
+                        "Invalid child Worker slot mapping",
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        let mut reserved = 0u32;
+        for (name, slot) in &self.slots {
+            require(is_name(name), "Invalid Worker slot name")?;
+            slot.validate()?;
+            require(
+                slot.independent_from
+                    .iter()
+                    .all(|other| other != name && self.slots.contains_key(other)),
+                "Independence must reference another declared slot",
+            )?;
+            reserved = reserved
+                .checked_add(slot.min_attempts)
+                .ok_or("Attempt reservation overflow")?;
+        }
+        require(
+            reserved <= self.max_attempts,
+            "Pipeline cannot hold its reserved Worker Attempts",
+        )?;
+        for node in &self.nodes {
+            if let Some(condition) = &node.when {
+                require(
+                    condition.node != node.id && ids.contains(&condition.node),
+                    "Condition must refer to another declared receipt producer",
+                )?;
+            }
+        }
+        for reference in self
+            .nodes
+            .iter()
+            .flat_map(|n| n.inputs.values())
+            .chain(self.outputs.values())
+            .chain(self.coverage.values())
+        {
+            reference.validate()?;
+            require(
+                match reference {
+                    ValueRefV1::Input { port } => self.contract.inputs.contains_key(port),
+                    ValueRefV1::Node { node, .. } => ids.contains(node),
+                },
+                "Pipeline reference has no declared producer",
+            )?;
+        }
+        let declared: BTreeSet<_> = self
+            .contract
+            .outputs
+            .values()
+            .flat_map(|p| p.covers.iter().cloned())
+            .collect();
+        require(
+            self.coverage.keys().all(|s| is_name(s))
+                && declared.iter().all(|s| self.coverage.contains_key(s)),
+            "Public coverage must have an internal evidence binding",
+        )
+    }
+}

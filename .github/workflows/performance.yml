@@ -1,0 +1,553 @@
+# The continuous performance laboratory (ADR-0177): pull requests to main, pushes to main, the
+# nightly schedule and explicit dispatch all use the one planner, runner, comparator and report
+# of scripts/performance. Every script runs from the trusted control revision's own worktree,
+# never from candidate code; candidate code is only built, credential-free, and measured in
+# sample containers. Enforcement is advisory: no job here is a required check, and nothing here
+# edits a ruleset or branch protection. Remote Check gate branches (af-gate/**) are never
+# measured. Read-only permissions, no secrets, every action pinned to a commit. A published
+# release is measured through performance-release.yml (ADR-0180), whose read-only handoff
+# claims it first and then calls this workflow with only the claim's artifact name. A pull
+# request labeled exactly `no-perf` is not measured at all; its stable check reports that
+# exemption, and every other trigger ignores the label (ADR-0196).
+name: Performance
+# A calibration member's run is named for its cohort's digest and its member before any job
+# starts, so the complete run history binds each member's original dispatch however its
+# artifacts fare (ADR-0182). Every other run keeps GitHub's default name.
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'calibration' && format('af-perf calibration {0} {1}', inputs.cohort_digest, inputs.member) || '' }}
+
+on:
+  pull_request:
+    branches: [main]
+    # A label change starts a new run that replaces the running one: adding `no-perf` cancels
+    # the measurement and removing it measures again (ADR-0196).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Baseline: a full commit SHA or refs/heads/... or refs/tags/..."
+        required: true
+        type: string
+      head:
+        description: "Candidate: a full commit SHA or a fully qualified ref"
+        required: true
+        type: string
+      control:
+        description: "Trusted control revision (default: the base)"
+        required: false
+        type: string
+      authority:
+        description: "A proposed authority SHA reachable from the control (optional)"
+        required: false
+        type: string
+      scope:
+        description: "Scope"
+        required: true
+        default: partial_scope
+        type: choice
+        options: [partial_scope, bootstrap, full, calibration]
+      tier:
+        description: "Tier"
+        required: true
+        default: quick
+        type: choice
+        options: [quick, nightly, release]
+      cases:
+        description: "Space-separated case or instance IDs (partial scope)"
+        required: false
+        type: string
+      shards:
+        description: "Shard count (optional)"
+        required: false
+        type: string
+      pairs:
+        description: "Pairs per case (partial or bootstrap scope, optional)"
+        required: false
+        type: string
+      cohort:
+        description: "Calibration: a fixtures/performance/*.json cohort of the control"
+        required: false
+        type: string
+      member:
+        description: "Calibration: the cohort member ID"
+        required: false
+        type: string
+      cohort_digest:
+        description: "Calibration: the cohort's sha256 digest; the run is named for it and the member"
+        required: false
+        type: string
+      calibration:
+        description: "Calibration: the sealed fixtures/performance/*.json parameters a slowdown member runs"
+        required: false
+        type: string
+      executor:
+        description: "Executor; dedicated capacity needs a configured trusted runner"
+        required: true
+        default: ephemeral_hosted
+        type: choice
+        options: [ephemeral_hosted, dedicated]
+  workflow_call:
+    inputs:
+      release_claim:
+        description: "The confirmed release claim artifact a handoff of this run wrote"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.release_claim || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  # The pull request's own opt-out, decided before any plan, build or matrix exists. Only an
+  # exact `no-perf` label on the event's pull request, on its first run attempt, exempts it: a
+  # rerun reads the event as it was, so it measures. No checkout, no candidate code.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exempt: ${{ steps.label.outputs.exempt }}
+    steps:
+      - name: Read the no-perf label of the pull request
+        id: label
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_CLAIM: ${{ inputs.release_claim }}
+        run: |
+          set -eu
+          exempt=false
+          if [ "$EVENT_NAME" = pull_request ] && [ -z "${RELEASE_CLAIM:-}" ] && [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
+            exempt="$(python3 -I -c 'import json, sys
+          labels = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["labels"]
+          print("true" if any(label["name"] == "no-perf" for label in labels) else "false")' "$GITHUB_EVENT_PATH")"
+          fi
+          case "$exempt" in
+            true) echo "Performance: pull request labeled no-perf; nothing is measured." >> "$GITHUB_STEP_SUMMARY" ;;
+            false) ;;
+            *) echo "unreadable pull request labels: $exempt" >&2; exit 1 ;;
+          esac
+          echo "exempt=$exempt" >> "$GITHUB_OUTPUT"
+
+  plan:
+    name: plan
+    needs: scope
+    if: needs.scope.outputs.exempt == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      control: ${{ steps.control.outputs.sha }}
+      any: ${{ steps.schedule.outputs.any }}
+      builds: ${{ steps.schedule.outputs.builds }}
+      matrix: ${{ steps.schedule.outputs.matrix }}
+      concurrent_jobs: ${{ steps.schedule.outputs.concurrent_jobs }}
+      runner: ${{ steps.schedule.outputs.runner }}
+      retention_days: ${{ steps.schedule.outputs.retention_days }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the trusted control revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          INPUT_BASE: ${{ github.event.inputs.base }}
+          INPUT_CONTROL: ${{ github.event.inputs.control }}
+          RELEASE_CLAIM: ${{ inputs.release_claim }}
+        run: |
+          set -eu
+          if [ -n "${RELEASE_CLAIM:-}" ]; then
+            # A release handoff ran the default branch's reviewed code at this SHA; its claim,
+            # not the event, names what is measured (ADR-0180).
+            case "$EVENT_NAME" in
+              workflow_run|workflow_dispatch) control="$EVENT_SHA" ;;
+              *) echo "a release claim is measured only from its handoff's workflow_run or dispatch, not $EVENT_NAME" >&2; exit 1 ;;
+            esac
+          else
+            case "$EVENT_NAME" in
+              pull_request) control="$PR_BASE_SHA" ;;
+              push) control="$(git rev-parse --verify --quiet "$EVENT_SHA^1^{commit}")" || {
+                      echo "the pushed commit $EVENT_SHA has no first parent" >&2; exit 1; } ;;
+              schedule) control="$EVENT_SHA" ;;
+              workflow_dispatch) control="${INPUT_CONTROL:-$INPUT_BASE}" ;;
+              *) echo "event $EVENT_NAME is not scheduled" >&2; exit 1 ;;
+            esac
+          fi
+          if ! printf '%s' "$control" | grep -Eq '^([0-9a-f]{40}|refs/(heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*)$'; then
+            echo "control '$control' is not a full SHA or fully qualified ref" >&2
+            exit 1
+          fi
+          # The checkout fetched every branch as refs/remotes/origin/NAME and made only the
+          # event's own branch local, so refs/heads/NAME is read there, exactly, and a local
+          # branch of that name must agree; a tag or full SHA resolves as given (ADR-0178).
+          case "$control" in
+            refs/heads/*)
+              name="${control#refs/heads/}"
+              sha=""
+              for ref in "refs/heads/$name" "refs/remotes/origin/$name"; do
+                oid="$(git show-ref --verify --hash -- "$ref" 2>/dev/null)" || continue
+                found="$(git rev-parse --verify --quiet --end-of-options "$oid^{commit}")" || {
+                  echo "control '$ref' does not name a commit" >&2; exit 1; }
+                if [ -n "$sha" ] && [ "$sha" != "$found" ]; then
+                  echo "control '$control' is ambiguous: refs/heads/$name and refs/remotes/origin/$name name different commits" >&2
+                  exit 1
+                fi
+                sha="$found"
+              done
+              if [ -z "$sha" ]; then
+                echo "control '$control' does not resolve to a commit: neither it nor the fetched refs/remotes/origin/$name exists" >&2
+                exit 1
+              fi ;;
+            *)
+              sha="$(git rev-parse --verify --quiet --end-of-options "$control^{commit}")" || {
+                echo "control '$control' does not resolve to a commit" >&2; exit 1; } ;;
+          esac
+          git worktree add --detach "$RUNNER_TEMP/control" "$sha"
+          echo "control $sha" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record the trusted control
+        id: control
+        run: echo "sha=$(git -C "$RUNNER_TEMP/control" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Fetch the confirmed release claim
+        if: ${{ inputs.release_claim }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.release_claim }}
+          path: ${{ runner.temp }}/release-claim
+      - name: Schedule from the trusted control
+        id: schedule
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_CLAIM: ${{ inputs.release_claim }}
+          INPUTS: ${{ toJSON(github.event.inputs) }}
+          # Each Linux recipe's build and sample image, a registry reference pinned by digest
+          # that the operator verified for the hosted platform (docs/performance-ci.md); a
+          # recipe without one is unavailable, never built on the host.
+          GNU_IMAGE: ${{ vars.AF_PERF_GNU_BUILD_IMAGE }}
+          MUSL_IMAGE: ${{ vars.AF_PERF_MUSL_BUILD_IMAGE }}
+          EXECUTOR: ${{ github.event.inputs.executor || vars.AF_PERF_EXECUTOR || 'ephemeral_hosted' }}
+          DEDICATED: ${{ vars.AF_PERF_DEDICATED_RUNNER }}
+        run: |
+          set -eu
+          if [ ! -f "$RUNNER_TEMP/control/scripts/performance/cli.py" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "Performance unavailable: the trusted base predates installation of the laboratory." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+          set --
+          if [ -n "$GNU_IMAGE" ]; then set -- "$@" --build-image "linux_gnu_native_release=$GNU_IMAGE"; fi
+          if [ -n "$MUSL_IMAGE" ]; then set -- "$@" --build-image "linux_musl_shipping=$MUSL_IMAGE"; fi
+          if [ -n "$DEDICATED" ]; then set -- "$@" --dedicated-label "$DEDICATED"; fi
+          if [ -n "$RELEASE_CLAIM" ]; then set -- "$@" --release-claim "$RUNNER_TEMP/release-claim/claim.json"; fi
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-schedule --repo . \
+            --event-name "$EVENT_NAME" --event "$GITHUB_EVENT_PATH" --inputs "$INPUTS" \
+            --sha "$GITHUB_SHA" --ref "$GITHUB_REF" --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --executor "$EXECUTOR" "$@" --output "$RUNNER_TEMP/schedule" \
+            --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain the schedule and frozen plans
+        if: ${{ steps.schedule.outputs.installed == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schedule/
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.run_id }})
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        run_id: ${{ fromJSON(needs.plan.outputs.builds) }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: 180
+    env:
+      RUN_ID: ${{ matrix.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the frozen plans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schedule
+      - name: Check out the trusted control
+        run: |
+          set -eu
+          control="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["resolved"]["control_sha"])' "$RUNNER_TEMP/schedule/plans/$RUN_ID.json")"
+          git worktree add --detach "$RUNNER_TEMP/control" "$control"
+      - name: Pull the frozen build image (trusted preparation)
+        run: |
+          set -eu
+          image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["profile"]["build"]["image"] or "")' "$RUNNER_TEMP/schedule/plans/$RUN_ID.json")"
+          if [ -n "$image" ]; then docker pull --quiet "$image"; fi
+          df -B1 --output=avail "$GITHUB_WORKSPACE" | tail -n 1 | sed 's/^/free bytes before the build: /'
+      - name: Refuse any credential before candidate code builds
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-credentials --git-dir .git --environment
+      - name: Build once, credential-free
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" build --plan "$RUNNER_TEMP/schedule/plans/$RUN_ID.json" --repo .
+      - name: Pack the verified build for its shards
+        run: |
+          set -eu
+          cli="$RUNNER_TEMP/control/scripts/performance/cli.py"
+          python3 "$cli" ci-pack --plan "$RUNNER_TEMP/schedule/plans/$RUN_ID.json" \
+            --build "target/performance/$RUN_ID/build" --output "$RUNNER_TEMP/pack"
+          python3 "$cli" ci-credentials --scan "$RUNNER_TEMP/pack"
+      - name: Publish the hashed build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-build-${{ matrix.run_id }}
+          path: ${{ runner.temp }}/pack/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: error
+      - name: Retain a failed build's bounded evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-build-failure-${{ matrix.run_id }}
+          path: |
+            target/performance/${{ matrix.run_id }}/build/builds.json
+            target/performance/${{ matrix.run_id }}/build/logs/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: ignore
+
+  status:
+    name: Performance check
+    needs: [scope, plan, build, shard, aggregate]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require a completed scope decision
+        if: ${{ always() }}
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          EXEMPT: ${{ needs.scope.outputs.exempt }}
+        run: |
+          set -eu
+          test "$SCOPE_RESULT" = success
+          case "$EXEMPT" in
+            true|false) ;;
+            *) echo "Performance scope did not produce a valid decision" >&2; exit 1 ;;
+          esac
+      # An exemption is reported as one, never as a measured or qualified result (ADR-0196).
+      - name: Report the no-perf exemption
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.exempt == 'true' }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          test "$EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          {
+            echo "### Performance check: exempt (label no-perf), not measured"
+            echo
+            echo "This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
+        with:
+          ref: ${{ needs.plan.outputs.control }}
+          persist-credentials: false
+      - name: Fetch the schedule
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schedule
+      - name: Fetch the trusted aggregators' reports
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-report-gh${{ github.run_id }}_a${{ github.run_attempt }}_*
+          path: ${{ runner.temp }}/reports
+          merge-multiple: false
+      - name: Finish the stable performance check
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
+        env:
+          CONTROL_SHA: ${{ needs.plan.outputs.control }}
+          PERF_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -eu
+          test -n "$CONTROL_SHA"
+          test "$(git rev-parse HEAD)" = "$CONTROL_SHA"
+          if [ ! -f scripts/performance/ci-status.py ]; then
+            # Only the initial installation may lack the trusted implementation.
+            test ! -e fixtures/performance/enforcement.toml
+            echo "Performance check: advisory, unavailable on the trusted base (initial installation)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 -I scripts/performance/ci-status.py --schedule "$RUNNER_TEMP/schedule" --reports "$RUNNER_TEMP/reports"
+
+  shard:
+    name: shard (${{ matrix.run_id }} ${{ matrix.shard }})
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.outputs.any == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.concurrent_jobs) }}
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: 180
+    env:
+      RUN_ID: ${{ matrix.run_id }}
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - name: Refuse a job rerun of an earlier attempt's plan
+        run: |
+          set -eu
+          case "$RUN_ID" in
+            "gh${GITHUB_RUN_ID}_a${GITHUB_RUN_ATTEMPT}_"*) ;;
+            *) echo "run $RUN_ID was planned by another attempt; a shard runs once, and a rerun of the whole workflow plans a new run" >&2
+               exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the frozen plans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schedule
+      - name: Fetch the hashed build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-build-${{ matrix.run_id }}
+          path: ${{ runner.temp }}/pack
+      - name: Check out the trusted control and verify the build
+        run: |
+          set -eu
+          plan="$RUNNER_TEMP/schedule/plans/$RUN_ID.json"
+          control="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["resolved"]["control_sha"])' "$plan")"
+          git worktree add --detach "$RUNNER_TEMP/control" "$control"
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-unpack --plan "$plan" \
+            --pack "$RUNNER_TEMP/pack" --output "$RUNNER_TEMP/build"
+      - name: Prepare the disk-bounded sample scratch (trusted preparation)
+        run: |
+          set -eu
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch \
+            --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs"
+          # The samples run in the image the plan froze for its build.
+          image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["profile"]["build"]["image"] or "")' "$RUNNER_TEMP/schedule/plans/$RUN_ID.json")"
+          test -n "$image"
+          docker pull --quiet "$image"
+          echo "SAMPLE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Refuse any credential before candidate code runs
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-credentials --git-dir .git --environment
+      - name: Run exactly this shard
+        run: |
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" run \
+            --plan "$RUNNER_TEMP/schedule/plans/$RUN_ID.json" --build "$RUNNER_TEMP/build" \
+            --shard "$SHARD" --run-dir "$RUNNER_TEMP/run" --repo . --container \
+            --image "$SAMPLE_IMAGE" --scratch-fs "$RUNNER_TEMP/scratch-fs"
+      - name: Stage the shard's evidence, failed or not
+        if: always()
+        run: |
+          set -eu
+          cli="$RUNNER_TEMP/control/scripts/performance/cli.py"
+          if python3 "$cli" ci-stage --run-dir "$RUNNER_TEMP/run" --shard "$SHARD" --output "$RUNNER_TEMP/transport"; then
+            python3 "$cli" ci-credentials --scan "$RUNNER_TEMP/transport"
+          fi
+      - name: Upload the shard bundle
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: af-perf-${{ matrix.run_id }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/transport/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: ignore
+      - name: Remove the sample scratch
+        if: always()
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch --cleanup --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs"
+
+  aggregate:
+    name: aggregate (${{ matrix.run_id }})
+    needs: [plan, build, shard]
+    if: ${{ always() && needs.plan.outputs.any == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run_id: ${{ fromJSON(needs.plan.outputs.builds) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUN_ID: ${{ matrix.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the frozen plans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schedule
+      - name: Fetch the hashed build
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-build-${{ matrix.run_id }}
+          path: ${{ runner.temp }}/pack
+      - name: Fetch every shard bundle, one directory each
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: af-perf-${{ matrix.run_id }}-shard-*
+          path: ${{ runner.temp }}/shards
+          merge-multiple: false
+      - name: Recompute the verdict and report it
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          set -eu
+          plan="$RUNNER_TEMP/schedule/plans/$RUN_ID.json"
+          control="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["resolved"]["control_sha"])' "$plan")"
+          git worktree add --detach "$RUNNER_TEMP/control" "$control"
+          if [ ! -f "$RUNNER_TEMP/pack/build-pack.json" ]; then
+            echo "### AF performance: $RUN_ID incomplete" >> "$GITHUB_STEP_SUMMARY"
+            echo "No verified build was published (build job: $BUILD_RESULT, shards: $SHARD_RESULT); no sample of this run exists." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/shards"
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-aggregate --plan "$plan" \
+            --build-pack "$RUNNER_TEMP/pack" --shards "$RUNNER_TEMP/shards" \
+            --run-dir "$RUNNER_TEMP/run" --report "$RUNNER_TEMP/report" \
+            --transport "$RUNNER_TEMP/transport" --job-summary "$GITHUB_STEP_SUMMARY" \
+            --enforcement advisory
+      - name: Upload the run bundle
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: af-perf-${{ matrix.run_id }}-run
+          path: ${{ runner.temp }}/transport/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: ignore
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report-${{ matrix.run_id }}
+          path: ${{ runner.temp }}/report/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: ignore

@@ -1,0 +1,9 @@
+{
+  "schema": "af.perf-transport/1",
+  "run_id": "fixture_run",
+  "content": "shard_bundle",
+  "shard": null,
+  "views": [
+    "report.html"
+  ]
+}

@@ -1,0 +1,676 @@
+{
+  "schema": "af/task-inspection@11",
+  "task_id": "chain-history",
+  "revision_id": "sha256:47af3bbc87f68cc9bdce32381c73fcdd8433640a7136d56e37c729107470aa48",
+  "phase": {
+    "kind": "ready"
+  },
+  "plan_id": "sha256:a558fff53b4e696ed13b516b11c768712aeeff5aa12dbe5006f1ab0f65027598",
+  "chargeable_tokens": "0",
+  "attempts": 0,
+  "selection": {
+    "artifact_id": "sha256:e512b23f5eddef444d0a09b7acb7755c3482c25bd46ebd450139aaa81d92bcaf",
+    "request_revision_id": "sha256:8a5d784b1aacae6e79b3382de6b93ae87528ba643db480698cc3d11bf64a6cf1",
+    "assessment": {
+      "schema": "af.pipeline-selection/1",
+      "requested": {
+        "name": "fixture/plain",
+        "fallback": "refuse"
+      },
+      "no_match": "refuse",
+      "candidates": [
+        {
+          "pipeline": "fixture/plain",
+          "preferred": true,
+          "priority": 4294967295,
+          "state": {
+            "kind": "fit"
+          }
+        }
+      ],
+      "decision": {
+        "kind": "selected",
+        "pipeline": "fixture/plain"
+      }
+    }
+  },
+  "history": [
+    {
+      "sequence": 0,
+      "transition": {
+        "writer": "cli-69891",
+        "epoch": 1,
+        "now_unix_ms": 1790162837997,
+        "change": {
+          "kind": "opened",
+          "revision_id": "sha256:47af3bbc87f68cc9bdce32381c73fcdd8433640a7136d56e37c729107470aa48",
+          "lease_until_unix_ms": 1790162852997
+        }
+      }
+    },
+    {
+      "sequence": 1,
+      "transition": {
+        "writer": "cli-69891",
+        "epoch": 1,
+        "now_unix_ms": 1790162838006,
+        "change": {
+          "kind": "plan_proposed",
+          "plan_id": "sha256:a558fff53b4e696ed13b516b11c768712aeeff5aa12dbe5006f1ab0f65027598"
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "transition": {
+        "writer": "cli-69891",
+        "epoch": 1,
+        "now_unix_ms": 1790162838012,
+        "change": {
+          "kind": "lease_released"
+        }
+      }
+    }
+  ],
+  "execution_records": [],
+  "run_reports": [],
+  "input_bindings": {
+    "schema": "af.task-input-bindings/1",
+    "bindings": {
+      "history": {
+        "artifact_id": "sha256:7cacfe006b69d344ba5d056b4ba5d151c4dfb59667739bcbdfb8fc6fff7c8405",
+        "task": {
+          "task_id": "chain-base",
+          "task_revision_id": "sha256:e36a2c2df8923ce1529f0e6161a31605dd047b05cc95498b8bcc11c8a82e1ed8",
+          "result_id": "sha256:43130613b5a2f6f9979c107df654f62272a469ea32143410fc58cf723a8a42e5",
+          "port": "history",
+          "acceptance": "satisfied",
+          "domain_conclusion": "verified"
+        }
+      }
+    }
+  },
+  "graph": {
+    "schema": "af.compiled-task/1",
+    "nodes": {
+      "root.inputs": {
+        "operator": {
+          "kind": "root_inputs"
+        },
+        "contract": {
+          "inputs": {},
+          "outputs": {
+            "history": {
+              "artifact_type": "af/ReviewHistory@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            },
+            "requirements": {
+              "artifact_type": "af/Requirements@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            },
+            "source": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {},
+        "conditions": []
+      },
+      "root.nodes.accept": {
+        "operator": {
+          "kind": "primitive",
+          "operator": {
+            "op": "accept"
+          },
+          "signature": "operator/accept"
+        },
+        "contract": {
+          "inputs": {
+            "checks": {
+              "artifact_type": "af/TaskCheckReceipt@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            },
+            "evaluation": {
+              "artifact_type": "af/TaskEvaluation@1",
+              "cardinality": "one",
+              "optional": true,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            },
+            "source": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          },
+          "outputs": {
+            "result": {
+              "artifact_type": "af/VerificationResult@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            },
+            "snapshot": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {
+          "checks": {
+            "node": "root.nodes.check",
+            "port": "result"
+          },
+          "evaluation": {
+            "node": "root.nodes.evaluate",
+            "port": "result"
+          },
+          "source": {
+            "node": "root.nodes.seal",
+            "port": "snapshot"
+          }
+        },
+        "conditions": []
+      },
+      "root.nodes.check": {
+        "operator": {
+          "kind": "primitive",
+          "operator": {
+            "op": "check",
+            "checks": [
+              "pagination"
+            ]
+          },
+          "signature": "operator/check"
+        },
+        "contract": {
+          "inputs": {
+            "source": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          },
+          "outputs": {
+            "result": {
+              "artifact_type": "af/TaskCheckReceipt@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {
+          "source": {
+            "node": "root.nodes.seal",
+            "port": "snapshot"
+          }
+        },
+        "conditions": []
+      },
+      "root.nodes.evaluate": {
+        "operator": {
+          "kind": "primitive",
+          "operator": {
+            "op": "verify",
+            "slot": "root.slots.evaluator"
+          },
+          "signature": "worker/fixture/evaluator"
+        },
+        "contract": {
+          "inputs": {
+            "checks": {
+              "artifact_type": "af/TaskCheckReceipt@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            },
+            "requirements": {
+              "artifact_type": "af/Requirements@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            },
+            "source": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          },
+          "outputs": {
+            "result": {
+              "artifact_type": "af/TaskEvaluation@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {
+          "checks": {
+            "node": "root.nodes.check",
+            "port": "result"
+          },
+          "requirements": {
+            "node": "root.inputs",
+            "port": "requirements"
+          },
+          "source": {
+            "node": "root.nodes.seal",
+            "port": "snapshot"
+          }
+        },
+        "conditions": [
+          {
+            "source": {
+              "node": "root.nodes.check",
+              "port": "result"
+            },
+            "outcome": "passed"
+          }
+        ]
+      },
+      "root.nodes.implement": {
+        "operator": {
+          "kind": "primitive",
+          "operator": {
+            "op": "worker",
+            "slot": "root.slots.implementer"
+          },
+          "signature": "worker/fixture/implementer"
+        },
+        "contract": {
+          "inputs": {
+            "history": {
+              "artifact_type": "af/ReviewHistory@1",
+              "cardinality": "one",
+              "optional": true,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            },
+            "requirements": {
+              "artifact_type": "af/Requirements@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            },
+            "source": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          },
+          "outputs": {
+            "candidate": {
+              "artifact_type": "af/CandidateTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            },
+            "report": {
+              "artifact_type": "af/ImplementationReport@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "same_as",
+                "input": "source"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {
+          "history": {
+            "node": "root.inputs",
+            "port": "history"
+          },
+          "requirements": {
+            "node": "root.inputs",
+            "port": "requirements"
+          },
+          "source": {
+            "node": "root.inputs",
+            "port": "source"
+          }
+        },
+        "conditions": []
+      },
+      "root.nodes.seal": {
+        "operator": {
+          "kind": "primitive",
+          "operator": {
+            "op": "seal"
+          },
+          "signature": "operator/seal"
+        },
+        "contract": {
+          "inputs": {
+            "candidate": {
+              "artifact_type": "af/CandidateTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "unbound"
+              },
+              "covers": []
+            }
+          },
+          "outputs": {
+            "snapshot": {
+              "artifact_type": "af/SourceTree@1",
+              "cardinality": "one",
+              "optional": false,
+              "affinity": {
+                "kind": "derived_from",
+                "input": "candidate"
+              },
+              "covers": []
+            }
+          }
+        },
+        "inputs": {
+          "candidate": {
+            "node": "root.nodes.implement",
+            "port": "candidate"
+          }
+        },
+        "conditions": []
+      }
+    },
+    "order": [
+      "root.inputs",
+      "root.nodes.implement",
+      "root.nodes.seal",
+      "root.nodes.check",
+      "root.nodes.evaluate",
+      "root.nodes.accept"
+    ],
+    "inputs": {
+      "history": {
+        "artifact_ids": [
+          "sha256:7cacfe006b69d344ba5d056b4ba5d151c4dfb59667739bcbdfb8fc6fff7c8405"
+        ],
+        "artifact_type": "af/ReviewHistory@1",
+        "cardinality": "one"
+      },
+      "requirements": {
+        "artifact_ids": [
+          "sha256:f92c021f33933c5191794694d6e2c51717014279bd9d9414b6bc8f98820a094a"
+        ],
+        "artifact_type": "af/Requirements@1",
+        "cardinality": "one"
+      },
+      "source": {
+        "artifact_ids": [
+          "sha256:156c05a08b7fc7cb73aa467c03081e7040d1c0b5a54334db9b99c358c56f9f8e"
+        ],
+        "artifact_type": "af/SourceTree@1",
+        "cardinality": "one",
+        "snapshot_id": "sha256:44fa1fb3010977ee51eeb4311d46b5af0b42f963891ac815598ede4e1c4cc14f"
+      }
+    },
+    "outputs": {
+      "snapshot": {
+        "node": "root.nodes.accept",
+        "port": "snapshot"
+      },
+      "verification": {
+        "node": "root.nodes.accept",
+        "port": "result"
+      }
+    },
+    "coverage": {
+      "verified": {
+        "node": "root.nodes.accept",
+        "port": "result"
+      }
+    },
+    "calls": {
+      "root": {
+        "pipeline": "fixture/plain",
+        "inputs": {
+          "history": {
+            "node": "root.inputs",
+            "port": "history"
+          },
+          "requirements": {
+            "node": "root.inputs",
+            "port": "requirements"
+          },
+          "source": {
+            "node": "root.inputs",
+            "port": "source"
+          }
+        },
+        "outputs": {
+          "snapshot": {
+            "node": "root.nodes.accept",
+            "port": "snapshot"
+          },
+          "verification": {
+            "node": "root.nodes.accept",
+            "port": "result"
+          }
+        },
+        "coverage": {
+          "verified": {
+            "node": "root.nodes.accept",
+            "port": "result"
+          }
+        },
+        "max_attempts": 3,
+        "max_parallel": 2
+      }
+    },
+    "slots": {
+      "root.slots.evaluator": {
+        "worker": "fixture/evaluator",
+        "role": "evaluate",
+        "input_type": "af/EvaluationInput@1",
+        "output_type": "af/TaskEvaluation@1",
+        "min_attempts": 1,
+        "max_attempts": 1,
+        "allow_local_replacement": true,
+        "independent_from": [
+          "root.slots.implementer"
+        ]
+      },
+      "root.slots.implementer": {
+        "worker": "fixture/implementer",
+        "role": "implement",
+        "input_type": "af/ImplementationInput@1",
+        "output_type": "af/ImplementationReport@1",
+        "min_attempts": 1,
+        "max_attempts": 1,
+        "allow_local_replacement": true,
+        "independent_from": []
+      }
+    },
+    "max_parallel": 2,
+    "allowances": {
+      "root.nodes.check": {
+        "tokens_per_attempt": 0,
+        "wall_ms_per_attempt": 5000,
+        "max_attempts": 1,
+        "verification_attempts": 1
+      },
+      "root.nodes.evaluate": {
+        "tokens_per_attempt": 0,
+        "wall_ms_per_attempt": 5000,
+        "max_attempts": 1,
+        "verification_attempts": 1
+      },
+      "root.nodes.implement": {
+        "tokens_per_attempt": 0,
+        "wall_ms_per_attempt": 5000,
+        "max_attempts": 1,
+        "verification_attempts": 0
+      }
+    }
+  },
+  "plan": {
+    "task_revision_id": "sha256:47af3bbc87f68cc9bdce32381c73fcdd8433640a7136d56e37c729107470aa48",
+    "engine_id": "sha256:17a960b9af94f41212e310c50ae1c0209599b8b41bae23ac095cd86693cddcf1",
+    "pipeline_id": "sha256:fac6b2eafba2ef8c05f23cd211135066509e0a94eeb417bccd8a2d8013027a92",
+    "compiled_graph_id": "sha256:b94191445ed30677fc7b2f24c1afacddcaf2d196e5c68e8e756f1946d051721f",
+    "authority": {
+      "policy_id": "sha256:3f868d9fc4bb82d68b1f08e10902681fe565d6da1e84b83493f7b878516d607f",
+      "allowed_effects": [
+        "execute-checks",
+        "read-source",
+        "write-source"
+      ],
+      "data_destinations": []
+    },
+    "limits": {
+      "tokens": 1000,
+      "max_attempts": 3,
+      "deadline_unix_ms": 1790162897761,
+      "verification": {
+        "tokens": 200,
+        "attempts": 2,
+        "wall_ms": 10000
+      }
+    },
+    "inputs": {
+      "history": {
+        "artifact_ids": [
+          "sha256:7cacfe006b69d344ba5d056b4ba5d151c4dfb59667739bcbdfb8fc6fff7c8405"
+        ],
+        "artifact_type": "af/ReviewHistory@1",
+        "cardinality": "one"
+      },
+      "requirements": {
+        "artifact_ids": [
+          "sha256:f92c021f33933c5191794694d6e2c51717014279bd9d9414b6bc8f98820a094a"
+        ],
+        "artifact_type": "af/Requirements@1",
+        "cardinality": "one"
+      },
+      "source": {
+        "artifact_ids": [
+          "sha256:156c05a08b7fc7cb73aa467c03081e7040d1c0b5a54334db9b99c358c56f9f8e"
+        ],
+        "artifact_type": "af/SourceTree@1",
+        "cardinality": "one",
+        "snapshot_id": "sha256:44fa1fb3010977ee51eeb4311d46b5af0b42f963891ac815598ede4e1c4cc14f"
+      }
+    },
+    "bindings": {
+      "root.slots.evaluator": {
+        "package_digest": "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202",
+        "package_artifact_id": "sha256:c046d6f5051a2cba47af00ffae5934c2fa0afc92d3ab9862c7819c057a490b19",
+        "execution": {
+          "kind": "command"
+        },
+        "invocation_policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318"
+      },
+      "root.slots.implementer": {
+        "package_digest": "sha256:1ab6e79fac1469e398cf801878eba1a5a3f4a5ca88feebc1d995ed35bbf8878e",
+        "package_artifact_id": "sha256:ac951d532182ad37c6188c2c1642422da300057b436e8a366688bb37c029614c",
+        "execution": {
+          "kind": "command"
+        },
+        "invocation_policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318"
+      }
+    },
+    "dependencies": {
+      "fixture/evaluator": {
+        "name": "fixture/evaluator",
+        "content_digest": "sha256:2bac704767e75767701db60054e5e1a093dd7bc2215f403b6b3761c8e6dcd9e0",
+        "artifact_id": "sha256:c046d6f5051a2cba47af00ffae5934c2fa0afc92d3ab9862c7819c057a490b19"
+      },
+      "fixture/implementer": {
+        "name": "fixture/implementer",
+        "content_digest": "sha256:70d4e8a81f8dea8248aaa94dfe8e9e5862304e22a933d61ddfc47080164255ad",
+        "artifact_id": "sha256:ac951d532182ad37c6188c2c1642422da300057b436e8a366688bb37c029614c"
+      },
+      "fixture/plain": {
+        "name": "fixture/plain",
+        "content_digest": "sha256:2b6183ba13d7f24a9ad3d012a96d2d12aae9cf5679d0bee57a8a48336bbeb6fe",
+        "artifact_id": "sha256:fac6b2eafba2ef8c05f23cd211135066509e0a94eeb417bccd8a2d8013027a92"
+      }
+    },
+    "generated_origins": [],
+    "acceptance": {
+      "verified": [
+        "root.nodes.accept.result"
+      ]
+    }
+  }
+}
