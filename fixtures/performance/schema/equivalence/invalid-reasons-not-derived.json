@@ -1,0 +1,170 @@
+{
+  "equivalence_group": "native_probe_public_api_v1",
+  "adapter_files": [
+    "crates/review-pipeline/examples/perf-probe/cases.rs"
+  ],
+  "bridge_adapters": [
+    "native_probe_public_api_v1"
+  ],
+  "calibrated_authority_sha": "ab3402e8707e82289e8033e0820bda02befd63c6",
+  "bridged_authority_sha": "2c49d8564a0fb9fcabaf6c0d1fbdce1ed213e8e8",
+  "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+  "tier": "quick",
+  "environment_id": "linux_x86_64_gnu_hosted",
+  "recipe_id": "linux_gnu_native_release",
+  "cohort_cases": [
+    {
+      "instance_id": "synthetic_advisory",
+      "criticality": "advisory",
+      "pairs": 12
+    },
+    {
+      "instance_id": "synthetic_fast",
+      "criticality": "critical",
+      "pairs": 12
+    },
+    {
+      "instance_id": "synthetic_process__size_1",
+      "criticality": "critical",
+      "pairs": 12
+    }
+  ],
+  "calibrated_groups": [
+    {
+      "group_id": "epyc",
+      "cpu_model": "AMD EPYC",
+      "image": "ubuntu-24.04"
+    }
+  ],
+  "schema": "af.perf-equivalence/1",
+  "golden": {
+    "actions_run_id": 8101,
+    "lab_run_id": "gh8101_a1_primary",
+    "plan_digest": "sha256:280089a5182cb1afb37b54d3177e51077539607af6610f76be4c46f028ec133d",
+    "verdict_sha256": "sha256:1e5be0a10ed41da13c23d06c0be9a172ea0e11aac9c582487de931f3dfcd1abf",
+    "builds_sha256": "sha256:adb5d0ca65dd16a267594d8672054c2afdc988fc397daf9dc0d72df3818c67ef",
+    "scope": "bootstrap",
+    "authority_mode": "proposed",
+    "tier": "quick",
+    "baseline_sha": "ab3402e8707e82289e8033e0820bda02befd63c6",
+    "candidate_sha": "2c49d8564a0fb9fcabaf6c0d1fbdce1ed213e8e8",
+    "authority_sha": "2c49d8564a0fb9fcabaf6c0d1fbdce1ed213e8e8",
+    "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+    "environment_id": "linux_x86_64_gnu_hosted",
+    "environment_digest": "sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+    "recipe_id": "linux_gnu_native_release",
+    "recipe_digest": "sha256:1b809cf6a48945727f1d46cd603fb12b4fe92e2b5c8d711d554b2e26c9b8d5bc",
+    "instrument_digest": "sha256:dd022124b8ff495caf7c5a9e5b0edc21d3eb9badca6140b452f64955f8b27c33",
+    "fixture_digest": "sha256:3520fe82656f3b3c4a64d816647f7bd07d89a4f075e1576d223e74a3a9004cf6",
+    "adapters": {
+      "baseline": "native_probe_public_api_v1",
+      "candidate": "native_probe_public_api_v1",
+      "baseline_group": "native_probe_public_api_v1",
+      "candidate_group": "native_probe_public_api_v1"
+    },
+    "probe_binaries": {
+      "baseline": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8",
+      "candidate": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+    },
+    "builds_succeeded": true,
+    "cpu_groups": [
+      "epyc",
+      "epyc"
+    ],
+    "shards_complete": true,
+    "healthy": true,
+    "provenance": "measured",
+    "result": "pass",
+    "cases": {
+      "synthetic_advisory": {
+        "criticality": "advisory",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 0,
+        "missing_records": 0
+      },
+      "synthetic_fast": {
+        "criticality": "critical",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 3,
+        "missing_records": 0
+      },
+      "synthetic_process__size_1": {
+        "criticality": "critical",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 0,
+        "missing_records": 0
+      }
+    },
+    "reasons": [],
+    "verified": true
+  },
+  "post_merge_aa": {
+    "actions_run_id": 8102,
+    "lab_run_id": "gh8102_a1_primary",
+    "plan_digest": "sha256:d90a42f66ba68a4ae930b40bb59cd653831ab4d68b0f3e00079113e5d1890b76",
+    "verdict_sha256": "sha256:b335728d451bb2aed6b872e4ed90a0359badb62c7a3c6a9b7bbfb5de42c8fa5d",
+    "builds_sha256": "sha256:fc9c5e258203a40c5c564031540b3c8c2a07fab3043697d6cc1641df48c73037",
+    "scope": "bootstrap",
+    "authority_mode": "proposed",
+    "tier": "quick",
+    "baseline_sha": "a0a59f2b9d79cbee840ad93d0561052d7bff3945",
+    "candidate_sha": "a0a59f2b9d79cbee840ad93d0561052d7bff3945",
+    "authority_sha": "2c49d8564a0fb9fcabaf6c0d1fbdce1ed213e8e8",
+    "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+    "environment_id": "linux_x86_64_gnu_hosted",
+    "environment_digest": "sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+    "recipe_id": "linux_gnu_native_release",
+    "recipe_digest": "sha256:1b809cf6a48945727f1d46cd603fb12b4fe92e2b5c8d711d554b2e26c9b8d5bc",
+    "instrument_digest": "sha256:dd022124b8ff495caf7c5a9e5b0edc21d3eb9badca6140b452f64955f8b27c33",
+    "fixture_digest": "sha256:3520fe82656f3b3c4a64d816647f7bd07d89a4f075e1576d223e74a3a9004cf6",
+    "adapters": {
+      "baseline": "native_probe_public_api_v1",
+      "candidate": "native_probe_public_api_v1",
+      "baseline_group": "native_probe_public_api_v1",
+      "candidate_group": "native_probe_public_api_v1"
+    },
+    "probe_binaries": {
+      "baseline": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8",
+      "candidate": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+    },
+    "builds_succeeded": true,
+    "cpu_groups": [
+      "epyc",
+      "epyc"
+    ],
+    "shards_complete": true,
+    "healthy": true,
+    "provenance": "measured",
+    "result": "pass",
+    "cases": {
+      "synthetic_advisory": {
+        "criticality": "advisory",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 0,
+        "missing_records": 0
+      },
+      "synthetic_fast": {
+        "criticality": "critical",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 0,
+        "missing_records": 0
+      },
+      "synthetic_process__size_1": {
+        "criticality": "critical",
+        "pairs": 12,
+        "classification": "within_tolerance",
+        "failures": 0,
+        "missing_records": 0
+      }
+    },
+    "reasons": [],
+    "verified": true
+  },
+  "verified": true,
+  "claim": "execution evidence of the bridge's golden checks and post-merge A/A; owner approval of semantic equivalence is a separate prerequisite"
+}

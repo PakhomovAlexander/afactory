@@ -1,0 +1,221 @@
+schema = "af.task-catalog/2"
+report_policy = ".af/report-policy.toml"
+# Campaign catalog for the kernel's own campaigns. warm/* served the Worker warm layers plan;
+# kernel/* is the generic family later plans use. Every package of a plan runs through one
+# implementation-reviewed Pipeline with the same four native Workers. Provider labels here
+# are neutral; a developer's local bindings file maps them to admitted machine-local accounts.
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+allow_targeted_repairs = false
+
+[review.reviewers]
+bugs = "required"
+correctness = "required"
+uix = "advisory"
+
+[packages."warm/implementer"]
+version = "1.3.0"
+digest = "sha256:fd5fca2e0f3810ab113d49ddb26ebcc6f884c5bb01743d195f664c940739d629"
+path = ".af/task-packages/warm/implementer"
+
+[packages."warm/correctness"]
+version = "1.0.0"
+digest = "sha256:abd803546bde2b5a9ebe2920ae161ec2488568d4749d742403c818301604331d"
+path = ".af/task-packages/warm/correctness"
+
+[packages."warm/bugs"]
+version = "1.0.0"
+digest = "sha256:83821fae727188bc212ebeb94bf2804739761d1824d59c99900b0467ca5f65ef"
+path = ".af/task-packages/warm/bugs"
+
+[packages."warm/evaluator"]
+version = "1.0.0"
+digest = "sha256:c15968ac1f8fe2b6985417bf8f0ecf16eb8d6f17f66641a92307cae87836dd25"
+path = ".af/task-packages/warm/evaluator"
+
+[packages."warm/review-light"]
+version = "1.0.0"
+digest = "sha256:b1eba94b4b2fe151b0327652a2203ff09067eea0dc0cad942167293c8b339685"
+path = ".af/task-packages/warm/review-light"
+
+[packages."warm/implementation-reviewed"]
+version = "1.0.0"
+digest = "sha256:3ac1aaa73fe0dbf444bf4bc4fec75e5aa8362bac91e763000f54a4c3ea947bb0"
+path = ".af/task-packages/warm/implementation-reviewed"
+
+[packages."warm/verification"]
+version = "1.0.0"
+digest = "sha256:198ece7f7da58241216800f550a1e5cb65dda88da5534fbf8a1979bc9d74f480"
+path = ".af/task-packages/warm/verification"
+
+[packages."warm/verification-kind"]
+version = "1.0.0"
+digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f32"
+path = ".af/task-packages/warm/verification-kind"
+
+[packages."kernel/implementer"]
+version = "1.8.0"
+digest = "sha256:99e612b8e6726f056fc54c3770e7cfed30150ea9d2e88890896ad0c3480aeaf7"
+path = ".af/task-packages/kernel/implementer"
+
+[packages."kernel/correctness"]
+version = "1.3.0"
+digest = "sha256:d7e2495a86e4dfcd5ea4f8ef403b2165f40f5e527cf9f92b698e510bc493773c"
+path = ".af/task-packages/kernel/correctness"
+
+[packages."kernel/bugs"]
+version = "1.5.0"
+digest = "sha256:8bef1b21b4f63ffe174b4dec3af1319a2c917c05c27e650b74de78fdef76a81a"
+path = ".af/task-packages/kernel/bugs"
+
+[packages."kernel/evaluator"]
+version = "1.2.0"
+digest = "sha256:25e4861b18e9cbcce1c999a699882c161e4575ef51420ec208e1868c0732d810"
+path = ".af/task-packages/kernel/evaluator"
+
+[packages."kernel/uix"]
+version = "1.5.0"
+digest = "sha256:29125757efd1adbda56d5083d731382633b3f9f18a08cb77a1b0e51642f799ea"
+path = ".af/task-packages/kernel/uix"
+
+[packages."kernel/ux"]
+version = "1.1.0"
+digest = "sha256:a23ae0764ad16405aa3e1ecdb9e86ab04b42f8a34491bb1b0ff79b5d142159d2"
+path = ".af/task-packages/kernel/ux"
+
+[packages."kernel/implementation-ux"]
+version = "1.2.0"
+digest = "sha256:99d7378b178c9b8cba9c08d4984f21a6bcf9973915ef3a48886ef7a8512f2978"
+path = ".af/task-packages/kernel/implementation-ux"
+
+[packages."kernel/implementer-long"]
+version = "1.3.0"
+digest = "sha256:1136878840d58bdcfaff6e43f2057a1249dcda1a71707b7ddf9d7e38d7124466"
+path = ".af/task-packages/kernel/implementer-long"
+
+[packages."kernel/review-light"]
+version = "1.3.0"
+digest = "sha256:e4c49ee478a4e70af9592cf9aacf45ec55dd6aea5cfbcaabba785879f987043b"
+path = ".af/task-packages/kernel/review-light"
+
+[packages."kernel/implementation-reviewed"]
+version = "1.4.0"
+digest = "sha256:ca9c0f4221cc4d8adf7e4f1a3b74c0cce89d5278141b0081b0fc845ec7bceb3e"
+path = ".af/task-packages/kernel/implementation-reviewed"
+
+[packages."kernel/review-code"]
+version = "1.1.0"
+digest = "sha256:1e7a06ef48b749397d90faa10f66ea9bc2dd1ad7ad542fc6f71171855d0ed3ac"
+path = ".af/task-packages/kernel/review-code"
+
+[packages."kernel/verification-reviewed"]
+version = "1.2.0"
+digest = "sha256:dd0ed85b000b374bc6a640a75a982a22b58015de030003910f73ba5e78b9a7ee"
+path = ".af/task-packages/kernel/verification-reviewed"
+
+[packages."kernel/verification"]
+version = "1.0.0"
+digest = "sha256:bb6787695f3a7f682ba9498992a19ea6b2f2cf299bce4527594af118515e52bc"
+path = ".af/task-packages/kernel/verification"
+
+[packages."kernel/gate-accept"]
+version = "1.0.0"
+digest = "sha256:7c24a6860a110d827e00875639b194302b04bae5a226b0ac8c5101c68571a9d7"
+path = ".af/task-packages/kernel/gate-accept"
+
+[packages."kernel/gate-bench"]
+version = "1.0.0"
+digest = "sha256:ee7e8c5fffff6e76afa1ef6c6d6c1f556672ca9908485b54a497aba59f0730f8"
+path = ".af/task-packages/kernel/gate-bench"
+
+[kinds]
+verification = "warm/verification-kind"
+
+[packages."kernel/experiment"]
+version = "1.0.0"
+digest = "sha256:c2c2609124c7116bec1e13cef0f0f05f75f116a9175d29051783ade634dd39a1"
+path = ".af/task-packages/kernel/experiment"
+
+[packages."kernel/experiment-evaluator"]
+version = "1.0.0"
+digest = "sha256:c643d704a15e3e3dc225dc02f6006e6ece7bd21428a3c16db98004f33408d025"
+path = ".af/task-packages/kernel/experiment-evaluator"
+
+[packages."kernel/experiment-trial"]
+version = "1.0.0"
+digest = "sha256:7f96ce714daafcc9d61e11b71bcfadc4a08e3f44afcdf16eb3041590f746a6a9"
+path = ".af/task-packages/kernel/experiment-trial"
+
+[packages."kernel/report"]
+version = "1.0.0"
+digest = "sha256:3a4050126b1e2c90fe8a0a1b4727b01aed07ce0d5ca055f748ffe988d3f24d82"
+path = ".af/task-packages/kernel/report"
+
+[packages."kernel/analyst"]
+version = "1.0.0"
+digest = "sha256:3739311a3cd9e014ecf80ae2c243c67aa6b7d176d19feb779e53ff601ce892a2"
+path = ".af/task-packages/kernel/analyst"
+
+[packages."kernel/report-verifier"]
+version = "1.0.0"
+digest = "sha256:c41672e751a34379feb7e11152d6cf5e9e974d7dfaf97b69c78e281b6b587436"
+path = ".af/task-packages/kernel/report-verifier"
+
+# Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
+# Each version is its local original's; the path is where the README installs it. Add each
+# entry to `.af/task-catalog.toml` beside the original, never in place of it.
+
+[packages."kernel/gate-bench-remote"]
+version = "1.0.0"
+digest = "sha256:93d710bce8cd6672a45f9b920908f8fd4bb033930bb3e0325b5c309bd805d224"
+path = ".af/task-packages/kernel/gate-bench-remote"
+
+[packages."kernel/implementation-reviewed-remote"]
+version = "1.4.0"
+digest = "sha256:a06fb7b0ebd8dbbd8471dd4a5a23c06172b996855ce783bf3fc2086348b4761e"
+path = ".af/task-packages/kernel/implementation-reviewed-remote"
+
+[packages."kernel/verification-reviewed-remote"]
+version = "1.2.0"
+digest = "sha256:d6e9bd15bce5622bd1feeef66e61ed75c6e4d8dc05c2713bdd7dcfd4662ca955"
+path = ".af/task-packages/kernel/verification-reviewed-remote"
+
+[packages."kernel/review-code-remote"]
+version = "1.1.0"
+digest = "sha256:579f0f912f7bb51f86f0bd7115afb1593774e95aad48e65eec8670a1a537ff23"
+path = ".af/task-packages/kernel/review-code-remote"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = false
+distinct_providers = false
+distinct_models = true
+
+[providers]
+"warm/implementer" = "claude-main"
+"warm/correctness" = "codex-main"
+"warm/bugs" = "codex-main"
+"warm/evaluator" = "codex-main"
+"kernel/implementer" = "claude-main"
+"kernel/implementer-long" = "claude-main"
+"kernel/correctness" = "codex-main"
+"kernel/bugs" = "codex-main"
+"kernel/evaluator" = "codex-main"
+"kernel/experiment-evaluator" = "codex-main"
+"kernel/analyst" = "claude-main"
+"kernel/report-verifier" = "codex-main"
+
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
+
+[packages."kernel/verification-ux"]
+version = "1.0.0"
+digest = "sha256:4d34fa8c4991ee208e8444f370e511a89f444a409f6a50954d63e6291626be9d"
+path = ".af/task-packages/kernel/verification-ux"

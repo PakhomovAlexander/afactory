@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:integration-plan:1",
+  "title": "IntegrationPlan@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subject_id", "base_snapshot_id", "policy_id", "candidates", "derived_manifest_artifact_id"],
+  "properties": {
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "base_snapshot_id": { "$ref": "#/$defs/digest" },
+    "policy_id": { "$ref": "#/$defs/digest" },
+    "protected_paths": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/path" } },
+    "candidates": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["proposal_id", "candidate_artifact_id", "node_id", "priority", "patch_artifact_id", "derived_manifest_artifact_id", "paths", "finding_ids"],
+        "properties": {
+          "proposal_id": { "$ref": "#/$defs/digest" },
+          "candidate_artifact_id": { "$ref": "#/$defs/digest" },
+          "node_id": { "type": "string", "minLength": 1 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "patch_artifact_id": { "$ref": "#/$defs/digest" },
+          "derived_manifest_artifact_id": { "$ref": "#/$defs/digest" },
+          "paths": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/path" } },
+          "finding_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
+          "evidence_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } }
+        }
+      }
+    },
+    "derived_manifest_artifact_id": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//).+$" }
+  }
+}

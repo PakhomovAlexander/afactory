@@ -1,0 +1,56 @@
+[package]
+name = "review-pipeline"
+description = "Composition: the typed graph driving real capture, sandboxes, checks, reviewers and the ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# No crate in this workspace has a doctest, and each empty rustdoc run still costs a
+# compile; the first doctest sets this back to true for its crate (ADR-0124).
+doctest = false
+
+[dependencies]
+review-attempt = { path = "../review-attempt" }
+review-check = { path = "../review-check" }
+review-process = { path = "../review-process" }
+review-config = { path = "../review-config" }
+review-core = { path = "../review-core" }
+review-graph = { path = "../review-graph" }
+review-runner = { path = "../review-runner" }
+review-sandbox = { path = "../review-sandbox" }
+review-source-git = { path = "../review-source-git" }
+review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tempfile = "3.27.0"
+toml = "1.1.6"
+toml_edit = "0.25.15"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+
+[features]
+# Diagnostic builds only, both off by default and in every product build (ADR-0174): phase
+# spans, and the `perf-probe` example's region handshake that lets a profiler record exactly
+# its timed region.
+perf-trace = ["review-core/perf-trace", "review-store/perf-trace"]
+perf-control = []
+# The `perf-probe` calibration loop of slowdown trials only (ADR-0181); off in every other build.
+perf-calibration = ["review-core/perf-calibration"]
+
+[dev-dependencies]
+# One test pins that `af review render`, which composes through the adapters, shows the
+# instructions the Task host dispatches.
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+jsonschema = { version = "0.58.4", default-features = false }
+# A real CommonMark and GFM parser: the human report export is judged by what it renders.
+comrak = { version = "0.55.0", default-features = false }
+# The test executables boundary every crate's tests share (`review-process/tests/support`).
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal"] }
+
+[lints]
+workspace = true

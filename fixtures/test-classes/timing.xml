@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<!-- Synthetic contract fixture, never a historical measurement. -->
+<testsuites time="30" tests="4" failures="0" errors="0">
+  <testsuite name="classes">
+    <testcase classname="review-core::schema_parity" name="contract_fixture" time="2"/>
+    <testcase classname="af::it" name="project::workflow_fixture" time="3"/>
+    <testcase classname="af::it" name="cli_surface::output_fixture" time="4"/>
+    <testcase classname="af::it" name="perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness" time="20"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,1036 @@
+//! Typed `.af/af.toml` policy shared by onboarding, review, and Task bootstrap.
+
+use review_config::Loaded;
+use review_config::layout::UndeclaredAfPathsPolicy;
+use review_config::lock::Lockfile;
+use semver::Version;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectFile {
+    version: u32,
+    project: Project,
+    defaults: Defaults,
+    /// What delivery does about paths the declared `.af/` layout does not name. Admitted here
+    /// so the full-file parse validates the table; capture reads it through `parse_delivery`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    delivery: Delivery,
+    /// How changed paths select a pipeline, and what happens when no route or too many match.
+    #[serde(default)]
+    routing: Option<Routing>,
+    /// Declared in order; a route matches when every changed path (both sides of a rename)
+    /// matches one of its patterns.
+    #[serde(default)]
+    routes: Vec<Route>,
+    /// What the Surveyor measures by (ADR-0159). Admitted here so the full-file parse refuses
+    /// an unknown key; the Surveyor reads the merged ladder through `Policy::load`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    survey: Option<crate::projects::survey::policy::SurveyTable>,
+    /// The Project Brief variants (ADR-0160). Admitted here so the full-file parse refuses an
+    /// unknown key; capture and `af project brief` read the merged ladder through
+    /// `project_brief::load_policy`, which also checks every value.
+    #[serde(default)]
+    #[allow(dead_code)]
+    brief: Option<std::collections::BTreeMap<String, crate::project_brief::BriefTable>>,
+    /// The `[task.defaults]` a Task file inherits (ADR-0212). Admitted and checked here so the
+    /// full-file parse refuses an unknown key; Task capture reads it from the Authority
+    /// Snapshot.
+    #[serde(default)]
+    task: Option<crate::task_execution::defaults::TaskTable>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Routing {
+    #[serde(default)]
+    unmatched: Unmatched,
+    #[serde(default)]
+    ambiguous: Ambiguous,
+    /// The pipeline to select instead when a Worker's first-Attempt input alone exhausts its
+    /// Attempt cap — a bounded strategy chosen by trusted policy, never a truncation.
+    #[serde(default)]
+    oversized: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Unmatched {
+    #[default]
+    Default,
+    Refuse,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Ambiguous {
+    #[default]
+    Refuse,
+    First,
+}
+
+/// One route: canonical repository-path patterns and the pipeline they select. Patterns are
+/// anchored at the repository root and match by segment: `*` within one segment, `?` one
+/// character, `**` any number of segments (`docs/**`, `**/*.md`, `src/*/lib.rs`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    pub name: String,
+    pub paths: Vec<String>,
+    pub pipeline: String,
+}
+
+/// How a pipeline was chosen for one invocation. Captured by the pipeline path the Campaign
+/// Manifest pins; printed by `plan` and at Campaign open.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct RouteDecision {
+    /// `explicit` (`--pipeline`), `default`, `route`, or `oversized`.
+    pub policy: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Every route whose patterns covered the changed paths, in declaration order.
+    pub matched: Vec<String>,
+    pub changed_paths: usize,
+    pub pipeline_path: String,
+    /// The pipeline the oversized policy replaced, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
+}
+
+impl RouteDecision {
+    pub(crate) fn explicit(pipeline_path: &str) -> Self {
+        RouteDecision {
+            policy: "explicit",
+            name: None,
+            matched: Vec::new(),
+            changed_paths: 0,
+            pipeline_path: pipeline_path.to_string(),
+            replaced: None,
+        }
+    }
+}
+
+pub(crate) fn pipeline_path_for(name: &str) -> String {
+    format!(".af/pipelines/{name}.toml")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Project {
+    name: String,
+    min_af: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Defaults {
+    pipeline: String,
+}
+
+/// `[delivery]` — what an explicit local delivery does about the project's own authority tree.
+/// Optional in every direction: a project that says nothing keeps the advisory default.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Delivery {
+    #[serde(default)]
+    undeclared_af_paths: UndeclaredAfPathsPolicy,
+}
+
+impl ProjectFile {
+    /// The delivery policy the full-file parse admitted; the unit tests read it here, while
+    /// capture reads the same table through `parse_delivery`.
+    #[cfg(test)]
+    pub fn undeclared_af_paths(&self) -> UndeclaredAfPathsPolicy {
+        self.delivery.undeclared_af_paths
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let project: Self = toml::from_str(text).map_err(|error| {
+            review_config::excerpt::bounded(&format!("authority project `.af/af.toml`: {error}"))
+        })?;
+        project.validate()?;
+        Ok(project)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.version != 1 {
+            return Err("authority project `.af/af.toml` must declare `version = 1`".into());
+        }
+        if self.project.name.trim().is_empty() {
+            return Err("authority project name must not be empty".into());
+        }
+        validate_safe_name(&self.defaults.pipeline, "default review pipeline")?;
+        if let Some(task) = &self.task {
+            task.validate()?;
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for route in &self.routes {
+            validate_safe_name(&route.name, "route name")?;
+            validate_safe_name(&route.pipeline, "route pipeline")?;
+            if !names.insert(route.name.as_str()) {
+                return Err(format!(
+                    "authority project route `{}` is declared twice",
+                    route.name
+                ));
+            }
+            if route.paths.is_empty() {
+                return Err(format!(
+                    "authority project route `{}` declares no path patterns",
+                    route.name
+                ));
+            }
+            for pattern in &route.paths {
+                validate_pattern(pattern, &route.name)?;
+            }
+        }
+        if let Some(oversized) = self
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.oversized.as_deref())
+        {
+            validate_safe_name(oversized, "routing.oversized pipeline")?;
+        }
+        enforce_min_af(&self.project.min_af)
+    }
+
+    /// Whether changed paths can change the pipeline at all.
+    pub fn routes_configured(&self) -> bool {
+        !self.routes.is_empty()
+            || self
+                .routing
+                .as_ref()
+                .is_some_and(|routing| routing.oversized.is_some())
+    }
+
+    pub fn oversized_pipeline(&self) -> Option<&str> {
+        self.routing
+            .as_ref()
+            .and_then(|routing| routing.oversized.as_deref())
+    }
+
+    /// Every pipeline this project may select: the default, every route target, and the
+    /// oversized strategy. All of them must exist and be pinned.
+    pub fn pipeline_candidates(&self) -> std::collections::BTreeSet<String> {
+        let mut candidates = std::collections::BTreeSet::from([self.defaults.pipeline.clone()]);
+        candidates.extend(self.routes.iter().map(|route| route.pipeline.clone()));
+        candidates.extend(self.oversized_pipeline().map(str::to_string));
+        candidates
+    }
+
+    /// Select the pipeline for a set of canonical changed paths — deterministic, token-free.
+    /// An empty set (a whole-tree Subject, or no `--base`) matches no route.
+    pub(crate) fn select_route(&self, changed_paths: &[String]) -> Result<RouteDecision, String> {
+        let routing = self.routing.as_ref();
+        let matched: Vec<&Route> = if changed_paths.is_empty() {
+            Vec::new()
+        } else {
+            self.routes
+                .iter()
+                .filter(|route| {
+                    changed_paths.iter().all(|path| {
+                        route
+                            .paths
+                            .iter()
+                            .any(|pattern| glob_matches(pattern, path))
+                    })
+                })
+                .collect()
+        };
+        let names: Vec<String> = matched.iter().map(|route| route.name.clone()).collect();
+        let decision = |policy: &'static str, route: Option<&Route>| RouteDecision {
+            policy,
+            name: route.map(|route| route.name.clone()),
+            matched: names.clone(),
+            changed_paths: changed_paths.len(),
+            pipeline_path: pipeline_path_for(
+                route.map_or(self.defaults.pipeline.as_str(), |route| {
+                    route.pipeline.as_str()
+                }),
+            ),
+            replaced: None,
+        };
+        match matched.as_slice() {
+            [] => match routing.map_or(Unmatched::Default, |routing| routing.unmatched) {
+                Unmatched::Default => Ok(decision("default", None)),
+                Unmatched::Refuse => Err(format!(
+                    "no route covers the {} changed path(s) and routing.unmatched = \"refuse\" ({}); declare a route or select --pipeline explicitly",
+                    changed_paths.len(),
+                    preview(changed_paths)
+                )),
+            },
+            [route] => Ok(decision("route", Some(route))),
+            [first, ..] => match routing.map_or(Ambiguous::Refuse, |routing| routing.ambiguous) {
+                Ambiguous::First => Ok(decision("route", Some(first))),
+                Ambiguous::Refuse => Err(format!(
+                    "routes {} all cover the changed paths and routing.ambiguous = \"refuse\"; make the patterns disjoint, set routing.ambiguous = \"first\", or select --pipeline explicitly",
+                    names.join(", ")
+                )),
+            },
+        }
+    }
+
+    /// Read `[delivery]` on its own, out of a captured `.af/af.toml`.
+    ///
+    /// A Task captures this policy at plan time from its Authority Snapshot, before anything has
+    /// admitted the whole project file, and must not start requiring more of that file than it
+    /// did: unknown *tables* are ignored here, because [`ProjectFile::parse`] is what admits
+    /// them. An unknown key inside `[delivery]` is still an error, never a silent setting.
+    pub fn parse_delivery(text: &str) -> Result<UndeclaredAfPathsPolicy, String> {
+        #[derive(Deserialize)]
+        struct DeliveryOnly {
+            #[serde(default)]
+            delivery: Delivery,
+        }
+        let read: DeliveryOnly = toml::from_str(text).map_err(|error| {
+            review_config::excerpt::bounded(&format!(
+                "authority project `.af/af.toml` [delivery]: {error}"
+            ))
+        })?;
+        Ok(read.delivery.undeclared_af_paths)
+    }
+
+    pub fn review_pipeline(&self) -> &str {
+        &self.defaults.pipeline
+    }
+}
+
+fn preview(paths: &[String]) -> String {
+    let shown: Vec<&str> = paths.iter().take(3).map(String::as_str).collect();
+    if paths.len() > 3 {
+        format!("{}, …", shown.join(", "))
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// The longest route pattern policy may declare, in bytes.
+const MAX_PATTERN_BYTES: usize = 1024;
+/// The most wildcards (`?`, and each run of `*`) one route pattern may hold.
+const MAX_PATTERN_WILDCARDS: usize = 64;
+
+fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(format!(
+            "authority project route `{route}` has a pattern of {} bytes; a route pattern is at most {MAX_PATTERN_BYTES} bytes",
+            pattern.len()
+        ));
+    }
+    let wildcards = pattern
+        .bytes()
+        .enumerate()
+        .filter(|&(index, byte)| {
+            byte == b'?' || (byte == b'*' && (index == 0 || pattern.as_bytes()[index - 1] != b'*'))
+        })
+        .count();
+    if wildcards > MAX_PATTERN_WILDCARDS {
+        return Err(format!(
+            "authority project route `{route}` has a pattern with {wildcards} wildcards; a route pattern holds at most {MAX_PATTERN_WILDCARDS}"
+        ));
+    }
+    if pattern.is_empty()
+        || pattern.starts_with('/')
+        || pattern.ends_with('/')
+        || pattern
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(format!(
+            "authority project route `{route}` pattern `{}` must be a root-anchored repository path pattern without empty, `.`, or `..` segments",
+            review_config::excerpt::quoted(pattern)
+        ));
+    }
+    Ok(())
+}
+
+/// Segment-wise glob: `**` spans any number of segments, `*` any run within a segment, `?` one
+/// byte of the canonical encoded spelling (`review_core::encode_path`'s: `é` is two bytes, a
+/// percent-encoded byte three). Anchored at the repository root; `path` is the canonical
+/// (encoded) form.
+///
+/// Matched by dynamic programming, never by backtracking (ADR-0159 clause 14): a match costs at
+/// most (pattern length + 1) × (path length + 1) cells, so `*a` thirty times then `b` against
+/// thirty `a`s, which the recursive form took billions of steps to refuse, is refused in under
+/// a thousand.
+pub(crate) fn glob_matches(pattern: &str, path: &str) -> bool {
+    glob_match_cells(pattern, path).0
+}
+
+/// [`glob_matches`] and the cells it evaluated: one per pair of a pattern segment and a path
+/// segment it compared, one per pair of a pattern byte and a text byte inside them.
+pub(crate) fn glob_match_cells(pattern: &str, path: &str) -> (bool, u64) {
+    let mut cells = 0_u64;
+    let pattern: Vec<&[u8]> = pattern.split('/').map(str::as_bytes).collect();
+    let path: Vec<&[u8]> = path.split('/').map(str::as_bytes).collect();
+    // `reached[j]`: the pattern segments so far match the first `j` path segments.
+    let mut reached = vec![false; path.len() + 1];
+    reached[0] = true;
+    for head in &pattern {
+        let mut next = vec![false; path.len() + 1];
+        let Some(first) = reached.iter().position(|reached| *reached) else {
+            return (false, cells);
+        };
+        if *head == b"**" {
+            // Any number of segments from the first prefix reached on.
+            cells += (path.len() + 1 - first) as u64;
+            next[first..].fill(true);
+        } else {
+            for j in first..path.len() {
+                if reached[j] {
+                    cells += 1;
+                    next[j + 1] = segment_matches(head, path[j], &mut cells);
+                }
+            }
+        }
+        reached = next;
+    }
+    (reached[path.len()], cells)
+}
+
+/// One segment against one pattern segment: `*` a run, `?` one byte, anything else itself.
+/// `reached[j]`: the pattern bytes so far match the first `j` text bytes; only the text bytes at
+/// or after the first prefix reached are visited, and a pattern byte that reaches none ends it.
+fn segment_matches(pattern: &[u8], text: &[u8], cells: &mut u64) -> bool {
+    let mut reached = vec![false; text.len() + 1];
+    reached[0] = true;
+    for &expected in pattern {
+        let Some(first) = reached.iter().position(|reached| *reached) else {
+            return false;
+        };
+        let mut next = vec![false; text.len() + 1];
+        if expected == b'*' {
+            *cells += (text.len() + 1 - first) as u64;
+            next[first..].fill(true);
+        } else {
+            for j in first..text.len() {
+                *cells += 1;
+                next[j + 1] = reached[j] && (expected == b'?' || expected == text[j]);
+            }
+        }
+        reached = next;
+    }
+    reached[text.len()]
+}
+
+fn validate_safe_name(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+        })
+    {
+        return Err(format!("authority project {label} must be one safe name"));
+    }
+    Ok(())
+}
+
+fn enforce_min_af(required: &str) -> Result<(), String> {
+    let required = parse_version(required)
+        .map_err(|error| format!("authority project min_af is invalid: {error}"))?;
+    let current = Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| format!("running af version is invalid: {error}"))?;
+    if current < required {
+        return Err(format!(
+            "authority requires af >= {required}; running {current}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_version(value: &str) -> Result<Version, semver::Error> {
+    let components = value.split('.').count();
+    match components {
+        1 => Version::parse(&format!("{value}.0.0")),
+        2 => Version::parse(&format!("{value}.0")),
+        _ => Version::parse(value),
+    }
+}
+
+/// Compares the running `af` with the release that wrote an authority lock. A lock written by a
+/// newer release is refused: this binary cannot know what that release meant by its pins. A lock
+/// written by an older release proceeds and returns a note naming `--refresh-lock`. A lock with
+/// no pin, or one written by this exact release, is silent.
+pub(crate) fn check_lock_af_version(
+    lock: &Lockfile,
+    lock_path: &str,
+) -> Result<Option<String>, String> {
+    let Some(pinned) = lock.af_version() else {
+        return Ok(None);
+    };
+    let pinned = Version::parse(pinned).map_err(|error| {
+        format!("authority lock `{lock_path}` records an invalid af version `{pinned}`: {error}")
+    })?;
+    let current = Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| format!("running af version is invalid: {error}"))?;
+    if pinned > current {
+        return Err(format!(
+            "authority lock `{lock_path}` was pinned by af {pinned}; this is af {current}, an older release that cannot trust those pins. Upgrade af, or re-pin with `af onboard --refresh-lock` from the release you run"
+        ));
+    }
+    if pinned < current {
+        return Ok(Some(format!(
+            "authority lock `{lock_path}` was pinned by af {pinned}; this is af {current} — `af onboard --refresh-lock` re-pins it"
+        )));
+    }
+    Ok(None)
+}
+
+/// One static Worker's first-Attempt reservation, as planning and admission count it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StaticReservation {
+    pub node: String,
+    pub tokens: u64,
+    /// `node` when the Worker declared its own cap, `pipeline` for the shared attempt cap.
+    pub source: &'static str,
+}
+
+/// Every static Worker's first-Attempt reservation, in node order. Empty when uncapped.
+pub(crate) fn static_reservations(loaded: &Loaded) -> Vec<StaticReservation> {
+    let Some(budgets) = loaded.budgets() else {
+        return Vec::new();
+    };
+    loaded
+        .reviewers()
+        .keys()
+        .map(|node| match loaded.node_attempt_caps().get(node) {
+            Some(cap) => StaticReservation {
+                node: node.clone(),
+                tokens: *cap,
+                source: "node",
+            },
+            None => StaticReservation {
+                node: node.clone(),
+                tokens: budgets.attempt,
+                source: "pipeline",
+            },
+        })
+        .collect()
+}
+
+/// The most the static Workers can hold reserved at once: every first Attempt together. This is
+/// what the run cap must admit before any Worker dispatches. `None` when uncapped.
+pub(crate) fn max_simultaneous_reservation(loaded: &Loaded) -> Result<Option<u64>, String> {
+    if loaded.budgets().is_none() {
+        return Ok(None);
+    }
+    static_reservations(loaded)
+        .iter()
+        .try_fold(0_u64, |sum, reservation| {
+            sum.checked_add(reservation.tokens)
+                .ok_or_else(|| "static Worker reservation arithmetic overflow".to_string())
+        })
+        .map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use review_config::layout::UndeclaredAfPathsPolicy;
+
+    use super::{ProjectFile, glob_matches};
+
+    fn project(extra: &str, min_af: &str) -> String {
+        format!(
+            "version = 1\n[project]\nname = \"demo\"\nmin_af = \"{min_af}\"\n\
+             [defaults]\npipeline = \"review\"\n{extra}"
+        )
+    }
+
+    #[test]
+    fn accepts_short_compatible_minimum_version() {
+        let parsed = ProjectFile::parse(&project("", "0.6")).unwrap();
+        assert_eq!(parsed.review_pipeline(), "review");
+    }
+
+    #[test]
+    fn rejects_unknown_policy_that_would_be_ignored() {
+        for extra in [
+            "[env.default]\nisolation = \"host\"\nnetwork = \"ambient\"\n",
+            "[worker.correctness]\npackage = \"correctness\"\n",
+            "task_pipeline = \"implement\"\n",
+        ] {
+            let error = ProjectFile::parse(&project(extra, "0.6")).unwrap_err();
+            assert!(error.contains("unknown field"), "{error}");
+        }
+    }
+
+    #[test]
+    fn the_delivery_policy_is_optional_and_a_typo_in_it_is_an_error() {
+        let silent = ProjectFile::parse(&project("", "0.6")).unwrap();
+        assert_eq!(silent.undeclared_af_paths(), UndeclaredAfPathsPolicy::Warn);
+        let table = "[delivery]\nundeclared_af_paths = \"refuse\"\n";
+        let strict = ProjectFile::parse(&project(table, "0.6")).unwrap();
+        let refuse = UndeclaredAfPathsPolicy::Refuse;
+        assert_eq!(strict.undeclared_af_paths(), refuse);
+        // The same value read on its own, the way a Task captures it: the rest of the file is
+        // somebody else's business, but this table is still admitted exactly.
+        assert_eq!(ProjectFile::parse_delivery(table).unwrap(), refuse);
+        assert_eq!(ProjectFile::parse_delivery("").unwrap().as_str(), "warn");
+        let alone = "[unrelated]\nkey = 1\n";
+        assert_eq!(ProjectFile::parse_delivery(alone).unwrap().as_str(), "warn");
+        for bad in [
+            "[delivery]\nundeclared_af_path = \"refuse\"\n",
+            "[delivery]\nundeclared_af_paths = \"strip\"\n",
+        ] {
+            assert!(ProjectFile::parse_delivery(bad).is_err(), "{bad}");
+            assert!(ProjectFile::parse(&project(bad, "0.6")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_newer_required_binary() {
+        let error = ProjectFile::parse(&project("", "999.0")).unwrap_err();
+        assert!(error.contains("requires af >= 999.0.0"), "{error}");
+    }
+
+    fn routed(routing: &str, routes: &str) -> ProjectFile {
+        ProjectFile::parse(&format!(
+            "version = 1\n[project]\nname = \"demo\"\nmin_af = \"0.6\"\n\
+             [defaults]\npipeline = \"review\"\n{routing}{routes}"
+        ))
+        .unwrap()
+    }
+
+    const DOCS: &str =
+        "[[routes]]\nname = \"docs\"\npaths = [\"docs/**\", \"*.md\"]\npipeline = \"docs\"\n";
+    const MARKDOWN: &str =
+        "[[routes]]\nname = \"markdown\"\npaths = [\"**/*.md\"]\npipeline = \"docs\"\n";
+
+    fn paths(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn globs_are_root_anchored_and_segment_wise() {
+        assert!(glob_matches("docs/**", "docs/a/b.md"));
+        assert!(glob_matches("docs/**", "docs"));
+        assert!(!glob_matches("docs/**", "src/docs/x"));
+        assert!(glob_matches("*.md", "README.md"));
+        assert!(!glob_matches("*.md", "docs/README.md"));
+        assert!(glob_matches("**/*.md", "docs/deep/README.md"));
+        assert!(glob_matches("**/*.md", "README.md"));
+        assert!(glob_matches("src/*/lib.rs", "src/core/lib.rs"));
+        assert!(!glob_matches("src/*/lib.rs", "src/core/inner/lib.rs"));
+        assert!(glob_matches("a?c", "abc"));
+        // Canonical encoding: a non-UTF-8 byte is `%FF` in the path both sides see.
+        assert!(glob_matches("**", "dir/a%FFb"));
+        assert!(glob_matches("dir/a*b", "dir/a%FFb"));
+    }
+
+    /// The recursive matcher the iterative one replaced: exponential, but the semantics.
+    fn recursive_matches(pattern: &str, path: &str) -> bool {
+        fn segment(pattern: &[u8], text: &[u8]) -> bool {
+            match (pattern.first(), text.first()) {
+                (None, None) => true,
+                (None, Some(_)) => false,
+                (Some(b'*'), _) => {
+                    segment(&pattern[1..], text)
+                        || (!text.is_empty() && segment(pattern, &text[1..]))
+                }
+                (Some(b'?'), Some(_)) => segment(&pattern[1..], &text[1..]),
+                (Some(&expected), Some(&actual)) if expected == actual => {
+                    segment(&pattern[1..], &text[1..])
+                }
+                _ => false,
+            }
+        }
+        fn segments(pattern: &[&str], path: &[&str]) -> bool {
+            match pattern.split_first() {
+                None => path.is_empty(),
+                Some((&"**", rest)) => (0..=path.len()).any(|skip| segments(rest, &path[skip..])),
+                Some((head, rest)) => match path.split_first() {
+                    Some((first, remaining)) => {
+                        segment(head.as_bytes(), first.as_bytes()) && segments(rest, remaining)
+                    }
+                    None => false,
+                },
+            }
+        }
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let path: Vec<&str> = path.split('/').collect();
+        segments(&pattern, &path)
+    }
+
+    #[test]
+    fn the_iterative_matcher_agrees_with_the_recursive_one() {
+        let patterns = [
+            "**",
+            "**/**",
+            "**/**/x",
+            "*",
+            "a*",
+            "*a",
+            "*a*",
+            "a*b*c",
+            "a**b",
+            "?",
+            "??",
+            "a?",
+            "*?",
+            "?*",
+            "docs/**",
+            "docs/**/*.md",
+            "**/b/**",
+            "**/b",
+            "a/**/b/**/c",
+            "*/*",
+            "a/*/c",
+            "**/*.md",
+            "src/*/lib.rs",
+            "*a*a*b",
+            "x/**/",
+            "a/**/**/b",
+        ];
+        let paths = [
+            "a",
+            "b",
+            "ab",
+            "abc",
+            "aab",
+            "aaab",
+            "acb",
+            "a/b",
+            "a/b/c",
+            "a/x/b/y/c",
+            "docs",
+            "docs/a.md",
+            "docs/x/y/z.md",
+            "b",
+            "x/b",
+            "x/y/b",
+            "src/core/lib.rs",
+            "src/core/inner/lib.rs",
+            "README.md",
+            "aaaaab",
+            "aaaa",
+            "x",
+            "x/y",
+            "a/c",
+            "a/b/b/c",
+        ];
+        for pattern in patterns {
+            for path in paths {
+                assert_eq!(
+                    glob_matches(pattern, path),
+                    recursive_matches(pattern, path),
+                    "{pattern} against {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_hostile_pattern_against_a_long_path_returns_at_once() {
+        let started = std::time::Instant::now();
+        let long = "a".repeat(60);
+        assert!(!glob_matches("*a*a*a*a*a*a*a*a b", &long));
+        assert!(!glob_matches(&"*a".repeat(64), &"a".repeat(63)));
+        assert!(!glob_matches(
+            &format!("{}c", "**/".repeat(64)),
+            &format!("{}b", "a/".repeat(500))
+        ));
+        assert!(glob_matches(
+            &format!("{}b", "*a".repeat(30)),
+            &format!("{long}b")
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_pattern_beyond_the_byte_or_wildcard_cap_is_refused_at_load() {
+        let route = |pattern: &str| {
+            format!(
+                "[[routes]]\nname = \"wide\"\npaths = [{}]\npipeline = \"docs\"\n",
+                toml::Value::String(pattern.to_string())
+            )
+        };
+        let within = format!("{}b", "*a".repeat(64));
+        assert!(ProjectFile::parse(&project(&route(&within), "0.6")).is_ok());
+        let error = ProjectFile::parse(&project(&route(&format!("{within}*")), "0.6")).unwrap_err();
+        assert!(error.contains("65 wildcards"), "{error}");
+        assert!(error.contains("at most 64"), "{error}");
+        // A run of stars is one wildcard.
+        assert!(ProjectFile::parse(&project(&route(&"**/".repeat(64)[..191]), "0.6")).is_ok());
+        let long = "a".repeat(1025);
+        let error = ProjectFile::parse(&project(&route(&long), "0.6")).unwrap_err();
+        assert!(error.contains("1025 bytes"), "{error}");
+        assert!(error.contains("at most 1024 bytes"), "{error}");
+        assert!(ProjectFile::parse(&project(&route(&"a".repeat(1024)), "0.6")).is_ok());
+    }
+
+    #[test]
+    fn a_route_must_cover_every_changed_path_including_both_rename_sides() {
+        let project = routed("", DOCS);
+        let docs = project
+            .select_route(&paths(&["docs/old.md", "docs/new.md", "README.md"]))
+            .unwrap();
+        assert_eq!(docs.policy, "route");
+        assert_eq!(docs.name.as_deref(), Some("docs"));
+        assert_eq!(docs.pipeline_path, ".af/pipelines/docs.toml");
+        assert_eq!(docs.changed_paths, 3);
+
+        let mixed = project
+            .select_route(&paths(&["docs/a.md", "src/lib.rs"]))
+            .unwrap();
+        assert_eq!(mixed.policy, "default");
+        assert_eq!(mixed.pipeline_path, ".af/pipelines/review.toml");
+        assert!(mixed.matched.is_empty());
+
+        let whole_tree = project.select_route(&[]).unwrap();
+        assert_eq!(whole_tree.policy, "default");
+        assert_eq!(whole_tree.changed_paths, 0);
+    }
+
+    #[test]
+    fn unmatched_and_ambiguous_follow_explicit_policy_never_silent_fallback() {
+        let refuse = routed("[routing]\nunmatched = \"refuse\"\n", DOCS);
+        let error = refuse.select_route(&paths(&["src/lib.rs"])).unwrap_err();
+        assert!(error.contains("no route covers"), "{error}");
+
+        let ambiguous = routed("", &format!("{DOCS}{MARKDOWN}"));
+        let error = ambiguous.select_route(&paths(&["docs/a.md"])).unwrap_err();
+        assert!(error.contains("routes docs, markdown"), "{error}");
+
+        let first = routed(
+            "[routing]\nambiguous = \"first\"\n",
+            &format!("{DOCS}{MARKDOWN}"),
+        );
+        let decision = first.select_route(&paths(&["docs/a.md"])).unwrap();
+        assert_eq!(decision.name.as_deref(), Some("docs"));
+        assert_eq!(decision.matched, vec!["docs", "markdown"]);
+    }
+
+    #[test]
+    fn route_targets_and_the_oversized_pipeline_are_candidates_and_are_validated() {
+        let project = routed("[routing]\noversized = \"scatter\"\n", DOCS);
+        assert_eq!(
+            project
+                .pipeline_candidates()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["docs", "review", "scatter"]
+        );
+        assert!(project.routes_configured());
+        assert!(!routed("", "").routes_configured());
+        for (routing, routes, expected) in [
+            (
+                "",
+                "[[routes]]\nname = \"x\"\npaths = []\npipeline = \"docs\"\n",
+                "no path patterns",
+            ),
+            (
+                "",
+                "[[routes]]\nname = \"x\"\npaths = [\"/abs\"]\npipeline = \"docs\"\n",
+                "root-anchored",
+            ),
+            ("", &format!("{DOCS}{DOCS}"), "declared twice"),
+            ("[routing]\noversized = \"bad name\"\n", "", "one safe name"),
+        ] {
+            let error = ProjectFile::parse(&format!(
+                "version = 1\n[project]\nname = \"demo\"\nmin_af = \"0.6\"\n\
+                 [defaults]\npipeline = \"review\"\n{routing}{routes}"
+            ))
+            .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    /// The recursive matcher `glob_matches` replaced: the semantics the dynamic programme keeps.
+    fn backtracking(pattern: &str, path: &str) -> bool {
+        fn segment(pattern: &[u8], text: &[u8]) -> bool {
+            match (pattern.first(), text.first()) {
+                (None, None) => true,
+                (None, Some(_)) => false,
+                (Some(b'*'), _) => {
+                    segment(&pattern[1..], text)
+                        || (!text.is_empty() && segment(pattern, &text[1..]))
+                }
+                (Some(b'?'), Some(_)) => segment(&pattern[1..], &text[1..]),
+                (Some(&expected), Some(&actual)) if expected == actual => {
+                    segment(&pattern[1..], &text[1..])
+                }
+                _ => false,
+            }
+        }
+        fn segments(pattern: &[&str], path: &[&str]) -> bool {
+            match pattern.split_first() {
+                None => path.is_empty(),
+                Some((&"**", rest)) => (0..=path.len()).any(|skip| segments(rest, &path[skip..])),
+                Some((head, rest)) => match path.split_first() {
+                    Some((first, remaining)) => {
+                        segment(head.as_bytes(), first.as_bytes()) && segments(rest, remaining)
+                    }
+                    None => false,
+                },
+            }
+        }
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let path: Vec<&str> = path.split('/').collect();
+        segments(&pattern, &path)
+    }
+
+    /// `*a` thirty times then `b`, against thirty `a`s: the failing match the recursive form
+    /// took billions of steps to refuse.
+    fn adversarial() -> (String, String) {
+        (format!("{}b", "*a".repeat(30)), "a".repeat(30))
+    }
+
+    #[test]
+    fn the_adversarial_pattern_fails_within_pattern_length_times_text_length_cells() {
+        use super::glob_match_cells;
+        let (pattern, text) = adversarial();
+        let started = std::time::Instant::now();
+        let (matched, cells) = glob_match_cells(&pattern, &text);
+        assert!(!matched);
+        let bound = (pattern.len() * text.len()) as u64;
+        assert_eq!((pattern.len(), text.len(), bound), (61, 30, 1830));
+        assert!(cells <= bound, "{cells} cells, over {bound}");
+        assert_eq!(cells, 961, "the stated count of ADR-0159 clause 14");
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        // The same text in a deeper path and behind `**` costs no more than the bound either.
+        for (pattern, path) in [
+            (format!("**/{pattern}"), format!("x/y/{text}")),
+            (format!("x/{pattern}/**"), format!("x/{text}/z")),
+        ] {
+            let (matched, cells) = glob_match_cells(&pattern, &path);
+            assert!(!matched, "{pattern}");
+            assert!(cells <= ((pattern.len() + 1) * (path.len() + 1)) as u64);
+        }
+    }
+
+    #[test]
+    fn the_matching_form_of_the_adversarial_pattern_matches() {
+        let text = "a".repeat(30);
+        assert!(glob_matches(&"*a".repeat(30), &text));
+        assert!(!glob_matches(&"*a".repeat(31), &text));
+        assert!(glob_matches(&format!("{}*", "*a".repeat(30)), &text));
+    }
+
+    #[test]
+    fn the_dynamic_programme_keeps_the_recursive_semantics_and_its_bound() {
+        let patterns = [
+            "",
+            "*",
+            "**",
+            "?",
+            "a",
+            "a*",
+            "*a",
+            "a?c",
+            "**/a",
+            "a/**",
+            "a/**/b",
+            "**/*.md",
+            "*.md",
+            "docs/**",
+            "src/*/lib.rs",
+            "*[bot]",
+            "[0-9]",
+            "a**b",
+            "**/**",
+            "*/*",
+            "a/*",
+            "??",
+            "*?*",
+            "a*b*c",
+            "**/tests/**",
+            "**/*_test.*",
+            "v?.*",
+        ];
+        let paths = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "abc",
+            "a/b",
+            "a/x/b",
+            "a/x/y/b",
+            "README.md",
+            "docs/README.md",
+            "docs",
+            "src/core/lib.rs",
+            "src/core/inner/lib.rs",
+            "dependabot[bot]",
+            "robot",
+            "[0-9]",
+            "0",
+            "a/",
+            "/a",
+            "aXbYc",
+            "acb",
+            "crates/af/tests/it/main.rs",
+            "pkg/a_test.go",
+            "v1.2",
+            "a//b",
+        ];
+        for pattern in patterns {
+            for path in paths {
+                let (matched, cells) = super::glob_match_cells(pattern, path);
+                assert_eq!(
+                    matched,
+                    backtracking(pattern, path),
+                    "`{pattern}` against `{path}`"
+                );
+                let bound = ((pattern.len() + 1) * (path.len() + 1)) as u64;
+                assert!(
+                    cells <= bound,
+                    "`{pattern}` against `{path}`: {cells} > {bound}"
+                );
+            }
+        }
+    }
+
+    /// `?` consumes one byte of the canonical encoded spelling (ADR-0159 clause 14), through a
+    /// route as through the Surveyor's `exclude` (`projects::survey::collect`'s tests and
+    /// `tests/it/project_collect.rs` run the same cases).
+    #[test]
+    fn a_question_mark_is_one_byte_of_the_encoded_spelling_in_a_route() {
+        for (pattern, raw, matches) in [
+            ("caf?.rs", "café.rs".as_bytes(), false),
+            ("caf??.rs", "café.rs".as_bytes(), true),
+            ("caf?.rs", b"caf\xe9.rs".as_slice(), false),
+            ("caf???.rs", b"caf\xe9.rs".as_slice(), true),
+            ("50?.txt", b"50%.txt".as_slice(), false),
+            ("50???.txt", b"50%.txt".as_slice(), true),
+            ("caf*.rs", "café.rs".as_bytes(), true),
+        ] {
+            let path = review_core::encode_path(raw);
+            let project = routed(
+                "",
+                &format!(
+                    "[[routes]]\nname = \"x\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"
+                ),
+            );
+            let decision = project.select_route(std::slice::from_ref(&path)).unwrap();
+            assert_eq!(
+                decision.name.is_some(),
+                matches,
+                "`{pattern}` against `{path}`"
+            );
+            assert_eq!(glob_matches(pattern, &path), matches);
+        }
+    }
+
+    #[test]
+    fn a_route_with_the_adversarial_pattern_is_refused_within_its_bound() {
+        let (pattern, text) = adversarial();
+        let failing = routed(
+            "",
+            &format!("[[routes]]\nname = \"x\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"),
+        );
+        let started = std::time::Instant::now();
+        let decision = failing.select_route(&paths(&[&text])).unwrap();
+        assert_eq!(decision.policy, "default");
+        assert!(decision.matched.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        let matching = routed(
+            "",
+            &format!(
+                "[[routes]]\nname = \"x\"\npaths = [\"{}\"]\npipeline = \"docs\"\n",
+                "*a".repeat(30)
+            ),
+        );
+        let decision = matching.select_route(&paths(&[&text])).unwrap();
+        assert_eq!(decision.name.as_deref(), Some("x"));
+    }
+}

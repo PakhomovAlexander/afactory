@@ -1,0 +1,1661 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-result:1",
+  "title": "af.perf-telemetry-result/1",
+  "description": "One telemetry experiment run (ADR-0214, ADR-0215): the baseline and candidate sources, binaries and builds, the measurement authority both ran under, the effective configuration and its digest, the execution mode, container, bounds, cleanup and any protected state that changed, the generated corpus's facts, the host observed at both ends, every planned run with its alternating position, seed, status, raw document, capped log and the script's own judgment, each side's within-binary figures by level, and each same-host cross-revision comparison by level, metric and shape, or why it is incompatible or missing. Advisory; never a verdict.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-result/1"
+    },
+    "result_id": {
+      "$ref": "#/$defs/id"
+    },
+    "trigger": {
+      "type": "string",
+      "enum": [
+        "pr",
+        "main_push",
+        "nightly",
+        "release",
+        "manual"
+      ]
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "pr",
+        "nightly",
+        "release",
+        "manual"
+      ]
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "ended_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "baseline_sha",
+        "candidate_sha",
+        "authority_sha"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "registry_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "digest",
+        "registry_sha256",
+        "files"
+      ]
+    },
+    "binaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              ]
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "schema": {
+                      "const": "af.perf-telemetry-build/1"
+                    },
+                    "side": {
+                      "type": "string",
+                      "enum": [
+                        "baseline",
+                        "candidate"
+                      ]
+                    },
+                    "source_sha": {
+                      "$ref": "#/$defs/git_sha"
+                    },
+                    "binary_sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "image": {
+                      "type": "string",
+                      "maxLength": 512,
+                      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+                    },
+                    "rustc": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "cargo": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": [
+                    "schema",
+                    "side",
+                    "source_sha",
+                    "binary_sha256",
+                    "image",
+                    "rustc",
+                    "cargo",
+                    "command"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "source_sha",
+            "sha256",
+            "version",
+            "build"
+          ]
+        },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              ]
+            },
+            "build": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "schema": {
+                      "const": "af.perf-telemetry-build/1"
+                    },
+                    "side": {
+                      "type": "string",
+                      "enum": [
+                        "baseline",
+                        "candidate"
+                      ]
+                    },
+                    "source_sha": {
+                      "$ref": "#/$defs/git_sha"
+                    },
+                    "binary_sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "image": {
+                      "type": "string",
+                      "maxLength": 512,
+                      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+                    },
+                    "rustc": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "cargo": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": [
+                    "schema",
+                    "side",
+                    "source_sha",
+                    "binary_sha256",
+                    "image",
+                    "rustc",
+                    "cargo",
+                    "command"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "source_sha",
+            "sha256",
+            "version",
+            "build"
+          ]
+        }
+      },
+      "required": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "experiments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "overhead",
+              "invocation_cost",
+              "read_latency"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "overhead": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pairs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 40
+            },
+            "scale": {
+              "type": "string",
+              "enum": [
+                "full",
+                "smoke"
+              ]
+            }
+          },
+          "required": [
+            "pairs",
+            "scale"
+          ]
+        },
+        "invocation_cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pairs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 40
+            },
+            "scale": {
+              "type": "string",
+              "enum": [
+                "full",
+                "smoke"
+              ]
+            }
+          },
+          "required": [
+            "pairs",
+            "scale"
+          ]
+        },
+        "read_latency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 10000
+            },
+            "repeat": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9
+            }
+          },
+          "required": [
+            "runs",
+            "repeat"
+          ]
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 355
+        },
+        "work_bytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 68719476736
+        }
+      },
+      "required": [
+        "digest",
+        "seed",
+        "rounds",
+        "experiments",
+        "overhead",
+        "invocation_cost",
+        "read_latency",
+        "timeout_minutes",
+        "work_bytes"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "trusted_local",
+            "linux_container"
+          ]
+        },
+        "containment": {
+          "type": "string",
+          "enum": [
+            "process_group",
+            "pid_namespace"
+          ]
+        },
+        "container": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "reference": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "platform": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "id",
+                    "platform"
+                  ]
+                },
+                "runtime": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "cpus": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4095
+                  },
+                  "minItems": 1,
+                  "maxItems": 64
+                },
+                "memory_limit_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "pid_limit": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "scratch_limit_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "image",
+                "runtime",
+                "cpus",
+                "memory_limit_bytes",
+                "pid_limit",
+                "scratch_limit_bytes"
+              ]
+            }
+          ]
+        },
+        "work_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "file_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "cleanup": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "uncertain"
+          ]
+        },
+        "retained": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          ]
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "limitations": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "mode",
+        "containment",
+        "container",
+        "work_bytes",
+        "file_bytes",
+        "cleanup",
+        "retained",
+        "problems",
+        "limitations"
+      ]
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu_model": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "cpu_topology": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "logical_cpus": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "kernel": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "os_image": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "libc": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "memory_bytes": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "virtualization": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "microcode": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "container_runtime": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "affinity": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "cpu_quota": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "cache": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "aslr": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            },
+            "python": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "unknown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "unknown"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "cpu_model",
+            "cpu_topology",
+            "logical_cpus",
+            "kernel",
+            "os_image",
+            "libc",
+            "memory_bytes",
+            "virtualization",
+            "microcode",
+            "container_runtime",
+            "affinity",
+            "cpu_quota",
+            "cache",
+            "aslr",
+            "python"
+          ]
+        },
+        "end_host_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "same_host": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "host_id",
+        "host",
+        "end_host_id",
+        "same_host"
+      ]
+    },
+    "corpus": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "failed",
+                "timeout",
+                "not_run"
+              ]
+            },
+            "runs": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 10000
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2147483647
+            },
+            "wall_ms": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/decimal"
+                }
+              ]
+            },
+            "log": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "$ref": "#/$defs/relative_path"
+                    },
+                    "sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "size": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "sha256",
+                    "size",
+                    "truncated"
+                  ]
+                }
+              ]
+            },
+            "facts": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "segments": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "segment_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "segment_stored_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "blob_files": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "blob_stored_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    }
+                  },
+                  "required": [
+                    "segments",
+                    "segment_bytes",
+                    "segment_stored_bytes",
+                    "blob_files",
+                    "blob_stored_bytes"
+                  ]
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "status",
+            "runs",
+            "seed",
+            "wall_ms",
+            "log",
+            "facts",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "experiment": {
+            "type": "string",
+            "enum": [
+              "overhead",
+              "invocation_cost",
+              "read_latency"
+            ]
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "baseline",
+              "candidate"
+            ]
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483655
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "failed",
+              "timeout",
+              "refused_document",
+              "not_run"
+            ]
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": -255,
+                "maximum": 255
+              }
+            ]
+          },
+          "wall_ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/decimal"
+              }
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size"
+                ]
+              }
+            ]
+          },
+          "log": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size",
+                  "truncated"
+                ]
+              }
+            ]
+          },
+          "judgment": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "verdict": {
+                    "type": "string",
+                    "enum": [
+                      "pass",
+                      "fail",
+                      "not_judged"
+                    ]
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 512
+                    },
+                    "minItems": 0,
+                    "maxItems": 64
+                  }
+                },
+                "required": [
+                  "verdict",
+                  "reasons"
+                ]
+              }
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "experiment",
+          "round",
+          "side",
+          "position",
+          "seed",
+          "argv",
+          "status",
+          "exit_code",
+          "wall_ms",
+          "document",
+          "log",
+          "judgment",
+          "detail"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 48
+    },
+    "within": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "experiment": {
+            "type": "string",
+            "enum": [
+              "overhead",
+              "invocation_cost",
+              "read_latency"
+            ]
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "baseline",
+              "candidate"
+            ]
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "spans",
+                  "content"
+                ]
+              }
+            ]
+          },
+          "figure": {
+            "type": "string",
+            "enum": [
+              "overhead_median_pct",
+              "overhead_upper_pct",
+              "drain_median_ms",
+              "wall_median_pct",
+              "wall_upper_pct",
+              "rss_median_bytes",
+              "latency_ms",
+              "index_bytes"
+            ]
+          },
+          "value": {
+            "$ref": "#/$defs/rational"
+          }
+        },
+        "required": [
+          "experiment",
+          "round",
+          "side",
+          "subject",
+          "level",
+          "figure",
+          "value"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "experiment": {
+            "type": "string",
+            "enum": [
+              "overhead",
+              "invocation_cost",
+              "read_latency"
+            ]
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "off",
+              "spans",
+              "content"
+            ]
+          },
+          "metric": {
+            "type": "string",
+            "enum": [
+              "wall_ms",
+              "peak_rss_bytes",
+              "drain_ms",
+              "latency_ms"
+            ]
+          },
+          "shape": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "json",
+                  "stream-json"
+                ]
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "compared",
+              "incompatible",
+              "missing"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "rounds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "round": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 7
+                },
+                "baseline": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "candidate": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "change": {
+                  "$ref": "#/$defs/rational"
+                }
+              },
+              "required": [
+                "round",
+                "baseline",
+                "candidate",
+                "change"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 8
+          },
+          "median_change": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          }
+        },
+        "required": [
+          "experiment",
+          "subject",
+          "level",
+          "metric",
+          "shape",
+          "state",
+          "reason",
+          "rounds",
+          "median_change"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ]
+    },
+    "verdict_effect": {
+      "const": "none"
+    },
+    "enforcement": {
+      "const": "advisory"
+    }
+  },
+  "required": [
+    "schema",
+    "result_id",
+    "trigger",
+    "profile",
+    "started_unix_ms",
+    "ended_unix_ms",
+    "sources",
+    "authority",
+    "binaries",
+    "configuration",
+    "execution",
+    "host",
+    "corpus",
+    "runs",
+    "within",
+    "comparisons",
+    "status",
+    "verdict_effect",
+    "enforcement"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}
