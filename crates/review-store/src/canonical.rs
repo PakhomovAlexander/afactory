@@ -14,7 +14,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::io::{Read, Write};
 
 /// Domain separator for `content_id` — hashes the payload alone.
 const DOMAIN_CONTENT: &[u8] = b"review.kernel/content-id/v1\0";
@@ -97,11 +97,11 @@ fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 
 fn write_number(n: &serde_json::Number, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
     if let Some(i) = n.as_i64() {
-        out.extend_from_slice(i.to_string().as_bytes());
+        write!(out, "{i}").expect("writing to a Vec cannot fail");
         return Ok(());
     }
     if let Some(u) = n.as_u64() {
-        out.extend_from_slice(u.to_string().as_bytes());
+        write!(out, "{u}").expect("writing to a Vec cannot fail");
         return Ok(());
     }
     let f = n
@@ -256,6 +256,84 @@ mod tests {
             canonicalize(&mixed).unwrap(),
             serde_json::to_vec(&mixed).unwrap()
         );
+    }
+
+    #[test]
+    fn every_byte_value_retains_exact_integer_encoding() {
+        let value = Value::Array((0u8..=u8::MAX).map(|n| Value::Number(n.into())).collect());
+        let expected = concat!(
+            "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,",
+            "30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,",
+            "60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,",
+            "90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,",
+            "110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,",
+            "130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,",
+            "150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,",
+            "170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,",
+            "190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,",
+            "210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,",
+            "230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,",
+            "250,251,252,253,254,255]"
+        );
+        assert_eq!(canonicalize(&value).unwrap(), expected.as_bytes());
+    }
+
+    #[test]
+    fn directly_constructed_integer_boundaries_retain_exact_encoding() {
+        // canonicalize accepts these Numbers directly, even outside json::admit's safe range.
+        let signed = [
+            (i64::MIN, "-9223372036854775808"),
+            (i64::MIN + 1, "-9223372036854775807"),
+            (-9_007_199_254_740_993, "-9007199254740993"),
+            (-9_007_199_254_740_992, "-9007199254740992"),
+            (-9_007_199_254_740_991, "-9007199254740991"),
+            (-10, "-10"),
+            (-1, "-1"),
+            (0, "0"),
+            (1, "1"),
+            (10, "10"),
+            (9_007_199_254_740_991, "9007199254740991"),
+            (9_007_199_254_740_992, "9007199254740992"),
+            (9_007_199_254_740_993, "9007199254740993"),
+            (i64::MAX - 1, "9223372036854775806"),
+            (i64::MAX, "9223372036854775807"),
+        ];
+        for (number, expected) in signed {
+            let value = Value::Number(number.into());
+            assert_eq!(canonicalize(&value).unwrap(), expected.as_bytes());
+        }
+        let unsigned = [
+            (0, "0"),
+            (1, "1"),
+            (9_007_199_254_740_991, "9007199254740991"),
+            (9_007_199_254_740_992, "9007199254740992"),
+            (9_007_199_254_740_993, "9007199254740993"),
+            (9_223_372_036_854_775_807, "9223372036854775807"),
+            (9_223_372_036_854_775_808, "9223372036854775808"),
+            (u64::MAX - 1, "18446744073709551614"),
+            (u64::MAX, "18446744073709551615"),
+        ];
+        for (number, expected) in unsigned {
+            let value = Value::Number(number.into());
+            assert_eq!(canonicalize(&value).unwrap(), expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn nested_mixed_integers_retain_exact_encoding() {
+        let value = json!({
+            "z": u64::MAX,
+            "a": [
+                i64::MIN, 0, 255,
+                { "u": 9_223_372_036_854_775_808u64, "s": -9_007_199_254_740_993i64 },
+                -1, 1.5, 1.0, -0.0, true, null, "7"
+            ]
+        });
+        let expected = concat!(
+            r#"{"a":[-9223372036854775808,0,255,{"s":-9007199254740993,"u":9223372036854775808},"#,
+            r#"-1,1.5,1,0,true,null,"7"],"z":18446744073709551615}"#
+        );
+        assert_eq!(canonicalize(&value).unwrap(), expected.as_bytes());
     }
 
     #[test]
