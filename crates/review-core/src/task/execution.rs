@@ -1,0 +1,353 @@
+//! Generic Task invocation and Attempt records. Domain outputs remain separately typed;
+//! an execution failure is never coerced into a negative verification receipt.
+
+use super::{ArtifactInputV1, is_name, require, safe_number};
+use crate::is_digest;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Exact provider counters exceed the canonical JSON number bound, so they travel as text.
+mod decimal_tokens {
+    use crate::task::usage::DecimalU128;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        DecimalU128::from(*value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+        DecimalU128::deserialize(deserializer).map(DecimalU128::get)
+    }
+}
+
+pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
+pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
+pub const TASK_EXECUTION_RECORD_V5: &str = "af/TaskExecutionRecord@5";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskInvocationV1 {
+    pub plan_id: String,
+    pub node: String,
+    /// Only present values are recorded; optional missing ports do not get invented artifacts.
+    pub inputs: BTreeMap<String, ArtifactInputV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskOutputV1 {
+    pub invocation_id: String,
+    pub outputs: BTreeMap<String, ArtifactInputV1>,
+}
+
+fn ports(values: &BTreeMap<String, ArtifactInputV1>) -> Result<(), String> {
+    for (name, value) in values {
+        require(is_name(name), "Invalid Task invocation port")?;
+        value.validate()?;
+    }
+    Ok(())
+}
+
+impl TaskInvocationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_digest(&self.plan_id) && self.node.split('.').all(is_name),
+            "Task invocation needs exact plan and qualified node",
+        )?;
+        ports(&self.inputs)
+    }
+}
+
+impl TaskOutputV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_digest(&self.invocation_id),
+            "Task output needs its exact invocation",
+        )?;
+        ports(&self.outputs)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskAttemptResultV1 {
+    Succeeded {
+        output_id: String,
+    },
+    Failed {
+        diagnostic_id: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        feedback_id: Option<String>,
+    },
+    Abandoned {
+        diagnostic_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskExecutionRecordV1 {
+    Invocation {
+        invocation_id: String,
+    },
+    /// Reserves the real Attempt identity before rendering its exact context.
+    Reserved {
+        invocation_id: String,
+        attempt_id: String,
+        reservation_id: String,
+        reserved_tokens: u64,
+        deadline_unix_ms: u64,
+        /// Admitted retry feedback, never diagnostic prose or in-memory transcript state.
+        feedback_ids: Vec<String>,
+    },
+    ContextBound {
+        attempt_id: String,
+        context_id: String,
+    },
+    Started {
+        attempt_id: String,
+    },
+    Released {
+        attempt_id: String,
+        reason: String,
+    },
+    /// Exact charges are recorded as canonical decimal text, never as a bounded JSON number.
+    Settled {
+        attempt_id: String,
+        #[serde(with = "decimal_tokens")]
+        charged_tokens: u128,
+        result: TaskAttemptResultV1,
+        raw_artifact_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        usage_id: Option<String>,
+        /// Present when no usage was reported: the Attempt is charged zero and its usage is
+        /// unknown, with its cause (ADR-0143). Absent on every settlement with reported usage,
+        /// so records written before this field keep their bytes and their charge.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        unknown_usage: Option<super::usage::TaskUnknownUsageV1>,
+    },
+    Published {
+        output_id: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        attempt_id: Option<String>,
+    },
+    /// A trusted cumulative charge floor for started work, whether running or settled.
+    /// It neither grants execution authority nor refunds an earlier observation.
+    UsageObserved {
+        attempt_id: String,
+        #[serde(with = "decimal_tokens")]
+        charged_tokens: u128,
+        usage_id: String,
+        raw_artifact_ids: Vec<String>,
+    },
+    OwnedChildrenRegistered {
+        child_set_id: String,
+    },
+    OwnedChildPublished {
+        child_set_id: String,
+        output_id: String,
+        attempt_id: String,
+    },
+    OwnedChildrenCompleted {
+        child_set_id: String,
+        output_id: String,
+    },
+    ExperimentPrepared {
+        prepared_id: String,
+    },
+    ExperimentPlanDecided {
+        prepared_id: String,
+        decision_id: String,
+    },
+    ExperimentChildrenRegistered {
+        prepared_id: String,
+        decision_id: String,
+        child_plan_id: String,
+    },
+}
+
+impl TaskExecutionRecordV1 {
+    pub fn artifact_refs(&self) -> Vec<&str> {
+        let mut refs = Vec::new();
+        match self {
+            Self::Invocation { invocation_id } => refs.push(invocation_id.as_str()),
+            Self::Reserved {
+                invocation_id,
+                feedback_ids,
+                ..
+            } => {
+                refs.push(invocation_id.as_str());
+                refs.extend(feedback_ids.iter().map(String::as_str));
+            }
+            Self::ContextBound { context_id, .. } => refs.push(context_id.as_str()),
+            Self::Settled {
+                result,
+                raw_artifact_ids,
+                usage_id,
+                ..
+            } => {
+                refs.extend(raw_artifact_ids.iter().map(String::as_str));
+                refs.extend(usage_id.iter().map(String::as_str));
+                match result {
+                    TaskAttemptResultV1::Succeeded { output_id } => refs.push(output_id),
+                    TaskAttemptResultV1::Failed {
+                        diagnostic_id,
+                        feedback_id,
+                    } => {
+                        refs.push(diagnostic_id);
+                        refs.extend(feedback_id.iter().map(String::as_str));
+                    }
+                    TaskAttemptResultV1::Abandoned { diagnostic_id } => refs.push(diagnostic_id),
+                }
+            }
+            Self::Published { output_id, .. } => refs.push(output_id),
+            Self::OwnedChildrenRegistered { child_set_id } => refs.push(child_set_id),
+            Self::ExperimentPrepared { prepared_id } => refs.push(prepared_id),
+            Self::ExperimentPlanDecided {
+                prepared_id,
+                decision_id,
+            } => refs.extend([prepared_id.as_str(), decision_id.as_str()]),
+            Self::ExperimentChildrenRegistered {
+                prepared_id,
+                decision_id,
+                child_plan_id,
+            } => refs.extend([
+                prepared_id.as_str(),
+                decision_id.as_str(),
+                child_plan_id.as_str(),
+            ]),
+            Self::OwnedChildPublished {
+                child_set_id,
+                output_id,
+                ..
+            }
+            | Self::OwnedChildrenCompleted {
+                child_set_id,
+                output_id,
+            } => {
+                refs.extend([child_set_id.as_str(), output_id.as_str()]);
+            }
+            Self::UsageObserved {
+                usage_id,
+                raw_artifact_ids,
+                ..
+            } => {
+                refs.push(usage_id);
+                refs.extend(raw_artifact_ids.iter().map(String::as_str));
+            }
+            _ => (),
+        }
+        refs
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.artifact_refs().iter().all(|id| is_digest(id)),
+            "Invalid Task execution artifact reference",
+        )?;
+        let attempt = match self {
+            Self::Invocation { .. }
+            | Self::OwnedChildrenRegistered { .. }
+            | Self::OwnedChildrenCompleted { .. }
+            | Self::ExperimentPrepared { .. }
+            | Self::ExperimentPlanDecided { .. }
+            | Self::ExperimentChildrenRegistered { .. } => None,
+            Self::Reserved {
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+                feedback_ids,
+                ..
+            } => {
+                require(
+                    reservation_id
+                        .strip_prefix("reservation:")
+                        .is_some_and(|number| {
+                            !number.is_empty()
+                                && number.len() <= 20
+                                && number.bytes().all(|b| b.is_ascii_digit())
+                        })
+                        && safe_number(*reserved_tokens)
+                        && *deadline_unix_ms > 0
+                        && safe_number(*deadline_unix_ms),
+                    "Invalid Task reservation",
+                )?;
+                require(
+                    feedback_ids.len() <= 16
+                        && feedback_ids
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            == feedback_ids.len(),
+                    "Invalid Task retry feedback selection",
+                )?;
+                Some(attempt_id)
+            }
+            Self::Started { attempt_id } | Self::ContextBound { attempt_id, .. } => {
+                Some(attempt_id)
+            }
+            Self::Released { attempt_id, reason } => {
+                require(
+                    !reason.trim().is_empty() && reason.chars().count() <= 65536,
+                    "Task release needs bounded diagnostics",
+                )?;
+                Some(attempt_id)
+            }
+            Self::Settled {
+                charged_tokens,
+                usage_id,
+                unknown_usage: Some(_),
+                ..
+            } if *charged_tokens != 0 || usage_id.is_some() => {
+                return Err("Unknown Task usage is charged zero and names no usage report".into());
+            }
+            Self::Settled {
+                attempt_id,
+                raw_artifact_ids,
+                ..
+            }
+            | Self::UsageObserved {
+                attempt_id,
+                raw_artifact_ids,
+                ..
+            } => {
+                require(
+                    raw_artifact_ids.len() <= 64
+                        && raw_artifact_ids
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            == raw_artifact_ids.len(),
+                    "Invalid raw Task evidence selection",
+                )?;
+                Some(attempt_id)
+            }
+            Self::Published { attempt_id, .. } => attempt_id.as_ref(),
+            Self::OwnedChildPublished { attempt_id, .. } => Some(attempt_id),
+        };
+        if let Some(attempt) = attempt {
+            require(
+                attempt.len() == 26 && attempt.bytes().all(|b| b.is_ascii_alphanumeric()),
+                "Invalid Task Attempt identity",
+            )?;
+        }
+        Ok(())
+    }
+}

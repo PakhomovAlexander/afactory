@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:round-input-superseded:1",
+  "title": "RoundInputSuperseded@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round", "old_epoch", "new_epoch", "campaign_manifest_id", "old_subject_id", "replacement_subject_id"],
+  "properties": {
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "old_epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "new_epoch": { "type": "integer", "minimum": 2, "maximum": 4294967295 },
+    "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+    "old_subject_id": { "$ref": "#/$defs/digest" },
+    "replacement_subject_id": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

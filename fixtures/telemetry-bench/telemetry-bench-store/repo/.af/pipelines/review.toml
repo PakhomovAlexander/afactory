@@ -1,0 +1,5129 @@
+# telemetry-bench-store (fixtures/telemetry-bench/README.md): a Task-backed Review whose gate
+# checks and reviewer nodes append Store events: one `CheckCompleted@1` per check and one
+# `FindingReported@1` per reported Finding, beside the Task's own transitions.
+version = 2
+
+[subject]
+kind = "whole-tree"
+
+[[checks]]
+name = "check-0000"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0001"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0002"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0003"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0004"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0005"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0006"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0007"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0008"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0009"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0010"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0011"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0012"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0013"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0014"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0015"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0016"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0017"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0018"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0019"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0020"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0021"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0022"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0023"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0024"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0025"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0026"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0027"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0028"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0029"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0030"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0031"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0032"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0033"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0034"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0035"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0036"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0037"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0038"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0039"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0040"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0041"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0042"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0043"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0044"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0045"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0046"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0047"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0048"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0049"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0050"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0051"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0052"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0053"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0054"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0055"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0056"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0057"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0058"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0059"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0060"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0061"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0062"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0063"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0064"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0065"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0066"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0067"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0068"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0069"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0070"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0071"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0072"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0073"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0074"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0075"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0076"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0077"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0078"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0079"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0080"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0081"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0082"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0083"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0084"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0085"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0086"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0087"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0088"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0089"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0090"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0091"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0092"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0093"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0094"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0095"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0096"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0097"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0098"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0099"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0100"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0101"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0102"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0103"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0104"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0105"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0106"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0107"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0108"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0109"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0110"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0111"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0112"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0113"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0114"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0115"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0116"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0117"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0118"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0119"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0120"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0121"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0122"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0123"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0124"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0125"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0126"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0127"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0128"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0129"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0130"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0131"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0132"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0133"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0134"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0135"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0136"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0137"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0138"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0139"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0140"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0141"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0142"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0143"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0144"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0145"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0146"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0147"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0148"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0149"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0150"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0151"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0152"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0153"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0154"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0155"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0156"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0157"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0158"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0159"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0160"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0161"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0162"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0163"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0164"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0165"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0166"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0167"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0168"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0169"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0170"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0171"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0172"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0173"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0174"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0175"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0176"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0177"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0178"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0179"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0180"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0181"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0182"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0183"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0184"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0185"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0186"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0187"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0188"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0189"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0190"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0191"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0192"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0193"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0194"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0195"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0196"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0197"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0198"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0199"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0200"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0201"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0202"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0203"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0204"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0205"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0206"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0207"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0208"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0209"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0210"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0211"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0212"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0213"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0214"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0215"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0216"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0217"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0218"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0219"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0220"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0221"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0222"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0223"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0224"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0225"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0226"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0227"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0228"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0229"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0230"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0231"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0232"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0233"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0234"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0235"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0236"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0237"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0238"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0239"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0240"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0241"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0242"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0243"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0244"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0245"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0246"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0247"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0248"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0249"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0250"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0251"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0252"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0253"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0254"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0255"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0256"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0257"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0258"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0259"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0260"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0261"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0262"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0263"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0264"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0265"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0266"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0267"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0268"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0269"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0270"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0271"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0272"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0273"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0274"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0275"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0276"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0277"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0278"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0279"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0280"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0281"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0282"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0283"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0284"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0285"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0286"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0287"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0288"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0289"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0290"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0291"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0292"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0293"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0294"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0295"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0296"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0297"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0298"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0299"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0300"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0301"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0302"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0303"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0304"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0305"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0306"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0307"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0308"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0309"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0310"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0311"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0312"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0313"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0314"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0315"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0316"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0317"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0318"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0319"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0320"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0321"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0322"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0323"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0324"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0325"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0326"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0327"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0328"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0329"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0330"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0331"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0332"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0333"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0334"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0335"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0336"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0337"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0338"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0339"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0340"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0341"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0342"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0343"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0344"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0345"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0346"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0347"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0348"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0349"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0350"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0351"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0352"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0353"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0354"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0355"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0356"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0357"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0358"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0359"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0360"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0361"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0362"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0363"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0364"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0365"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0366"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0367"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0368"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0369"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0370"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0371"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0372"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0373"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0374"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0375"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0376"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0377"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0378"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0379"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0380"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0381"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0382"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0383"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0384"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0385"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0386"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0387"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0388"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0389"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0390"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0391"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0392"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0393"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0394"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0395"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0396"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0397"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0398"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0399"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0400"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0401"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0402"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0403"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0404"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0405"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0406"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0407"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0408"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0409"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0410"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0411"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0412"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0413"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0414"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0415"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0416"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0417"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0418"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0419"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0420"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0421"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0422"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0423"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0424"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0425"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0426"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0427"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0428"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0429"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0430"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0431"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0432"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0433"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0434"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0435"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0436"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0437"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0438"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0439"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0440"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0441"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0442"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0443"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0444"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0445"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0446"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0447"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0448"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0449"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0450"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0451"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0452"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0453"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0454"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0455"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0456"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0457"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0458"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0459"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0460"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0461"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0462"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0463"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0464"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0465"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0466"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0467"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0468"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0469"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0470"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0471"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0472"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0473"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0474"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0475"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0476"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0477"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0478"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0479"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0480"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0481"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0482"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0483"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0484"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0485"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0486"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0487"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0488"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0489"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0490"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0491"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0492"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0493"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0494"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0495"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0496"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0497"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0498"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0499"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0500"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0501"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0502"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0503"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0504"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0505"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0506"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0507"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0508"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0509"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0510"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0511"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0512"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0513"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0514"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0515"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0516"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0517"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0518"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0519"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0520"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0521"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0522"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0523"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0524"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0525"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0526"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0527"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0528"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0529"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0530"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0531"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0532"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0533"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0534"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0535"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0536"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0537"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0538"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0539"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0540"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0541"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0542"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0543"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0544"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0545"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0546"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0547"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0548"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0549"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0550"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0551"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0552"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0553"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0554"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0555"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0556"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0557"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0558"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0559"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0560"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0561"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0562"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0563"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0564"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0565"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0566"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0567"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0568"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0569"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0570"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0571"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0572"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0573"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0574"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0575"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0576"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0577"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0578"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0579"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0580"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0581"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0582"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0583"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0584"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0585"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0586"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0587"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0588"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0589"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0590"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0591"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0592"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0593"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0594"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0595"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0596"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0597"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0598"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0599"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0600"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0601"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0602"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0603"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0604"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0605"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0606"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0607"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0608"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0609"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0610"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0611"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0612"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0613"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0614"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0615"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0616"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0617"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0618"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0619"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0620"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0621"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0622"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0623"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0624"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0625"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0626"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0627"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0628"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0629"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0630"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0631"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0632"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0633"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0634"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0635"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0636"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0637"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0638"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0639"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0640"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0641"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0642"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0643"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0644"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0645"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0646"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0647"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0648"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0649"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0650"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0651"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0652"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0653"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0654"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0655"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0656"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0657"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0658"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0659"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0660"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0661"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0662"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0663"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0664"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0665"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0666"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0667"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0668"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0669"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0670"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0671"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0672"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0673"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0674"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0675"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0676"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0677"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0678"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0679"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0680"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0681"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0682"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0683"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0684"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0685"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0686"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0687"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0688"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0689"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0690"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0691"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0692"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0693"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0694"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0695"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0696"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0697"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0698"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0699"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0700"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0701"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0702"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0703"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0704"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0705"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0706"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0707"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0708"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0709"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0710"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0711"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0712"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0713"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0714"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0715"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0716"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0717"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0718"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0719"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0720"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0721"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0722"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0723"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0724"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0725"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0726"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0727"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0728"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0729"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0730"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0731"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0732"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0733"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0734"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0735"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0736"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0737"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0738"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0739"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0740"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0741"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0742"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0743"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0744"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0745"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0746"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0747"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0748"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0749"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0750"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0751"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0752"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0753"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0754"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0755"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0756"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0757"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0758"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0759"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0760"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0761"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0762"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0763"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0764"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0765"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0766"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0767"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0768"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0769"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0770"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0771"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0772"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0773"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0774"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0775"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0776"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0777"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0778"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0779"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0780"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0781"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0782"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0783"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0784"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0785"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0786"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0787"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0788"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0789"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0790"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0791"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0792"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0793"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0794"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0795"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0796"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0797"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0798"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0799"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0800"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0801"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0802"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0803"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0804"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0805"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0806"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0807"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0808"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0809"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0810"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0811"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0812"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0813"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0814"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0815"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0816"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0817"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0818"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0819"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0820"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0821"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0822"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0823"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0824"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0825"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0826"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0827"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0828"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0829"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0830"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0831"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0832"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0833"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0834"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0835"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0836"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0837"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0838"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0839"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0840"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0841"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0842"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0843"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0844"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0845"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0846"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0847"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0848"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0849"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0850"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0851"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0852"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0853"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0854"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0855"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0856"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0857"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0858"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0859"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0860"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0861"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0862"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0863"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0864"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0865"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0866"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0867"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0868"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0869"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0870"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0871"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0872"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0873"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0874"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0875"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0876"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0877"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0878"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0879"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0880"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0881"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0882"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0883"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0884"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0885"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0886"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0887"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0888"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0889"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0890"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0891"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0892"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0893"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0894"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0895"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0896"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0897"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0898"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0899"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0900"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0901"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0902"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0903"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0904"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0905"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0906"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0907"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0908"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0909"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0910"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0911"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0912"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0913"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0914"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0915"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0916"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0917"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0918"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0919"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0920"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0921"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0922"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0923"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0924"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0925"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0926"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0927"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0928"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0929"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0930"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0931"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0932"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0933"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0934"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0935"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0936"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0937"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0938"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0939"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0940"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0941"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0942"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0943"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0944"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0945"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0946"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0947"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0948"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0949"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0950"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0951"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0952"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0953"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0954"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0955"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0956"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0957"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0958"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0959"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0960"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0961"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0962"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0963"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0964"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0965"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0966"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0967"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0968"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0969"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0970"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0971"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0972"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0973"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0974"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0975"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0976"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0977"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0978"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0979"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0980"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0981"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0982"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0983"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0984"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0985"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0986"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0987"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0988"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0989"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0990"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0991"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0992"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0993"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0994"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0995"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0996"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0997"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0998"
+program = "/usr/bin/true"
+args = []
+
+[[checks]]
+name = "check-0999"
+program = "/usr/bin/true"
+args = []
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "r1"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+[nodes.runner]
+program = "/usr/bin/python3"
+args = [{ value = "-B" }, { value = "reviewer.py" }, { value = "r1" }]
+
+[[nodes]]
+id = "r2"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+[nodes.runner]
+program = "/usr/bin/python3"
+args = [{ value = "-B" }, { value = "reviewer.py" }, { value = "r2" }]
+
+[[nodes]]
+id = "r3"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+[nodes.runner]
+program = "/usr/bin/python3"
+args = [{ value = "-B" }, { value = "reviewer.py" }, { value = "r3" }]
+
+[[nodes]]
+id = "r4"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+[nodes.runner]
+program = "/usr/bin/python3"
+args = [{ value = "-B" }, { value = "reviewer.py" }, { value = "r4" }]
+
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{ name = "r1", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "r2", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "r3", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "r4", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r1", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "r1", port = "prior_findings" }
+
+[[edges]]
+from = { node = "r1", port = "result" }
+to = { node = "gather", port = "r1" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r2", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "r2", port = "prior_findings" }
+
+[[edges]]
+from = { node = "r2", port = "result" }
+to = { node = "gather", port = "r2" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r3", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "r3", port = "prior_findings" }
+
+[[edges]]
+from = { node = "r3", port = "result" }
+to = { node = "gather", port = "r3" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r4", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "r4", port = "prior_findings" }
+
+[[edges]]
+from = { node = "r4", port = "result" }
+to = { node = "gather", port = "r4" }
+
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+
+[convergence]
+clean_rounds = 1
+max_rounds = 1
+gate = "major"

@@ -1,0 +1,80 @@
+{
+  "schema": "af.perf-supervisor-result/5",
+  "supervisor": {
+    "platform": "macos",
+    "arch": "aarch64",
+    "namespace_init": false,
+    "containment": "process_group"
+  },
+  "termination": {
+    "kind": "exited",
+    "code": 0,
+    "signal": null,
+    "detail": ""
+  },
+  "timing": {
+    "child_wall_ns": "22854875",
+    "exit_observation": "unreaped",
+    "before_launch_ns": "3284375",
+    "cleanup_ns": "6092542",
+    "after_exit_ns": "6243333"
+  },
+  "stdout": {
+    "retained": 6,
+    "total": 1600006,
+    "truncated": 1600000
+  },
+  "stderr": {
+    "retained": 0,
+    "total": 0,
+    "truncated": 0
+  },
+  "stdout_pattern_counts": [],
+  "stdout_json": {
+    "document": {
+      "status": "incomplete",
+      "offset": 1600006,
+      "detail": "the document is not complete"
+    },
+    "selectors": [
+      {
+        "holders": 10000,
+        "count": 10000,
+        "duplicates": 0,
+        "invalid": 0,
+        "first_invalid": null,
+        "first": 0,
+        "last": 9999,
+        "breaks": 0,
+        "first_break": null,
+        "matches": []
+      }
+    ]
+  },
+  "lifecycle": {
+    "observation": "pipes_only",
+    "descendants_at_exit": null,
+    "remaining_after_cleanup": null,
+    "pipes_held": false,
+    "status": "no_observed_descendants",
+    "detail": "the process group was killed and the pipes closed; descendants that left the group are not observable on this platform"
+  },
+  "setup": null,
+  "scratch": null,
+  "rusage": {
+    "scope": "reaped_child_and_its_waited_descendants",
+    "user_cpu_ns": "3139000",
+    "system_cpu_ns": "3382000",
+    "maxrss_bytes": 1531904,
+    "minor_faults": 225,
+    "major_faults": 21,
+    "voluntary_switches": 52,
+    "involuntary_switches": 0
+  },
+  "rusage_unavailable": null,
+  "observations": {
+    "before": {},
+    "after": {},
+    "unavailable": "cgroup v2 and /proc observations exist only on Linux"
+  }
+}

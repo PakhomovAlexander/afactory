@@ -1,0 +1,30 @@
+~/hub                       |CAMPAIGNS  project: hub
+v hub  (project)            |
+  v providers/              |~/state/af/review/campaigns
+      claude-main           |  pr-42                 round 1.1  open  -
+      codex-ambient         |      spend - tok  wall -  last write <date> <time>
+  v workers/                |
+  v pipelines/              |~/state/af/review/local
+      review                |  local                 round -    new  -
+      fixture/implementation|      spend - tok  wall -  last write <date> <time>
+  v tasks/                  |
+  v campaigns/              |~/elsewhere/audit
+      pr-42            open |  audit                 round 1.1  open  -
+      local             new |      spend - tok  wall -  last write <date> <time>
+      audit            open |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+NORMAL  campaigns/                          j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

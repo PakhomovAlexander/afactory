@@ -1,0 +1,24 @@
+{
+  "schema": "af.perf-supervisor-request/4",
+  "argv": [
+    "/perf/bin/perf-probe"
+  ],
+  "environment": {
+    "HOME": "/perf/scratch",
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin",
+    "TMPDIR": "/perf/scratch",
+    "TZ": "UTC"
+  },
+  "cwd": "/perf/scratch",
+  "stdin": "{\"schema\":\"af.perf-probe-request/2\"}",
+  "timeout_ms": 30000,
+  "stdout_cap_bytes": 65536,
+  "log_cap_bytes": 262144,
+  "cleanup_grace_ms": 5000,
+  "containment": "pid_namespace",
+  "scratch": "/perf/scratch",
+  "setup": null,
+  "stdout_patterns": [],
+  "stdout_json": []
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:finding-grouping:1",
+  "title": "FindingGrouping@1 payload",
+  "description": "A reversible operator adjudication. Grouping preserves both Finding identities and every Report obligation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["from", "into", "action", "round"],
+  "properties": {
+    "from": { "type": "string", "minLength": 1 },
+    "into": { "type": "string", "minLength": 1 },
+    "action": { "enum": ["group", "ungroup"] },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+  }
+}
