@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:document-sources:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.document-sources/1"
+    },
+    "sources": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "uri",
+          "revision",
+          "text"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "\\S"
+          }
+        }
+      }
+    }
+  }
+}
