@@ -1053,7 +1053,8 @@ pub(super) fn report(
             serde_json::to_string(&report).map_err(|error| error.to_string())?
         );
     } else if let Some(body) = pr_body {
-        let block = super::task_execution::task_report::markdown(&report);
+        let unresolved = super::task_execution::task_report::unresolved(&state, &report)?;
+        let block = super::task_execution::task_report::markdown_pr_body(&report, unresolved);
         print!(
             "{}",
             super::task_execution::pr_body::render(&repository, body.template, body.base, &block)?

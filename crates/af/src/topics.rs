@@ -514,7 +514,7 @@ The Task documents, each named by its `schema`:
   af task findings --json              af/task-findings@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
-  af task status --json, wait --json   af/task-status@1
+  af task status --json, wait --json   af/task-status@2
   af task run --detach --json          af/task-detached@2
   af task cancel --json                af/task-cancelled@1
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
@@ -522,7 +522,7 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@1, af/task-detached@2
+af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@2, af/task-detached@2
 and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
 carrying the selectors the command was given (a report, pasted into a pull request, names no
 Store path); the diff, the materialized candidate and the refused selection describe no Task
@@ -560,7 +560,9 @@ after a Provider failure. `af task show ID --checks` prints the gate's last chec
 check's failing and flaky tests and the end of its stderr.
 
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
-tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.
+reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
+duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
+outcome's code.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
 names who cancelled it. `af help agents` walks the whole loop.";
 

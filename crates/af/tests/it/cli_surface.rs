@@ -1517,11 +1517,17 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         ),
         (
             &["task", "wait", "--help"],
-            &["--timeout <S>", "exits 124", "af/task-status@1"],
+            &[
+                "--timeout <S>",
+                "--bell",
+                "--notify",
+                "exits 124",
+                "af/task-status@2",
+            ],
         ),
         (
             &["task", "status", "--help"],
-            &["af/task-status@1", "without waiting"],
+            &["af/task-status@2", "without waiting"],
         ),
         (
             &["task", "run", "--help"],
@@ -1697,7 +1703,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         "af/task-findings@1",
         "af/task-diff@1",
         "af/task-materialized@1",
-        "af/task-status@1",
+        "af/task-status@2",
         "af/task-detached@2",
         "af/task-cancelled@1",
     ] {

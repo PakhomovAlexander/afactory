@@ -2029,14 +2029,17 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
     /// Block until a Task settles, then exit with its exit code
     #[command(
         long_about = "Block until a Task settles — no writer holds it and no run of this host \
-is starting — then print its status line (`af/task-status@1` under --json) and exit with the \
+is starting — then print its status line (`af/task-status@2` under --json) and exit with the \
 Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
+--bell rings terminal stderr when it settles; --notify requests an OS notification, warning \
+without changing the exit code when the notifier is unavailable. \
 With --timeout S it gives up after S seconds, prints the status so far and exits 124. A \
 planned Task with no run in progress is refused (exit 1): there is nothing to wait for.\n\n\
 Never: starts, resumes or changes a Task.",
         after_long_help = "Examples:\n  \
 af task wait TASK_ID   # needs: a Task af task run --detach started\n  \
-af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
+af task wait TASK_ID --timeout 600 --json   # needs: a running Task\n  \
+af task wait TASK_ID --bell --notify   # needs: a running Task"
     )]
     Wait {
         /// Task id
@@ -2044,16 +2047,24 @@ af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
         /// Give up after S seconds and exit 124
         #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
+        /// Ring the terminal bell when the Task settles, if stderr is a terminal
+        #[arg(long)]
+        bell: bool,
+        /// Send an OS notification when the Task settles; an unavailable notifier warns
+        #[arg(long)]
+        notify: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Print a Task's state, current node, elapsed time and tokens so far, and what is next
+    /// Print a Task's state, current node, elapsed time, tokens and what is next
     #[command(
         long_about = "Print where a Task is, now, without waiting: its state \
 (phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
-clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
+clock started, one line with tokens reserved, charged and remaining (and unknown usage), the \
+last comparable Gate duration recorded for this repository, check and code policy when one \
+exists, the run that holds it (run number, pid and host) and \
 who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
-width when narrower) and broken only between arguments. --json prints one `af/task-status@1` \
+width when narrower) and broken only between arguments. --json prints one `af/task-status@2` \
 document. Exits 0: the state is data.",
         after_long_help = "Examples:\n  \
 af task status TASK_ID   # needs: a Task\n  \

@@ -430,3 +430,5 @@ future readers need.
 - [0243 — Add pinned Task authority through additive
   onboarding](0243-add-task-authority-with-additive-onboarding.md)
 - [0244 — Version review inspection views](0244-version-review-inspection-views.md)
+- [0245 — Show recorded Gate history and version Task
+  status](0245-show-recorded-gate-history-and-version-task-status.md)
