@@ -1,0 +1,242 @@
+# Architecture decisions
+
+The binding decisions behind the Review Kernel and the `af` command. They travel with the code
+rather than with any project that uses it: a consuming repository records its own decisions in
+its own log, and the kernel's are all here.
+
+One decision per file, numbered in order of acceptance as `NNNN-kebab-case-title.md`, **immutable
+once accepted**. Each opens with a status line carrying the status and date, states the context,
+lists the considered options with the reasons each was rejected, records the decision, and ends
+with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
+superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR,
+and that status line may be restated when the new ADR spends the transition wording it carried; a
+fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
+ADR, or to an internal record deleted at GA, are rewritten to point at the superseding ADR or to
+plain text; this is the only edit allowed in another accepted ADR's body
+([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8).
+
+A number is never reissued: a deleted record leaves its number empty, and the index simply skips
+it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
+release-validation ADR listed beside it. Both keep the number they were accepted under, for
+different reasons: the release-validation record keeps its number by owner decision, and the
+warm-layer record keeps its because renumbering it would rewrite links inside the accepted
+ADR-0108, ADR-0109 and ADR-0110 and in a shipped release section. 0107 is not issued again.
+
+To propose one, take the next number after the highest in the index below, write it in that
+shape, add it to the index, and open a pull request; it becomes binding when the pull request
+merges with the status `accepted`. Record the options you rejected and why — that is the part
+future readers need.
+
+## Index
+
+- [0001 — Compute the Change Set with `git diff`, reachable only through a typed
+  method](0001-tree-diff-behind-a-typed-method.md)
+- [0002 — A payload shape change bumps the event type
+  version](0002-event-payload-changes-bump-the-type-version.md)
+- [0005 — Report artifacts are authoritative for finding
+  projections](0005-report-artifacts-are-projection-authority.md)
+- [0006 — Finding identity is independent of path and
+  title](0006-finding-identity-is-path-independent.md)
+- [0007 — Demands are independent blocking
+  obligations](0007-demands-are-independent-blocking-obligations.md)
+- [0008 — Safe caches are sandbox-local
+  snapshots](0008-safe-caches-are-sandbox-local-snapshots.md)
+- [0009 — Campaign authority is resolved before candidate
+  capture](0009-campaign-authority-is-base-pinned.md)
+- [0010 — Proposals are exported by ID and remain bound to their base
+  Snapshot](0010-proposals-are-exported-by-id-and-base-bound.md)
+- [0011 — Silence is not a Drop](0011-silence-is-not-a-drop.md)
+- [0012 — Fixed requires current-Subject
+  verification](0012-fixed-requires-current-subject-verification.md)
+- [0013 — Scope is evaluated per active Report
+  claim](0013-scope-is-evaluated-per-active-claim.md)
+- [0014 — Non-fixed resolutions are scoped and
+  challengeable](0014-non-fixed-resolutions-are-challengeable.md)
+- [0017 — Record rename truncation and continue the diff
+  Subject](0017-record-rename-truncation-and-continue.md)
+- [0018 — Share one bounded infrastructure
+  executor](0018-share-one-bounded-infrastructure-executor.md)
+- [0019 — Report authority failures
+  explicitly](0019-report-authority-failures-explicitly.md)
+- [0020 — Stream CAS materialization and clone duplicate
+  files](0020-stream-cas-materialization-and-clone-duplicates.md)
+- [0021 — Keep the ReviewerResult wire shape
+  flat](0021-keep-reviewer-result-wire-shape-flat.md)
+- [0025 — Require typed Generation outputs in pipeline version
+  2](0025-require-typed-generation-outputs-in-version-2.md)
+- [0026 — Share process supervision through a leaf
+  crate](0026-share-process-supervision-through-a-leaf-crate.md)
+- [0027 — Use one correctness reviewer per
+  milestone](0027-use-one-correctness-reviewer-per-milestone.md)
+- [0028 — Prioritize wise token use and minimum Worker
+  context](0028-prioritize-wise-token-use-and-minimum-worker-context.md)
+- [0031 — Deliver verified Tasks only to new local
+  worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)
+- [0032 — Generate review authority with
+  `af onboard`](0032-generate-review-authority-with-af-onboard.md)
+- [0033 — Treat configured Workers as authorization for declared input
+  delivery](0033-configured-workers-authorize-declared-input-delivery.md)
+- [0034 — Surface partial results without granting Ledger
+  authority](0034-surface-partial-results-without-ledger-authority.md)
+- [0035 — Address Campaign state by opaque
+  ID](0035-address-campaign-state-by-opaque-id.md)
+- [0036 — Resolve Gate caches through machine-local bounded
+  policy](0036-resolve-gate-caches-through-machine-local-bounded-policy.md)
+- [0037 — Default Campaigns to one-Round light
+  review](0037-default-campaigns-to-one-round-light-review.md)
+- [0038 — Transport Proposal declarations beside Reviewer
+  Results](0038-transport-proposals-beside-reviewer-results.md)
+- [0039 — Own dynamic shards inside a typed Scatter
+  node](0039-own-dynamic-shards-inside-a-typed-scatter-node.md)
+- [0040 — Promote only checked derived
+  Snapshots](0040-promote-only-checked-derived-snapshots.md)
+- [0041 — Make review selectors explicit and refuse empty
+  Diffs](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)
+- [0042 — Require Provider bindings and isolate Claude
+  reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
+- [0044 — `af` manages itself: dispatch to the pinned release, policy-driven updates, a
+  layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
+- [0045 — One release train, and a pin that binds
+  bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
+- [0046 — Add versioned Task contracts with exact-plan
+  approval](0046-add-versioned-task-contracts-with-exact-plan-approval.md)
+- [0047 — Preserve Task wire identity and review
+  completeness](0047-preserve-task-wire-identity-and-review-completeness.md)
+- [0048 — Compile Task ports and fence developer plan
+  decisions](0048-compile-task-ports-and-fence-developer-plan-decisions.md)
+- [0049 — Run Task Workers through shared durable
+  Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
+- [0050 — Reduce Review Tasks with the canonical domain
+  Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
+- [0052 — Capture local bindings and compose Review
+  acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
+- [0053 — Resolve shared catalogs only during explicit
+  sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
+- [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
+- [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)
+- [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
+- [0057 — Export portable Task definitions without execution authority](0057-export-portable-task-definitions-without-execution-authority.md)
+- [0058 — Verify document artifacts through the common Task runtime](0058-verify-document-artifacts-through-the-common-task-runtime.md)
+- [0059 — Carry Task fix evidence into bounded heavy Review](0059-carry-task-fix-evidence-into-bounded-heavy-review.md)
+- [0060 — Generate working starters from supported contracts](0060-generate-working-starters-from-supported-contracts.md)
+- [0061 — Capture read-only issue sources outside execution authority](0061-capture-read-only-issue-sources-outside-execution-authority.md)
+- [0062 — Refresh issue revisions without resetting execution authority](0062-refresh-issue-revisions-without-resetting-execution-authority.md)
+- [0063 — Require goal acceptance alongside embedded Review](0063-require-goal-acceptance-alongside-embedded-review.md)
+- [0064 — Reuse structural validation with fresh authority checks](0064-reuse-structural-validation-with-fresh-authority-checks.md)
+- [0065 — Persist Task run diagnostics and recover domain publication](0065-persist-task-run-diagnostics-and-recover-domain-publication.md)
+- [0066 — Reserve Task Attempts before binding exact
+  context](0066-reserve-task-attempts-before-binding-exact-context.md)
+- [0067 — Project common Task selections into canonical
+  Review](0067-project-common-task-selections-into-canonical-review.md)
+- [0068 — Retain in-flight Task usage in the common
+  budget](0068-retain-inflight-task-usage-in-the-common-budget.md)
+- [0069 — Compile captured Review ports with explicit artifact
+  codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)
+- [0070 — Separate Review domain operations and fence Task dispatch by Round](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)
+- [0071 — Share captured Review authority and Task token scopes](0071-share-captured-review-authority-and-task-token-scopes.md)
+- [0072 — Retain process output independently of transport status](0072-retain-process-output-independently-of-transport-status.md)
+- [0073 — Check Task retry eligibility before reservation](0073-check-task-retry-eligibility-before-reservation.md)
+- [0074 — Isolate concurrent process pipe creation on Apple](0074-isolate-concurrent-process-pipe-creation-on-apple.md)
+- [0075 — Retain exact Task usage with versioned decimal counters](0075-retain-exact-task-usage-with-versioned-decimal-counters.md)
+- [0076 — Decode and verify typed CAS reads
+  once](0076-decode-and-verify-typed-cas-reads-once.md)
+- [0077 — Run captured Review operations under common Task
+  Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)
+- [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)
+- [0079 — Retain exact cumulative charge within one Task Attempt](0079-retain-exact-cumulative-charge-within-one-task-attempt.md)
+- [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)
+- [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
+- [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
+- [0084 — Route new Review commands through the common Task](0084-route-new-review-commands-through-the-common-task.md)
+- [0085 — Retain exact native Task usage across multiple turns](0085-retain-exact-native-task-usage-across-multiple-turns.md)
+- [0086 — Record expired Review publication without restarting work](0086-record-expired-review-publication-without-restarting-work.md)
+- [0087 — Control native Task invocations through the shared supervisor](0087-control-native-task-invocations-through-the-shared-supervisor.md)
+- [0088 — Retain native billing completeness with Task usage](0088-retain-native-billing-completeness-with-task-usage.md)
+- [0089 — Interrupt Task work when its writer heartbeat fails](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md)
+- [0090 — Recheck native Task Provider identity before private invocation](0090-recheck-native-task-provider-identity-before-private-invocation.md)
+- [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)
+- [0092 — Capture common Review admission reservations](0092-capture-common-review-admission-reservations.md)
+- [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
+- [0094 — Bind Task Review assignments and readable
+  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
+- [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
+- [0096 — Revalidate Task execution evidence on cached
+  replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
+- [0097 — Share validated source reads within one
+  operation](0097-share-validated-source-reads-within-one-operation.md)
+- [0098 — Scope Review memos to one domain operation](0098-scope-review-memos-to-one-domain-operation.md)
+- [0099 — Select Task Review generation independently of Provider
+  costs](0099-select-task-review-generation-independently-of-provider-costs.md)
+- [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)
+- [0101 — Reuse Review structure with fresh Task
+  boundaries](0101-reuse-review-structure-with-fresh-task-boundaries.md)
+- [0102 — Account for every reported Claude Task
+  model](0102-account-for-every-reported-claude-task-model.md)
+- [0103 — Constrain native Claude Task
+  replies](0103-constrain-native-claude-task-replies.md)
+- [0104 — Preview captured Task plans before first
+  execution](0104-preview-captured-task-plans-before-first-execution.md)
+- [0105 — Dispatch `self optimize` through the project
+  pin](0105-dispatch-self-optimize-through-the-project-pin.md)
+- [0106 — Authorize experimental children separately inside one
+  Task](0106-authorize-experimental-children-separately.md)
+- [0107 — Carry Worker Notes and Head Deltas as declared warm
+  layers](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+- [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
+- [0108 — Carry Gate build caches as explicitly unsafe warm
+  layers](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)
+- [0109 — Re-base Warm Workspaces at stable roots with digest
+  verification](0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)
+- [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
+  cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
+- [0111 — Keep Provider bootstrap machine-local and cross-release
+  safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
+- [0112 — Refuse agent-mediated Provider logins and separate status from
+  usage](0112-refuse-agent-mediated-provider-logins.md)
+- [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)
+- [0114 — Budget CLI Task fixtures for loaded machines, never for a fast
+  one](0114-budget-cli-task-fixtures-for-loaded-machines.md)
+- [0115 — Declare the `.af/` layout once and keep Task files out of
+  git](0115-declare-the-af-layout-and-keep-task-files-out-of-git.md)
+- [0116 — Report undeclared `.af/` paths from the manifest, and let a project refuse
+  delivery](0116-report-undeclared-af-paths-and-let-a-project-refuse-them.md)
+- [0117 — Bind a Task input port to a recorded Task's
+  output](0117-bind-task-inputs-to-recorded-task-outputs.md)
+- [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
+  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)
+- [0119 — Open a read-first browser on bare `af`](0119-open-a-read-first-browser-on-bare-af.md)
+- [0120 — Give a source-writing Worker that declares `execute-checks` a
+  shell](0120-give-a-source-writing-worker-a-shell.md)
+- [0121 — Show recorded Tasks in the browser from their inspection
+  documents](0121-show-recorded-tasks-in-the-browser.md)
+- [0122 — Show committed Workers and the Attempts their recorded plans
+  bound](0122-show-committed-workers-and-their-recorded-attempts.md)
+- [0123 — Hand the terminal to `af` commands typed in the
+  browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)
+- [0124 — Run tests in parallel processes and link them
+  once](0124-run-tests-in-parallel-processes-and-link-them-once.md)
+- [0125 — Charge a Claude model breakdown that covers the top-level
+  summary](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)
+- [0126 — Keep the captured native executable when its launcher
+  moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)
+- [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
+- [0128 — Renew a live Task writer's lease through its own Store
+  connection](0128-renew-a-live-task-writer-lease-through-its-own-connection.md)
+- [0129 — Stop Task Workers when af is
+  interrupted](0129-stop-task-workers-when-af-is-interrupted.md)
+- [0130 — Report a Provider CLI that cannot start as an installation
+  failure](0130-report-a-provider-cli-that-cannot-start.md)
+- [0131 — Warm Task checks through a toolchain-keyed, bounded, machine-local
+  cache](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+- [0132 — Measure and compare source candidates in the
+  kernel](0132-measure-and-compare-source-candidates-in-the-kernel.md)
+- [0133 — Accept reports bound to an exact source
+  Snapshot](0133-accept-reports-bound-to-an-exact-source-snapshot.md)
+- [0134 — Bind any declared root port to recorded Task
+  outputs](0134-bind-any-declared-root-port-to-recorded-task-outputs.md)
+- [0135 — Collect finished Tasks behind a tombstone and a reachability
+  sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+- [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
+- [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
+- [0139 — Run a declared check through a gate pull
+  request](0139-run-a-declared-check-through-a-gate-pull-request.md)

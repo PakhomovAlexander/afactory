@@ -1,0 +1,30 @@
+~/hub                      |TASKS  project: hub
+v hub  (project)           |
+  v providers/             |~/state/af/task/local/<repository>
+      claude-main          |  done/
+      codex-ambient        |    pagination-cli           verified           100%  0 tok
+  v workers/               |  failed/
+  v pipelines/             |    pagination-unfinished    changes_requested  100%  0 tok
+      review               |
+      fixture/implementatio|
+  v tasks/                 |
+    v done/ (1)            |
+        pagination-c~  100%|
+    v failed/ (1)          |
+        pagination-u~  100%|
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+NORMAL  tasks/                              j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

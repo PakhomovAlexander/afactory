@@ -1,0 +1,30 @@
+~/hub                      |PROVIDERS  claude-main
+v hub  (project)           |
+  v providers/             |ID                       KIND     STATUS              AUTH
+      claude-main          |claude-main              claude   authenticated       oauth
+      codex-ambient        |
+  v workers/               |limit  [####......]  5h window: 41% used, 59% left, reset unavailable
+  v pipelines/             |limit  [#######...]  weekly: 68% used, 32% left, reset unavailable
+      review               |note   weekly limit read from the local /usage screen
+      fixture/implementatio|
+  v tasks/                 |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+NORMAL  providers/claude-main               j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

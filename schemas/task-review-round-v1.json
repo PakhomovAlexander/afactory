@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-round:1",
+  "title": "task-review-round@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_id",
+    "subject_id",
+    "snapshot_id",
+    "invocation",
+    "round",
+    "outcome",
+    "conclusion",
+    "selected_results",
+    "missing_reviewers"
+  ],
+  "properties": {
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "subject_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "finding_set_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "demand_set_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "conclusion": {
+      "enum": [
+        "pass",
+        "changes_requested",
+        "convergence_exhausted",
+        "incomplete"
+      ]
+    },
+    "selected_results": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    },
+    "missing_reviewers": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "const": "pass"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "passed"
+          },
+          "missing_reviewers": {
+            "maxItems": 0
+          },
+          "selected_results": {
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "finding_set_id",
+          "demand_set_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "const": "changes_requested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          },
+          "missing_reviewers": {
+            "maxItems": 0
+          },
+          "selected_results": {
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "finding_set_id",
+          "demand_set_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "const": "convergence_exhausted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          },
+          "missing_reviewers": {
+            "maxItems": 0
+          },
+          "selected_results": {
+            "minProperties": 1
+          }
+        },
+        "required": [
+          "finding_set_id",
+          "demand_set_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "const": "incomplete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "inconclusive"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "finding_set_id"
+              ]
+            },
+            {
+              "required": [
+                "demand_set_id"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
