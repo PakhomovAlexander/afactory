@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-trace:1",
+  "title": "af.perf-trace/1",
+  "description": "The metadata-only phase spans a perf-trace diagnostic build exports (ADR-0174): the process, the recorder's monotonic clock and wall epoch, its capacity, the spans dropped and still open, and each kept span's identity, parent, closed phase name, thread and interval. No payload, path, prompt or credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-trace/1"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "clock": {
+      "const": "monotonic_ns"
+    },
+    "epoch_unix_ns": {
+      "type": "string",
+      "maxLength": 31,
+      "pattern": "^(?:0|[1-9][0-9]{0,30})$"
+    },
+    "capacity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "dropped": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "open": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "spans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 18446744073709551615
+              }
+            ]
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "cli_startup",
+              "cli_command",
+              "canonicalize",
+              "envelope_validate",
+              "cas_put",
+              "cas_get",
+              "cas_get_artifact",
+              "task_projection",
+              "authority_plan_check",
+              "task_runtime_new",
+              "probe_setup",
+              "probe_region"
+            ]
+          },
+          "tid": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "start_ns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "end_ns": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          }
+        },
+        "required": [
+          "id",
+          "parent",
+          "phase",
+          "tid",
+          "start_ns",
+          "end_ns"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 65536
+    }
+  },
+  "required": [
+    "schema",
+    "pid",
+    "clock",
+    "epoch_unix_ns",
+    "capacity",
+    "dropped",
+    "open",
+    "spans"
+  ]
+}

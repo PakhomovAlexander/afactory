@@ -1,0 +1,80 @@
+{
+  "event": {
+    "bundles": {
+      "run": "sha256:6adb537969b3842b2ebcaff4ae56ce440737a73db44362b775415509978255aa",
+      "shards": [
+        {
+          "bundle": "sha256:c50d927ed5c8141abee99edb4e8ce8ef3b6e04d7aa47e3420a0a7ae6496fc8b3",
+          "shard": 0
+        }
+      ]
+    },
+    "kind": "run",
+    "members": [
+      {
+        "class": "verdict",
+        "path": "verdict.json",
+        "sha256": "sha256:3c531655dcf67fc6adebaa1ba8ad4539c39df3a79c0052a8d292d3d3efec528a",
+        "size": 1580
+      },
+      {
+        "class": "shard",
+        "path": "shards/0/shard.json",
+        "sha256": "sha256:eb3270a0226f8c6027f8d5e8ca54c531c4f3ca0f8b086e3705f7cb7e4bdf0d76",
+        "size": 2815
+      },
+      {
+        "class": "samples",
+        "path": "shards/0/samples.jsonl",
+        "sha256": "sha256:12d71aba86114a288a6c0ad096298262ec70ecfb1c86cbccc9de8bac16a41b35",
+        "size": 64062
+      },
+      {
+        "class": "manifest",
+        "path": "shards/0/manifest.json",
+        "sha256": "sha256:c50d927ed5c8141abee99edb4e8ce8ef3b6e04d7aa47e3420a0a7ae6496fc8b3",
+        "size": 282
+      },
+      {
+        "class": "plan",
+        "path": "run.json",
+        "sha256": "sha256:ce4e9e7b7b44459475f7f5a66ad4c3dd8a0b5c2dd70f7def2bcf24579f9a52df",
+        "size": 4821
+      },
+      {
+        "class": "summary",
+        "path": "report.json",
+        "sha256": "sha256:c0637ef6a54af6c35679a153821cb63e69fee9fae32222c11421855b03066012",
+        "size": 15280
+      },
+      {
+        "class": "manifest",
+        "path": "manifest.json",
+        "sha256": "sha256:6adb537969b3842b2ebcaff4ae56ce440737a73db44362b775415509978255aa",
+        "size": 277
+      },
+      {
+        "class": "build_manifest",
+        "path": "builds.json",
+        "sha256": "sha256:81fd52d8b4cea98e129137661157e2b4fa276923b39fbc4b66538ec0b1258e8d",
+        "size": 7066
+      }
+    ],
+    "plan_digest": "sha256:4efb6064cb01da8d3736f9b9707920fbd454d8aac168e0016a5236b5e4900c64",
+    "run_ended_unix_ms": 1760000000048,
+    "run_id": "fixture_run",
+    "source": {
+      "kind": "local"
+    },
+    "verdict": {
+      "exit_code": 0,
+      "provenance": "synthetic",
+      "result": "pass",
+      "satisfies_required_check": false,
+      "scope": "partial_scope"
+    }
+  },
+  "schema": "af.perf-archive-event/1",
+  "sequence": 1,
+  "unix_ms": 1800000000000
+}

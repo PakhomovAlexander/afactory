@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-commit:1",
+  "title": "TaskReviewCommit@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "integration_id",
+    "snapshot_id",
+    "prior_history_id",
+    "pending_claims",
+    "outcome"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "integration_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "prior_history_id": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "pending_claims": {
+      "type": "object",
+      "maxProperties": 4096,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pending_claims": {
+            "minProperties": 1
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+version = 2
+
+[project]
+name = "hub"
+min_af = "0.9"
+

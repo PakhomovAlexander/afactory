@@ -1,0 +1,77 @@
+{
+  "title": "Issue Workflow pilot manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "issue",
+    "pull_request",
+    "source_commit",
+    "selection",
+    "tasks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.issue-workflow-pilot/1"
+    },
+    "issue": {
+      "type": "string",
+      "pattern": "^https://github.com/[A-Za-z0-9-]+/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$",
+      "description": "Must exactly equal issue_url in the original implementation native Requirements specification."
+    },
+    "pull_request": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^https://github.com/[A-Za-z0-9-]+/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"
+        }
+      ],
+      "description": "Optional operator-declared association, unverified by native evidence. Must name the issue repository (case-insensitive); no remote lookup is performed."
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "selection": {
+      "enum": [
+        "bugfix/light-kimi-terra-sol",
+        "bugfix/light-codex",
+        "bugfix/default-codex",
+        "bugfix/research-fix-codex",
+        "impl/default-codex",
+        "perf/research-experiment-codex",
+        "impl/light-kimi-codex",
+        "design/astra-kimi",
+        "perf/research-kimi-codex"
+      ]
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      }
+    },
+    "research_tasks": {
+      "type": "array",
+      "maxItems": 15,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "verification_task": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-workflow-pilot:1"
+}

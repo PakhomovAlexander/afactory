@@ -1,0 +1,30 @@
+~/hub                       |TASKS  project: hub
+v hub  (project)            |
+  v providers/              |NEEDS YOU  (af task list --attention)
+      claude-main           |  Failed gate (1)
+      codex-ambient         |    pagination-unfinished  finished/gate_failed/check_failed
+  v workers/                |      next: af task show pagination-unfinished --checks
+      fixture/evaluator     |  Verified, ready to deliver (1)
+      fixture/implementer   |    pagination-cli  finished/verified
+  v pipelines/              |      next: af task deliver pagination-cli --branch af/pagination-cli \
+      review                |                --worktree ../pagination-cli --confirm pagination-cli
+      fixture/implementation|
+  v tasks/                  |this checkout  ~/state/af/task/local/<repository>
+    v done/ (1)             |  done/
+        pagination-c~  100% |    pagination-cli           verified           100%  0 tok
+    v failed/ (1)           |  failed/
+        pagination-u~  100% |    pagination-unfinished    changes_requested  100%  0 tok
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+NORMAL  tasks/                              j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

@@ -1,0 +1,825 @@
+//! Real CLI/Store lifecycle with a local deterministic Codex protocol substitute. No credentials,
+//! network or model inference are used. Synthetic usage reproduces the admission sizing boundary.
+use super::*;
+use af_pipeline_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
+
+pub(crate) struct Fixture {
+    pub(crate) _root: tempfile::TempDir,
+    pub(crate) repo: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) home: PathBuf,
+    pub(crate) path: std::ffi::OsString,
+    catalog: Value,
+}
+
+impl Fixture {
+    /// `explicit` declares a wider catalog admission cost; otherwise the catalog omits it and
+    /// the Task gets the fixed default allowance.
+    pub(crate) fn new(explicit: bool, actual: u64, tokens: u64) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = setup(root.path());
+        let home = root.path().join("home");
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        // Like codex-cli 0.121.0, the app-server refuses `--stdio` and serves stdio by default.
+        let native = r#"#!/usr/bin/python3 -B
+import json,os,sys
+home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server'] and sys.argv[2:]:
+ sys.stderr.write("error: unexpected argument '"+sys.argv[2]+"' found\n\nUsage: codex app-server [OPTIONS] [COMMAND]\n")
+ sys.exit(2)
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  request=json.loads(line)
+  if request.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
+ sys.exit(0)
+request=sys.stdin.read()
+if request==PROBE_INPUT:
+ kind='admission'; message='OK'; usage=json.load(open(home+'/usage.json'))
+else:
+ kind='author'; r=json.loads(request)
+ assert set(r['inputs'])=={'requirements','sources'}
+ s=r['inputs']['sources'][0]['payload']['sources']
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/3','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':[{'kind':'source','name':name} for name in sorted(s)]}]}})
+ usage={'input_tokens':3,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
+with open(home+'/calls','a') as f: f.write(kind+'\n')
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':usage}))
+"#;
+        std::fs::write(
+            bin.join("codex"),
+            crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(native)),
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let usage = match actual {
+            5712 => {
+                json!({"input_tokens":16331,"cached_input_tokens":10624,"output_tokens":5,"reasoning_output_tokens":0,"cache_write_input_tokens":0})
+            }
+            16336 => {
+                json!({"input_tokens":16331,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"cache_write_input_tokens":0})
+            }
+            _ => {
+                json!({"input_tokens":actual,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"cache_write_input_tokens":0})
+            }
+        };
+        std::fs::write(home.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":4,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        let catalog_path = repo.join(".af/task-catalog.toml");
+        let mut catalog: Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        if explicit {
+            catalog["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+        }
+        catalog["providers"] = json!({"builtin/document-author":"codex-personal"});
+        let package = repo.join(
+            catalog["packages"]["builtin/document-author"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        worker.runner = TaskWorkerRunner::Model {
+            provider_kind: "codex".into(),
+            model: "codex-fixture-1".into(),
+            effort: "high".into(),
+        };
+        worker.signature.attempt.as_mut().unwrap().tokens = 16384;
+        worker.signature.attempt.as_mut().unwrap().wall_ms = 180000;
+        std::fs::write(
+            package.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        catalog["packages"]["builtin/document-author"]["digest"] = json!(
+            af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
+        );
+        let package = repo.join(
+            catalog["packages"]["builtin/release-notes"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut pipeline: af_contracts::task::pipeline::PipelineDefinition =
+            toml::from_str(&std::fs::read_to_string(package.join("pipeline.toml")).unwrap())
+                .unwrap();
+        pipeline.max_attempts = 4;
+        std::fs::write(
+            package.join("pipeline.toml"),
+            toml::to_string(&pipeline).unwrap(),
+        )
+        .unwrap();
+        catalog["packages"]["builtin/release-notes"]["digest"] = json!(
+            af_pipeline_config::lock::package_digest("builtin/release-notes", &package).unwrap()
+        );
+        std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        let task_path = repo.join("document.json");
+        let mut task: Value = serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
+        task["limits"] = json!({"tokens":tokens,"max_attempts":4,"wall_ms":300000,"verification":{"tokens":0,"attempts":2,"wall_ms":10000}});
+        std::fs::write(task_path, serde_json::to_vec(&task).unwrap()).unwrap();
+        commit(&repo);
+        let path = std::env::join_paths(
+            std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        Self {
+            _root: root,
+            repo,
+            state,
+            home,
+            path,
+            catalog,
+        }
+    }
+
+    pub(crate) fn cli(&self, args: &[&str]) -> std::process::Output {
+        crate::common::af()
+            .current_dir(&self.repo)
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", self.home.join("config"))
+            .env("USER", "fixture")
+            .env("PATH", &self.path)
+            .env("AF_PROVIDERS_FILE", self.home.join("providers.toml"))
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&self.state)
+            .output()
+            .unwrap()
+    }
+}
+
+#[test]
+fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
+    for (explicit, actual, accepted) in [
+        (false, 5712, false),
+        (true, 5712, true),
+        (true, 16336, true),
+        (true, 32769, false),
+    ] {
+        // The default allowance deliberately has the same ample Task total as the explicit
+        // one: its own smaller reservation still fences it.
+        let mut f = Fixture::new(explicit, actual, 49152);
+        let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+        assert!(
+            !f.home.join("calls").exists(),
+            "planning ran the synthetic capability call"
+        );
+        let allowance = if explicit { 32768 } else { 4096 };
+        assert_eq!(
+            planned["graph"]["allowances"]["root.providers.admit0"],
+            json!({"tokens_per_attempt":allowance,"wall_ms_per_attempt":45000,"max_attempts":1,"verification_attempts":0})
+        );
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let authority = cas
+            .get_json(planned["plan"]["authority"]["policy_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(authority["schema"], "af.task-run-authority/2");
+        assert_eq!(
+            authority["provider_admission"],
+            json!({"tokens":allowance,"wall_ms":45000})
+        );
+        let captured_bytes = cas.get(authority["catalog_id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            captured_bytes,
+            std::fs::read(f.repo.join(".af/task-catalog.toml")).unwrap()
+        );
+        // Change only the disposable fixture checkout after capture. Run must ignore new policy,
+        // Task-file resources and source text, and use the original CAS authority instead.
+        f.catalog["provider_admission"] = json!({"tokens":1,"wall_ms":1});
+        std::fs::write(
+            f.repo.join(".af/task-catalog.toml"),
+            toml::to_string(&f.catalog).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(f.repo.join("document.json"), b"changed input and limits").unwrap();
+        std::fs::write(f.repo.join("sources.json"), b"changed sources").unwrap();
+        commit(&f.repo);
+        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+        assert_eq!(
+            out.status.code(),
+            Some(if accepted { 0 } else { 4 }),
+            "status {:?}, raw {}, Unix signal {:?}\n{}\n{}",
+            out.status,
+            out.status.into_raw(),
+            out.status.signal(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let done: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(done["plan_id"], planned["plan_id"]);
+        assert_eq!(done["revision_id"], planned["revision_id"]);
+        assert_eq!(done["attempts"], if accepted { 4 } else { 1 });
+        assert_eq!(
+            done["chargeable_tokens"],
+            (actual + if accepted { 5 } else { 0 }).to_string()
+        );
+        assert_eq!(
+            done["result"]["execution"],
+            if accepted { "completed" } else { "exhausted" }
+        );
+        assert_eq!(
+            done["result"]["acceptance"],
+            if accepted {
+                "satisfied"
+            } else {
+                "inconclusive"
+            }
+        );
+        let calls = std::fs::read_to_string(f.home.join("calls")).unwrap();
+        assert_eq!(
+            calls,
+            if accepted {
+                "admission\nauthor\n"
+            } else {
+                "admission\n"
+            }
+        );
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&projection.revision.limits).unwrap(),
+            planned["plan"]["limits"]
+        );
+        let execution = projection.execution.unwrap();
+        assert_eq!(execution.budget.breached(), !accepted);
+        assert_eq!(
+            execution.budget.committed_tokens(),
+            u128::from(actual + if accepted { 5 } else { 0 })
+        );
+        let attempts = execution.attempt_accounting();
+        let admission = attempts
+            .iter()
+            .find(|a| a.reservation.node == "root.providers.admit0")
+            .unwrap();
+        assert_eq!(admission.reservation.tokens, allowance);
+        assert_eq!(admission.charged_tokens, u128::from(actual));
+        assert!(execution.outputs.contains_key("root.providers.admit0"));
+        assert_eq!(
+            attempts
+                .iter()
+                .any(|a| a.reservation.node == "root.nodes.author" && a.started),
+            accepted
+        );
+        drop(store);
+        let replay = f.cli(&["task", "run", "--execute", "release-notes"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
+            done
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.home.join("calls")).unwrap(),
+            calls
+        );
+    }
+}
+
+#[test]
+fn catalog_schema_and_cli_refuse_malformed_and_underfunded_admission() {
+    let mut f = Fixture::new(true, 5712, 49151);
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../../../schemas/task-catalog-v2.json")).unwrap();
+    let validator = catalog_schema(&schema);
+    assert!(validator.is_valid(&f.catalog));
+    let out = f.cli(&["task", "plan", "--file", "document.json"]);
+    assert!(
+        !out.status.success(),
+        "underfunded admission and author were accepted"
+    );
+    let refusal: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        refusal["selection"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["state"]["kind"] == "infeasible"
+                    && candidate["state"]["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("token and Attempt allowance")
+            })
+    );
+    assert!(!f.home.join("calls").exists());
+    for cost in [
+        Value::Null,
+        json!({"tokens":0,"wall_ms":45000}),
+        json!({"tokens":32768,"wall_ms":0}),
+        json!({"tokens":9007199254740992_u64,"wall_ms":45000}),
+        json!({"tokens":32768,"wall_ms":9007199254740992_u64}),
+        json!({"tokens":32768}),
+        json!({"tokens":32768,"wall_ms":45000,"extra":1}),
+    ] {
+        f.catalog["provider_admission"] = cost;
+        assert!(!validator.is_valid(&f.catalog));
+    }
+    // Exercise the actual configuration parser once; remaining shape boundaries have both
+    // Rust unit and schema controls. No account or native capability operation is necessary.
+    f.catalog["schema"] = json!("af.task-catalog/1");
+    f.catalog["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+    assert!(!validator.is_valid(&f.catalog));
+    std::fs::write(
+        f.repo.join(".af/task-catalog.toml"),
+        toml::to_string(&f.catalog).unwrap(),
+    )
+    .unwrap();
+    commit(&f.repo);
+    let out = f.cli(&["task", "plan", "--file", "document.json"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("requires schema af.task-catalog/2"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!f.home.join("calls").exists());
+}
+
+#[test]
+fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch() {
+    for (cost, reason) in [
+        (
+            json!({"tokens":49153,"wall_ms":45000}),
+            "token and Attempt allowance",
+        ),
+        (
+            json!({"tokens":32768,"wall_ms":300001}),
+            "Remaining Task deadline",
+        ),
+    ] {
+        let mut f = Fixture::new(true, 5712, 49152);
+        f.catalog["provider_admission"] = cost;
+        std::fs::write(
+            f.repo.join(".af/task-catalog.toml"),
+            toml::to_string(&f.catalog).unwrap(),
+        )
+        .unwrap();
+        commit(&f.repo);
+        let out = f.cli(&["task", "plan", "--file", "document.json"]);
+        assert!(!out.status.success());
+        let refusal: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(refusal["attempts"], 0);
+        assert!(
+            refusal["selection"]["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|candidate| {
+                    candidate["state"]["kind"] == "infeasible"
+                        && candidate["state"]["reason"]
+                            .as_str()
+                            .unwrap()
+                            .contains(reason)
+                }),
+            "{refusal}"
+        );
+        // The existing token-free native account protocol may run during binding. The paid
+        // capability protocol and author are never invoked when original resources cannot fit.
+        assert!(!f.home.join("calls").exists());
+    }
+}
+
+fn catalog_schema(schema: &Value) -> jsonschema::Validator {
+    let contracts: Value = serde_json::from_str(include_str!(
+        "../../../../../schemas/task-contracts-v4.json"
+    ))
+    .unwrap();
+    let planner: Value = serde_json::from_str(include_str!(
+        "../../../../../schemas/task-planner-settings-v1.json"
+    ))
+    .unwrap();
+    let registry = jsonschema::Registry::new()
+        .add(
+            "urn:af:schema:task-contracts:4",
+            jsonschema::Resource::from_contents(contracts),
+        )
+        .unwrap()
+        .add(
+            "urn:af:schema:task-planner-settings:1",
+            jsonschema::Resource::from_contents(planner),
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    jsonschema::options()
+        .with_registry(&registry)
+        .build(schema)
+        .unwrap()
+}
+
+/// Issue #136: a Codex CLI that cannot start — it exits 1 printing its installation error, or it
+/// is missing — is refused at Provider admission with the CLI's own message, before any Attempt
+/// is reserved or charged and before the paid capability protocol runs.
+#[test]
+fn a_provider_cli_that_cannot_start_is_refused_at_admission_before_any_attempt() {
+    const NPM_ERROR: &str = "Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest";
+    for missing in [false, true] {
+        let mut f = Fixture::new(true, 5712, 49152);
+        let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+        let bin = f._root.path().join("bin");
+        let program = std::fs::canonicalize(bin.join("codex")).unwrap();
+        if missing {
+            std::fs::remove_file(&program).unwrap();
+            // No other `codex` may stand in for the removed one; git stays reachable.
+            let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|directory| directory.join("git"))
+                .find(|candidate| candidate.is_file())
+                .unwrap();
+            let shims = f._root.path().join("shims");
+            std::fs::create_dir(&shims).unwrap();
+            std::os::unix::fs::symlink(git, shims.join("git")).unwrap();
+            f.path = std::env::join_paths([bin, shims]).unwrap();
+        } else {
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\nprintf '%s\\n' '{NPM_ERROR}' >&2\nexit 1\n"),
+            )
+            .unwrap();
+        }
+        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stdout}\n{stderr}");
+        let refusal = "Task Provider admission refused before any Worker was dispatched: provider codex-personal: Provider installation failure: the codex CLI";
+        assert!(stderr.contains(refusal), "{stderr}");
+        if missing {
+            assert!(stderr.contains("`codex` is not on PATH"), "{stderr}");
+        } else {
+            assert!(
+                stderr.contains(&format!(
+                    "`{}` exited 1 on its own `--version` check before doing any provider work: {NPM_ERROR}; fix: Reinstall Codex: npm install -g @openai/codex@latest",
+                    program.display()
+                )),
+                "{stderr}"
+            );
+        }
+        assert!(!stderr.contains("identity"), "{stderr}");
+        assert!(!f.home.join("calls").exists(), "a Provider protocol ran");
+        let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.plan_id.as_deref(), planned["plan_id"].as_str());
+        assert!(
+            projection
+                .execution
+                .is_none_or(|execution| execution.attempt_accounting().is_empty()),
+            "an Attempt was reserved for a Provider whose CLI cannot start"
+        );
+    }
+}
+
+/// Issue #136's incident: the CLI broke after admission (an auto-update). The author Worker's
+/// Attempts fail as a Provider environment failure naming the CLI's own error — not as a model
+/// failure, and not as an identity or credential refusal.
+#[test]
+fn a_cli_that_stops_starting_mid_task_fails_its_attempt_as_an_environment_failure() {
+    let f = Fixture::new(true, 5712, 49152);
+    let program = f._root.path().join("bin/codex");
+    let native = std::fs::read_to_string(&program).unwrap();
+    let native = native
+        .replacen(
+            "home=os.environ['CODEX_HOME']\n",
+            "home=os.environ['CODEX_HOME']\nif os.path.exists(home+'/broken'):\n sys.stderr.write('Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest\\n'); sys.exit(1)\n",
+            1,
+        )
+        .replacen(
+            "with open(home+'/calls','a') as f: f.write(kind+'\\n')\n",
+            "with open(home+'/calls','a') as f: f.write(kind+'\\n')\nif kind=='admission': open(home+'/broken','w').close()\n",
+            1,
+        );
+    assert!(native.contains("/broken"), "{native}");
+    std::fs::write(&program, native).unwrap();
+    success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(f.home.join("calls")).unwrap(),
+        "admission\n",
+        "the author Worker reached a CLI that cannot start"
+    );
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let projection = store
+        .task_projection(&cas, "release-notes")
+        .unwrap()
+        .unwrap();
+    let execution = projection.execution.unwrap();
+    let authors: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter(|attempt| attempt.reservation.node == "root.nodes.author" && attempt.started)
+        .collect();
+    assert!(!authors.is_empty(), "{stdout}\n{stderr}");
+    for attempt in authors {
+        assert_eq!(attempt.charged_tokens, 0);
+        let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id, ..
+        }) = attempt.result
+        else {
+            panic!("author Attempt did not fail: {:?}", attempt.result);
+        };
+        let diagnostic = cas.get_json(&diagnostic_id).unwrap().to_string();
+        assert!(
+            diagnostic.contains("Provider environment failure, not a model or credential failure: provider codex-personal: Provider installation failure: the codex CLI"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("Error: Missing optional dependency @openai/codex-darwin-arm64"),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("identity"), "{diagnostic}");
+    }
+}
+
+#[test]
+fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan() {
+    let f = Fixture::new(true, 10, 49152);
+    let program = f._root.path().join("bin/codex");
+    let script = std::fs::read_to_string(&program).unwrap().replacen(
+        '\n',
+        "\nimport os\nwith open(os.environ['CODEX_HOME']+'/spawns','a') as f: f.write('call\\n')\n",
+        1,
+    );
+    std::fs::write(&program, script).unwrap();
+    success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let spawns = std::fs::read(f.home.join("spawns")).unwrap();
+    let availability = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&f.repo)
+            .env("HOME", &f.home)
+            .env("XDG_CONFIG_HOME", f.home.join("config"))
+            .env("AF_PROVIDERS_FILE", f.home.join("providers.toml"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let disabled = availability(&["provider", "disable", "codex-personal", "--for", "2d"]);
+    assert!(
+        disabled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disabled.stderr)
+    );
+    let refused = f.cli(&["task", "run", "--execute", "release-notes"]);
+    assert!(!refused.status.success());
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        text.contains("disabled until ") && text.contains("Z (UTC)"),
+        "{text}"
+    );
+    assert!(text.contains("af provider enable codex-personal"), "{text}");
+    assert_eq!(
+        std::fs::read(f.home.join("spawns")).unwrap(),
+        spawns,
+        "disabled captured Task spawned its harness"
+    );
+    assert!(!f.home.join("calls").exists());
+    let enabled = availability(&["provider", "enable", "codex-personal"]);
+    assert!(enabled.status.success());
+    success(f.cli(&["task", "run", "--execute", "release-notes"]));
+    assert_eq!(
+        std::fs::read_to_string(f.home.join("calls")).unwrap(),
+        "admission\nauthor\n"
+    );
+}
+
+#[test]
+fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() {
+    for mode in [
+        "document",
+        "api-key-document",
+        "custom-document",
+        "cloud-document",
+        "kimi-document",
+        "kimi-replace-auth-after-admission",
+        "retry",
+        "replace-after-admission",
+        "rotate-after-admission",
+        "replace-endpoint-after-admission",
+    ] {
+        pi_task_case(mode);
+    }
+}
+
+#[test]
+fn pi_terminal_rate_limit_with_complete_usage_outranks_conflicting_diagnostic_in_task_reports() {
+    pi_task_case("kimi-terminal-error-after-admission");
+}
+
+fn pi_task_case(mode: &str) {
+    let mut f = Fixture::new(true, 5, 49152);
+    let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
+    f.path = path;
+    let kimi = mode.starts_with("kimi-");
+    if matches!(
+        mode,
+        "kimi-document" | "kimi-terminal-error-after-admission"
+    ) {
+        // Exercise actual Task admission and Worker settlement with total native usage
+        // and unknown cache, rather than an SDK's initialized cache zero.
+        let mut fixture: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        fixture["usage"] = json!({"prompt_tokens":439,"completion_tokens":38,
+                "completion_tokens_details":{"reasoning_tokens":24}});
+        std::fs::write(&state, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    }
+    let backend = match mode {
+        "api-key-document" => "anthropic",
+        "custom-document" => "team-compatible",
+        "cloud-document" => "google-vertex",
+        _ if kimi => "kimi-coding",
+        _ => "openai-codex",
+    };
+    let generic = backend != "openai-codex" && !kimi;
+    if generic {
+        let mut data: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        data["backend"] = json!(backend);
+        data["model"] = json!("sdk-code");
+        data["mode"] = json!("document");
+        data["api"] = json!("openai-completions");
+        std::fs::write(&state, serde_json::to_vec(&data).unwrap()).unwrap();
+        std::fs::write(
+            f.home.join("auth.json"),
+            serde_json::to_vec(
+                &json!({(backend):{"type":"api_key","key":"SYNTHETIC_CONTEXT_SECRET"}}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        if mode == "cloud-document" {
+            std::fs::write(f.home.join("auth.json"), "{}").unwrap();
+            let context = f.home.join("af-context.json");
+            std::fs::write(&context, r#"{"schema":"af.pi-context/1","environment":{"GOOGLE_CLOUD_API_KEY":"SYNTHETIC_CLOUD_SECRET"}}"#).unwrap();
+            std::fs::set_permissions(&context, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+    if kimi || generic {
+        // Successful context-only admission requires explicit trusted policy. The
+        // pi-light compile fixture separately proves strict principal-policy refusal.
+        f.catalog["independence"] = json!({"command_workers_by_package":true,
+                "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
+    }
+    std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":4,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+    f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
+    let package = f.repo.join(
+        f.catalog["packages"]["builtin/document-author"]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "pi".into(),
+        model: if kimi {
+            "k3"
+        } else if generic {
+            "sdk-code"
+        } else {
+            "o3"
+        }
+        .into(),
+        effort: "high".into(),
+    };
+    std::fs::write(
+        package.join("worker.toml"),
+        toml::to_string(&worker).unwrap(),
+    )
+    .unwrap();
+    f.catalog["packages"]["builtin/document-author"]["digest"] = json!(
+        af_pipeline_config::lock::package_digest("builtin/document-author", &package).unwrap()
+    );
+    std::fs::write(
+        f.repo.join(".af/task-catalog.toml"),
+        toml::to_string(&f.catalog).unwrap(),
+    )
+    .unwrap();
+    commit(&f.repo);
+    let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let binding = &planned["plan"]["bindings"]["root.slots.author"];
+    // The exact execution identity is captured even when this plan renderer changes its
+    // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
+    let cas = af_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
+    let text = envelope.to_string();
+    assert!(text.contains(backend), "{binding}\n{text}");
+    assert!(!text.contains("SYNTHETIC_CONTEXT_SECRET"));
+    assert!(!text.contains("SYNTHETIC_CLOUD_SECRET"));
+    if kimi || generic {
+        let execution = &envelope["payload"]["bindings"]["root.slots.author"]["execution"];
+        assert!(execution["principal_id"].is_null(), "{execution}");
+        assert_eq!(execution["pi"]["identity_mode"], "unavailable");
+        assert!(
+            execution["pi"]["auth_context_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+    }
+    let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+    let done: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+        panic!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let calls = std::fs::read_to_string(state.with_extension("json.calls")).unwrap();
+    if mode == "kimi-terminal-error-after-admission" {
+        assert!(!out.status.success(), "{done}");
+        assert_eq!(calls, "admission\nworker\n");
+        assert_eq!(done["chargeable_tokens"], "954");
+        assert_eq!(done["state"]["cause"], "provider_capacity", "{done}");
+        let shown = success(f.cli(&["task", "show", "release-notes"]));
+        assert_eq!(shown["state"]["cause"], "provider_capacity", "{shown}");
+        let store = af_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        let execution = projection.execution.unwrap();
+        let failed = execution
+            .attempt_accounting()
+            .into_iter()
+            .find(|a| a.reservation.node == "root.nodes.author")
+            .unwrap();
+        assert_eq!(failed.charged_tokens, 477);
+        assert!(failed.unknown_usage.is_none());
+        let raw: Vec<Value> = failed
+            .raw_artifact_ids
+            .iter()
+            .map(|id| cas.get_json(id).unwrap())
+            .collect();
+        assert!(
+            raw.iter().any(|v| v["type"] == "af/NativeFailureEvidence@1"
+                && v["payload"] == json!({"schema":"af.native-failure/1","kind":"quota"})),
+            "{raw:?}"
+        );
+        assert!(raw.iter().any(|v| v["schema"] == "af.pi-host/7"
+            && v["diagnostic"] == "model_unavailable"
+            && v["accounting_complete"] == true));
+        let Some(af_contracts::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id, ..
+        }) = &failed.result
+        else {
+            panic!("{:?}", failed.result);
+        };
+        let diagnostic = cas.get_json(diagnostic_id).unwrap();
+        let error = diagnostic["error"].as_str().unwrap();
+        assert!(error.contains("model_unavailable"), "{error}");
+        assert!(
+            !error.contains("billing") && !error.contains("malformed_reply"),
+            "{error}"
+        );
+    } else if matches!(
+        mode,
+        "replace-after-admission"
+            | "replace-endpoint-after-admission"
+            | "kimi-replace-auth-after-admission"
+    ) {
+        assert!(!out.status.success(), "{done}");
+        assert_eq!(calls, "admission\n");
+        assert_eq!(done["chargeable_tokens"], if kimi { "15" } else { "5" });
+    } else {
+        assert!(
+            out.status.success(),
+            "{done}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(done["result"]["acceptance"], "satisfied");
+        assert_eq!(
+            calls,
+            if mode == "retry" {
+                "admission\nworker\nworker\n"
+            } else {
+                "admission\nworker\n"
+            }
+        );
+        assert_eq!(
+            done["chargeable_tokens"],
+            if mode == "retry" {
+                "15"
+            } else if generic {
+                "30"
+            } else if kimi {
+                "954"
+            } else {
+                "10"
+            }
+        );
+    }
+}

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:issue-triage-hold:1",
+  "title": "Issue triage hold af/issue-triage-hold@1",
+  "$comment": "The private record scripts/backlog-check-triage.py prints, with exit code 3, when an issue is held (docs/design/issue-triage.md §6.3 step 1, §7): a class/security or triage/held label among the issue's or the owner's labels, or a security class from either triager. The runner keeps it in its journal and publishes nothing about the issue. It carries the issue when the author's document names one, why it is held, the hold labels and the triagers that triggered it (held_labels, security_triagers; at least one), and the generation identities the runner gave, as given and unchecked (null when it gave none). It is never an af/issue-triage-merged@1 record and needs none of that record's identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "issue",
+    "reasons",
+    "held_labels",
+    "security_triagers",
+    "generation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/issue-triage-hold@1"
+    },
+    "issue": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "\\S"
+      }
+    },
+    "held_labels": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "class/security",
+          "triage/held"
+        ]
+      }
+    },
+    "security_triagers": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "author",
+          "verifier"
+        ]
+      }
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "bundle_sha256",
+            "main",
+            "policy_version",
+            "event_id"
+          ],
+          "properties": {
+            "bundle_sha256": {
+              "$ref": "#/$defs/given"
+            },
+            "main": {
+              "$ref": "#/$defs/given"
+            },
+            "policy_version": {
+              "$ref": "#/$defs/given"
+            },
+            "event_id": {
+              "$ref": "#/$defs/given"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "held_labels": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "security_triagers": {
+          "minItems": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "given": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    }
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "schema": "af.perf-shipping/3",
+  "suite_sha256": "sha256:9d6de2e3ccd26a9a7e5aed29a57283011ae074e18c4b176029cb629989287841",
+  "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+  "status": "pending",
+  "reasons": [],
+  "runs": [
+    {
+      "run_id": "linux",
+      "plan_digest": "sha256:d4ee765094700b1463b3bac2679eaef2818e3a5cb1f557c06996867ea1126172",
+      "run_bundle": "sha256:f2dc976c821497ca1dfdf1f29b795ff912c1401b00ea6307ec625a4b732bff86",
+      "builds_sha256": "sha256:611e1ba1a6f813271b768d4aa46155379cc5b5815aa1c7279ee69722f9585ff8",
+      "candidate_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+      "candidate_binary": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+      "environment_id": "linux_x86_64_musl_hosted",
+      "recipe_id": "linux_musl_shipping",
+      "provenance": "measured",
+      "hosts": [
+        "sha256:84e6c826d20e78ea434358dad26b4a05c4a791683d794f397caaed528fd2e54a"
+      ]
+    }
+  ],
+  "budgets": [
+    {
+      "budget_id": "cli_discovery_under_50ms",
+      "environment_id": "linux_x86_64_musl_hosted",
+      "instance_id": "synthetic_process__size_1",
+      "limit": "50",
+      "unit": "ms",
+      "minimum_samples": 20,
+      "targets": [
+        {
+          "candidate_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+          "candidate_binary": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+          "recipe_id": "linux_musl_shipping",
+          "host_fingerprint": "sha256:84e6c826d20e78ea434358dad26b4a05c4a791683d794f397caaed528fd2e54a",
+          "host": "unknown; unknown",
+          "planned": 20,
+          "failed": 0,
+          "missing": 0,
+          "samples": [
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10"
+          ],
+          "max": "10",
+          "median": "10",
+          "p95": "10",
+          "runs": [
+            "linux"
+          ],
+          "incomplete_runs": [],
+          "result": "met"
+        }
+      ],
+      "runs": [
+        "linux"
+      ],
+      "result": "met"
+    },
+    {
+      "budget_id": "cli_discovery_under_50ms",
+      "environment_id": "linux_x86_64_musl_hosted",
+      "instance_id": "synthetic_process__size_2",
+      "limit": "50",
+      "unit": "ms",
+      "minimum_samples": 20,
+      "targets": [
+        {
+          "candidate_sha": "5881b9503a3b2cd2a4e97cbd94d36f08d35e410d",
+          "candidate_binary": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+          "recipe_id": "linux_musl_shipping",
+          "host_fingerprint": "sha256:84e6c826d20e78ea434358dad26b4a05c4a791683d794f397caaed528fd2e54a",
+          "host": "unknown; unknown",
+          "planned": 20,
+          "failed": 0,
+          "missing": 0,
+          "samples": [
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10",
+            "10"
+          ],
+          "max": "10",
+          "median": "10",
+          "p95": "10",
+          "runs": [
+            "linux"
+          ],
+          "incomplete_runs": [],
+          "result": "met"
+        }
+      ],
+      "runs": [
+        "linux"
+      ],
+      "result": "met"
+    },
+    {
+      "budget_id": "cli_discovery_under_50ms",
+      "environment_id": "macos_arm64_local",
+      "instance_id": "synthetic_process__size_1",
+      "limit": "50",
+      "unit": "ms",
+      "minimum_samples": 20,
+      "targets": [],
+      "runs": [],
+      "result": "insufficient"
+    },
+    {
+      "budget_id": "cli_discovery_under_50ms",
+      "environment_id": "macos_arm64_local",
+      "instance_id": "synthetic_process__size_2",
+      "limit": "50",
+      "unit": "ms",
+      "minimum_samples": 20,
+      "targets": [],
+      "runs": [],
+      "result": "insufficient"
+    }
+  ]
+}

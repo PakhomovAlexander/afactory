@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-scenario-adapter:1",
+  "title": "af.perf-scenario-adapter/1",
+  "description": "Native Scenario lab integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-scenario-adapter/1"
+    },
+    "root": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "executor": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "af": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "af_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "task_repo": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "task_state": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "evidence_index": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "evidence_index_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "evidence_root": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "evidence_max_age_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 31536000000
+    },
+    "evidence_max_items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "evidence_max_bytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 24576
+    },
+    "destination": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "max_intents": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 12885032960,
+      "maximum": 1125899906842624
+    }
+  },
+  "required": [
+    "schema",
+    "root",
+    "executor",
+    "af",
+    "af_digest",
+    "task_repo",
+    "task_state",
+    "evidence_index",
+    "evidence_index_digest",
+    "evidence_root",
+    "evidence_max_age_ms",
+    "evidence_max_items",
+    "evidence_max_bytes",
+    "destination",
+    "max_intents",
+    "max_bytes"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
