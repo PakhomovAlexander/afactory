@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:candidate-tree:1",
+  "title": "candidate-tree@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "parent_snapshot_id",
+    "manifest_id"
+  ],
+  "properties": {
+    "parent_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/review-core", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-source-task", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/af"]
+
+[workspace.package]
+version = "0.11.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Line tables are enough for a panic backtrace and for the check receipts; full debug
+# information doubled the linked size of a hundred test executables (ADR-0124). CI used
+# to set this through CARGO_PROFILE_*_DEBUG; here it holds for Task checks and developer
+# builds too. Override per build with CARGO_PROFILE_DEV_DEBUG=2 when a debugger needs more.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# Capture hashes the running executable and every exact package. Keep the audited SHA-2
+# implementation at production speed in debug/CI too; Task deadlines still include capture.
+[profile.dev.package.sha2]
+opt-level = 3
+
+# Durable Task replay repeatedly validates typed envelopes and canonical JSON. Keep these
+# hot paths optimized in developer/CI builds, with debug assertions and overflow checks intact.
+# Crash-recovery tests retain the same Task deadline, lease wait and verification reserve.
+[profile.dev.package.review-store]
+opt-level = 2
+
+[profile.dev.package.serde_json]
+opt-level = 3

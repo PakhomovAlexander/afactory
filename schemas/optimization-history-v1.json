@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-history:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project_id", "cutoff_unix_ms", "receipts", "observations"],
+  "properties": {
+    "schema": {"const": "af.optimization-history/1"},
+    "project_id": {"$ref": "#/$defs/digest"},
+    "previous_capture_id": {"$ref": "#/$defs/digest"},
+    "cutoff_unix_ms": {"$ref": "#/$defs/u64"},
+    "receipts": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/receipt"}},
+    "observations": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/observation"}},
+    "gaps": {"$ref": "#/$defs/names"},
+    "exposed_case_families": {"type": "array", "uniqueItems": true, "maxItems": 100000, "items": {"type": "string", "minLength": 1, "maxLength": 256}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "u64": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20},
+    "u128": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,38})$", "maxLength": 39},
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "names": {"type": "array", "uniqueItems": true, "maxItems": 1024, "items": {"$ref": "#/$defs/name"}},
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receipt_id", "adapter", "adapter_version", "project_id", "source_id", "execution_id", "byte_start", "byte_end", "prefix_digest", "cutoff_unix_ms", "redaction_version", "completeness"],
+      "properties": {
+        "receipt_id": {"$ref": "#/$defs/digest"}, "adapter": {"$ref": "#/$defs/name"}, "adapter_version": {"$ref": "#/$defs/name"}, "project_id": {"$ref": "#/$defs/digest"},
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 512}, "execution_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "byte_start": {"$ref": "#/$defs/u64"}, "byte_end": {"$ref": "#/$defs/u64"}, "prefix_digest": {"$ref": "#/$defs/digest"}, "cutoff_unix_ms": {"$ref": "#/$defs/u64"},
+        "redaction_version": {"$ref": "#/$defs/name"}, "completeness": {"enum": ["complete", "partial", "unavailable"]}
+      }
+    },
+    "usage": {
+      "type": "object", "additionalProperties": false, "required": ["chargeable_tokens"],
+      "properties": {"input_tokens": {"$ref": "#/$defs/u128"}, "output_tokens": {"$ref": "#/$defs/u128"}, "cache_read_tokens": {"$ref": "#/$defs/u128"}, "cache_write_tokens": {"$ref": "#/$defs/u128"}, "reasoning_tokens": {"$ref": "#/$defs/u128"}, "chargeable_tokens": {"$ref": "#/$defs/u128"}}
+    },
+    "tokens": {
+      "type": "object", "additionalProperties": false, "required": ["cumulative_key", "usage", "status", "outer_session"],
+      "properties": {"cumulative_key": {"type": "string", "minLength": 1, "maxLength": 256}, "usage": {"$ref": "#/$defs/usage"}, "status": {"$ref": "#/$defs/status"}, "context_tokens": {"$ref": "#/$defs/u128"}, "retrieval_tokens": {"$ref": "#/$defs/u128"}, "repeated_context_tokens": {"$ref": "#/$defs/u128"}, "outer_session": {"type": "boolean"}}
+    },
+    "status": {"enum": ["exact", "estimated", "lower_bound", "unknown"]},
+    "attribution": {
+      "type": "object", "additionalProperties": false, "required": ["project_id", "case_family", "execution_id"],
+      "properties": {"project_id": {"$ref": "#/$defs/digest"}, "case_family": {"type": "string", "minLength": 1, "maxLength": 256}, "execution_id": {"type": "string", "minLength": 1, "maxLength": 256}, "outer_execution_id": {"type": "string", "minLength": 1, "maxLength": 256}, "task_id": {"type": "string", "minLength": 1, "maxLength": 256}, "attempt_id": {"type": "string", "minLength": 1, "maxLength": 256}, "pipeline": {"type": "string", "minLength": 1, "maxLength": 256}, "node": {"type": "string", "minLength": 1, "maxLength": 256}, "worker": {"type": "string", "minLength": 1, "maxLength": 256}, "model": {"type": "string", "minLength": 1, "maxLength": 256}, "effort": {"type": "string", "minLength": 1, "maxLength": 256}, "configuration_id": {"type": "string", "minLength": 1, "maxLength": 256}, "environment_id": {"type": "string", "minLength": 1, "maxLength": 256}}
+    },
+    "span": {
+      "type": "object", "additionalProperties": false, "required": ["span_id", "kind", "start_unix_ms", "end_unix_ms", "clock", "status"],
+      "properties": {"span_id": {"$ref": "#/$defs/digest"}, "kind": {"enum": ["end_to_end", "active", "check", "dependency_preparation", "queue", "approval_waiting", "user_waiting", "retrieval", "verification"]}, "start_unix_ms": {"$ref": "#/$defs/u64"}, "end_unix_ms": {"$ref": "#/$defs/u64"}, "clock": {"$ref": "#/$defs/name"}, "status": {"$ref": "#/$defs/status"}}
+    },
+    "cache": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "eligible", "result", "temperature"],
+      "properties": {"kind": {"type": "string", "minLength": 1, "maxLength": 256}, "eligible": {"type": "boolean"}, "result": {"enum": ["hit", "miss", "unknown"]}, "temperature": {"enum": ["cold", "warm", "unknown"]}, "invalidation_id": {"type": "string", "minLength": 1, "maxLength": 512}, "bytes_reused": {"$ref": "#/$defs/u128"}, "tokens_reused": {"$ref": "#/$defs/u128"}, "lookup_ms": {"$ref": "#/$defs/u64"}, "warmup_ms": {"$ref": "#/$defs/u64"}}
+    },
+    "outcome": {
+      "type": "object", "additionalProperties": false, "required": ["outcome", "retries", "repairs", "later_defects"],
+      "properties": {"outcome": {"enum": ["verified", "failed", "incomplete", "cancelled", "abandoned"]}, "requirements_id": {"$ref": "#/$defs/digest"}, "verifier_id": {"$ref": "#/$defs/digest"}, "retries": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "repairs": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "later_defects": {"type": "integer", "minimum": 0, "maximum": 4294967295}}
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false, "required": ["observation_id", "source_receipt_id", "attribution"],
+      "properties": {"observation_id": {"$ref": "#/$defs/digest"}, "source_receipt_id": {"$ref": "#/$defs/digest"}, "attribution": {"$ref": "#/$defs/attribution"}, "tokens": {"$ref": "#/$defs/tokens"}, "spans": {"type": "array", "items": {"$ref": "#/$defs/span"}}, "caches": {"type": "array", "items": {"$ref": "#/$defs/cache"}}, "outcome": {"$ref": "#/$defs/outcome"}, "missing_fields": {"$ref": "#/$defs/names"}}
+    }
+  }
+}

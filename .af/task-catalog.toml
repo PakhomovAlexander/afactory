@@ -1,0 +1,175 @@
+schema = "af.task-catalog/2"
+report_policy = ".af/report-policy.toml"
+# Campaign catalog for the kernel's own campaigns. warm/* served the Worker warm layers plan;
+# kernel/* is the generic family later plans use. Every package of a plan runs through one
+# implementation-reviewed Pipeline with the same four native Workers. Provider labels here
+# are neutral; a developer's local bindings file maps them to admitted machine-local accounts.
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+allow_targeted_repairs = false
+
+[review.reviewers]
+bugs = "required"
+correctness = "required"
+
+[packages."warm/implementer"]
+version = "1.3.0"
+digest = "sha256:fd5fca2e0f3810ab113d49ddb26ebcc6f884c5bb01743d195f664c940739d629"
+path = ".af/task-packages/warm/implementer"
+
+[packages."warm/correctness"]
+version = "1.0.0"
+digest = "sha256:abd803546bde2b5a9ebe2920ae161ec2488568d4749d742403c818301604331d"
+path = ".af/task-packages/warm/correctness"
+
+[packages."warm/bugs"]
+version = "1.0.0"
+digest = "sha256:83821fae727188bc212ebeb94bf2804739761d1824d59c99900b0467ca5f65ef"
+path = ".af/task-packages/warm/bugs"
+
+[packages."warm/evaluator"]
+version = "1.0.0"
+digest = "sha256:c15968ac1f8fe2b6985417bf8f0ecf16eb8d6f17f66641a92307cae87836dd25"
+path = ".af/task-packages/warm/evaluator"
+
+[packages."warm/review-light"]
+version = "1.0.0"
+digest = "sha256:b1eba94b4b2fe151b0327652a2203ff09067eea0dc0cad942167293c8b339685"
+path = ".af/task-packages/warm/review-light"
+
+[packages."warm/implementation-reviewed"]
+version = "1.0.0"
+digest = "sha256:3ac1aaa73fe0dbf444bf4bc4fec75e5aa8362bac91e763000f54a4c3ea947bb0"
+path = ".af/task-packages/warm/implementation-reviewed"
+
+[packages."warm/verification"]
+version = "1.0.0"
+digest = "sha256:198ece7f7da58241216800f550a1e5cb65dda88da5534fbf8a1979bc9d74f480"
+path = ".af/task-packages/warm/verification"
+
+[packages."warm/verification-kind"]
+version = "1.0.0"
+digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f32"
+path = ".af/task-packages/warm/verification-kind"
+
+[packages."kernel/implementer"]
+version = "1.5.0"
+digest = "sha256:cc933a72e607c996e2e159e682e573b2099d6207663df06e239efee3e55e7836"
+path = ".af/task-packages/kernel/implementer"
+
+[packages."kernel/correctness"]
+version = "1.2.0"
+digest = "sha256:9533b547e5b67b18da797b849b18c8f7bc2d71768abfdc513e2185bf44970e2d"
+path = ".af/task-packages/kernel/correctness"
+
+[packages."kernel/bugs"]
+version = "1.4.0"
+digest = "sha256:5b31be756ca0ca949712627cb7e426efb4f8b2ade2b0cc4cd52b3c6fad846ead"
+path = ".af/task-packages/kernel/bugs"
+
+[packages."kernel/evaluator"]
+version = "1.1.0"
+digest = "sha256:c1e50092fe4c30d552120e6465f98e1d9f6c84d7131012add711ea1c48e99c33"
+path = ".af/task-packages/kernel/evaluator"
+
+[packages."kernel/uix"]
+version = "1.4.0"
+digest = "sha256:3ac542410f555e78428864ac0dfdf20061b42a1e1f023bb6291c2212123aee65"
+path = ".af/task-packages/kernel/uix"
+
+[packages."kernel/review-light"]
+version = "1.2.0"
+digest = "sha256:c6bed1e2d5d1f493278c8559fff8a851d66b403dabce5f0aba2c74b98f53ec47"
+path = ".af/task-packages/kernel/review-light"
+
+[packages."kernel/implementation-reviewed"]
+version = "1.2.0"
+digest = "sha256:5d4b4eec72574adf86f2f1de69647249c6b7ec1f6893b0aaff4d59dfae4d8e2a"
+path = ".af/task-packages/kernel/implementation-reviewed"
+
+[packages."kernel/review-code"]
+version = "1.1.0"
+digest = "sha256:1e7a06ef48b749397d90faa10f66ea9bc2dd1ad7ad542fc6f71171855d0ed3ac"
+path = ".af/task-packages/kernel/review-code"
+
+[packages."kernel/verification-reviewed"]
+version = "1.2.0"
+digest = "sha256:e6050fa5881728e9d8a4f5e94a186d18380924fde4f0355e249b533bc8d8ef85"
+path = ".af/task-packages/kernel/verification-reviewed"
+
+[packages."kernel/verification"]
+version = "1.0.0"
+digest = "sha256:a410f4e80545b4d1a7295746f4a3d66f5438fe6129df15956d5a823722cc5a4f"
+path = ".af/task-packages/kernel/verification"
+
+[packages."kernel/gate-accept"]
+version = "1.0.0"
+digest = "sha256:7c24a6860a110d827e00875639b194302b04bae5a226b0ac8c5101c68571a9d7"
+path = ".af/task-packages/kernel/gate-accept"
+
+[packages."kernel/gate-bench"]
+version = "1.0.0"
+digest = "sha256:5644bf8e52efd02be0892236d4fd979dd0547b4148e013ecad3a61278e68a16e"
+path = ".af/task-packages/kernel/gate-bench"
+
+[kinds]
+verification = "warm/verification-kind"
+
+[packages."kernel/experiment"]
+version = "1.0.0"
+digest = "sha256:07ba05a2949e579055f85a3a959da3db64ef80ab266bdc6c05a5d74f6764f447"
+path = ".af/task-packages/kernel/experiment"
+
+[packages."kernel/experiment-evaluator"]
+version = "1.0.0"
+digest = "sha256:c643d704a15e3e3dc225dc02f6006e6ece7bd21428a3c16db98004f33408d025"
+path = ".af/task-packages/kernel/experiment-evaluator"
+
+[packages."kernel/experiment-trial"]
+version = "1.0.0"
+digest = "sha256:1938157d9fe082bf0a191b8f6235999355d56fecbcd453d0e6fcbdcc6e31fb79"
+path = ".af/task-packages/kernel/experiment-trial"
+
+[packages."kernel/report"]
+version = "1.0.0"
+digest = "sha256:6480b6a6175b6fa29c62ba077a93f683cbb61151427e8847469fa4bde72b5149"
+path = ".af/task-packages/kernel/report"
+
+[packages."kernel/analyst"]
+version = "1.0.0"
+digest = "sha256:3739311a3cd9e014ecf80ae2c243c67aa6b7d176d19feb779e53ff601ce892a2"
+path = ".af/task-packages/kernel/analyst"
+
+[packages."kernel/report-verifier"]
+version = "1.0.0"
+digest = "sha256:c41672e751a34379feb7e11152d6cf5e9e974d7dfaf97b69c78e281b6b587436"
+path = ".af/task-packages/kernel/report-verifier"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[providers]
+"warm/implementer" = "claude-main"
+"warm/correctness" = "codex-main"
+"warm/bugs" = "codex-main"
+"warm/evaluator" = "codex-main"
+"kernel/implementer" = "claude-main"
+"kernel/correctness" = "codex-main"
+"kernel/bugs" = "codex-main"
+"kernel/evaluator" = "codex-main"
+"kernel/experiment-evaluator" = "codex-main"
+"kernel/analyst" = "claude-main"
+"kernel/report-verifier" = "codex-main"
+
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
