@@ -785,11 +785,19 @@ fn references(
                 value.authority.policy_id,
             ]);
             for dep in value.dependencies.values() {
-                let raw = cas
-                    .get_json(&dep.artifact_id)
-                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
-                let dep_envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
-                validate_envelope(&dep_envelope).map_err(conflict)?;
+                let dep_envelope = match cas.get_artifact(&dep.artifact_id) {
+                    Ok(envelope) => envelope,
+                    Err(_) => {
+                        // Preserve the original errors for raw content-addressed JSON,
+                        // including malformed or oversized envelopes.
+                        let raw = cas
+                            .get_json(&dep.artifact_id)
+                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                        let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
+                        validate_envelope(&envelope).map_err(conflict)?;
+                        envelope
+                    }
+                };
                 if dep_envelope.artifact_id != dep.artifact_id
                     || dep_envelope.content_id != dep.content_digest
                 {
