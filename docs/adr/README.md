@@ -244,3 +244,5 @@ future readers need.
   requester](0139-deliver-native-login-challenges-to-a-verified-private-requester.md)
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md)
+- [0141 — Let a pinned `ci`-tagged root Pipeline send a changed
+  workflow](0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)

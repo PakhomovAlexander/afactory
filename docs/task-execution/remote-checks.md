@@ -111,7 +111,7 @@ in another form is stored as printed.
 | Reason | What to do |
 | --- | --- |
 | `remote_skipped_local_failed` | fix the local failure |
-| `remote_candidate_changes_ci` | the candidate changes `.github/`; run this Task where the check is local |
+| `remote_candidate_changes_ci` | the candidate changes `.github/`; run this Task where the check is local, or select a pinned root Pipeline tagged `ci` (§7) |
 | `remote_tool_unavailable` | install `git` or `gh`, or run `gh auth login` |
 | `remote_ref_invalid` | use a ref-safe Task ID |
 | `remote_ref_conflict` | another Task owns the branches; delete them or rename the Task |
@@ -145,6 +145,44 @@ git push <push-url> --delete af-gate/<task-id>/base af-gate/<task-id>/head
 - Point a Remote Check only at workflows you would run for a collaborator's branch: CI executes
   the candidate with whatever permissions and secrets a same-repository pull request gets. The
   kernel refuses any candidate that changes `.github/`, so a Worker cannot change what the
-  workflow does.
+  workflow does, except under the trusted CI Pipeline of §7.
 - A ruleset that forbids pushing `af-gate/**` branches makes every remote check
   `remote_push_refused`.
+
+## 7. A Task that changes the workflow
+
+A candidate that changes anything under `.github/` is refused with `remote_candidate_changes_ci`.
+There is one exception
+([ADR-0141](../adr/0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)): the
+Task's selected root Pipeline is a package pinned in `.af/task-catalog.toml` on the authority
+commit, and its own `pipeline.toml` carries the exact tag `ci`.
+
+```toml
+schema = "af.pipeline/1"
+name = "project/ci-maintenance"
+version = "1.0.0"
+tags = ["ci"]
+# contract, accepts, slots, nodes, outputs and coverage as for any Pipeline
+```
+
+- Adding the tag changes the package's bytes: update its `digest` in `.af/task-catalog.toml`,
+  commit both, and start the Task from that commit (`af task start --authority <commit>` or
+  `af review --file`). The tag is read from the pinned bytes captured
+  into the Task's run authority, again on every resume and retry.
+- Only the selected root counts. A tagged Pipeline that the root calls, another pinned Pipeline
+  the Task did not select, a Pipeline a Planner generated, and a tag the candidate writes into
+  its own tree grant nothing. Neither does a Pipeline or job name, `CI`, `cicd`, a Task-file field
+  or an environment variable.
+- The evidence then carries `trusted_ci`: the tag, the run authority, the plan and the root
+  Pipeline package that granted it. `af task show` prints `changed .github/ sent under trusted CI
+  Pipeline <name> (tag ci)`. Every reader recomputes the source and the `.github/` difference from
+  the Snapshots and accepts the claim only from its own capture of the same plan.
+
+Everything else is unchanged. The `workflow` path and `required` job names stay the captured
+policy's, so a changed workflow that drops or renames a required job leaves the check
+`remote_check_missing`, a skipped job is inconclusive and a failed one fails. The merge-ref proof,
+the latest run attempt and branch ownership still bind the result to the exact candidate.
+
+A changed workflow is trusted code: it runs with the repository's secrets, and a green run shows
+only that the altered workflow passed. It is not a universal quality guarantee. Tag a Pipeline
+`ci` only when you would accept its Tasks being judged by the workflow they write.

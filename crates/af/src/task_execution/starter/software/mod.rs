@@ -84,6 +84,7 @@ pub(super) fn definition(
         coverage: BTreeMap::new(),
         max_attempts: attempts,
         max_parallel: 2,
+        tags: Default::default(),
     }
 }
 pub(super) fn cover(pipeline: &mut PipelineDefinitionV1, obligation: &str, port: &str) {

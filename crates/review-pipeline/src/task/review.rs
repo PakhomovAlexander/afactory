@@ -349,6 +349,16 @@ impl ReviewTaskDomain {
         self
     }
 
+    /// The trusted CI Pipeline exception (ADR-0141) for the checks this domain runs, captured
+    /// by the coordinator for the Task's admitted plan.
+    pub fn with_trusted_ci(
+        mut self,
+        trusted: Option<super::remote_check::TrustedCiPipeline>,
+    ) -> Result<Self, String> {
+        self.code = self.code.with_trusted_ci(trusted)?;
+        Ok(self)
+    }
+
     /// Chosen by the captured Task-kind profile, never by a Worker response or display name.
     pub fn with_review_task(mut self, review: bool) -> Self {
         self.review_task = review;

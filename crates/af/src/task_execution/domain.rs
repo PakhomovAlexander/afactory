@@ -1,7 +1,7 @@
 //! Select an installed domain's policy and environment without manufacturing code authority.
 use super::*;
 use review_pipeline::task::host::{DataTaskEnvironment, TaskEnvironment};
-use review_pipeline::task::remote_check::RemoteCheckHost;
+use review_pipeline::task::remote_check::{RemoteCheckHost, TrustedCiPipeline};
 use std::io::Write;
 
 pub(super) fn code_domain(
@@ -9,11 +9,20 @@ pub(super) fn code_domain(
     policy_id: &str,
     graph: CompiledTask,
     state: &Path,
+    plan_id: &str,
 ) -> Result<CodeTaskDomain, String> {
     let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
-    Ok(CodeTaskDomain::captured(cas, policy_id, graph)?
+    CodeTaskDomain::captured(cas, policy_id, graph)?
         .with_rust_toolchain_mapping(mapping)
-        .with_remote_checks(remote_checks(state)?))
+        .with_remote_checks(remote_checks(state)?)
+        .with_trusted_ci(trusted_ci(cas, plan_id)?)
+}
+
+/// The trusted CI Pipeline exception (ADR-0141) of the admitted plan `plan_id`, captured again
+/// from the Store each time a domain is built — at start, on every resume and so for every
+/// retry — from the plan's run authority and its selected, pinned root Pipeline alone.
+pub(super) fn trusted_ci(cas: &Cas, plan_id: &str) -> Result<Option<TrustedCiPipeline>, String> {
+    TrustedCiPipeline::capture(cas, plan_id)
 }
 
 /// The machine-local Remote Check configuration (ADR-0140): the operator's mapping, resolved

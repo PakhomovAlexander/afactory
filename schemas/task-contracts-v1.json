@@ -1331,6 +1331,16 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 16
+        },
+        "tags": {
+          "description": "Labels the project attaches to this Pipeline, matched exactly and case-sensitively; absent when empty. Only the selected root of an admitted plan, pinned in the Task's captured catalog and tagged `ci`, may send a candidate that changes `.github/` to a Remote Check (ADR-0141).",
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          }
         }
       }
     },

@@ -284,6 +284,36 @@ pub struct PipelineDefinitionV1 {
     pub coverage: BTreeMap<String, ValueRefV1>,
     pub max_attempts: u32,
     pub max_parallel: u32,
+    /// Labels the project attaches to this Pipeline, matched exactly and case-sensitively.
+    /// Empty by default and absent when empty, so an untagged Pipeline keeps its exact bytes.
+    /// A tag grants nothing by itself: only the selected root of an admitted plan, pinned in
+    /// the Task's captured catalog, can carry [`PIPELINE_TAG_CI`] into the trusted CI exception
+    /// of a Remote Check (ADR-0141).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeSet::is_empty",
+        deserialize_with = "super::unique_set"
+    )]
+    pub tags: BTreeSet<String>,
+}
+
+/// The one tag the kernel reads: the selected root Pipeline that carries it, pinned in the
+/// Task's captured catalog, may send a candidate that changes `.github/` to a Remote Check
+/// (ADR-0141). `CI`, `cicd` or any other spelling is an ordinary tag.
+pub const PIPELINE_TAG_CI: &str = "ci";
+/// At most this many tags per Pipeline.
+pub const MAX_PIPELINE_TAGS: usize = 16;
+/// Bound, in bytes, of one tag.
+pub const MAX_PIPELINE_TAG_BYTES: usize = 64;
+
+/// A Pipeline tag: 1 to 64 ASCII letters, digits, `.`, `_` or `-`, starting with a letter or
+/// digit.
+pub fn is_pipeline_tag(tag: &str) -> bool {
+    (1..=MAX_PIPELINE_TAG_BYTES).contains(&tag.len())
+        && tag
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b.is_ascii_alphanumeric() || (i > 0 && matches!(b, b'.' | b'_' | b'-')))
 }
 
 impl PipelineDefinitionV1 {
@@ -291,6 +321,10 @@ impl PipelineDefinitionV1 {
         require(
             is_package_name(&self.name) && !self.version.trim().is_empty(),
             "Invalid Pipeline name/version",
+        )?;
+        require(
+            self.tags.len() <= MAX_PIPELINE_TAGS && self.tags.iter().all(|t| is_pipeline_tag(t)),
+            "Pipeline tags are at most 16 names of 1 to 64 ASCII letters, digits, `.`, `_` or `-`",
         )?;
         self.contract.validate()?;
         require(
@@ -423,5 +457,33 @@ impl PipelineDefinitionV1 {
                 && declared.iter().all(|s| self.coverage.contains_key(s)),
             "Public coverage must have an internal evidence binding",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tag_is_a_bounded_case_preserving_label() {
+        let longest = "x".repeat(MAX_PIPELINE_TAG_BYTES);
+        let too_long = "x".repeat(MAX_PIPELINE_TAG_BYTES + 1);
+        for tag in ["ci", "CI", "cicd", "release.2", "a_b-c", longest.as_str()] {
+            assert!(is_pipeline_tag(tag), "{tag}");
+        }
+        for tag in [
+            "",
+            "-ci",
+            ".ci",
+            "c i",
+            "ci/x",
+            "ci\n",
+            "é",
+            too_long.as_str(),
+        ] {
+            assert!(!is_pipeline_tag(tag), "{tag:?}");
+        }
+        // Only the exact lower-case spelling is the kernel's tag.
+        assert_eq!(PIPELINE_TAG_CI, "ci");
     }
 }

@@ -12,3 +12,6 @@ serve them, not recorded here.
   of one run attempt — that the fake `gh` of
   `crates/review-pipeline/tests/it/remote_checks.rs` serves. `@HEAD@` and `@TASK@` stand for the
   gate head commit and the Task ID, which the fake substitutes from its local bare repository.
+- `evidence/observed-passed-trusted-ci.json` is evidence of a candidate that changed `.github/`
+  and was sent under the selected root Pipeline's trusted CI exception
+  ([ADR-0141](../../docs/adr/0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)).

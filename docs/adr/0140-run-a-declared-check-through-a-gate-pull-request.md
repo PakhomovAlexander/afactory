@@ -8,6 +8,10 @@ pull request only, the rule that publishing is a human action
 Implements package RC1 of [`docs/design/remote-checks.md`](../design/remote-checks.md) under
 that plan's §2 fixed requirements.
 
+Amended by [ADR-0141](0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md): a
+candidate that changes `.github/` is still refused, unless the Task's selected root Pipeline is
+pinned by its captured run authority and tagged exactly `ci`.
+
 ## Context
 
 A Task check is a command this machine runs. On a host too small to build this repository
@@ -50,6 +54,8 @@ The four choices below were made on 2026-10-04.
 4. **A candidate that changes `.github/`.**
    - *Refused before anything is published* — chosen: `remote_candidate_changes_ci`. A Worker
      must never decide what the workflow that judges its work does.
+     [ADR-0141](0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md) adds one
+     exception that no Worker controls: a catalog-pinned, selected root Pipeline tagged `ci`.
    - *Published and flagged* — rejected. A flag is advice; a candidate that rewrites the workflow
      would already have run with the repository's secrets.
 
@@ -94,7 +100,9 @@ The executor (`review_pipeline::task::remote_check::github_pr`) is the one seam 
 operator calls, with the candidate Snapshot, the phase deadline and the cancellation flag.
 
 - The *source* is the candidate's root ancestor along `parent_snapshot_id`. A difference in any
-  path, mode or content under `.github/` refuses the check before any subprocess runs.
+  path, mode or content under `.github/` refuses the check before any subprocess runs, unless
+  the trusted CI Pipeline exception of
+  [ADR-0141](0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md) grants it.
 - In a temporary bare repository the kernel owns, `git fast-import` writes both trees from the
   manifests (`100644`, `100755`, `120000`); every tree is read back with `git ls-tree -r` and
   compared path, mode and blob with its manifest. A mismatch is a kernel error.

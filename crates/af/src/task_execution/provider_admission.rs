@@ -4,7 +4,9 @@ use review_core::json::SAFE_INTEGER_MAX;
 use review_graph::task::OperatorAttemptCost;
 
 pub(super) const TASK_CATALOG_SCHEMA: &str = "af.task-catalog/2";
-pub(super) const RUN_AUTHORITY_SCHEMA: &str = "af.task-run-authority/2";
+/// One spelling with the trusted CI Pipeline capture, which reads the same document (ADR-0141).
+pub(super) const RUN_AUTHORITY_SCHEMA: &str =
+    review_pipeline::task::remote_check::trust::RUN_AUTHORITY_SCHEMA;
 
 /// The allowance a catalog that declares no explicit Provider admission cost receives.
 const DEFAULT_ADMISSION: OperatorAttemptCost = OperatorAttemptCost {

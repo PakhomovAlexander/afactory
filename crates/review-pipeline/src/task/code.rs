@@ -38,7 +38,7 @@ use super::host::TaskDomain;
 use super::remote_check::github_pr::{self, RemotePhase};
 use super::remote_check::{
     GithubPrTarget, RemoteCheckHost, RemoteCheckMapping, RemoteCheckOutcome, RemoteCheckRequest,
-    result_matches_evidence,
+    TrustedCiPipeline, result_matches_evidence,
 };
 use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
@@ -488,6 +488,15 @@ fn root_snapshot(
     Err("Task Snapshot ancestry is deeper than 4096 Snapshots".into())
 }
 
+/// The candidate's root ancestor, recomputed along `parent_snapshot_id`, and whether the
+/// candidate differs from it under `.github/`.
+fn ci_lineage(cas: &Cas, candidate_id: &str) -> Result<(String, bool), String> {
+    let (candidate, manifest) = review_source_git::task::read_snapshot(cas, candidate_id)?;
+    let (source_id, source) = root_snapshot(cas, candidate_id, &candidate)?;
+    let changes_ci = github_pr::ci_difference(&source, &manifest).is_some();
+    Ok((source_id, changes_ci))
+}
+
 fn port(artifact_type: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
     PipelinePortV1 {
         artifact_type: artifact_type.into(),
@@ -732,6 +741,7 @@ pub struct CodeTaskDomain {
     warm: WarmCheckHost,
     rust_toolchain_mapping: Option<PathBuf>,
     remote: RemoteCheckHost,
+    trusted_ci: Option<TrustedCiPipeline>,
 }
 
 impl CodeTaskDomain {
@@ -777,6 +787,7 @@ impl CodeTaskDomain {
             warm: WarmCheckHost::default(),
             rust_toolchain_mapping: None,
             remote: RemoteCheckHost::default(),
+            trusted_ci: None,
         })
     }
 
@@ -820,6 +831,22 @@ impl CodeTaskDomain {
     pub fn with_remote_checks(mut self, remote: RemoteCheckHost) -> Self {
         self.remote = remote;
         self
+    }
+
+    /// The trusted CI Pipeline exception (ADR-0141) the coordinator captured for this Task's
+    /// admitted plan, or `None`. A capture of another plan's graph or another code policy is
+    /// refused; the default, and every domain built without a capture, refuses a candidate
+    /// that changes `.github/` and every record that claims the exception.
+    pub fn with_trusted_ci(mut self, trusted: Option<TrustedCiPipeline>) -> Result<Self, String> {
+        if let Some(trusted) = &trusted
+            && !trusted.belongs_to(&self.policy_id, &self.graph)
+        {
+            return Err(
+                "The trusted CI Pipeline capture belongs to another plan or code policy".into(),
+            );
+        }
+        self.trusted_ci = trusted;
+        Ok(self)
     }
 
     /// The operator's mapping entry for this Snapshot's repository and the checks of `names` it
@@ -890,6 +917,7 @@ impl CodeTaskDomain {
         let mut failed = false;
         let mut unavailable = false;
         let mut required = false;
+        let mut lineage: Option<(String, bool)> = None;
         for (name, id) in &receipt.checks {
             let definition = self
                 .policy
@@ -947,6 +975,40 @@ impl CodeTaskDomain {
                         )
                     {
                         return Err("Check result changed its captured definition".into());
+                    }
+                    // The source and `.github/` relation are recomputed from the Snapshots,
+                    // never taken from the evidence (ADR-0141).
+                    if lineage.is_none() {
+                        lineage = Some(ci_lineage(cas, &receipt.snapshot_id)?);
+                    }
+                    let (source_id, changes_ci) = lineage
+                        .as_ref()
+                        .ok_or("Remote check evidence lost its source lineage")?;
+                    if evidence.source_snapshot_id != *source_id {
+                        return Err("Remote check evidence names another source Snapshot".into());
+                    }
+                    match &evidence.trusted_ci {
+                        Some(claimed) => {
+                            if !changes_ci
+                                || claimed.plan_id != receipt.plan_id
+                                || self.trusted_ci.as_ref().map(TrustedCiPipeline::record)
+                                    != Some(claimed)
+                            {
+                                return Err("Remote check evidence claims a trusted CI \
+                                            exception this Task's captured authority does not \
+                                            grant"
+                                    .into());
+                            }
+                        }
+                        None if *changes_ci
+                            && evidence.state
+                                != review_core::task::remote_check::RemoteCheckStateV1::Refused =>
+                        {
+                            return Err("Remote check evidence sent a candidate that changes \
+                                        `.github/` without the trusted CI exception"
+                                .into());
+                        }
+                        None => {}
                     }
                 }
             }
@@ -1333,6 +1395,11 @@ AF_TOOLCHAIN_SNAPSHOT ",
         let mut remote_evidence = Vec::new();
         if let Some((target, selected, owner)) = &remote {
             let (source_id, source_manifest) = root_snapshot(cas, &snapshot_id, &snapshot)?;
+            // Only the capture of the plan this invocation belongs to grants the exception.
+            let trusted_ci = self
+                .trusted_ci
+                .as_ref()
+                .filter(|trusted| trusted.record().plan_id == input.plan_id);
             let requests: Vec<RemoteCheckRequest> = selected
                 .iter()
                 .map(|name| {
@@ -1377,6 +1444,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
                         checks: &requests,
                         deadline: started + Duration::from_millis(limit),
                         cancellation,
+                        trusted_ci,
                     },
                     &self.remote.github_pr,
                 )?
@@ -1385,6 +1453,11 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     github: &target.github,
                     snapshot_id: &snapshot_id,
                     source_snapshot_id: &source_id,
+                    // Nothing is sent, but a refusal under a used exception says so, as the
+                    // executor's own refusals do.
+                    trusted_ci: trusted_ci
+                        .filter(|_| github_pr::ci_difference(&source_manifest, &manifest).is_some())
+                        .map(TrustedCiPipeline::record),
                 };
                 let failed = local_failed
                     .iter()

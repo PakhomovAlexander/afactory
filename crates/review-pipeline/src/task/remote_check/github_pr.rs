@@ -26,6 +26,7 @@ use super::gate::{
 };
 use super::{
     EvidenceBase, GithubPrTarget, MAPPING_KNOB, Redactor, RemoteCheckOutcome, RemoteCheckRequest,
+    TrustedCiPipeline,
 };
 
 /// How the executor reaches `git` and `gh` and how it paces its wait. The defaults are the
@@ -68,6 +69,10 @@ pub struct RemotePhase<'a> {
     pub checks: &'a [RemoteCheckRequest],
     pub deadline: Instant,
     pub cancellation: Option<&'a AtomicBool>,
+    /// The trusted CI Pipeline exception (ADR-0141) the coordinator captured for this Task's
+    /// admitted plan. Only with it may a candidate whose `.github/` differs from the source
+    /// reach the remote; `None` keeps the ADR-0140 refusal.
+    pub trusted_ci: Option<&'a TrustedCiPipeline>,
 }
 
 const PR_TITLE_PREFIX: &str = "af gate: ";
@@ -91,10 +96,18 @@ pub fn run(
     phase: &RemotePhase<'_>,
     settings: &GithubPrSettings,
 ) -> Result<Vec<RemoteCheckOutcome>, String> {
+    // A changed `.github/` is trusted code: only the selected root Pipeline's captured `ci`
+    // exception sends it, and every record of this phase then names that exception.
+    let changed_ci = ci_difference(phase.source, phase.candidate);
+    let trusted_ci = phase
+        .trusted_ci
+        .filter(|_| changed_ci.is_some())
+        .map(TrustedCiPipeline::record);
     let base = EvidenceBase {
         github: &phase.target.github,
         snapshot_id: phase.candidate_id,
         source_snapshot_id: phase.source_id,
+        trusted_ci,
     };
     let refuse_all = |reason: RemoteCheckReasonV1, message: String, diagnostic: Option<String>| {
         phase
@@ -110,13 +123,14 @@ pub fn run(
             })
             .collect::<Vec<_>>()
     };
-    if let Some(path) = ci_difference(phase.source, phase.candidate) {
+    if let (Some(path), None) = (&changed_ci, trusted_ci) {
         return Ok(refuse_all(
             RemoteCheckReasonV1::RemoteCandidateChangesCi,
             format!(
                 "the candidate differs from the Task's source Snapshot under `.github/` (first \
                  at `{path}`), so it is never sent to a remote executor; run this Task where the \
-                 check is local by removing it from `checks` in {MAPPING_KNOB}"
+                 check is local by removing it from `checks` in {MAPPING_KNOB}, or select a \
+                 catalog-pinned root Pipeline tagged `ci` (ADR-0141)"
             ),
             None,
         ));
@@ -843,7 +857,7 @@ fn wait(tools: &Tools<'_>, interval: Duration) {
 
 /// The first path under `.github/` whose presence, mode or content differs between the two
 /// manifests, rendered for a message.
-fn ci_difference(source: &Manifest, candidate: &Manifest) -> Option<String> {
+pub(crate) fn ci_difference(source: &Manifest, candidate: &Manifest) -> Option<String> {
     let under = |manifest: &Manifest| {
         manifest
             .entries

@@ -14,7 +14,7 @@ use review_core::{Arg, Command};
 use review_pipeline::task::TaskRuntime;
 use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
 use review_pipeline::task::host::*;
-use review_pipeline::task::remote_check::RemoteCheckHost;
+use review_pipeline::task::remote_check::{RemoteCheckHost, TrustedCiPipeline};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
 use review_source_git::task::{SOURCE_TREE_V1, source_tree};
 use review_store::EventStore;
@@ -139,10 +139,12 @@ fn pipeline(checks: &[&str]) -> PipelineDefinitionV1 {
         coverage: BTreeMap::from([("verified".into(), from("accept", "result"))]),
         max_attempts: 3,
         max_parallel: 1,
+        tags: Default::default(),
     }
 }
 
-/// One recorded Task: its Store directory, CAS, domain, policy identity and check receipt.
+/// One recorded Task: its Store directory, CAS, domain, policy identity and check receipt,
+/// and the admitted plan, its graph and its Task authority, so a test can reopen it.
 pub struct Recorded {
     pub directory: tempfile::TempDir,
     pub cas: Cas,
@@ -150,6 +152,10 @@ pub struct Recorded {
     pub policy_id: String,
     pub receipt: Option<TaskCheckReceiptV1>,
     pub candidate: String,
+    pub plan_id: String,
+    pub authority_id: String,
+    pub graph: review_graph::task::CompiledTask,
+    pub pipeline_id: String,
 }
 
 impl Recorded {
@@ -177,12 +183,88 @@ impl Recorded {
     }
 }
 
+/// How [`run_with`] shapes one Task beyond its policy and checks (ADR-0141).
+#[derive(Clone, Copy)]
+pub struct Shape<'a> {
+    /// The tags of the Pipeline that holds the Check node.
+    pub tags: &'a [&'a str],
+    /// Select an untagged wrapper as the root, which calls the Pipeline above as an embedded
+    /// child; both are pinned.
+    pub wrapped: bool,
+    /// Also pin a second Pipeline tagged `ci` that the Task never selects or calls.
+    pub sibling: bool,
+    /// Record the Task's authority as a captured run authority that pins every Pipeline, as
+    /// the coordinator does; otherwise the code policy itself is the authority.
+    pub run_authority: bool,
+    /// The candidate's changed paths and their bytes, derived from the fixture source.
+    pub changes: &'a [(&'a str, &'a [u8])],
+    /// Capture the trusted CI exception from the Store and hand it to the domain, as the
+    /// coordinator does. Without it the domain is built the way a direct caller builds it.
+    pub capture: bool,
+}
+
+/// The candidate every Task of this suite checks unless a test changes something else.
+const SOURCE_CHANGE: &[(&str, &[u8])] = &[("src/lib.txt", b"version 2\n")];
+
+impl Default for Shape<'_> {
+    fn default() -> Self {
+        Shape {
+            tags: &[],
+            wrapped: false,
+            sibling: false,
+            run_authority: false,
+            changes: SOURCE_CHANGE,
+            capture: false,
+        }
+    }
+}
+
+/// The root Pipeline a wrapped Task selects: one call of `child`, nothing else.
+fn wrapper(child: &PipelineDefinitionV1) -> PipelineDefinitionV1 {
+    let mut wrapper = child.clone();
+    wrapper.name = "fixture/remote-checks-wrapper".into();
+    wrapper.tags.clear();
+    wrapper.nodes = vec![TaskNodeV1 {
+        id: "inner".into(),
+        operator: TaskOperatorV1::Call {
+            pipeline: child.name.clone(),
+            bindings: BTreeMap::new(),
+        },
+        inputs: child
+            .contract
+            .inputs
+            .keys()
+            .map(|port| (port.clone(), ValueRefV1::Input { port: port.clone() }))
+            .collect(),
+        when: None,
+    }];
+    wrapper.outputs = child
+        .contract
+        .outputs
+        .keys()
+        .map(|port| (port.clone(), from("inner", port)))
+        .collect();
+    wrapper.coverage = BTreeMap::from([("verified".into(), from("inner", "verification"))]);
+    wrapper
+}
+
 /// Run one Task named `TASK` over a candidate derived from the fixture source, with the
 /// machine-local configuration `host` builds from the Task's directory.
 pub fn run(
     policy: &CodeTaskPolicy,
     checks: &[&str],
     host: impl FnOnce(&Path) -> RemoteCheckHost,
+) -> Recorded {
+    run_with(policy, checks, host, Shape::default())
+}
+
+/// [`run`], shaped: the Pipelines' tags and nesting, the authority the Task records, the
+/// candidate's changes, and whether the coordinator's trusted CI capture reaches the domain.
+pub fn run_with(
+    policy: &CodeTaskPolicy,
+    checks: &[&str],
+    host: impl FnOnce(&Path) -> RemoteCheckHost,
+    shape: Shape<'_>,
 ) -> Recorded {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
@@ -191,8 +273,80 @@ pub fn run(
         .put_json(&serde_json::to_value(policy).unwrap())
         .unwrap();
     let snapshots = Snapshots::new(&cas);
-    let (candidate, _) = snapshots.candidate(&cas, "version 2\n");
+    let (candidate, _) = snapshots.derived_all(
+        &cas,
+        &shape
+            .changes
+            .iter()
+            .map(|(path, bytes)| (*path, EntryKind::File, *bytes))
+            .collect::<Vec<_>>(),
+    );
     let source = source_tree(&cas, producer(), &candidate, vec![]).unwrap();
+    let mut checked = pipeline(checks);
+    checked.tags = shape.tags.iter().map(|tag| tag.to_string()).collect();
+    let mut pipelines = vec![checked.clone()];
+    if shape.wrapped {
+        pipelines.push(wrapper(&checked));
+    }
+    if shape.sibling {
+        let mut sibling = checked.clone();
+        sibling.name = "fixture/remote-checks-sibling".into();
+        sibling.tags = BTreeSet::from(["ci".to_string()]);
+        pipelines.push(sibling);
+    }
+    let root = if shape.wrapped {
+        "fixture/remote-checks-wrapper".to_string()
+    } else {
+        checked.name.clone()
+    };
+    // Every Pipeline as one exactly pinned package. The coordinator's captured run authority
+    // pins the same packages; its own identity is what the Task revision and the compiler name.
+    let packages: Vec<(String, TaskPackagePin, BTreeMap<String, Vec<u8>>)> = pipelines
+        .iter()
+        .map(|pipeline| {
+            let files = BTreeMap::from([(
+                "pipeline.toml".to_string(),
+                toml::to_string(pipeline).unwrap().into_bytes(),
+            )]);
+            let pin = TaskPackagePin {
+                version: "1.0.0".into(),
+                path: "package".into(),
+                digest: review_config::lock::package_digest_from_files(&files),
+            };
+            (pipeline.name.clone(), pin, package_files(&files))
+        })
+        .collect();
+    let mut probe = TaskPlanCompiler::new(
+        policy_id.clone(),
+        policy_id.clone(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        IndependencePolicyV1::default(),
+    )
+    .unwrap();
+    let pinned: BTreeMap<String, (String, String)> = packages
+        .iter()
+        .map(|(name, pin, files)| {
+            let id = probe.capture_package(&cas, name, pin, files).unwrap();
+            (name.clone(), (pin.digest.clone(), id))
+        })
+        .collect();
+    let authority_id = if shape.run_authority {
+        let packages: serde_json::Map<String, serde_json::Value> = pinned
+            .iter()
+            .map(|(name, (digest, id))| {
+                (name.clone(), json!({"digest": digest, "artifact_id": id}))
+            })
+            .collect();
+        cas.put_json(&json!({
+            "schema": "af.task-run-authority/2",
+            "code_policy_id": &policy_id,
+            "packages": packages,
+        }))
+        .unwrap()
+    } else {
+        policy_id.clone()
+    };
     let task = TaskRevisionV1 {
         previous_revision_id: None,
         task_id: TASK.into(),
@@ -212,7 +366,7 @@ pub fn run(
             input_artifact_ids: vec![],
         },
         authority: TaskAuthorityV1 {
-            policy_id: policy_id.clone(),
+            policy_id: authority_id.clone(),
             allowed_effects: BTreeSet::from(["read-source".into(), "execute-checks".into()]),
             data_destinations: BTreeSet::new(),
         },
@@ -231,41 +385,23 @@ pub fn run(
             },
         },
         strategy: "small".into(),
-        pipeline: serde_json::from_value(
-            json!({"name": "fixture/remote-checks", "fallback": "refuse"}),
-        )
-        .unwrap(),
+        pipeline: serde_json::from_value(json!({"name": root, "fallback": "refuse"})).unwrap(),
         facts: BTreeMap::new(),
     };
-    let pipeline = pipeline(checks);
     let mut compiler = TaskPlanCompiler::new(
         policy_id.clone(),
-        policy_id.clone(),
+        authority_id.clone(),
         code_signatures(&policy_id, policy).unwrap(),
         BTreeMap::from([("verified".into(), "snapshot".into())]),
         IndependencePolicyV1::default(),
     )
     .unwrap();
-    let files = BTreeMap::from([(
-        "pipeline.toml".to_string(),
-        toml::to_string(&pipeline).unwrap().into_bytes(),
-    )]);
-    let pin = TaskPackagePin {
-        version: "1.0.0".into(),
-        path: "package".into(),
-        digest: review_config::lock::package_digest_from_files(&files),
-    };
-    compiler
-        .capture_package(
-            &cas,
-            &pipeline.name,
-            &pin,
-            &files
-                .into_iter()
-                .map(|(path, bytes)| (format!("package/{path}"), bytes))
-                .collect(),
-        )
-        .unwrap();
+    for (name, pin, files) in &packages {
+        assert_eq!(
+            compiler.capture_package(&cas, name, pin, files).unwrap(),
+            pinned[name].1
+        );
+    }
     let revision = cas
         .put_artifact(
             TASK_REVISION_V1,
@@ -276,7 +412,7 @@ pub fn run(
         )
         .unwrap()
         .0;
-    let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
+    let (plan, graph) = compiler.compile(&cas, &revision, &root).unwrap();
     let plan_id = cas
         .put_artifact(
             EXECUTION_PLAN_V1,
@@ -287,9 +423,17 @@ pub fn run(
         )
         .unwrap()
         .0;
+    let trusted = if shape.capture {
+        TrustedCiPipeline::capture(&cas, &plan_id).unwrap()
+    } else {
+        None
+    };
     let domain = CodeTaskDomain::captured(&cas, &policy_id, graph.clone())
         .unwrap()
-        .with_remote_checks(host(directory.path()));
+        .with_remote_checks(host(directory.path()))
+        .with_trusted_ci(trusted)
+        .unwrap();
+    let recorded_graph = graph.clone();
     let environment = SnapshotTaskEnvironment {
         policy: policy.isolation(),
     };
@@ -315,12 +459,17 @@ pub fn run(
     let runtime = TaskRuntime::new(&mut store, &cas, lease, &authority, &host).unwrap();
     runtime.execute().unwrap();
     let state = runtime.projection().unwrap();
+    let check_node = if shape.wrapped {
+        "root.nodes.inner.nodes.check"
+    } else {
+        "root.nodes.check"
+    };
     let receipt = state
         .execution
         .as_ref()
         .unwrap()
         .outputs
-        .get("root.nodes.check")
+        .get(check_node)
         .map(|(_, output)| {
             let id = &output.outputs["result"].artifact_ids[0];
             serde_json::from_value(cas.get_artifact(id).unwrap().payload).unwrap()
@@ -334,12 +483,23 @@ pub fn run(
         policy_id,
         receipt,
         candidate,
+        pipeline_id: plan.pipeline_id.clone(),
+        plan_id,
+        authority_id,
+        graph: recorded_graph,
     }
+}
+
+fn package_files(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    files
+        .iter()
+        .map(|(path, bytes)| (format!("package/{path}"), bytes.clone()))
+        .collect()
 }
 
 /// The operator's configuration with a mapping file in the operator's own directory, never
 /// inside the Store.
-fn mapped(remote: &Remote, text: String) -> impl FnOnce(&Path) -> RemoteCheckHost + '_ {
+pub fn mapped(remote: &Remote, text: String) -> impl FnOnce(&Path) -> RemoteCheckHost + '_ {
     move |_: &Path| {
         let config = remote
             .directory

@@ -91,8 +91,11 @@ review corpora belong in consuming repositories, not here.
   branches `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and
   opens one draft gate pull request between them. It never force-pushes, writes another ref,
   merges, marks ready, closes, comments or deletes, and never sends a candidate that changes
-  `.github/`. Committed policy never forces a remote run; delivery above is unchanged
-  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
+  `.github/` unless the Task's selected root Pipeline is pinned by its captured run authority and
+  tagged exactly `ci`; no name, label, Task input or environment grants that. Committed policy
+  never forces a remote run; delivery above is unchanged
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
+  [ADR-0141](docs/adr/0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)).
 - `af onboard` is deterministic and token-free. It may atomically create only an absent `.af/`
   authority bundle; it never overwrites existing policy, invents or hand-types lock digests,
   executes Gates, accesses credentials, or publishes repository changes. Emitted authority is
