@@ -36,7 +36,7 @@ if [[ "$#" -gt 0 ]]; then
   elif [[ "$#" -eq 2 && "$1" == --profile && "$2" == fast ]]; then
     plan="$run_dir/test-plan.json"
     python3 scripts/test-classes.py plan --context gate --label release:fast --output "$plan"
-    check_args=(check-classes "TEST_PLAN=$plan")
+    check_args=(test-build check-classes "TEST_PLAN=$plan")
   elif [[ "$#" -eq 2 && "$1" == --profile && "$2" == full ]]; then
     check_args=(check)
   else

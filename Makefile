@@ -1,4 +1,4 @@
-.PHONY: prereqs release-check preflight-check check fmt lint test test-repeat release review-kernel-container-probes
+.PHONY: prereqs release-check preflight-check check fmt lint test-build test test-repeat release review-kernel-container-probes
 
 # What this machine needs before `make check`, one line per tool with the command that installs
 # a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
@@ -37,12 +37,13 @@ lint:
 	$(CI_STEP) --stage lint lint cargo clippy --all-targets --locked -- -D warnings
 	$(CI_STEP) --stage lint lint-diagnostic-features cargo clippy --locked -p review-pipeline -p af --example perf-probe --bin af --features review-pipeline/perf-trace,review-pipeline/perf-control,review-pipeline/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
 
-test:
-ifeq ($(TEST_RUNNER),nextest)
+test-build:
 	$(CI_STEP) --stage build test-build cargo test --locked --no-run
+
+test: test-build
+ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) --stage tests test python3 scripts/nextest-gate.py --locked --profile ci --test-threads $(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
-	$(CI_STEP) --stage build test-build cargo test --locked --no-run
 	$(CI_STEP) --stage tests test cargo test --locked -- --test-threads=$(TEST_THREADS)
 else
 	$(error TEST_RUNNER must be nextest or cargo)
