@@ -1,0 +1,57 @@
+[package]
+name = "af"
+description = "The af command: Afactory's CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "af"
+path = "src/main.rs"
+
+[dependencies]
+fs2 = "0.4.3"
+review-config = { path = "../review-config" }
+review-attempt = { path = "../review-attempt" }
+review-core = { path = "../review-core" }
+review-graph = { path = "../review-graph" }
+review-pipeline = { path = "../review-pipeline" }
+review-process = { path = "../review-process" }
+review-runner = { path = "../review-runner" }
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
+review-source-git = { path = "../review-source-git" }
+review-source-task = { path = "../review-source-task" }
+review-store = { path = "../review-store" }
+review-sandbox = { path = "../review-sandbox" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).
+rustix = { version = "1.1.4", features = ["fs", "termios"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+semver = "1.0.27"
+sha2 = "0.11.0"
+shell-words = "1.1.1"
+tempfile = "3.27.0"
+toml = "1.1.6"
+clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"] }
+clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
+clap_mangen = "0.3.3"
+toml_edit = "0.25"
+minisign-verify = "0.3.0"
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "user"] }
+portable-pty = { version = "0.9.0", default-features = false }
+
+[dev-dependencies]
+jsonschema = { version = "0.58.4", default-features = false }
+# Provider setup refuses to start an official CLI login unless it owns an interactive terminal.
+# Covering the terminal path therefore needs a real one, not a flag that would weaken the check.
+portable-pty = { version = "0.9.0", default-features = false }
+# Signs test releases the way the release job signs real ones, so signature verification is
+# exercised end to end without a key on disk.
+minisign = "0.10.0"
+
+[lints]
+workspace = true

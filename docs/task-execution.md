@@ -1,0 +1,173 @@
+# Task execution
+
+The Task runtime is the common execution path behind `af task` and `af review`. A Task is the
+durable business abstraction: it captures exact inputs and authority, compiles a Pipeline into an
+execution plan, runs Workers through durable, budgeted Attempts, and records typed acceptance
+evidence that survives replay. Review is one Task kind and composes inside implementation under
+one Task budget and history. This page indexes the runtime's design decisions, contracts and
+walkthroughs; the decisions themselves are
+[ADR-0046](adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md) onward.
+
+See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
+expanded tree, Claude/Codex workflow and the automation boundary.
+
+## Fixed design decisions
+
+- Task is the durable business abstraction; review is a Task kind. Every Pipeline has public
+  typed inputs and outputs, and review composes inside implementation under one Task budget and
+  history ([ADR-0046](adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md),
+  [ADR-0052](adr/0052-capture-local-bindings-and-compose-review-acceptance.md)).
+- Shared Pipeline/Worker definitions and locks travel through Git; local bindings are captured
+  and cannot weaken mandatory acceptance
+  ([ADR-0053](adr/0053-resolve-shared-catalogs-only-during-explicit-sync.md)).
+- Every generated plan requires an authorized developer's signed approval before execution. The
+  exact plan, Task revision and authority bind that approval; model output never provides it
+  ([ADR-0056](adr/0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)).
+- Generated optimization children cross a second exact approval barrier. Preparation records the
+  complete baseline/candidate closure and pauses at `needs_plan_review` without reserving child
+  work. Task inspection shows the pending closure and its separate decision. Initial
+  `--execute` and outer `--confirm-plan` do not approve it
+  ([ADR-0106](adr/0106-authorize-experimental-children-separately.md)).
+- Every Attempt is reserved before its context is bound; failed, abandoned and late usage stays
+  charged on the same ledger, and a finished Task replays without spending
+  ([ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md),
+  [ADR-0066](adr/0066-reserve-task-attempts-before-binding-exact-context.md),
+  [ADR-0068](adr/0068-retain-inflight-task-usage-in-the-common-budget.md)).
+- An Attempt whose Provider reported no usage settles at zero with its usage recorded as unknown
+  and its cause, never at its reservation or an estimate: it releases its reservation, adds to no
+  budget and still counts against the Attempt limits, and every report shows it as unknown
+  ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
+- Result construction determines failed execution before acceptance: passing receipts cannot
+  make incomplete work Satisfied, and genuine negative verification remains Unsatisfied with its
+  evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
+- Targeted repair is a distinct acceptance type from complete Review, and a project must opt
+  into it ([ADR-0054](adr/0054-keep-targeted-repair-distinct-from-complete-review.md)).
+- Review commands run every Campaign through the common runtime. Missing common Task state
+  refuses instead of falling back, and a Campaign that holds pre-Task executor history (af < 0.9)
+  is refused ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+  [ADR-0113](adr/0113-ga-reads-only-what-ga-writes.md)).
+- Provider admission is a paid, captured node inside the Task's own limits; a catalog may
+  declare an explicit admission cost, and an omitted one means the fixed 4,096-token, 45-second
+  allowance, and native identity is rechecked before every private send
+  ([ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
+  [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md)).
+- A Worker's sandbox and a model Worker's tools derive from its captured effects alone. A review
+  Worker that declares `execute-checks` gets a shell in an ephemeral-write clone that seals
+  nothing back ([ADR-0118](adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)).
+- A code policy's `[warm]` table lets a `trusted_local` Task check reuse one machine-local,
+  toolchain-keyed build directory. The directory is bounded in bytes before, during and after
+  every check, and is removed rather than repaired. It is never inside a Worker sandbox, a
+  Snapshot or a delivered tree, and `require_container = true` refuses it. Warm or cold is
+  runtime evidence only
+  ([ADR-0131](adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
+- The kernel measures; a model never writes a number the kernel did not record. A code policy's
+  `[measures]` are run by the installed `measure` operator against a read-only Snapshot, and
+  `compare` folds two `af/Measurement@1` under a declared `[objectives]` entry in exact decimal
+  arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
+  it ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md),
+  [experiments](task-execution/experiments.md)).
+- A declared check may also run as a Remote Check: a pipeline's check node lists it in
+  `remote_checks`, and the kernel hands it to the repository's `pull_request` workflow through
+  two `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. The
+  operator's machine-local mapping supplies only the push target; without one the pipeline
+  cannot be planned, and its plan carries `publish-gate` and the `github:` destination. Local
+  checks run first; the result counts only after the merge ref reads back as the candidate tree,
+  and every remote fact is one `af/RemoteCheckEvidence@1`
+  ([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
+  [Remote Checks](task-execution/remote-checks.md)).
+- A report is accepted by an independent verifier, not by its author, and every report receipt
+  names the source Snapshot its repository citations were resolved against. A report Task
+  allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
+  is its only exit ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md),
+  [report Tasks](task-execution/report.md)).
+
+## Worker effects: what `execute-checks` grants a reviewer
+
+A Worker package declares its effects in `[signature] effects`. The Task's authority must allow
+each one before the plan compiler admits the Worker. One function,
+`review_pipeline::task::source::worker_access`, then turns the captured signature into a
+`review_runner::task::WorkerAccess`. The source environment picks the sandbox mode from it, and
+the native adapter picks its tool and sandbox flags from it. The two cannot disagree.
+
+| Declared effects | Access | Sandbox | Claude tools | Codex `-s` |
+|---|---|---|---|---|
+| `read-source`, or `execute-checks` on a Worker with neither the `review` role nor the `author` role and `read-source` | `ReadOnly` | read-only materialization | `Read,Glob,Grep` | `read-only` |
+| `execute-checks` on a Worker with `roles` containing `review` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back | `Read,Glob,Grep,Bash` | `workspace-write` |
+| `read-source` and `execute-checks` on a Worker with `roles` containing `author` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md)) | `Read,Glob,Grep,Bash` | `workspace-write` |
+| `write-source` with a kernel-captured `candidate` port | `WriteSource` | ephemeral-write clone, captured as the candidate | `Read,Glob,Grep,Edit,Write` | `workspace-write` |
+| `write-source` and `execute-checks` with a kernel-captured `candidate` port | `WriteSourceWithShell` | ephemeral-write clone, captured as the candidate minus shell scratch ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)) | `Read,Glob,Grep,Edit,Write,Bash` | `workspace-write` |
+
+What `execute-checks` grants a review Worker:
+
+- A writable clone of the exact source Snapshot. It is the same `Mode::EphemeralWrite` clone that
+  AF-owned preparation uses, and its declared Review inputs sit in the same place as in a
+  read-only run. The reviewer can build the candidate (`cargo build -p af`) and write its own
+  harness, for example a Python pseudo-terminal script under `target/uix-harness/`.
+- A shell. Claude gets `Bash` in the adapter-owned `--tools` and `--allowedTools` lists, still
+  under `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
+  `-s workspace-write`. Both are rooted at the sandbox root, which is also the working directory.
+- Anything it adds: build output, its own harness, the dotfiles the tools it runs write into
+  `HOME` (the sandbox root). All of it is discarded with the clone.
+
+What it never grants:
+
+- Any change to the declared source. At `finish` every Snapshot entry must seal byte-identical;
+  a modified or deleted entry fails the Attempt with `Execute-checks reviewer changed its declared source: <paths>`,
+  naming up to 20 paths and counting the rest. No candidate, Proposal or derived Snapshot is ever
+  produced from the clone.
+- Edit tools, MCP servers, a permission mode or any other flag. Package runner arguments stay
+  limited to one model and one effort, so no package, local binding or `.af/` policy can name a
+  tool that the declared effects do not derive.
+- Any shell for a Worker without the `review` role that does not also write source, except a
+  report author that declares `read-source` and `execute-checks`: it gets the review Worker's
+  clone and message ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md)).
+  Every other such Worker keeps its read-only source. A source-writing Worker that declares `execute-checks` gets a shell too; its
+  candidate excludes anything added under a new top-level name or as a new top-level dotfile
+  ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)).
+- More time or tokens. The Attempt's wall clock and token reservation apply unchanged. With this
+  access the adapter ends the whole process group when the model process exits, through the
+  supervised process-group path in `review-process`, so a shell child cannot outlive the Attempt.
+- Isolation beyond what the installed sandbox provider gives. The `trusted_local` provider is still
+  not security isolation; the Task's captured isolation requirement still decides admission.
+
+## Where the contracts live
+
+| Contract | Location |
+|---|---|
+| Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
+| Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
+| Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`task-report-v1`](../schemas/task-report-v1.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
+| Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
+| Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
+| Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
+
+## Walkthroughs
+
+Start with the Task-file walkthrough, then follow the composition pages in order.
+
+- [Task file](task-execution/task-file.md) — plan, explain, run, show, list and deliver a captured Task; state outside the checkout; exit codes.
+- [Task input bindings](task-execution/task-inputs.md) — the `inputs` table that binds a root port to a recorded Task's output, its plan-time resolution, and where it is implemented.
+- [Model bindings](task-execution/model-bindings.md) — native Claude/Codex Workers, Provider registry labels, token-free identity capture, paid capability admission, usage retention and cancellation.
+- [Local bindings](task-execution/local-bindings.md) — per-developer `af.task-bindings/1` files that replace Workers without weakening policy.
+- [Selection](task-execution/selection.md) — choosing a captured Pipeline before any Planner call; fallback, ranking and persisted refusal reasons.
+- [Generated plans](task-execution/generated-plans.md) — the fixed Planner, bounded compiler repair and exact signed developer approval.
+- [Shared catalogs](task-execution/shared-catalogs.md) — explicit Git catalog sync and immutable Task-kind profiles.
+- [Export](task-execution/export.md) — portable bundles, static contract fixtures and reuse without another Planner call.
+- [Starters](task-execution/starters.md) — `af catalog init` profiles and the builtin definitions with their Attempt bounds.
+- [Review Tasks](task-execution/review-task.md) — standalone Review through the common runtime and its exit codes.
+- [Embedded Review](task-execution/embedded-review.md) — implementation that requires Review and goal acceptance under one budget.
+- [Bounded repair](task-execution/bounded-repair.md) — targeted fixes after Findings, with a distinct acceptance guarantee.
+- [Heavy Review](task-execution/heavy-review.md) — carrying repair evidence into a complete second discovery Round.
+- [Issues](task-execution/issues.md) — read-only local/Jira requirement capture and explicit revision refresh.
+- [Documents](task-execution/document.md) — document Tasks with captured sources, content checks and independent acceptance.
+- [Experiments](task-execution/experiments.md) — measured baselines and candidates, the deterministic comparison and the evaluator gated on it.
+- [Remote Checks](task-execution/remote-checks.md) — declare a check's `remote` table, map it on one machine, and read the gate pull request's evidence.
+- [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
+- [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
+- [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
+- [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
+
+The operator-facing guide for the `implement` Task and local delivery is
+[Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in
+[Non-goals](non-goals.md).

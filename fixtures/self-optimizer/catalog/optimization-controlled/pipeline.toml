@@ -1,0 +1,238 @@
+"schema" = "af.pipeline/1"
+"name" = "builtin/optimization-controlled"
+"version" = "1.0.0"
+"max_attempts" = 81
+"max_parallel" = 1
+
+["contract"]
+
+["contract"."inputs"]
+
+["contract"."inputs"."source"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."source"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."requirements"]
+"artifact_type" = "af/Requirements@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."requirements"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."history"]
+"artifact_type" = "af/OptimizationHistory@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."history"."affinity"]
+"kind" = "unbound"
+
+["contract"."outputs"]
+
+["contract"."outputs"."comparison"]
+"artifact_type" = "af/ExperimentComparison@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = ["experiment"]
+
+["contract"."outputs"."comparison"."affinity"]
+"kind" = "unbound"
+
+["contract"."outputs"."snapshot"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."outputs"."snapshot"."affinity"]
+"kind" = "derived_from"
+"input" = "source"
+
+["contract"."outputs"."verification"]
+"artifact_type" = "af/OptimizationVerification@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = ["verified"]
+
+["contract"."outputs"."verification"."affinity"]
+"kind" = "derived_from"
+"input" = "source"
+
+["accepts"]
+"kinds" = ["optimize"]
+
+["accepts"."required_facts"]
+"experimental" = true
+"finalize" = true
+
+["slots"]
+
+["slots"."baseline"]
+"worker" = "builtin/optimization-check-baseline"
+"role" = "optimize"
+"input_type" = "af/OptimizationArmInput@1"
+"output_type" = "af/OptimizationArmReceipt@1"
+"min_attempts" = 0
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = ["candidate"]
+
+["slots"."candidate"]
+"worker" = "builtin/optimization-check-candidate"
+"role" = "optimize"
+"input_type" = "af/OptimizationArmInput@1"
+"output_type" = "af/OptimizationArmReceipt@1"
+"min_attempts" = 0
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = ["baseline"]
+
+["slots"."evaluator"]
+"worker" = "builtin/optimization-check-evaluator"
+"role" = "evaluate"
+"input_type" = "af/OptimizationEvaluationInput@1"
+"output_type" = "af/OptimizationEvaluation@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = ["baseline", "candidate"]
+
+[["nodes"]]
+"id" = "prepare"
+
+["nodes"."operator"]
+"op" = "optimization_prepare"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+[["nodes"]]
+"id" = "experiment"
+
+["nodes"."operator"]
+"op" = "optimization_experiment"
+"baseline_slot" = "baseline"
+"candidate_slot" = "candidate"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."configuration"]
+"kind" = "node"
+"node" = "prepare"
+"port" = "configuration"
+
+[["nodes"]]
+"id" = "evaluate"
+
+["nodes"."operator"]
+"op" = "verify"
+"slot" = "evaluator"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "node"
+"node" = "prepare"
+"port" = "candidate"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+["nodes"."inputs"."configuration"]
+"kind" = "node"
+"node" = "prepare"
+"port" = "configuration"
+
+["nodes"."inputs"."comparison"]
+"kind" = "node"
+"node" = "experiment"
+"port" = "comparison"
+
+[["nodes"]]
+"id" = "finalize"
+
+["nodes"."operator"]
+"op" = "optimization_finalize"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."candidate"]
+"kind" = "node"
+"node" = "prepare"
+"port" = "candidate"
+
+["nodes"."inputs"."configuration"]
+"kind" = "node"
+"node" = "prepare"
+"port" = "configuration"
+
+["nodes"."inputs"."comparison"]
+"kind" = "node"
+"node" = "experiment"
+"port" = "comparison"
+
+["nodes"."inputs"."evaluation"]
+"kind" = "node"
+"node" = "evaluate"
+"port" = "evaluation"
+
+["outputs"]
+
+["outputs"."comparison"]
+"kind" = "node"
+"node" = "experiment"
+"port" = "comparison"
+
+["outputs"."snapshot"]
+"kind" = "node"
+"node" = "finalize"
+"port" = "snapshot"
+
+["outputs"."verification"]
+"kind" = "node"
+"node" = "finalize"
+"port" = "verification"
+
+["coverage"]
+
+["coverage"."experiment"]
+"kind" = "node"
+"node" = "experiment"
+"port" = "comparison"
+
+["coverage"."verified"]
+"kind" = "node"
+"node" = "finalize"
+"port" = "verification"
