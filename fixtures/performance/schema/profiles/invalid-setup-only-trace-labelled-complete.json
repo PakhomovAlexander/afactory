@@ -1,0 +1,539 @@
+{
+  "schema": "af.perf-profiles/4",
+  "run_id": "diag_child",
+  "parent_run_id": "schema_fixture_run",
+  "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",
+  "plan_digest": "sha256:f0c587a00fcbb256b20d2055d3935ea553f426cafafc3629b71e916ccb54d696",
+  "registry_sha256": "sha256:a3d321ed024893ee3caad198fb423a67d3207cd1b006e25d95874598c293844c",
+  "verdict_effect": "none",
+  "selection": {
+    "mode": "automatic",
+    "limit": 1,
+    "parent_verdict_sha256": "sha256:11e221bd1b7fc99544f3f765b0c39dd2786e636c3422d6bec026d1ed03884cac",
+    "cases": [
+      {
+        "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+        "case_id": "cli_state_read",
+        "reason": "regressed"
+      }
+    ],
+    "not_selected": [
+      {
+        "instance_id": "cas_raw_get_small__package_small_envelope",
+        "reason": "over_case_limit"
+      }
+    ]
+  },
+  "sources": {
+    "baseline_sha": "1111111111111111111111111111111111111111",
+    "candidate_sha": "2222222222222222222222222222222222222222",
+    "authority_sha": "2222222222222222222222222222222222222222"
+  },
+  "recipe": {
+    "recipe_id": "linux_gnu_cpu_profile",
+    "kind": "cpu_profile",
+    "recipe_digest": "sha256:e1d8e552330911f9f779f85b6f2c00a15e790dcc3fbb3b28f5da1d660a30c5b8",
+    "base_recipe": "linux_gnu_native_release",
+    "features": [
+      "perf-control"
+    ],
+    "debug_symbols": true,
+    "frame_pointers": true,
+    "builds_sha256": "sha256:8459419d4cfe6b1acac1499410aacffaf38450db924d1002c9dd1f563d1bda55"
+  },
+  "capture": {
+    "frequency_hz": 997,
+    "duration_ms": 10000,
+    "event": "task-clock:u",
+    "dwarf_stack_bytes": 32768
+  },
+  "budgets": {
+    "wall_ms": {
+      "limit": 900000,
+      "used": 312000
+    },
+    "bytes": {
+      "limit": 134217728,
+      "administrative_reserve": 8388608,
+      "evidence_used": 52428800,
+      "evidence_overage": 0
+    },
+    "cases": {
+      "limit": 8,
+      "used": 1
+    },
+    "builds": {
+      "limit": 4,
+      "used": 2
+    }
+  },
+  "execution": {
+    "mode": "linux_container",
+    "containment": "pid_namespace",
+    "declared_containment": "linux_container",
+    "matches_environment": true,
+    "supervisor_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "machine_lock": "/tmp/af-perf-machine.lock",
+    "scratch_bound": "verified_disk_bounded",
+    "container": {
+      "image": "registry.invalid/af-perf-sample@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "runtime": "linux 27.3.1 cgroup2; image registry.invalid/af-perf-sample@sha256:0000000000000000000000000000000000000000000000000000000000000000; cpus 2,3",
+      "cpus": [
+        2,
+        3
+      ],
+      "scratch_limit_bytes": 2147483648
+    },
+    "retained_scratch": 0,
+    "started_unix_ms": 1760000000000,
+    "ended_unix_ms": 1760000312000,
+    "deadline_unix_ms": 1760000900000,
+    "host": "fixture-host"
+  },
+  "tools": [
+    {
+      "name": "inferno_flamegraph",
+      "state": "available",
+      "executable_sha256": "sha256:f8a8f21a3505b68568afbef2a7ea3c4a9118e5fc8097099ca07fb39fe919ee1d",
+      "package": "inferno",
+      "declared_version": "0.12.8",
+      "reported_version": null,
+      "version_provenance": "declared_pin_only",
+      "detail": "it reports no version; the declared pin and its SHA-256 identify it",
+      "provisioning": "cargo install --locked --version 0.12.8 inferno"
+    },
+    {
+      "name": "perf",
+      "state": "available",
+      "executable_sha256": "sha256:342edb77c95f94da5f1c2e5a397d5467ba9e09b141e69dfa182cb243cb5b3b32",
+      "package": "linux-perf",
+      "declared_version": null,
+      "reported_version": "perf version 6.1.190",
+      "version_provenance": "tool_reported",
+      "detail": "capability: 1993 task-clock:u samples",
+      "provisioning": "install perf"
+    },
+    {
+      "name": "samply",
+      "state": "unavailable",
+      "executable_sha256": null,
+      "package": "samply",
+      "declared_version": null,
+      "reported_version": null,
+      "version_provenance": "unknown",
+      "detail": "samply does not run on linux",
+      "provisioning": "install samply"
+    }
+  ],
+  "captures": [
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "baseline",
+      "attempt": 1,
+      "tool": "perf",
+      "subject": "cli_process",
+      "binary_sha256": "sha256:9be5114811dd45bd3344d8b60b493ab93181718c814af15906171e0b0d85a07f",
+      "event": "task-clock:u",
+      "frequency_hz": 997,
+      "duration_ms": 10000,
+      "effective_frequency_hz": "1993/2",
+      "unwind": "frame_pointer",
+      "dwarf_stack_bytes": null,
+      "region": {
+        "mechanism": "whole_process",
+        "process": "fresh_process",
+        "repetitions": 40,
+        "setup_ms": "812.5",
+        "region_ms": "10000.25",
+        "enabled_ms": "10000.25",
+        "wall_ms": "11020",
+        "observed": true,
+        "truncated_at_cap": false,
+        "stopped": "duration_reached"
+      },
+      "samples": 9965,
+      "frames": 59800,
+      "unknown_frames": 11960,
+      "unknown_frame_ratio": "1/5",
+      "symbols": {
+        "state": "retained",
+        "build_ids": [
+          "0123456789abcdef0123456789abcdef01234567"
+        ],
+        "binary_build_id_present": true
+      },
+      "artifacts": [
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/collapsed.folded",
+          "bytes": 100,
+          "sha256": "sha256:5727ca72d45ee16998e8ae58f82f7881b0176cb8f12c309dc6a0793c78ab2899"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/rep-0001.data",
+          "bytes": 100,
+          "sha256": "sha256:b2d858546d17efc18677e647ae6ad336ee56c0d6a1e32b2e4e277695ce6921a0"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/rep-0001.script",
+          "bytes": 100,
+          "sha256": "sha256:d273eb059e142b93dd51734d5ab2b90e04ee8f2aa4174b8fe0c8a39fd87177b3"
+        }
+      ],
+      "omission": null,
+      "losses": {
+        "state": "decoded",
+        "lost_event_records": 0,
+        "lost_events": 0,
+        "lost_sample_records": 0,
+        "potentially_lost_samples": 0,
+        "detail": ""
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "baseline",
+      "attempt": 2,
+      "tool": "perf",
+      "subject": "cli_process",
+      "binary_sha256": "sha256:9be5114811dd45bd3344d8b60b493ab93181718c814af15906171e0b0d85a07f",
+      "event": "task-clock:u",
+      "frequency_hz": 997,
+      "duration_ms": 10000,
+      "effective_frequency_hz": "1993/2",
+      "unwind": "dwarf",
+      "dwarf_stack_bytes": 32768,
+      "region": {
+        "mechanism": "whole_process",
+        "process": "fresh_process",
+        "repetitions": 40,
+        "setup_ms": "812.5",
+        "region_ms": "10000.25",
+        "enabled_ms": "10000.25",
+        "wall_ms": "11020",
+        "observed": true,
+        "truncated_at_cap": false,
+        "stopped": "duration_reached"
+      },
+      "samples": 9965,
+      "frames": 59800,
+      "unknown_frames": 598,
+      "unknown_frame_ratio": "1/100",
+      "symbols": {
+        "state": "retained",
+        "build_ids": [
+          "0123456789abcdef0123456789abcdef01234567"
+        ],
+        "binary_build_id_present": true
+      },
+      "artifacts": [
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/collapsed.folded",
+          "bytes": 100,
+          "sha256": "sha256:f006f843b5e6b79f8bca29ee89b090b235bf977fd8f826d7dab328fc31e0f573"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/rep-0001.data",
+          "bytes": 100,
+          "sha256": "sha256:77fe0a8ea3eaa6d579fd1c5daf931fcf8c4b88d247d4a67e8b4e016934fe3e57"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/rep-0001.script",
+          "bytes": 100,
+          "sha256": "sha256:7704a919259b9ae574cd52a90dca17cca4adc42096a05d840f5c3afe38603179"
+        }
+      ],
+      "omission": null,
+      "losses": {
+        "state": "decoded",
+        "lost_event_records": 0,
+        "lost_events": 0,
+        "lost_sample_records": 0,
+        "potentially_lost_samples": 0,
+        "detail": ""
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "candidate",
+      "attempt": 1,
+      "tool": "perf",
+      "subject": "cli_process",
+      "binary_sha256": "sha256:49573a3bf4dcdbb9f990e1e99eb610ca804b8c403c0327254571179083e1088c",
+      "event": "task-clock:u",
+      "frequency_hz": 997,
+      "duration_ms": 10000,
+      "effective_frequency_hz": "1993/2",
+      "unwind": "frame_pointer",
+      "dwarf_stack_bytes": null,
+      "region": {
+        "mechanism": "whole_process",
+        "process": "fresh_process",
+        "repetitions": 40,
+        "setup_ms": "812.5",
+        "region_ms": "10000.25",
+        "enabled_ms": "10000.25",
+        "wall_ms": "11020",
+        "observed": true,
+        "truncated_at_cap": false,
+        "stopped": "duration_reached"
+      },
+      "samples": 9965,
+      "frames": 59800,
+      "unknown_frames": 11960,
+      "unknown_frame_ratio": "1/5",
+      "symbols": {
+        "state": "retained",
+        "build_ids": [
+          "0123456789abcdef0123456789abcdef01234567"
+        ],
+        "binary_build_id_present": true
+      },
+      "artifacts": [
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/collapsed.folded",
+          "bytes": 100,
+          "sha256": "sha256:41621b1df4292e478eb16e920881727332da08761f528c7c15deea0c5cce1e82"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/rep-0001.data",
+          "bytes": 100,
+          "sha256": "sha256:b3f1d6ad10618c129eef965985c5c6f9d804aae83f8a1bd68ec9ec1e6a2c6c99"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/rep-0001.script",
+          "bytes": 100,
+          "sha256": "sha256:f543795cfaa1ec9cd11cc6befe54043f23f126b4df3e4ce094cb119af2472224"
+        }
+      ],
+      "omission": null,
+      "losses": {
+        "state": "decoded",
+        "lost_event_records": 0,
+        "lost_events": 0,
+        "lost_sample_records": 0,
+        "potentially_lost_samples": 0,
+        "detail": ""
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "candidate",
+      "attempt": 2,
+      "tool": "perf",
+      "subject": "cli_process",
+      "binary_sha256": "sha256:49573a3bf4dcdbb9f990e1e99eb610ca804b8c403c0327254571179083e1088c",
+      "event": "task-clock:u",
+      "frequency_hz": 997,
+      "duration_ms": 10000,
+      "effective_frequency_hz": "1993/2",
+      "unwind": "dwarf",
+      "dwarf_stack_bytes": 32768,
+      "region": {
+        "mechanism": "whole_process",
+        "process": "fresh_process",
+        "repetitions": 40,
+        "setup_ms": "812.5",
+        "region_ms": "10000.25",
+        "enabled_ms": "10000.25",
+        "wall_ms": "11020",
+        "observed": true,
+        "truncated_at_cap": false,
+        "stopped": "duration_reached"
+      },
+      "samples": 9965,
+      "frames": 59800,
+      "unknown_frames": 598,
+      "unknown_frame_ratio": "1/100",
+      "symbols": {
+        "state": "retained",
+        "build_ids": [
+          "0123456789abcdef0123456789abcdef01234567"
+        ],
+        "binary_build_id_present": true
+      },
+      "artifacts": [
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/collapsed.folded",
+          "bytes": 100,
+          "sha256": "sha256:14b438c27bc03e38e794efc89646aea9b22b04b4faf28a81bd93ec816428cfe5"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/rep-0001.data",
+          "bytes": 100,
+          "sha256": "sha256:341e52a49132e765c5d03316bc757ffd566606233b3b5870fad1bc298ef7279f"
+        },
+        {
+          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/rep-0001.script",
+          "bytes": 100,
+          "sha256": "sha256:3e5049062d3b862cebd87d1467d0ee17cea9e315eb6ea57e75f30af1bc7d563c"
+        }
+      ],
+      "omission": null,
+      "losses": {
+        "state": "decoded",
+        "lost_event_records": 0,
+        "lost_events": 0,
+        "lost_sample_records": 0,
+        "potentially_lost_samples": 0,
+        "detail": ""
+      }
+    }
+  ],
+  "renders": [
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "kind": "baseline",
+      "color": "sample_count",
+      "inputs": [
+        "sha256:96955e86f440d8b9f82894ad4aad4a942d99255b6b8e73a7cf01f6ccd597bd74"
+      ],
+      "original": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/baseline.original.svg",
+        "bytes": 100,
+        "sha256": "sha256:4c9a67a92cff6c1f57b78daa9c456d2e4a6d2f1885c1ae9e30be0af1441fda0c"
+      },
+      "sanitized": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/baseline.svg",
+        "bytes": 100,
+        "sha256": "sha256:117ddedc1ca3cd47fcee95b42102b0387246884b1465ea38b66934f8b9739df5"
+      },
+      "removed": {
+        "elements": 1,
+        "attributes": 2
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "kind": "candidate",
+      "color": "sample_count",
+      "inputs": [
+        "sha256:54f3fee42be117411015948aec247502280ac256892fbe48b9bad66330a124f6"
+      ],
+      "original": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/candidate.original.svg",
+        "bytes": 100,
+        "sha256": "sha256:1349c8c8b38eb0c6478118b9c4ffee4c334f358cd045439ef0be0e73e692c04f"
+      },
+      "sanitized": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/candidate.svg",
+        "bytes": 100,
+        "sha256": "sha256:e099c4758e47ac51bce1f1e3fe93b80ff71e4cc352f6fae9b969cd9c8c03dfcf"
+      },
+      "removed": {
+        "elements": 1,
+        "attributes": 2
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "kind": "difference_forward",
+      "color": "sample_share_change",
+      "inputs": [
+        "sha256:96955e86f440d8b9f82894ad4aad4a942d99255b6b8e73a7cf01f6ccd597bd74",
+        "sha256:54f3fee42be117411015948aec247502280ac256892fbe48b9bad66330a124f6"
+      ],
+      "original": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/difference_forward.original.svg",
+        "bytes": 100,
+        "sha256": "sha256:f4669464b09863abb8c7899f4a6552d33e6ff6205007268a543d96905bc49ef1"
+      },
+      "sanitized": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/difference_forward.svg",
+        "bytes": 100,
+        "sha256": "sha256:5fe8cc5ce261e9069aabf8fe67a090b2b545994106f9fd43068aac08046f08f7"
+      },
+      "removed": {
+        "elements": 1,
+        "attributes": 2
+      }
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "kind": "difference_reverse",
+      "color": "sample_share_change",
+      "inputs": [
+        "sha256:54f3fee42be117411015948aec247502280ac256892fbe48b9bad66330a124f6",
+        "sha256:96955e86f440d8b9f82894ad4aad4a942d99255b6b8e73a7cf01f6ccd597bd74"
+      ],
+      "original": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/difference_reverse.original.svg",
+        "bytes": 100,
+        "sha256": "sha256:4367a9395f7bf0ed429b2f9d06f9602d4ff56443e261ab1543333e0481eb17f4"
+      },
+      "sanitized": {
+        "path": "flamegraphs/cli_state_read__command_task_show_state_cli_state_10000/difference_reverse.svg",
+        "bytes": 100,
+        "sha256": "sha256:7c037b7e20df8536c1dbe30c811211a1e83dc30f554797675621550cb02460e3"
+      },
+      "removed": {
+        "elements": 1,
+        "attributes": 2
+      }
+    }
+  ],
+  "traces": [
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "baseline",
+      "subject": "cli_process",
+      "region_phase": "cli_command",
+      "region_spans": 1,
+      "coverage": "complete",
+      "spans": 2,
+      "dropped": 0,
+      "open": 0,
+      "async_spans": 0,
+      "overhead": null,
+      "artifacts": [
+        {
+          "path": "traces/cli_state_read__command_task_show_state_cli_state_10000/baseline/perfetto.json",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "path": "traces/cli_state_read__command_task_show_state_cli_state_10000/baseline/trace.json",
+          "bytes": 100,
+          "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "omission": null
+    },
+    {
+      "instance_id": "cli_state_read__command_task_show_state_cli_state_10000",
+      "side": "candidate",
+      "subject": "cli_process",
+      "region_phase": "cli_command",
+      "region_spans": 0,
+      "coverage": "complete",
+      "spans": 65536,
+      "dropped": 4,
+      "open": 0,
+      "async_spans": 0,
+      "overhead": null,
+      "artifacts": [
+        {
+          "path": "traces/cli_state_read__command_task_show_state_cli_state_10000/candidate/perfetto.json",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "path": "traces/cli_state_read__command_task_show_state_cli_state_10000/candidate/trace.json",
+          "bytes": 100,
+          "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "omission": null
+    }
+  ],
+  "counters": [],
+  "omissions": [
+    {
+      "kind": "trace_overhead",
+      "instance_id": null,
+      "side": null,
+      "reason": "not_requested",
+      "detail": "a CPU profile recipe records no trace",
+      "reproduction": null
+    }
+  ]
+}

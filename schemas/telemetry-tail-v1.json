@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-tail:1",
+  "title": "af/telemetry-tail@1",
+  "description": "One line of `af telemetry tail --json` (design §10; ADR-0153): a span end or an event as its writer wrote it to a live segment, with the segment and the record's `seq`, the span (its name; for an event, the span it is on), the run's `trace_id` when the span belongs to one, the time as unix nanoseconds in a decimal string, a span end's duration in microseconds (when its start was read) and status, and the record's attributes as written. While a run is open a record reaches the segment within `[telemetry] flush_latency_ms` of its creation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "segment_id",
+    "seq",
+    "record",
+    "span_id",
+    "span",
+    "time_unix_ns",
+    "attributes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-tail@1"
+    },
+    "segment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "record": {
+      "enum": [
+        "span_end",
+        "event"
+      ]
+    },
+    "span_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "span": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "time_unix_ns": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)?$"
+    },
+    "duration_us": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "error",
+        "unset"
+      ]
+    },
+    "attributes": {
+      "type": "object"
+    }
+  }
+}

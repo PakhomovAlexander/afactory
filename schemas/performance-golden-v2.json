@@ -1,0 +1,495 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-golden:2",
+  "title": "af.perf-golden/2",
+  "description": "fixtures/performance/golden/native.json: the native oracle's golden entries, derived by perflab.reference from reference bytes and explicit semantic facts, never from a judged execution (ADR-0163).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-golden/2"
+    },
+    "generator": {
+      "const": "perflab.reference/1"
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task_lease_ms": {
+          "const": 15000
+        },
+        "artifact_envelope_cap_bytes": {
+          "const": 8388608
+        },
+        "policy_id": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "task_lease_ms",
+        "artifact_envelope_cap_bytes",
+        "policy_id"
+      ]
+    },
+    "fixtures": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "canonical_small"
+                },
+                "canonical": {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 4096
+                },
+                "content_id": {
+                  "$ref": "#/$defs/digest"
+                },
+                "repetitions": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "kind",
+                "canonical",
+                "content_id",
+                "repetitions"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "event_log"
+                },
+                "events": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                },
+                "prefix_events": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 16
+                },
+                "relevant_events": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "kind",
+                "events",
+                "prefix_events",
+                "relevant_events"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "file_tree"
+                },
+                "file_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1048576
+                },
+                "trees": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "maxProperties": 8,
+                  "patternProperties": {
+                    "^[1-9][0-9]{0,6}$": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "files": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10000000
+                        },
+                        "manifest_digest": {
+                          "$ref": "#/$defs/digest"
+                        }
+                      },
+                      "required": [
+                        "files",
+                        "manifest_digest"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "kind",
+                "file_bytes",
+                "trees"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "typed_envelope"
+                },
+                "artifact_type": {
+                  "type": "string",
+                  "enum": [
+                    "af/Requirements@1",
+                    "af/TaskPackage@1"
+                  ]
+                },
+                "serialized_envelope_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8388608
+                },
+                "generation": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "author_package_padding"
+                        },
+                        "padding_digits": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 2147483648
+                        },
+                        "padding_tens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "padding_digits",
+                        "padding_tens"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "requirements_text"
+                        },
+                        "text_bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text_bytes"
+                      ]
+                    }
+                  ]
+                },
+                "artifact_id": {
+                  "$ref": "#/$defs/digest"
+                },
+                "content_id": {
+                  "$ref": "#/$defs/digest"
+                },
+                "envelope_blob_id": {
+                  "$ref": "#/$defs/digest"
+                }
+              },
+              "required": [
+                "kind",
+                "artifact_type",
+                "serialized_envelope_bytes",
+                "generation",
+                "artifact_id",
+                "content_id",
+                "envelope_blob_id"
+              ]
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "cap_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "admitted": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "serialized_envelope_bytes": {
+              "const": 8388608
+            },
+            "text_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "artifact_id": {
+              "$ref": "#/$defs/digest"
+            }
+          },
+          "required": [
+            "serialized_envelope_bytes",
+            "text_bytes",
+            "artifact_id"
+          ]
+        },
+        "refused": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "serialized_envelope_bytes": {
+              "const": 8388609
+            },
+            "text_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "serialized_envelope_bytes",
+            "text_bytes"
+          ]
+        }
+      },
+      "required": [
+        "admitted",
+        "refused"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "case_id": {
+            "$ref": "#/$defs/id"
+          },
+          "contract_id": {
+            "$ref": "#/$defs/id"
+          },
+          "parameters": {
+            "type": "object",
+            "minProperties": 0,
+            "maxProperties": 4,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/id"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000000000
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "fixture_digest": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "digest_of": {
+            "type": "string",
+            "enum": [
+              "reference_bytes",
+              "semantic"
+            ]
+          },
+          "semantic": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "basis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "instance_id",
+          "case_id",
+          "contract_id",
+          "parameters",
+          "fixture_digest",
+          "digest",
+          "count",
+          "digest_of",
+          "semantic",
+          "basis"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 128
+    },
+    "seeds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "case_id": {
+            "$ref": "#/$defs/id"
+          },
+          "contract_id": {
+            "$ref": "#/$defs/id"
+          },
+          "parameters": {
+            "type": "object",
+            "minProperties": 0,
+            "maxProperties": 4,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/id"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000000000
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "fixture_digest": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "digest_of": {
+            "type": "string",
+            "enum": [
+              "reference_bytes",
+              "semantic"
+            ]
+          },
+          "semantic": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "basis": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "instance_id",
+          "case_id",
+          "contract_id",
+          "parameters",
+          "fixture_digest",
+          "digest",
+          "count",
+          "digest_of",
+          "semantic",
+          "basis"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 32
+    }
+  },
+  "required": [
+    "schema",
+    "generator",
+    "note",
+    "constants",
+    "fixtures",
+    "cap_boundary",
+    "entries",
+    "seeds"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-check-sequence-policy:1",
+  "title": "TaskReviewCheckSequencePolicy@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authority_policy_id",
+    "pipeline_policy_id",
+    "gate_execution_policy_id",
+    "ordered_check_names",
+    "check_timeout_ms"
+  ],
+  "properties": {
+    "authority_policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "pipeline_policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gate_execution_policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ordered_check_names": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 63,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "\\S"
+      }
+    },
+    "check_timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "$comment": "Compilation requires gate_execution_policy_id equal pipeline_policy_id and rederives the exact Gate binding, declared check order and commands; byte lengths are also validated in Rust. At most 63 checks leave one existing common-settlement raw artifact slot for the whole-sequence summary."
+}
