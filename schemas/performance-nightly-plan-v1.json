@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-nightly-plan:1",
+  "title": "af.nightly-plan/1",
+  "description": "What one night would build (ADR-0265): the newest green first-parent commit of main and every red commit walked over, the previous night, the stable baseline, the nightly tag and version, and whether the night is skipped because main has not moved.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.nightly-plan/1"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "build",
+        "skipped"
+      ]
+    },
+    "date": {
+      "type": "string",
+      "maxLength": 10,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "tag": {
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 96,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-nightly\\.[0-9]{8}$"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "head_committed_unix": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "sha",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "previous_head_sha": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/git_sha"
+        }
+      ]
+    },
+    "previous_tag": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 19,
+          "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+        }
+      ]
+    },
+    "baseline_tag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "baseline_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "cargo_version_on_main": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "skip_reason": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "date",
+    "tag",
+    "version",
+    "head_sha",
+    "head_committed_unix",
+    "rejected",
+    "previous_head_sha",
+    "previous_tag",
+    "baseline_tag",
+    "baseline_sha",
+    "cargo_version_on_main",
+    "skip_reason"
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

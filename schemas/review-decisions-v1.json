@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-decisions:1",
+  "title": "Explicit native Review decisions af/ReviewDecisions@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "review_id",
+    "policy_id",
+    "subject_id",
+    "snapshot_id",
+    "actor",
+    "reason",
+    "actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.review-decisions/1"
+    },
+    "review_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "subject_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "base_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "demand_id",
+              "content"
+            ],
+            "properties": {
+              "kind": {
+                "const": "attach"
+              },
+              "demand_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 65536
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "demand_id",
+              "evidence",
+              "reason"
+            ],
+            "properties": {
+              "kind": {
+                "const": "satisfy"
+              },
+              "demand_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "evidence": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "artifact_id"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "recorded"
+                      },
+                      "artifact_id": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "kind",
+                      "action"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "attached"
+                      },
+                      "action": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 31
+                      }
+                    }
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "demand_id",
+              "satisfaction_id",
+              "reason"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reuse"
+              },
+              "demand_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "satisfaction_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "demand_id",
+              "evidence_id",
+              "reason"
+            ],
+            "properties": {
+              "kind": {
+                "const": "reuse_evidence"
+              },
+              "demand_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "evidence_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "waiver"
+            ],
+            "properties": {
+              "kind": {
+                "const": "waive"
+              },
+              "waiver": {
+                "$ref": "urn:review-kernel:schema:demand-waiver:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "resolution"
+            ],
+            "properties": {
+              "kind": {
+                "const": "resolve"
+              },
+              "resolution": {
+                "allOf": [
+                  {
+                    "$ref": "urn:review-kernel:schema:finding-resolution:1"
+                  },
+                  {
+                    "properties": {
+                      "outcome": {
+                        "enum": [
+                          "rejected",
+                          "wontfix_tracked"
+                        ]
+                      },
+                      "evidence_ids": {
+                        "type": "array",
+                        "minItems": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "challenge"
+            ],
+            "properties": {
+              "kind": {
+                "const": "challenge"
+              },
+              "challenge": {
+                "$ref": "urn:review-kernel:schema:resolution-challenge:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "time"
+            ],
+            "properties": {
+              "kind": {
+                "const": "policy_time"
+              },
+              "time": {
+                "$ref": "urn:review-kernel:schema:policy-time:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "grouping",
+              "from_view_id",
+              "into_view_id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "group"
+              },
+              "grouping": {
+                "$ref": "urn:review-kernel:schema:finding-grouping:1"
+              },
+              "from_view_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "into_view_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

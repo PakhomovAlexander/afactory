@@ -1,0 +1,69 @@
+{
+  "schema": "af/telemetry-status@1",
+  "level": "spans",
+  "perturbing": false,
+  "directory": "~/af/telemetry",
+  "exists": true,
+  "bytes": {
+    "total": 241664,
+    "max_bytes": 4294967296,
+    "entries": [
+      {
+        "kind": "segment",
+        "name": "1792675940832-85555-e2869ee3",
+        "state": "sealed",
+        "exit": "error",
+        "capture": "complete",
+        "bytes": 12288
+      },
+      {
+        "kind": "blobs",
+        "name": "blobs",
+        "bytes": 0
+      },
+      {
+        "kind": "index",
+        "name": "index.sqlite",
+        "bytes": 229376
+      },
+      {
+        "kind": "temporary",
+        "name": "temporary",
+        "bytes": 0
+      },
+      {
+        "kind": "locks",
+        "name": "locks",
+        "bytes": 0
+      }
+    ]
+  },
+  "segments": {
+    "live": 0,
+    "unsealed": 0,
+    "sealed": 1,
+    "corrupt": 0
+  },
+  "runs": 1,
+  "withheld_attempts": 0,
+  "missing_blobs": 0,
+  "blob_verification": "verified",
+  "index": {
+    "state": "fresh",
+    "ingested_segments": 0,
+    "ingested_records": 0,
+    "ingested_bytes": 0
+  },
+  "problems": [],
+  "unreadable": [],
+  "registered": [
+    {
+      "path": "/private/scratch/sample/af/telemetry",
+      "exists": true,
+      "current": true,
+      "first_use_unix_ms": 1792675940832,
+      "last_use_unix_ms": 1792675940832,
+      "overlap": "none"
+    }
+  ]
+}

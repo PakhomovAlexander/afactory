@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source"
+  ],
+  "properties": {
+    "source": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object"
+      }
+    },
+    "knowledge": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object"
+      }
+    },
+    "knowledge_query": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

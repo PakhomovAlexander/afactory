@@ -1,0 +1,58 @@
+"schema" = "af.task-catalog/2"
+"code_policy" = ".af/code-policy.toml"
+
+["packages"]
+
+["packages"."fixture/bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:8d31fd68781c02346942a51d34df828a90dcbe12d1c2300e0dad4cc41f8c2c94"
+"path" = ".af/task-packages/fixture/bugs"
+
+["packages"."fixture/correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:250fa09c833f904cb9fa23c995d62bcff07a100bc051b41af34d2990244d93f8"
+"path" = ".af/task-packages/fixture/correctness"
+
+# Placeholders: this repository is `embedded-review` with a `history` output added to the
+# reviewed Pipeline, a `fixture/plain` Pipeline for the two successors and an optional
+# `history` input on the implementer. The test pins every digest from the copied tree before
+# it commits, exactly as `crates/af/tests/task_acceptance.rs` does for the fixtures it edits.
+["packages"."fixture/implementation"]
+version = "1.0.1"
+digest = "sha256:e0098db8f19f395f409c49da0797c385e06411339df2f52c7324b30bf624b42a"
+"path" = ".af/task-packages/fixture/implementation"
+
+["packages"."fixture/plain"]
+version = "1.0.1"
+digest = "sha256:32d310c3136329c41864ccccf758d84d3dc9a1479603c667395b63a381d551d5"
+"path" = ".af/task-packages/fixture/plain"
+
+["packages"."fixture/implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+"path" = ".af/task-packages/fixture/implementer"
+
+["packages"."fixture/review"]
+version = "1.0.1"
+digest = "sha256:898ab1fea90db7cf9d917ddf49575458b85bb496af5c1920eb06c98390ab6467"
+"path" = ".af/task-packages/fixture/review"
+
+["packages"."fixture/evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:4a1d03705b92bb7dda61a95f4ccdf2c03bfbac7a0f950cf6230f237c98f1ca4e"
+"path" = ".af/task-packages/fixture/evaluator"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = true
+"distinct_providers" = false
+"distinct_models" = false
+
+["review"]
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 1
+
+["review"."reviewers"]
+"bugs" = "required"
+"correctness" = "required"
