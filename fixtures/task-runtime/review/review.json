@@ -1,0 +1,22 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "review-cli",
+  "kind": "review",
+  "goal": "Review the captured source",
+  "pipeline": {
+    "name": "fixture/review",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "facts": {},
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 3,
+    "wall_ms": 60000,
+    "verification": {
+      "tokens": 0,
+      "attempts": 3,
+      "wall_ms": 15000
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:shared-task-catalog:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "packages"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.shared-task-catalog/1"
+    },
+    "packages": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "maxProperties": 128,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "digest",
+          "path"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "digest": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f])(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+          }
+        }
+      }
+    },
+    "path_base": {
+      "enum": [
+        "repository",
+        "manifest"
+      ]
+    },
+    "imports": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f])(?!(?:.*\\/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+      }
+    }
+  }
+}

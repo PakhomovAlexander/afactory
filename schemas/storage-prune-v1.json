@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:storage-prune:1",
+  "title": "af/storage-prune@1",
+  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "applied",
+    "collection",
+    "max_bytes",
+    "total_before",
+    "total_after",
+    "stop",
+    "removals",
+    "gate_cleanups",
+    "registry_dropped",
+    "failures"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/storage-prune@1"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "collection": {
+      "type": "boolean"
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_before": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_after": {
+      "$ref": "#/$defs/bytes"
+    },
+    "stop": {
+      "enum": [
+        "fits",
+        "nothing_evictable"
+      ]
+    },
+    "removals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "rule"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "warm_key",
+              "workspace",
+              "campaign",
+              "task",
+              "unreadable_store",
+              "version"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "rule": {
+            "enum": [
+              "collection",
+              "budget"
+            ]
+          }
+        }
+      }
+    },
+    "gate_cleanups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "outcome",
+          "summary"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "registry_dropped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

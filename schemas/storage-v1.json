@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:storage:1",
+  "title": "af/storage@1",
+  "description": "`af storage --json` (ADR-0144): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are allocated bytes (a finished Task's are the bytes only it reaches). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "max_bytes",
+    "total_bytes",
+    "min_free_bytes",
+    "free_bytes",
+    "kinds",
+    "entries",
+    "problems"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/storage@1"
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "min_free_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "free_bytes": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kinds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "entries",
+          "bytes",
+          "oldest_use_unix_ms",
+          "newest_use_unix_ms"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          },
+          "entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "oldest_use_unix_ms": {
+            "$ref": "#/$defs/optional_time"
+          },
+          "newest_use_unix_ms": {
+            "$ref": "#/$defs/optional_time"
+          }
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "last_use_unix_ms"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "last_use_unix_ms": {
+            "$ref": "#/$defs/bytes"
+          },
+          "in_use": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "optional_time": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "warm_key",
+        "workspace",
+        "campaign",
+        "task",
+        "task_store",
+        "unreadable_store",
+        "version"
+      ]
+    }
+  }
+}
