@@ -1185,6 +1185,25 @@ class ReleaseCLI(unittest.TestCase):
         path.write_bytes(original)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_exact_native_and_performance_schema_identities_are_admitted(self):
+        policy = json.loads((ROOT / 'scripts/release-policy.json').read_text())
+        expected = {
+            'schemas/scenario-v6.json': 'af/scenario@6',
+            'schemas/performance-executor-v5.json': 'af.perf-executor/5',
+            'schemas/performance-history-v2.json': 'af.perf-history/2',
+            'schemas/performance-equivalence-v2.json': 'af.perf-equivalence/2',
+            'schemas/performance-schedule-v3.json': 'af.perf-schedule/3',
+        }
+        for name, identity in expected.items():
+            with self.subTest(schema=name):
+                self.assertIn(identity, policy['required_features'][name])
+                document = json.loads((self.source / name).read_text())
+                self.assertEqual(document['properties']['schema']['const'], identity)
+        self.cli('plan')
+        self.assertEqual(self.state_value()['status'], 'planned')
+        self.assertFalse((self.state / 'candidate').exists())
+        self.assertFalse(self.data().get('effects'))
+
     def test_declared_schema_identity_is_required_with_rebound_capabilities(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('release_contract', ROOT / 'scripts/release-contract.py')
@@ -1196,46 +1215,57 @@ class ReleaseCLI(unittest.TestCase):
         for name, tokens in policy['required_features'].items():
             if not name.startswith('schemas/'):
                 continue
-            with self.subTest(schema=name):
-                path = self.source / name
-                original = path.read_bytes()
-                document = json.loads(original)
-                expected = document['properties']['schema']['const']
-                document['properties']['schema']['const'] = 'af/foreign@1'
-                document['description'] = 'Retains expected identity: ' + expected
-                path.write_text(json.dumps(document))
-                self.assertTrue(all(token in path.read_text() for token in tokens))
-                declaration = json.loads(original_declaration)
-                declaration['capabilities'] = contract.capabilities(self.source)
-                declaration_path.write_text(json.dumps(declaration))
-                # Exact-byte preflight accepts these explicitly reviewed bytes;
-                # fetched-source identity admission must independently refuse them.
-                self.assertEqual(contract.check(self.source), '0.15.1-rc.3')
-                self.commit('foreign declared identity with reviewed capabilities')
-                self.git('-C', self.source, 'push', str(self.remote), 'main')
-                result = self.cli('plan', ok=False)
-                self.assertIn('source_inclusion: foreign required schema identity ' + name, result.stderr)
-                self.assertFalse((self.state / 'candidate').exists())
-                self.assertFalse(self.data().get('effects'))
-                path.write_bytes(original)
-                declaration_path.write_bytes(original_declaration)
+            expected = json.loads((self.source / name).read_bytes())['properties']['schema']['const']
+            for declared in ('af/foreign@1', 'af.perf-foreign/1', expected.rstrip('0123456789') + '0'):
+                with self.subTest(schema=name, declared=declared):
+                    path = self.source / name
+                    original = path.read_bytes()
+                    document = json.loads(original)
+                    expected = document['properties']['schema']['const']
+                    document['properties']['schema']['const'] = declared
+                    document['description'] = 'Retains expected identity: ' + expected
+                    path.write_text(json.dumps(document))
+                    self.assertTrue(all(token in path.read_text() for token in tokens))
+                    declaration = json.loads(original_declaration)
+                    declaration['capabilities'] = contract.capabilities(self.source)
+                    declaration_path.write_text(json.dumps(declaration))
+                    # Rebinding bytes does not bypass generated performance schema parity.
+                    # Controller identity admission must independently refuse both families.
+                    if name.startswith('schemas/performance-'):
+                        with self.assertRaisesRegex(ValueError, 'is stale'):
+                            contract.check(self.source)
+                    else:
+                        self.assertEqual(contract.check(self.source), '0.15.1-rc.3')
+                    self.commit('foreign declared identity with reviewed capabilities')
+                    self.git('-C', self.source, 'push', str(self.remote), 'main')
+                    result = self.cli('plan', ok=False)
+                    self.assertIn('source_inclusion: foreign required schema identity ' + name, result.stderr)
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('effects'))
+                    path.write_bytes(original)
+                    declaration_path.write_bytes(original_declaration)
         self.commit('restore reviewed schemas')
         self.git('-C', self.source, 'push', str(self.remote), 'main')
         self.cli('plan')
 
     def test_malformed_required_schema_identity_is_refused(self):
-        name = 'schemas/scenario-v6.json'
-        path = self.source / name
-        for content in ('null', '{}', '{"properties": []}',
-                        '{"properties": {"schema": {}}}', '{invalid json'):
-            with self.subTest(content=content):
-                path.write_text(content)
-                self.commit('malformed required schema')
-                self.git('-C', self.source, 'push', str(self.remote), 'main')
-                result = self.cli('plan', ok=False)
-                self.assertIn('source_inclusion: invalid required schema ' + name, result.stderr)
-                self.assertFalse((self.state / 'candidate').exists())
-                self.assertFalse(self.data().get('effects'))
+        for name in ('schemas/scenario-v6.json', 'schemas/performance-executor-v5.json'):
+            path = self.source / name
+            original = path.read_bytes()
+            for content in ('null', '{}', '{"properties": []}',
+                            '{"properties": {"schema": {}}}', '{invalid json'):
+                with self.subTest(schema=name, content=content):
+                    path.write_text(content)
+                    self.commit('malformed required schema')
+                    self.git('-C', self.source, 'push', str(self.remote), 'main')
+                    result = self.cli('plan', ok=False)
+                    self.assertIn('source_inclusion: invalid required schema ' + name, result.stderr)
+                    self.assertFalse((self.state / 'candidate').exists())
+                    self.assertFalse(self.data().get('effects'))
+            path.write_bytes(original)
+        self.commit('restore required schemas')
+        self.git('-C', self.source, 'push', str(self.remote), 'main')
+        self.cli('plan')
 
     def test_release_pr_profile_drift_and_fork_are_refused(self):
         self.data(checks='pending')

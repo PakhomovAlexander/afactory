@@ -1450,7 +1450,7 @@ class Comparison(ExecutorFixture):
 
     def test_the_documented_full_comparison_configuration_and_checks_hold(self):
         """The operator documentation's full-comparison configuration, applied to the executor
-        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/4`
+        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/5`
         that launches the whole nightly family in its declared 45 and 120 minute windows; its documented checks, run as written on the
         launched journal, find 39 instances, 37 judged, 2 exploratory, 3436 slots in 8 shards
         and 12 manual telemetry runs."""

@@ -1,6 +1,6 @@
 """Continuous scheduling of the laboratory in GitHub Actions (package p6a, ADR-0177).
 
-`schedule` turns one Actions event into an `af.perf-schedule/1` document and the frozen plans it
+`schedule` turns one Actions event into an `af.perf-schedule/3` document and the frozen plans it
 names. It runs from the trusted control revision's own checkout, never from candidate code, and
 resolves every selector exactly once, to full SHAs:
 
@@ -248,7 +248,7 @@ def _skip(doc, reason, detail):
 
 
 def schedule(git, event, settings, release=None):
-    """(af.perf-schedule/2 document, {run ID: plan bytes}) of one event; `release` is the
+    """(af.perf-schedule/3 document, {run ID: plan bytes}) of one event; `release` is the
     confirmed `af.perf-release-claim/1` this run wrote, when it measures a release."""
     require(isinstance(event.run_id, int) and event.run_id > 0
             and isinstance(event.run_attempt, int) and event.run_attempt > 0,

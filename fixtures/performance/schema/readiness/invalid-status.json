@@ -1,7 +1,7 @@
 {
-  "schema": "af.perf-readiness/6",
+  "schema": "af.perf-readiness/7",
   "cohort_id": "synthetic_cohort",
-  "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
+  "cohort_digest": "sha256:af4262c030c1d50f40838f358d340fb30ad96a57c9d1a8c89409ab31b76ca44f",
   "calibration_digest": "sha256:b1baa203c2544a2edaf9beda2e5d99e4c32dcd9e69bcae82663d99597df3c0b6",
   "recomputed_calibration_digest": "sha256:b1baa203c2544a2edaf9beda2e5d99e4c32dcd9e69bcae82663d99597df3c0b6",
   "history": {
@@ -19,7 +19,7 @@
         "actions_run_id": 7001,
         "run_number": 42,
         "run_attempt": 1,
-        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_01",
+        "display_title": "af-perf calibration sha256:af4262c030c1d50f40838f358d340fb30ad96a57c9d1a8c89409ab31b76ca44f aa_01",
         "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
         "attempt_started_unix_ms": 1759989640000,
         "attempt_updated_unix_ms": 1759989670000,

@@ -161,6 +161,17 @@ seed_publish)
     test -d "$scratch/seed"
     copy_tree "$scratch/seed" "$argument"
     ;;
+dev_flow_cold)
+    # The driver creates its own private HOME, Store and empty compiled cache.
+    ;;
+dev_flow_primed)
+    # Untimed setup: run only the first real Task, then privately copy its valid Round-0 layer.
+    PYTHONDONTWRITEBYTECODE=1 python3 -I "$fixtures/default-light-smoke/driver.py" --af "$af" \
+        --work "$scratch/prime" --prime-only --output "$scratch/prime.json" \
+        >"$scratch/prime-summary.json"
+    mkdir -p "$scratch/work/home/cache"
+    cp -R "$scratch/prime/home/cache"/. "$scratch/work/home/cache"/
+    ;;
 registry_empty)
     registry_home
     ;;

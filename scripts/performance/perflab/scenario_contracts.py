@@ -30,11 +30,11 @@ def register(c):
     receipt = Obj(Field("schema", Const("af.perf-scenario-receipt/1")),
                   Field("intent_digest", DIGEST), Field("request_id", c.ID),
                   Field("request_digest", DIGEST))
-    verification = Obj(Field("schema", Const("af.perf-scenario-verification/1")),
+    verification = Obj(Field("schema", Const("af.perf-scenario-verification/2")),
                        Field("receipt_digest", DIGEST), Field("result_sha256", DIGEST),
                        Field("verified_unix_ms", c.UNIX_MS),
                        Field("measurement_status", Str(enum=("pass", "fail", "incomplete", "complete", "partial", "failed"))),
-                       Field("completion", Obj(Field("schema", Const("af.perf-scenario-completion/1")),
+                       Field("completion", Obj(Field("schema", Const("af.perf-scenario-completion/2")),
                            Field("experiment", source),
                            Field("request", c.CONTRACTS["executor-request"][1]),
                            Field("result_sha256", DIGEST), Field("source_request_digest", DIGEST),

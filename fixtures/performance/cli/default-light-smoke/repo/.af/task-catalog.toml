@@ -1,0 +1,53 @@
+schema = "af.task-catalog/2"
+report_policy = ".af/report-policy.toml"
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+
+[review.reviewers]
+correctness = "required"
+
+[packages."default-light/implementer"]
+version = "1.7.0"
+digest = "sha256:fd47bff4445ac3195add809628d2e31187b4ca3047b8c821c92a45bd60049fc4"
+path = ".af/task-packages/default-light/implementer"
+
+[packages."default-light/correctness"]
+version = "1.3.0"
+digest = "sha256:02969ca242fbdd5375bca98b29499260d9be59f61f3eff13fef378ac13b29421"
+path = ".af/task-packages/default-light/correctness"
+
+[packages."default-light/evaluator"]
+version = "1.2.0"
+digest = "sha256:213d78b24e1567a1426a5aa7a6d8c6c2e0ec4b5fcc1f6c9a959fec2f4b77d608"
+path = ".af/task-packages/default-light/evaluator"
+
+[packages."default-light/implementation"]
+version = "1.4.0"
+digest = "sha256:3c711496f543a13abfb837b9fbc813ff447fc9b15670d67185c735afb0c493c5"
+path = ".af/task-packages/default-light/implementation"
+
+[packages."default-light/review"]
+version = "1.1.0"
+digest = "sha256:a80bc31b816d87a02fb6228863741654ccbc7064636574c465a397689459c2da"
+path = ".af/task-packages/default-light/review"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = false
+distinct_providers = false
+distinct_models = true
+
+[providers]
+"default-light/implementer" = "codex-main"
+"default-light/correctness" = "codex-main"
+"default-light/evaluator" = "codex-main"
+
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
