@@ -1,0 +1,947 @@
+{
+  "schema": "af.perf-report/2",
+  "run_id": "fixture_run",
+  "plan_digest": "sha256:4efb6064cb01da8d3736f9b9707920fbd454d8aac168e0016a5236b5e4900c64",
+  "comparison": "trend_across_runs",
+  "required_check": {
+    "satisfied": false,
+    "reasons": [
+      "scope_not_full",
+      "policy_not_active",
+      "evidence_not_measured"
+    ]
+  },
+  "identity": {
+    "trigger": "manual",
+    "tier": "quick",
+    "scope": "partial_scope",
+    "seed": 7,
+    "parent_run_id": null,
+    "baseline_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+    "candidate_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+    "control_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+    "authority_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+    "authority_mode": "control",
+    "activation": null,
+    "suite_sha256": "sha256:9d6de2e3ccd26a9a7e5aed29a57283011ae074e18c4b176029cb629989287841",
+    "policy_digest": "sha256:86dccd07803ed39f5bcdbe48ccc0fa826f537cfbb214e74d612325e36e21c6fa",
+    "instrument_digest": "sha256:dd022124b8ff495caf7c5a9e5b0edc21d3eb9badca6140b452f64955f8b27c33",
+    "fixture_digest": "sha256:3520fe82656f3b3c4a64d816647f7bd07d89a4f075e1576d223e74a3a9004cf6",
+    "harness_changed": false,
+    "environment_id": "linux_x86_64_gnu_hosted",
+    "environment_digest": "sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+    "recipe_id": "linux_gnu_native_release",
+    "recipe_digest": "sha256:1b809cf6a48945727f1d46cd603fb12b4fe92e2b5c8d711d554b2e26c9b8d5bc",
+    "build_isolation": "trusted_host",
+    "build_image": null,
+    "health_rule": "sentinel_start_end_v1",
+    "health_state": "provisional",
+    "build": {
+      "baseline": {
+        "af": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+        "probe": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8",
+        "adapter": "synthetic_adapter"
+      },
+      "candidate": {
+        "af": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+        "probe": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022",
+        "adapter": "synthetic_adapter"
+      },
+      "provenance": "synthetic",
+      "supervisor_sha256": "sha256:c21ba98d72cc821d29a83788c82dd972d027d71eddfd90cd9c2c4cc3f1f4b877",
+      "toolchain": "synthetic",
+      "isolation": "host_process"
+    }
+  },
+  "sensitivity": {
+    "state": "not_calibrated",
+    "detail": "These are measured results, not detection sensitivity: no minimum detectable effect is inferred from this run's intervals. Sensitivity is established only by a calibration cohort's readiness evidence (design section 15). No activation binds this plan (authority mode control), so no calibration evidence applies to it."
+  },
+  "cases": [
+    {
+      "instance_id": "synthetic_fast",
+      "case_id": "synthetic_fast",
+      "failures": {
+        "baseline": 0,
+        "candidate": 0
+      },
+      "denominator": {
+        "planned_records": 28,
+        "missing_records": 0,
+        "measured_pairs": 12,
+        "warmup_pairs": 2
+      },
+      "profile": {
+        "state": "unavailable",
+        "reason": "no linked diagnostic child run covers this case: CPU profiles and phase traces are separate diagnostic child runs (cli.py profile --plan run.json --case ID, ADR-0174) that never change this verdict; link one with report --diagnostic DIR",
+        "items": [],
+        "omissions": []
+      },
+      "trace": {
+        "state": "unavailable",
+        "reason": "no linked diagnostic child run covers this case: CPU profiles and phase traces are separate diagnostic child runs (cli.py profile --plan run.json --case ID, ADR-0174) that never change this verdict; link one with report --diagnostic DIR",
+        "items": [],
+        "omissions": []
+      }
+    }
+  ],
+  "diagnostics": [],
+  "sequences": [
+    {
+      "shard": 0,
+      "points": [
+        {
+          "sequence": 0,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 1,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 1,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 1,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 2,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 2,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 3,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 2,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 4,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 3,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 5,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 3,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 6,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 4,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 7,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 4,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 8,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 5,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 9,
+          "phase": "sentinel_start",
+          "instance_id": "sentinel_canonical",
+          "pair": 5,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 10,
+          "phase": "warmup",
+          "instance_id": "synthetic_fast",
+          "pair": 1,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 11,
+          "phase": "warmup",
+          "instance_id": "synthetic_fast",
+          "pair": 1,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 12,
+          "phase": "warmup",
+          "instance_id": "synthetic_fast",
+          "pair": 2,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 13,
+          "phase": "warmup",
+          "instance_id": "synthetic_fast",
+          "pair": 2,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 14,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 1,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 15,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 1,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 16,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 2,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 17,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 2,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 18,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 3,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 19,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 3,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 20,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 4,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 21,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 4,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 22,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 5,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 23,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 5,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 24,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 6,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 25,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 6,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 26,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 7,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 27,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 7,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 28,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 8,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 29,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 8,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 30,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 9,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 31,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 9,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 32,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 10,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 33,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 10,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 34,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 11,
+          "position": 1,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 35,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 11,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 36,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 12,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 37,
+          "phase": "measured",
+          "instance_id": "synthetic_fast",
+          "pair": 12,
+          "position": 2,
+          "side": "candidate",
+          "status": "ok",
+          "value": "10.5",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 38,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 1,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 39,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 1,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 40,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 2,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 41,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 2,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 42,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 3,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 43,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 3,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 44,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 4,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 45,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 4,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 46,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 5,
+          "position": 1,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        },
+        {
+          "sequence": 47,
+          "phase": "sentinel_end",
+          "instance_id": "sentinel_canonical",
+          "pair": 5,
+          "position": 2,
+          "side": "baseline",
+          "status": "ok",
+          "value": "10",
+          "failure": null,
+          "detail": null
+        }
+      ]
+    }
+  ],
+  "shards": [
+    {
+      "shard": 0,
+      "terminal": {
+        "status": "complete",
+        "failure": null,
+        "host_id": "sha256:a92e29a8b9c5225188cb9e95c81749ce84bf27a81d3a6302b4bedb018e8be734",
+        "host": {
+          "affinity": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "aslr": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "cache": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "container_runtime": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "cpu_model": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "cpu_quota": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "cpu_topology": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "kernel": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "libc": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "logical_cpus": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "memory_bytes": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "microcode": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "os_image": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "python": {
+            "unknown": "synthetic: no host was observed"
+          },
+          "virtualization": {
+            "value": "synthetic"
+          }
+        },
+        "mode": "synthetic",
+        "containment": "process_group",
+        "sample_image": null,
+        "seeds": [],
+        "observations": {
+          "end": {
+            "cpu_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "cpu_steal": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "cpu_throttling": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "io_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "load_average": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "memory_events": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "memory_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            }
+          },
+          "start": {
+            "cpu_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "cpu_steal": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "cpu_throttling": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "io_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "load_average": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "memory_events": {
+              "unknown": "synthetic: nothing was observed"
+            },
+            "memory_pressure": {
+              "unknown": "synthetic: nothing was observed"
+            }
+          }
+        },
+        "started_unix_ms": 1760000000000,
+        "ended_unix_ms": 1760000000048
+      }
+    }
+  ],
+  "downloads": [
+    {
+      "path": "verdict.json",
+      "sha256": "sha256:3c531655dcf67fc6adebaa1ba8ad4539c39df3a79c0052a8d292d3d3efec528a",
+      "size": 1580,
+      "kind": "verdict"
+    }
+  ],
+  "reproduction": [
+    {
+      "purpose": "recompute",
+      "argv": [
+        "python3",
+        "scripts/performance/cli.py",
+        "compare",
+        "--run",
+        "RUN_DIR"
+      ],
+      "limitations": []
+    },
+    {
+      "purpose": "report",
+      "argv": [
+        "python3",
+        "scripts/performance/cli.py",
+        "report",
+        "--run",
+        "RUN_DIR",
+        "--output",
+        "NEW_REPORT_DIR"
+      ],
+      "limitations": []
+    },
+    {
+      "purpose": "rerun",
+      "argv": [
+        "python3",
+        "scripts/performance/cli.py",
+        "plan",
+        "--trigger",
+        "manual",
+        "--tier",
+        "quick",
+        "--scope",
+        "partial_scope",
+        "--environment",
+        "linux_x86_64_gnu_hosted",
+        "--shards",
+        "1",
+        "--seed",
+        "7",
+        "--parent-run-id",
+        "fixture_run",
+        "--run-id",
+        "NEW_RUN_ID",
+        "--base",
+        "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+        "--head",
+        "ee1d102f56c84e336281cc85eec6d5effa771720",
+        "--control",
+        "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+        "--case",
+        "synthetic_fast"
+      ],
+      "limitations": []
+    }
+  ],
+  "verdict": {
+    "schema": "af.perf-verdict/2",
+    "run_id": "fixture_run",
+    "plan_digest": "sha256:4efb6064cb01da8d3736f9b9707920fbd454d8aac168e0016a5236b5e4900c64",
+    "scope": "partial_scope",
+    "provenance": "synthetic",
+    "inputs": {
+      "run_bundle": "sha256:6adb537969b3842b2ebcaff4ae56ce440737a73db44362b775415509978255aa",
+      "builds_sha256": "sha256:81fd52d8b4cea98e129137661157e2b4fa276923b39fbc4b66538ec0b1258e8d",
+      "shard_bundles": [
+        {
+          "shard": 0,
+          "bundle": "sha256:c50d927ed5c8141abee99edb4e8ce8ef3b6e04d7aa47e3420a0a7ae6496fc8b3"
+        }
+      ]
+    },
+    "shards": [
+      {
+        "shard": 0,
+        "status": "complete",
+        "failure": null,
+        "expected_records": 48,
+        "matched_records": 48
+      }
+    ],
+    "algorithm": "paired_median_tolerance_v2",
+    "family_alpha": "1/20",
+    "family_size": 1,
+    "case_alpha": "1/20",
+    "health": [
+      {
+        "shard": 0,
+        "status": "healthy",
+        "flags": [],
+        "start_median": "10",
+        "end_median": "10",
+        "shift": "0",
+        "start_mad_ratio": "0",
+        "end_mad_ratio": "0"
+      }
+    ],
+    "cases": [
+      {
+        "instance_id": "synthetic_fast",
+        "criticality": "critical",
+        "exploratory": false,
+        "shard": 0,
+        "pairs": 12,
+        "rank": 3,
+        "alpha": "1/20",
+        "metric": {
+          "direction": "lower_is_better",
+          "key": "wall_ms",
+          "unit": "ms"
+        },
+        "tolerance": {
+          "relative": "0.05",
+          "absolute": "1"
+        },
+        "status": "within_tolerance",
+        "statistical_classification": "within_tolerance",
+        "outcome": "pass",
+        "interval": {
+          "lower": "0",
+          "upper": "0"
+        },
+        "baseline": {
+          "median": "21/2",
+          "p95": "21/2",
+          "max": "21/2"
+        },
+        "candidate": {
+          "median": "21/2",
+          "p95": "21/2",
+          "max": "21/2"
+        },
+        "change": {
+          "absolute": "0",
+          "percent": "0"
+        },
+        "missing_records": 0,
+        "failures": [],
+        "budgets": []
+      }
+    ],
+    "aggregate": {
+      "result": "pass",
+      "exit_code": 0,
+      "satisfies_required_check": false,
+      "coverage": {
+        "expected_records": 48,
+        "matched_records": 48,
+        "missing_records": 0
+      },
+      "reasons": []
+    }
+  }
+}

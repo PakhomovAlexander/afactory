@@ -1,0 +1,8 @@
+context of Attempt golden-content-attempt-1  task run task:sha256:9898989898989898989898989898989898989898989898989898989898989898  history prefix:1 — retained executions 1–1
+  captured
+  composed span 02898a9d195c61b3  level content  manifest sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  420 B  ~105 tokens
+  layers source, output_schemas, reply_format
+  input    1700000400000-4246-2b3c4d5e:8  sha256:735a7d3d98e961ed6b22fb107cc132cb9fc0755cb56d20a65edab8f3ccc5bd7b  420 B (original 420 B)
+  system   1700000400000-4246-2b3c4d5e:11  sha256:e496f3beb304003595bc5015aff43f134ac3a2f0b0ef929441dc5b74379d33e7  276 B (original 276 B)
+--- input ---
+{"schema":"af.worker-request/1","instructions":"Review the lighthouse.","inputs":{"source":[{"artifact_id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_type":"af/SourceTree@1","snapshot_id":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","payload":{"snapshot_id":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}]},"feedback":[]}
