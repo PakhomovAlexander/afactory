@@ -1,0 +1,378 @@
+# Shared selection and fail-closed stable gates; full local make check remains unchanged.
+name: Validate
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        type: boolean
+        default: false
+      test_plan:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      selected: ${{ steps.plan.outputs.selected }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      perf: ${{ steps.plan.outputs.perf }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Resolve exact class selection
+        id: plan
+        env:
+          BOUND_PLAN: ${{ inputs.test_plan }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          if [ -n "$BOUND_PLAN" ]; then
+            python3 scripts/test-classes.py plan --bound "$BOUND_PLAN" --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = pull_request ]; then
+            python3 scripts/test-classes.py plan --context pr --event "$GITHUB_EVENT_PATH" --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
+          else
+            python3 scripts/test-classes.py plan --context local --output target/test-classes/plan.json --github-output "$GITHUB_OUTPUT"
+          fi
+      - name: Retain the plan
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-plan-${{ github.run_attempt }}
+          path: target/test-classes/plan.json
+          if-no-files-found: error
+
+  base:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.release && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+      - name: Install the pinned test runner
+        run: bash scripts/install-nextest.sh
+      - name: Link with lld
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - name: Always-on format, lint, policy and binary smoke
+        env:
+          AF_CI_METRICS: target/base-metrics.jsonl
+        run: |
+          make fmt lint base-check
+          python3 scripts/ci-step.py --stage release cli-smoke cargo run --locked --bin af -- --version
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain separate base costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-base-${{ runner.os }}-${{ github.run_attempt }}
+          path: |
+            target/base-metrics.jsonl
+            target/base-evidence/
+          if-no-files-found: error
+
+  classes:
+    name: class ${{ matrix.class }} (${{ matrix.os }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        class: ${{ fromJSON(needs.resolve.outputs.selected || '["functional"]') }}
+        os: ${{ fromJSON(inputs.release && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+      - name: Install the pinned test runner
+        run: bash scripts/install-nextest.sh
+      - name: Link with lld
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: validation-plan-${{ github.run_attempt }}
+          path: target/test-classes
+      - name: Run exactly the selected class
+        env:
+          TEST_CLASS: ${{ matrix.class }}
+          AF_CI_METRICS: target/class-metrics.jsonl
+          AF_PERF_REQUIRE_TOMLLIB: '1'
+        run: |
+          python3 scripts/ci-step.py --stage tests "class-$TEST_CLASS" python3 scripts/test-classes.py run             --plan target/test-classes/plan.json --class "$TEST_CLASS" --output target/class-evidence
+      - name: Report observed class costs
+        if: always()
+        env:
+          SOURCE_RUN: ${{ github.run_id }}/${{ github.run_attempt }}
+        run: |
+          python3 scripts/test-classes.py report --plan target/test-classes/plan.json             --junit target/class-evidence/*.xml --steps target/class-metrics.jsonl             --inventory target/class-evidence/inventory.json --source-run "$SOURCE_RUN"             --source-sha "$GITHUB_SHA" --output target/class-evidence/report.json
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain class evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-class-${{ runner.os }}-${{ matrix.class }}-${{ github.run_attempt }}
+          path: |
+            target/class-evidence/
+            target/class-metrics.jsonl
+          if-no-files-found: error
+
+  container-probes:
+    needs: resolve
+    if: needs.resolve.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+      - name: Install the pinned test runner
+        run: bash scripts/install-nextest.sh
+      - name: Link with lld
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - name: Verify container runtime
+        run: docker info
+      - name: Run live e2e containment probes (ignored by the ordinary suite)
+        env:
+          AF_CI_METRICS: target/container-metrics.jsonl
+        run: python3 scripts/ci-step.py --stage tests container-probes make review-kernel-container-probes
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain container costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-container-${{ github.run_attempt }}
+          path: target/container-metrics.jsonl
+          if-no-files-found: error
+
+  lint:
+    name: lint
+    needs: [resolve, base, classes, container-probes, telemetry-build-smoke, telemetry-runtime-smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Fetch selected class receipts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: validation-*-${{ github.run_attempt }}
+          path: target/class-receipts
+      - name: Require resolver, base and every selected class
+        env:
+          PLAN: ${{ needs.resolve.outputs.plan }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -eu
+          mkdir -p target/test-classes
+          python3 -c 'import os,pathlib; pathlib.Path("target/test-classes/plan.json").write_text(os.environ["PLAN"]); pathlib.Path("target/test-classes/needs.json").write_text(os.environ["JOB_RESULTS"])'
+          set -- Linux
+          if [ "$RELEASE" = true ]; then set -- Linux macOS; fi
+          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
+          python3 -c 'import json; p=json.load(open("target/test-classes/plan.json")); print("\n".join(c+": "+p["classes"][c]["state"]+" ("+p["classes"][c]["reason"]+")" for c in p["classes"]))' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain aggregate metrics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-summary-lint-${{ runner.os }}-${{ github.run_attempt }}
+          path: target/test-classes/validation-metrics.json
+          if-no-files-found: warn
+
+  check:
+    name: check (${{ matrix.os }})
+    needs: [resolve, base, classes, container-probes, telemetry-build-smoke, telemetry-runtime-smoke]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.release && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Fetch selected class receipts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: validation-*-${{ github.run_attempt }}
+          path: target/class-receipts
+      - name: Require resolver, base and every selected class
+        env:
+          PLAN: ${{ needs.resolve.outputs.plan }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -eu
+          mkdir -p target/test-classes
+          python3 -c 'import os,pathlib; pathlib.Path("target/test-classes/plan.json").write_text(os.environ["PLAN"]); pathlib.Path("target/test-classes/needs.json").write_text(os.environ["JOB_RESULTS"])'
+          set -- Linux
+          if [ "$RELEASE" = true ]; then set -- Linux macOS; fi
+          python3 scripts/test-classes.py aggregate --plan target/test-classes/plan.json             --needs target/test-classes/needs.json --evidence target/class-receipts --platforms "$@"
+          python3 -c 'import json; p=json.load(open("target/test-classes/plan.json")); print("\n".join(c+": "+p["classes"][c]["state"]+" ("+p["classes"][c]["reason"]+")" for c in p["classes"]))' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain aggregate metrics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-summary-check-${{ runner.os }}-${{ github.run_attempt }}
+          path: target/test-classes/validation-metrics.json
+          if-no-files-found: warn
+
+  telemetry-build-smoke:
+    env:
+      AF_CI_METRICS: target/telemetry-smoke-metrics.jsonl
+    needs: resolve
+    if: needs.resolve.outputs.perf == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned telemetry build image
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Exercise offline builds, aggregate storage and hostile output admission
+        timeout-minutes: 15
+        run: python3 scripts/ci-step.py --stage tests telemetry-build-smoke python -I -B scripts/performance/tests/telemetry_build_smoke.py
+      - name: Exercise contained measurements, diagnostic readers, denied writes and owned cleanup
+        timeout-minutes: 4
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/ci-step.py --stage tests telemetry-measurement-smoke python -I -B scripts/performance/tests/telemetry_measurement_smoke.py
+      - name: Retain perf smoke costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-telemetry-smoke-${{ github.run_attempt }}
+          path: target/telemetry-smoke-metrics.jsonl
+          if-no-files-found: error
+
+  telemetry-runtime-smoke:
+    env:
+      AF_CI_METRICS: target/telemetry-runtime-smoke-metrics.jsonl
+    needs: resolve
+    if: needs.resolve.outputs.perf == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned GNU image for real AF setup coverage
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Build actual release AF through the contained offline compiler
+        timeout-minutes: 81
+        run: |
+          python3 scripts/ci-step.py --stage tests telemetry-runtime-build python -I -B scripts/performance/cli.py telemetry-contained-build \
+            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/telemetry-runtime-build" \
+            --scratch-fs "$RUNNER_TEMP/telemetry-runtime-build-scratch" \
+            --image ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Exercise real AF admission and all three contained telemetry paths
+        timeout-minutes: 9
+        run: |
+          python3 scripts/ci-step.py --stage tests telemetry-runtime-smoke python -I -B scripts/performance/tests/telemetry_runtime_smoke.py \
+            --af "$RUNNER_TEMP/telemetry-runtime-build/af" --work-parent "$RUNNER_TEMP"
+      - name: Retain real AF smoke costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-telemetry-runtime-smoke-${{ github.run_attempt }}
+          path: target/telemetry-runtime-smoke-metrics.jsonl
+          if-no-files-found: error

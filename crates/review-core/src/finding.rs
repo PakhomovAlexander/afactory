@@ -1,0 +1,177 @@
+//! `FindingReport@1` — one immutable claim by one attempt about one snapshot.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Minor,
+    Major,
+    Blocker,
+}
+
+impl Severity {
+    /// Rank, ordered so a re-report may only raise it. The enum is closed, so an out-of-enum
+    /// severity is refused at parse time instead of ranking as minor and slipping under a gate.
+    pub fn rank(self) -> u8 {
+        match self {
+            Severity::Minor => 1,
+            Severity::Major => 2,
+            Severity::Blocker => 3,
+        }
+    }
+}
+
+/// Where a claim applies. An empty location list means change-wide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Location {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+}
+
+impl Location {
+    pub fn file(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            line: None,
+            end_line: None,
+        }
+    }
+
+    pub fn at(path: impl Into<String>, line: u32) -> Self {
+        Self {
+            path: path.into(),
+            line: Some(line),
+            end_line: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationKind {
+    Corroborates,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimTargetKind {
+    Finding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelationTarget {
+    pub kind: ClaimTargetKind,
+    pub id: String,
+}
+
+/// An explicit corroboration of a Finding in the attempt's input FindingSet. Only explicit
+/// relations — or an exact occurrence-key match — may attach a report; titles and fuzzy
+/// fingerprints never prove claim identity. A reviewer disputes a prior Finding through its
+/// disposition, never through a relation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relation {
+    pub kind: RelationKind,
+    pub target: RelationTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The payload of a `review.kernel/FindingReport@1` artifact.
+///
+/// There is deliberately no status, no resolution and no round on a report: those belong to the
+/// Finding projection, which is rebuildable. A report only ever states what one reviewer saw.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FindingReport {
+    pub title: String,
+    pub severity: Severity,
+    pub locations: Vec<Location>,
+    pub body: String,
+    /// The proposed remedy. Required: the legacy schema required it too, and the legacy ledger
+    /// then stored it nowhere.
+    pub fix: String,
+    pub confidence: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_trace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Relation>,
+}
+
+impl FindingReport {
+    /// Enforce the language-neutral `FindingReport@1` semantic contract.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.title.trim().is_empty() || self.body.trim().is_empty() || self.fix.trim().is_empty()
+        {
+            return Err("FindingReport@1 title, body, and fix must be non-empty".into());
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err("FindingReport@1 confidence must be within 0.0..=1.0".into());
+        }
+        if self
+            .rule_id
+            .as_deref()
+            .is_some_and(|rule| !valid_rule_id(rule))
+        {
+            return Err("FindingReport@1 rule_id is not a namespaced versioned rule".into());
+        }
+        if self.occurrence_key.as_deref().is_some_and(str::is_empty)
+            || self
+                .relations
+                .iter()
+                .any(|relation| relation.target.id.is_empty())
+        {
+            return Err("FindingReport@1 claim identifiers must be non-empty".into());
+        }
+        if let Some(location) = self.locations.iter().find(|location| {
+            !crate::is_valid_repo_path(&location.path)
+                || location.line == Some(0)
+                || location.end_line == Some(0)
+        }) {
+            return Err(format!(
+                "FindingReport@1 locations must use canonical repository-relative paths and \
+                 positive lines, got `{}`",
+                location.path
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn valid_rule_id(rule: &str) -> bool {
+    let Some((namespace, rest)) = rule.split_once('/') else {
+        return false;
+    };
+    let Some((name, version)) = rest.rsplit_once('@') else {
+        return false;
+    };
+    namespace
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase())
+        && namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.')
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && version
+            .bytes()
+            .next()
+            .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+}

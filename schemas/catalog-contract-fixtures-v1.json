@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:catalog-contract-fixtures:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "pipelines",
+    "workers",
+    "kinds"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.catalog-contract-fixtures/1"
+    },
+    "pipelines": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "maxProperties": 128,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract",
+          "accepts",
+          "coverage",
+          "max_attempts",
+          "max_parallel"
+        ],
+        "properties": {
+          "contract": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/contract"
+          },
+          "accepts": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/applicability"
+          },
+          "coverage": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "additionalProperties": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/valueRef"
+            }
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          },
+          "max_parallel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          }
+        }
+      }
+    },
+    "workers": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "maxProperties": 128,
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-operator-signature:1"
+      }
+    },
+    "kinds": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "maxProperties": 128,
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-kind:1"
+      }
+    }
+  }
+}
