@@ -1,0 +1,1400 @@
+//! Loading a pipeline definition, and refusing a broken one.
+//!
+//! Every rejection here happens before a single node runs. A pipeline that is 90% valid is not
+//! 90% of a review, so there is no partial load and no defaulting-around-a-typo.
+
+use review_config::{ConfigError, Definition};
+use review_core::SubjectKind;
+use review_graph::PlanError;
+
+fn workspace_root() -> std::path::PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+const MINIMAL: &str = r#"
+version = 2
+
+[subject]
+kind = "whole-tree"
+
+[[checks]]
+name = "build"
+program = "/bin/sh"
+args = [{ value = "./build.sh" }]
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = "echo hi" }] }
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "architecture", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "architecture", port = "prior_findings" }
+
+[[edges]]
+from = { node = "architecture", port = "result" }
+to = { node = "ledger", port = "reports" }
+"#;
+
+/// `MINIMAL`'s Generation outputs, for tests that extend them.
+const GENERATION_OUTPUTS: &str = r#"outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
+
+/// `MINIMAL`'s reviewer inputs, for tests that extend them.
+const REVIEWER_INPUTS: &str = r#"inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
+
+const DYNAMIC_V5: &str = r#"
+version = 5
+
+[subject]
+kind = "whole-tree"
+
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+
+[budgets]
+unit = "tokens"
+attempt = 100
+fan_out = 200
+run = 400
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "slicer"
+kind = "slicer"
+outputs = [{ name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+slicing = { scatter = "scatter", max_paths_per_slice = 1, max_fanout = 2, coverage = "complete", all_shards_required = true, closeout = "required" }
+
+[[nodes]]
+id = "scatter"
+kind = "scatter"
+inputs = [
+  { name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "closeout"
+kind = "reviewer"
+closeout_for = "scatter"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "closeout", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "scatter", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "closeout", port = "prior_findings" }
+[[edges]]
+from = { node = "slicer", port = "slices" }
+to = { node = "scatter", port = "slices" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "closeout", port = "shards" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "ledger", port = "shards" }
+[[edges]]
+from = { node = "closeout", port = "result" }
+to = { node = "ledger", port = "closeout" }
+"#;
+
+#[test]
+fn a_definition_loads_into_a_plan_with_bindings() {
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+
+    assert_eq!(
+        loaded.plan_order(),
+        ["gate", "generation", "architecture", "ledger"]
+    );
+    assert_eq!(loaded.checks().len(), 1);
+    assert!(
+        loaded.checks()[0].required,
+        "checks are required by default"
+    );
+    assert_eq!(loaded.reviewers().len(), 1);
+    assert!(loaded.reviewers().contains_key("architecture"));
+    assert_eq!(
+        loaded.demand_requirements()["architecture"],
+        review_core::DemandRequirement::Required,
+        "a pipeline that omits `demands` classifies every Demand as required"
+    );
+    assert_eq!(loaded.convergence().max_rounds, 3);
+    assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+    assert_eq!(loaded.check_timeout_seconds(), 3600);
+}
+
+#[test]
+fn version_five_captures_bounded_scatter_and_requires_closeout() {
+    let loaded = Definition::from_toml(DYNAMIC_V5).unwrap().load().unwrap();
+    assert_eq!(loaded.slicing()["slicer"].scatter, "scatter");
+    assert_eq!(loaded.closeouts()["scatter"], "closeout");
+    assert_eq!(loaded.budgets().unwrap().fan_out, Some(200));
+    assert!(loaded.reviewers().contains_key("scatter"));
+
+    let missing = DYNAMIC_V5.replace("closeout_for = \"scatter\"\n", "");
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("closeout")
+    ));
+}
+
+#[test]
+fn version_five_captures_closed_automatic_integration_policy() {
+    let configured = DYNAMIC_V5.replace(
+        "[budgets]\n",
+        "[[checks]]\nname = \"postapply\"\nprogram = \"/usr/bin/true\"\n\n[integration]\nprotected_paths = [\".github\"]\npost_apply_checks = [\"postapply\"]\nreviewer_priority = [\"scatter\"]\n\n[budgets]\n",
+    );
+    let loaded = Definition::from_toml(&configured).unwrap().load().unwrap();
+    let integration = loaded.integration().unwrap();
+    assert_eq!(integration.post_apply_checks, ["postapply"]);
+    assert_eq!(integration.reviewer_priority, ["scatter"]);
+
+    let unknown = configured.replace("[\"postapply\"]", "[\"missing\"]");
+    assert!(matches!(
+        Definition::from_toml(&unknown).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("post_apply_checks")
+    ));
+    let unsafe_path = configured.replace("[\".github\"]", "[\"../outside\"]");
+    assert!(matches!(
+        Definition::from_toml(&unsafe_path).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("protected_paths")
+    ));
+
+    let static_pipeline = r#"
+version = 5
+[subject]
+kind = "whole-tree"
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+[integration]
+post_apply_checks = ["postapply"]
+[[checks]]
+name = "postapply"
+program = "/usr/bin/true"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free", auto_apply = true }
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "correctness", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "correctness", port = "prior_findings" }
+[[edges]]
+from = { node = "correctness", port = "result" }
+to = { node = "ledger", port = "result" }
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
+"#;
+    assert!(matches!(
+        Definition::from_toml(static_pipeline).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("semantic-closure route")
+    ));
+}
+
+#[test]
+fn warm_layer_policy_is_reviewer_owned_and_bounded() {
+    let cold = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert!(
+        cold.warm_policies().is_empty(),
+        "a pipeline written before warm layers existed runs cold"
+    );
+
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(policy.notes);
+    assert_eq!(
+        policy.notes_max_bytes,
+        review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+    );
+
+    let bounded = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 4096 }",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    assert_eq!(loaded.warm_policies()["architecture"].notes_max_bytes, 4096);
+
+    let over = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 1048576 }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("notes_max_bytes")
+    ));
+
+    let opted_in = warm.replace("warm = { notes = true }", "warm = {}");
+    let loaded = Definition::from_toml(&opted_in).unwrap().load().unwrap();
+    assert!(
+        loaded.warm_policies()["architecture"].notes,
+        "Notes default to on"
+    );
+    let cold = warm.replace("warm = { notes = true }", "warm = { notes = false }");
+    let loaded = Definition::from_toml(&cold).unwrap().load().unwrap();
+    assert!(!loaded.warm_policies()["architecture"].notes);
+
+    let unknown = warm.replace("warm = { notes = true }", "warm = { transcript = true }");
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+
+    let on_gate = MINIMAL.replace(
+        "id = \"gate\"\nkind = \"gate\"\n",
+        "id = \"gate\"\nkind = \"gate\"\nwarm = { notes = true }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&on_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("warm-layer policy")
+    ));
+}
+
+#[test]
+fn the_session_layer_is_off_by_default_and_always_falls_back_to_notes() {
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.session,
+        review_config::SessionSpec::Off,
+        "the session layer ships behind a policy default of off"
+    );
+    assert!(policy.session.is_off() && !policy.session.captures());
+    assert_eq!(
+        policy.session_max_age_secs,
+        review_core::DEFAULT_SESSION_MAX_AGE_SECS
+    );
+
+    let recent = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 900 }",
+    );
+    let loaded = Definition::from_toml(&recent).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(policy.session, review_config::SessionSpec::IfRecent);
+    assert!(policy.session.captures());
+    assert_eq!(
+        policy.session.max_age_secs(policy.session_max_age_secs),
+        900
+    );
+    let always = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"always\", session_max_age_secs = 900 }",
+    );
+    let loaded = Definition::from_toml(&always).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.session.max_age_secs(policy.session_max_age_secs),
+        review_core::MAX_SESSION_MAX_AGE_SECS,
+        "`always` still refuses a transcript no prompt cache could be serving"
+    );
+
+    let over = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 604800 }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("session_max_age_secs")
+    ));
+
+    // Every session gate falls back to Notes alone, so a session-only node would silently carry
+    // nothing the moment a gate refused.
+    let notes_off = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = false, session = \"if_recent\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&notes_off).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires `notes = true`")
+    ));
+}
+
+#[test]
+fn cold_closeout_is_compiled_from_the_pinned_policy_and_refused_when_infeasible() {
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.cold_closeout(),
+        review_config::ColdCloseoutSpec::None,
+        "a pipeline written before the field existed dispatches what it always did"
+    );
+    assert!(loaded.cold_closeout_nodes().is_empty());
+
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let compiled = format!("{warm}\n[convergence]\ncold_closeout = \"one_required\"\n");
+    let loaded = Definition::from_toml(&compiled).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.cold_closeout_nodes().to_vec(),
+        vec!["architecture".to_string()],
+        "the closeout names the exact warm reviewer it confirms, at load time"
+    );
+
+    // A cold reviewer's result needs no cold confirmation.
+    let cold = format!("{MINIMAL}\n[convergence]\ncold_closeout = \"all\"\n");
+    assert!(matches!(
+        Definition::from_toml(&cold).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("no reviewer declares warm layers")
+    ));
+
+    // Feasibility: the run cap must admit the protected Attempt beside the Round's Workers.
+    let budgets = "\n[budgets]\nunit = \"tokens\"\nattempt = 1000\nrun = ";
+    let tight = format!("{compiled}{budgets}1500\n");
+    assert!(matches!(
+        Definition::from_toml(&tight).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("protected tokens")
+    ));
+    let feasible = format!("{compiled}{budgets}4000\n");
+    assert_eq!(
+        Definition::from_toml(&feasible)
+            .unwrap()
+            .load()
+            .unwrap()
+            .cold_closeout_nodes()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn warm_workspace_policy_defaults_to_a_fresh_template_per_round() {
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.workspace,
+        review_config::WorkspaceSpec::Fresh,
+        "a warm node without the key keeps a temporary template per Round"
+    );
+    assert!(policy.workspace.is_fresh());
+    let serialized = serde_json::to_value(policy).unwrap();
+    assert!(
+        serialized.get("workspace").is_none(),
+        "the default is never written back, so earlier pipelines stay byte-identical"
+    );
+
+    let rebase = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = false, workspace = \"rebase\" }",
+    );
+    let loaded = Definition::from_toml(&rebase).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a workspace node need not carry Notes");
+    assert_eq!(policy.workspace, review_config::WorkspaceSpec::Rebase);
+    assert!(!policy.workspace.is_fresh());
+    assert_eq!(
+        serde_json::to_value(policy).unwrap()["workspace"],
+        serde_json::json!("rebase")
+    );
+
+    let explicit = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"fresh\" }",
+    );
+    let loaded = Definition::from_toml(&explicit).unwrap().load().unwrap();
+    assert!(loaded.warm_policies()["architecture"].workspace.is_fresh());
+
+    let unknown = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"shared\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+}
+
+#[test]
+fn build_cache_carry_requires_a_trusted_local_gate_that_declares_the_kind() {
+    let trusted_gate = "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_caches = [\"cargo_target\"]";
+    let declared = MINIMAL.replace("version = 2", trusted_gate).replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = false, build_cache = [\"cargo_target\"] }\n",
+    );
+    let loaded = Definition::from_toml(&declared).unwrap().load().unwrap();
+    let binding = loaded.gate_execution().expect("v3 Gate binding");
+    assert_eq!(
+        binding.build_caches,
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        binding.build_cache_limits(),
+        review_core::BuildCacheLimitsV1::default_v1(),
+        "absent bounds are the kernel defaults with the fixed depth and path limits"
+    );
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a build cache node need not carry Notes");
+    assert_eq!(
+        policy.build_cache.kinds(),
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        review_config::BuildCacheKindSpec::CargoTarget.kind(),
+        review_core::BuildCacheKindV1::CargoTarget
+    );
+
+    let bounded = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 1048576\nbuild_cache_max_entries = 1000",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    let limits = loaded.gate_execution().unwrap().build_cache_limits();
+    assert_eq!(limits.max_bytes, 1_048_576);
+    assert_eq!(limits.max_entries, 1000);
+    assert_eq!(limits.max_depth, review_core::BUILD_CACHE_MAX_DEPTH_V1);
+
+    // The safe policy refuses the handoff before anything runs: a container Gate cannot
+    // declare a candidate-built cache, whatever the reviewer asks for.
+    let safe = declared.replace(
+        "provider = \"trusted_local\"\nrequired_isolation = \"none\"",
+        &format!(
+            "provider = \"container\"\nrequired_isolation = \"container\"\nimage = \"ghcr.io/example/gate@sha256:{}\"",
+            "a".repeat(64)
+        ),
+    );
+    assert!(matches!(
+        Definition::from_toml(&safe).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("refused under the safe policy")
+    ));
+
+    // A reviewer may only receive a kind its Gate declares.
+    let undeclared = declared.replace("\nbuild_caches = [\"cargo_target\"]", "");
+    assert!(matches!(
+        Definition::from_toml(&undeclared).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+    let ungated = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { build_cache = [\"cargo_target\"] }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&ungated).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+
+    // The cache travels from the exact Gate the reviewer waits on, so it must wait on one.
+    assert_eq!(declared.matches("gated_by = \"gate\"").count(), 1);
+    let unbound = declared.replace("gated_by = \"gate\"\n", "");
+    assert!(matches!(
+        Definition::from_toml(&unbound).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires `gated_by`")
+    ));
+
+    // The vocabulary is closed on both sides.
+    let duplicate = declared.replace(
+        "build_cache = [\"cargo_target\"]",
+        "build_cache = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate),
+        Err(ConfigError::Parse(message)) if message.contains("more than once")
+    ));
+    let duplicate_gate = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache kinds must be unique")
+    ));
+    let registry_snapshot_is_not_a_build_cache = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo\"]",
+    );
+    assert!(
+        Definition::from_toml(&registry_snapshot_is_not_a_build_cache)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
+    let over = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 17179869184",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache limits")
+    ));
+    let limits_without_kinds = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_cache_max_entries = 10",
+    );
+    assert!(matches!(
+        Definition::from_toml(&limits_without_kinds).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("require `build_caches`")
+    ));
+}
+
+#[test]
+fn reviewer_demand_classification_is_pipeline_owned() {
+    let advisory = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\ndemands = \"advisory\"\n",
+    );
+    let loaded = Definition::from_toml(&advisory).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.demand_requirements()["architecture"],
+        review_core::DemandRequirement::Advisory
+    );
+
+    let invalid = MINIMAL.replace(
+        "id = \"gate\"\nkind = \"gate\"\n",
+        "id = \"gate\"\nkind = \"gate\"\ndemands = \"advisory\"\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&invalid).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("not a reviewer")
+    ));
+}
+
+#[test]
+fn check_timeout_is_validated_and_resolved_from_pipeline_authority() {
+    let configured = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 17");
+    assert_eq!(
+        Definition::from_toml(&configured)
+            .unwrap()
+            .load()
+            .unwrap()
+            .check_timeout_seconds(),
+        17
+    );
+
+    let zero = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 0");
+    assert!(matches!(
+        Definition::from_toml(&zero).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("check_timeout_seconds")
+    ));
+}
+
+#[test]
+fn a_convergence_policy_that_can_never_be_met_is_refused() {
+    let infeasible =
+        format!("{MINIMAL}\n[convergence]\nclean_rounds = 4\nmax_rounds = 3\ngate = \"major\"\n");
+    assert!(matches!(
+        Definition::from_toml(&infeasible).unwrap().load(),
+        Err(ConfigError::Binding(message))
+            if message.contains("requires 4 clean rounds but permits only 3 rounds")
+    ));
+}
+
+/// Provenance defaults to `literal`, because the project writing its own command is trusted.
+/// The unsafe classification is the one that must be typed out.
+#[test]
+fn an_untrusted_argument_must_say_so() {
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    let command = &loaded.reviewers()["architecture"];
+    assert!(
+        command
+            .args
+            .iter()
+            .all(|a| a.provenance == review_core::Provenance::Literal),
+        "unmarked arguments are literals"
+    );
+
+    let with_untrusted = MINIMAL.replace(
+        r#"{ value = "echo hi" }"#,
+        r#"{ value = "--config=/tmp/evil", provenance = "untrusted" }"#,
+    );
+    let loaded = Definition::from_toml(&with_untrusted)
+        .unwrap()
+        .load()
+        .unwrap();
+    // Loading succeeds — the refusal happens at execution, where the value is known to be an
+    // option position. The definition is allowed to *describe* an untrusted slot.
+    assert!(loaded.reviewers()["architecture"].resolve().is_err());
+}
+
+#[test]
+fn a_typo_in_a_field_is_an_error_not_a_silent_default() {
+    let typo = MINIMAL.replace("gated_by = \"gate\"", "gated_bye = \"gate\"");
+    match Definition::from_toml(&typo) {
+        Err(ConfigError::Parse(message)) => assert!(
+            message.contains("gated_bye"),
+            "the error should name the typo: {message}"
+        ),
+        other => panic!("a typo must be refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_reviewer_with_no_runner_is_refused() {
+    let unbound = MINIMAL.replace(
+        r#"runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = "echo hi" }] }"#,
+        "",
+    );
+    match Definition::from_toml(&unbound).unwrap().load() {
+        Err(ConfigError::Binding(message)) => {
+            assert!(message.contains("architecture"), "{message}");
+            assert!(message.contains("always reports nothing"), "{message}");
+        }
+        Err(other) => panic!("expected a binding error, got {other}"),
+        Ok(_) => panic!("an unbound reviewer must be refused"),
+    }
+}
+
+#[test]
+fn a_non_reviewer_with_a_runner_is_refused() {
+    let confused = MINIMAL.replace(
+        "id = \"ledger\"\nkind = \"ledger\"",
+        "id = \"ledger\"\nkind = \"ledger\"\nrunner = { program = \"/bin/sh\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&confused).unwrap().load(),
+        Err(ConfigError::Binding(_))
+    ));
+}
+
+/// The graph's own validation reaches through the config unchanged — an edge to a port that does
+/// not exist is caught here, not at run time.
+#[test]
+fn graph_validation_applies_to_definitions_too() {
+    let bad_port = MINIMAL.replace(
+        r#"to = { node = "architecture", port = "gate" }"#,
+        r#"to = { node = "architecture", port = "gates" }"#,
+    );
+    assert!(matches!(
+        Definition::from_toml(&bad_port).unwrap().load(),
+        Err(ConfigError::Plan(PlanError::UnknownPort { .. }))
+    ));
+
+    let unwired = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace(
+            "}]",
+            r#"}, { name = "unwired", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+        ),
+    );
+    assert_ne!(unwired, MINIMAL);
+    assert!(matches!(
+        Definition::from_toml(&unwired).unwrap().load(),
+        Err(ConfigError::Plan(PlanError::UnwiredInput(_)))
+    ));
+}
+
+#[test]
+fn a_future_version_is_refused_rather_than_guessed_at() {
+    let future = MINIMAL.replace("version = 2", "version = 6");
+    assert!(matches!(
+        Definition::from_toml(&future).unwrap().load(),
+        Err(ConfigError::UnknownVersion(6))
+    ));
+}
+
+fn version_four(mode: &str, extra: &str) -> String {
+    MINIMAL
+        .replace(
+            "version = 2",
+            "version = 4\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+        )
+        .replace(
+            "id = \"architecture\"\nkind = \"reviewer\"",
+            &format!(
+                "id = \"architecture\"\nkind = \"reviewer\"\nexecution = {{ credential_mode = \"{mode}\"{extra} }}"
+            ),
+        )
+}
+
+#[test]
+fn version_four_requires_an_explicit_reviewer_execution_binding() {
+    let missing = MINIMAL.replace(
+        "version = 2",
+        "version = 4\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("version 4") && message.contains("architecture")
+    ));
+
+    let loaded = Definition::from_toml(&version_four("credential_free", ""))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(
+        loaded.reviewer_execution()["architecture"].credential_mode,
+        review_core::CredentialModeV1::CredentialFree
+    );
+
+    let retroactive = MINIMAL.replace(
+        "kind = \"reviewer\"",
+        "kind = \"reviewer\"\nexecution = { credential_mode = \"credential_free\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&retroactive).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("before pipeline version 4")
+    ));
+}
+
+#[test]
+fn trusted_unsafe_reviewers_cannot_auto_apply_and_only_two_credential_modes_parse() {
+    let unsafe_auto = version_four("trusted_unsafe", ", auto_apply = true");
+    assert!(matches!(
+        Definition::from_toml(&unsafe_auto).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("cannot authorize auto_apply")
+    ));
+    let loaded = Definition::from_toml(&version_four("credential_free", ", auto_apply = true"))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(loaded.reviewer_execution()["architecture"].auto_apply);
+    assert!(matches!(
+        Definition::from_toml(&version_four("brokered", "")),
+        Err(ConfigError::Parse(message)) if message.contains("brokered")
+    ));
+    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 200 }]";
+    assert!(matches!(
+        Definition::from_toml(&version_four("trusted_unsafe", operation)),
+        Err(ConfigError::Parse(message)) if message.contains("operations")
+    ));
+}
+
+#[test]
+fn version_three_requires_an_explicit_root_gate_execution_binding() {
+    let missing = MINIMAL.replace("version = 2", "version = 3");
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires an explicit `[gate]`")
+    ));
+
+    let bound = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    let loaded = Definition::from_toml(&bound).unwrap().load().unwrap();
+    let binding = loaded.gate_execution().expect("v3 Gate binding");
+    assert_eq!(
+        binding.provider,
+        review_config::SandboxProviderSpec::TrustedLocal
+    );
+    assert_eq!(
+        binding.required_isolation,
+        review_config::IsolationSpec::None
+    );
+    assert_eq!(binding.mode, review_config::GateModeSpec::EphemeralWrite);
+    assert_eq!(binding.image, None);
+    assert!(binding.caches.is_empty());
+
+    let unpinned_container = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"container\"\nrequired_isolation = \"container\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&unpinned_container).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("require an `image`")
+    ));
+
+    let trusted_overclaim = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"container\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&trusted_overclaim).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("can satisfy only")
+    ));
+
+    let inherited = MINIMAL.replace(
+        "version = 2",
+        "version = 2\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&inherited).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("use version 3")
+    ));
+}
+
+#[test]
+fn version_three_accepts_only_unique_known_symbolic_gate_caches() {
+    let cached = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&cached).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.gate_execution().unwrap().caches,
+        [review_config::CacheKindSpec::Cargo]
+    );
+
+    let duplicate = cached.replace("caches = [\"cargo\"]", "caches = [\"cargo\", \"cargo\"]");
+    assert!(matches!(
+        Definition::from_toml(&duplicate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("must be unique")
+    ));
+
+    let unknown = cached.replace("caches = [\"cargo\"]", "caches = [\"npm\"]");
+    assert!(
+        Definition::from_toml(&unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
+}
+
+#[test]
+fn a_definition_round_trips() {
+    let parsed = Definition::from_toml(MINIMAL).unwrap();
+    let reserialized = toml::to_string(&parsed).unwrap();
+    assert_eq!(Definition::from_toml(&reserialized).unwrap(), parsed);
+}
+
+#[test]
+fn a_diff_pipeline_cannot_omit_the_change_set_port() {
+    let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
+    let error = Definition::from_toml(&diff)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("ChangeSet@1"), "{error}");
+}
+
+#[test]
+fn subject_format_transitions_are_explicit() {
+    let missing = MINIMAL.replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
+    let error = Definition::from_toml(&missing)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("version 2 requires `[subject]`"));
+
+    // Format 1, with or without `[subject]`, is no longer a pipeline format.
+    for retired in [missing.as_str(), MINIMAL] {
+        let retired = retired.replace("version = 2", "version = 1");
+        assert!(matches!(
+            Definition::from_toml(&retired).unwrap().load(),
+            Err(ConfigError::UnknownVersion(1))
+        ));
+    }
+}
+
+#[test]
+fn an_inline_reviewer_cannot_claim_diff_support() {
+    let diff = MINIMAL
+        .replace("kind = \"whole-tree\"", "kind = \"diff\"")
+        .replace(
+            GENERATION_OUTPUTS,
+            &GENERATION_OUTPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
+        )
+        .replace(
+            REVIEWER_INPUTS,
+            &REVIEWER_INPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
+        )
+        .replace(
+            "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
+            r#"[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "architecture", port = "change_set" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }"#,
+        );
+    let error = Definition::from_toml(&diff)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("inline runner"), "{error}");
+}
+
+#[test]
+fn a_pipeline_with_no_reviewer_is_refused() {
+    let text = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#;
+    let error = Definition::from_toml(text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("no reviewer"), "{error}");
+}
+
+/// This repository's own pipeline must load — through its own lockfile and registry, which
+/// re-verifies every package digest on every test run: editing a package without re-locking
+/// fails here, exactly as it would fail a real run.
+///
+/// The assertions are deliberately structural: the docs invite users to reconfigure `.af/` —
+/// add a reviewer, add a check, retune the budgets — and pinning the node list or counts would
+/// break on any documented reconfiguration. What must hold for any pipeline of this shape is
+/// asserted instead, and each assertion below would fail on a real mistake.
+#[test]
+fn the_checked_in_pipeline_loads() {
+    let review_dir = workspace_root().join(".af");
+    let text = std::fs::read_to_string(review_dir.join("pipelines/review.toml")).unwrap();
+    let lock_text = std::fs::read_to_string(review_dir.join("af.lock")).unwrap();
+    let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
+    let registry = review_config::lock::Registry::new(review_dir.join("workers"));
+    let loaded = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    // A gate with nothing to run admits everything, and a review with no reviewer reports
+    // nothing while looking like it ran.
+    assert!(!loaded.checks().is_empty(), "the gate has no checks");
+    assert!(
+        !loaded.reviewers().is_empty(),
+        "the pipeline has no reviewer"
+    );
+
+    for (node, command) in loaded.reviewers() {
+        let package = loaded
+            .packages()
+            .get(node)
+            .unwrap_or_else(|| panic!("reviewer `{node}` did not come from a package"));
+        assert!(
+            package.digest.starts_with("sha256:"),
+            "reviewer `{node}` is not pinned by digest"
+        );
+        assert!(
+            !command.program.is_empty(),
+            "reviewer `{node}` has no runner program"
+        );
+        assert!(
+            !loaded.planned().gates_for(node).is_empty(),
+            "reviewer `{node}` is ungated — it would run against a tree that failed its checks"
+        );
+        // Prior findings must arrive through a wired port. A reviewer wired to nothing would
+        // review an empty input with full confidence.
+        assert!(
+            loaded
+                .planned()
+                .dependencies_of(node)
+                .iter()
+                .any(|edge| edge.to.name == "prior_findings"),
+            "reviewer `{node}` receives no prior findings"
+        );
+    }
+
+    // Every node the plan orders is a node the definition declares, and the order is a
+    // function of the pipeline alone.
+    assert!(!loaded.plan_order().is_empty());
+}
+
+/// Budgets validate at load: caps that could never admit a dispatch are refused as config
+/// errors, not discovered as a run that mysteriously does nothing.
+#[test]
+fn an_impossible_budget_is_refused_at_load() {
+    let capped = |budgets: &str| MINIMAL.replace("version = 2", &format!("version = 2\n{budgets}"));
+
+    let inverted = capped("[budgets]\nunit = \"tokens\"\nattempt = 500\nrun = 100");
+    let error = Definition::from_toml(&inverted)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("exceeds the run cap"), "{error}");
+
+    let zero = capped("[budgets]\nunit = \"tokens\"\nattempt = 0\nrun = 100");
+    let error = Definition::from_toml(&zero)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("zero-token"), "{error}");
+}
+
+/// Only `tokens` exists as a unit; a typo'd or aspirational unit is a parse error.
+#[test]
+fn an_unknown_budget_unit_is_refused() {
+    let text = MINIMAL.replace(
+        "version = 2",
+        "version = 2\n[budgets]\nunit = \"dollars\"\nattempt = 1\nrun = 2",
+    );
+    assert!(Definition::from_toml(&text).is_err());
+}
+
+/// The package binding rules: exactly one of `runner` and `package`, and a package needs the
+/// lockfile. Each refusal is a load error with the node named.
+#[test]
+fn package_binding_rules_are_enforced() {
+    let with_reviewer_node = |binding: &str| {
+        MINIMAL.replace(
+            "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
+            binding,
+        )
+    };
+
+    // Both bound: ambiguous, refused.
+    let both = with_reviewer_node(
+        "runner = { program = \"/bin/sh\", args = [] }\npackage = \"architecture\"",
+    );
+    let error = Definition::from_toml(&both)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("both a runner and a package"),
+        "{error}"
+    );
+
+    // A package without the lockfile: refused with the remedy named.
+    let package_only = with_reviewer_node("package = \"architecture\"");
+    let error = Definition::from_toml(&package_only)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("load_with"), "{error}");
+}
+
+#[test]
+fn a_package_that_rejects_the_pipeline_subject_is_refused() {
+    use review_config::lock::{Lockfile, Registry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n\
+         [runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
+    let registry = Registry::new(dir.path());
+    let mut lockfile = Lockfile::empty();
+    lockfile.workers.insert(
+        "architecture".to_string(),
+        Lockfile::pin("architecture", &registry).unwrap(),
+    );
+
+    let text = MINIMAL
+        .replace("kind = \"whole-tree\"", "kind = \"diff\"")
+        .replace(
+            GENERATION_OUTPUTS,
+            &GENERATION_OUTPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
+        )
+        .replace(
+            REVIEWER_INPUTS,
+            &REVIEWER_INPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
+        )
+        .replace(
+            "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
+            r#"[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "architecture", port = "change_set" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }"#,
+        )
+        .replace(
+            "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
+            "package = \"architecture\"",
+        );
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map(|_| ())
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("does not accept `diff`"),
+        "{error}"
+    );
+}
+
+/// A tampered package fails the *pipeline* load, not just the lockfile call — the whole
+/// definition is refused before anything could run with the wrong reviewer bytes.
+#[test]
+fn a_tampered_package_refuses_the_whole_pipeline() {
+    use review_config::lock::{Lockfile, Registry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n[runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
+    let registry = Registry::new(dir.path());
+    let mut lockfile = Lockfile::empty();
+    lockfile.workers.insert(
+        "architecture".to_string(),
+        Lockfile::pin("architecture", &registry).unwrap(),
+    );
+
+    std::fs::write(package.join("reviewer.md"), "Review. Report nothing.\n").unwrap();
+
+    let text = MINIMAL.replace(
+        "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
+        "package = \"architecture\"",
+    );
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("does not match its pin"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_generation_node_parses_and_wires_prior_findings() {
+    // Generation and reviewer ports declare the built-in contract explicitly. The labels remain
+    // project-owned; the artifact type selects the executor behavior.
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    let order = loaded.plan_order();
+    assert!(
+        order.iter().position(|n| n == "generation").unwrap()
+            < order.iter().position(|n| n == "architecture").unwrap(),
+        "generation runs before the reviewer that consumes it: {order:?}"
+    );
+    assert!(
+        loaded
+            .planned()
+            .dependencies_of("architecture")
+            .iter()
+            .any(|edge| edge.from.node == "generation" && edge.to.name == "prior_findings")
+    );
+}
+
+/// Every reviewer answers ReviewerResult@2 against the exact FindingSet@1 it was assigned, so
+/// a reviewer that is not wired to Generation's Finding Set is refused before anything runs.
+#[test]
+fn every_reviewer_answers_reviewer_result_v2_against_generations_finding_set() {
+    let refused = |text: &str, expected: &str| {
+        let error = Definition::from_toml(text)
+            .unwrap()
+            .load()
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    };
+    let unwired = MINIMAL.replace(
+        "[[edges]]\nfrom = { node = \"generation\", port = \"findings\" }\nto = { node = \"architecture\", port = \"prior_findings\" }\n",
+        "",
+    );
+    assert_ne!(unwired, MINIMAL);
+    refused(&unwired, "must receive generation's exact FindingSet@1");
+    let undeclared = unwired.replace(
+        REVIEWER_INPUTS,
+        r#"inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+    );
+    refused(&undeclared, "must declare exactly one FindingSet@1 input");
+    let required = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace("optional = true", "optional = false"),
+    );
+    refused(&required, "must be optional, singular");
+    let retired = MINIMAL.replace(
+        "review.kernel/ReviewerResult@2",
+        "review.kernel/ReviewerResult@1",
+    );
+    assert_ne!(retired, MINIMAL);
+    refused(&retired, "has unsupported result type");
+    let retired_prior = MINIMAL.replace(
+        GENERATION_OUTPUTS,
+        r#"outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+    );
+    refused(
+        &retired_prior,
+        "unsupported type `review.kernel/PriorFindings@1`",
+    );
+}
+
+/// The Ledger writes the Round's canonical Finding Set onto its one typed FindingSet@1 output,
+/// which the next Round reads back, so a Ledger that declares none, or two, is refused at load
+/// rather than failing mid-Round after its reviewers ran.
+#[test]
+fn a_ledger_without_exactly_one_finding_set_output_is_refused() {
+    let finding_set = r#"{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#;
+    let demand_set = r#"{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#;
+    let ledger_outputs = format!("outputs = [{finding_set}]");
+    assert_eq!(MINIMAL.matches(&ledger_outputs).count(), 1);
+    let demand_only = format!("outputs = [{demand_set}]");
+    let two_finding_sets = format!(
+        "outputs = [{finding_set}, {}]",
+        finding_set.replace(r#""findings""#, r#""more_findings""#)
+    );
+    for outputs in [demand_only, two_finding_sets] {
+        let text = MINIMAL.replace(&ledger_outputs, &outputs);
+        let error = Definition::from_toml(&text)
+            .unwrap()
+            .load()
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "ledger node `ledger` must declare exactly one `review.kernel/FindingSet@1` output"
+            ),
+            "{error}"
+        );
+    }
+}
+
+/// Every port is a typed table and every node declares its outputs: a bare-string port or a
+/// node without `outputs` is refused when the file is parsed, before anything loads.
+#[test]
+fn an_untyped_port_or_a_node_without_outputs_is_refused_when_parsed() {
+    let untyped_output = MINIMAL.replace(GENERATION_OUTPUTS, r#"outputs = ["findings"]"#);
+    let untyped_input = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace(
+            r#"{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#,
+            r#""gate""#,
+        ),
+    );
+    for text in [&untyped_output, &untyped_input] {
+        assert_ne!(text, MINIMAL);
+        let error = Definition::from_toml(text).map(|_| ()).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid type: string"),
+            "{error}"
+        );
+    }
+    let without_outputs = MINIMAL.replace(
+        r#"outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#,
+        "",
+    );
+    assert_ne!(without_outputs, MINIMAL);
+    let error = Definition::from_toml(&without_outputs)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `outputs`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_whole_tree_generation_cannot_declare_a_change_set() {
+    let text = MINIMAL.replace(
+        GENERATION_OUTPUTS,
+        &GENERATION_OUTPUTS.replace(
+            "}]",
+            r#"}, { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+        ),
+    );
+    assert_ne!(text, MINIMAL);
+
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("only a `diff` Subject"),
+        "{error}"
+    );
+}
