@@ -1,0 +1,62 @@
+{
+  "schema": "af/telemetry-gc@1",
+  "applied": false,
+  "max_bytes": 4294967296,
+  "storage_max_bytes": 21474836480,
+  "total_before": "<n>",
+  "total_after": "<n>",
+  "storage_total_before": "<n>",
+  "storage_total_after": "<n>",
+  "stop": "fits",
+  "entries": [
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000000000-4242-0a1b2c3d.jsonl.gz",
+      "bytes": "<n>",
+      "last_use_unix_ms": "<n>",
+      "directory": "<root>/xstate/af/telemetry",
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "state": "sealed"
+    },
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000100000-4243-0b1c2d3e.jsonl.gz",
+      "bytes": "<n>",
+      "last_use_unix_ms": "<n>",
+      "directory": "<root>/xstate/af/telemetry",
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "state": "sealed"
+    },
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry",
+      "bytes": "<n>",
+      "last_use_unix_ms": "<n>",
+      "in_use": "the index, locks and blobs several segments share, orphaned blobs and temporary files: reclaimed by every sweep, never evicted whole",
+      "directory": "<root>/xstate/af/telemetry",
+      "state": "shared"
+    }
+  ],
+  "removals": [
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000000000-4242-0a1b2c3d.jsonl.gz",
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "bytes": "<n>",
+      "rule": "collection"
+    },
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000100000-4243-0b1c2d3e.jsonl.gz",
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "bytes": "<n>",
+      "rule": "collection"
+    }
+  ],
+  "reclaimed": [],
+  "registry_dropped": [],
+  "changed": [],
+  "notes": [],
+  "failures": [],
+  "problems": []
+}

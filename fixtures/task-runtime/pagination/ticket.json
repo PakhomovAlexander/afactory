@@ -1,0 +1,22 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "pagination-cli",
+  "kind": "implement",
+  "goal": "Implement this Jira ticket: offset/limit pagination",
+  "pipeline": {
+    "name": "fixture/implementation",
+    "fallback": "refuse"
+  },
+  "strategy": "small",
+  "facts": {},
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 3,
+    "wall_ms": 60000,
+    "verification": {
+      "tokens": 200,
+      "attempts": 2,
+      "wall_ms": 10000
+    }
+  }
+}

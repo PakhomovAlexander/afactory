@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:round-started:1",
+  "title": "RoundStarted@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round", "epoch", "campaign_manifest_id", "subject_id", "prior_finding_set_id", "prior_demand_set_id"],
+  "properties": {
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "prior_finding_set_id": { "$ref": "#/$defs/digest" },
+    "prior_demand_set_id": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

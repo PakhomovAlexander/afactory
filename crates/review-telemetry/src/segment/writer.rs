@@ -1,0 +1,2947 @@
+//! The segment writer (design §6).
+//!
+//! One live segment per process under `v1/segments/<started_unix_ms>-<pid>-<nonce>.jsonl`,
+//! opened lazily at the first record and never before, under an exclusive `flock` for the
+//! writer's lifetime. Records are encoded into a buffer of `flush_bytes` guarded by a mutex and
+//! appended with one `write(2)` of whole lines when the buffer is full, when a span of depth at
+//! most 2 ends, and at exit.
+//!
+//! **One owner.** The open file, every write, the manifest, the seal, the compression and the
+//! rename are the consumer's work ([`Writer::consume`] and the sealing below) and no other
+//! code's. Appending threads only encode into the buffer and wake the consumer.
+//!
+//! **The consumer thread** (design §6) starts when the process opens its first `af.run` span
+//! ([`Writer::run_started`]) and is from then on the segment's only writer, until the segment
+//! is sealed or abandoned: ending `af.run` ([`Writer::run_ended`]) neither stops it nor hands
+//! the writes back, so the `af.command` end and every later record go through it too. It waits
+//! parked with one deadline and wakes when a kernel thread appends a record, when a stream
+//! queue receives a chunk (a harness stream observer unparks it, [`StreamQueue`]), or when the
+//! deadline passes — the oldest pending record's time plus `flush_latency_ms`. An unpark is
+//! never lost and never blocks the thread that gives it, so an observer's offer takes no lock
+//! of the writer's. After each wake it drains the stream queues, writes every full buffer, and
+//! writes the current buffer when the queues are empty or the deadline has passed; then it
+//! recomputes the deadline and sleeps.
+//! There is no periodic timer and no polling: a quiet writer sleeps without a deadline. Before
+//! the consumer thread starts (before the first `af.run`, and in a process that opens none) the
+//! appending thread runs the same consumer code after each append, under the consumer's own
+//! mutex, so there is never a second owner; [`Writer::begin_terminal`] starts the consumer for
+//! the shutdown when no `af.run` did.
+//!
+//! **Bounded shutdown and sealing.** The seal is the consumer thread's: [`Writer::finish`] sends
+//! it one terminal request — the records still pending (the `af.command` end among them), the
+//! seal record, the `.refs` manifest, the compression and the publication — and waits for it
+//! once, at most [`layout::LOCK_WAIT`] (2 s) beyond the consumer's last progress, over all of
+//! it; once [`Writer::begin_terminal`] began the shutdown, that bound runs from there and every
+//! other wait of the shutdown (a publication's flush) ends with it too; and each content a
+//! released harness stream publishes under the seal moves the bound to [`layout::LOCK_WAIT`]
+//! from that moment (`Writer::renew_shutdown`), so a release still in progress completes. A
+//! consumer that makes no progress by then — a write blocked on the volume — is abandoned: no
+//! other thread writes, seals,
+//! compresses or replaces the segment, the records never written are absent, the lock ends with
+//! the process, and the next reader recovers the flushed prefix. The compressed segment and its
+//! manifest are staged in temporary files; the deadline governs the whole publication and is
+//! checked again after their blocking write and sync, and it is the last thing before each
+//! publication step — the manifest's rename, the compressed copy's rename and the unlink of the
+//! live `.jsonl`, the last made under the lock [`Writer::finish`] judges the deadline under —
+//! with no hook or wait between the check and the step, and it runs again when a rename
+//! returns. A consumer that finds the deadline passed at any check publishes nothing further,
+//! removes what it already renamed into place (the file just placed included) and what it
+//! staged, and leaves the live segment, which every reader treats as unsealed beside any
+//! `.jsonl.gz` or `.refs` of its id. A seal is reported only when the live `.jsonl` itself was
+//! unlinked: a live name that no longer holds the writer's file at the last step withdraws the
+//! seal the same way and the segment is reported unsealed.
+//!
+//! **Segment limit.** `segment_max_bytes` bounds the file across every record kind. The last
+//! [`TERMINAL_RESERVE_BYTES`] are kept for terminal records (`problem`, `seal`): past the rest no
+//! record of any kind is accepted, bounded in-memory counters are kept, one `problem` is
+//! recorded, and at exit the seal is written from the reserve with the `dropped` count.
+//!
+//! **Publication.** Content becomes a blob in this order: the blob is written to a temporary
+//! file; `gc.lock` is taken shared without waiting; the file is renamed into place; the `blob`
+//! object (once per digest per segment), the `blob_ref` occurrence and the owning record are
+//! appended and the buffer flushed; the lock is released. When the lock is not free (a sweep
+//! holds it) the blob is dropped and counted, and the occurrence says `state = dropped`.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
+
+use nix::fcntl::FlockArg;
+use serde_json::Value;
+
+use super::{Clock, TERMINAL_RESERVE_BYTES, new_segment_id};
+use crate::blob::{self, Media, Prepared};
+use crate::content::{self, Scope};
+use crate::dirs::{self, Accounted};
+use crate::layout::{self, Confined, FileIdentity, Held, Layout};
+use crate::level::{Level, Settings};
+use crate::record::{
+    self, Attributes, Attrs, BlobObject, BlobRef, BlobState, ConfigPart, ConfigRow, Counters,
+    Demand, Event, Finding, Host, MAX_KEY_BYTES, MAX_STRING_BYTES, Node, OCCURRENCE_PREFIX,
+    Oversized, Problem, ProblemWhat, RECORD_MAX_BYTES, Record, Seal, SealExit, SegmentHeader,
+    SpanEnd, SpanKind, SpanStart, SpanStatus, schema,
+};
+use crate::redact::{self, Redactor};
+use crate::trace;
+
+/// A step of the blob publication protocol, offered to a [`PublishHook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishStep {
+    /// The blob is in its temporary file.
+    Staged,
+    /// `gc.lock` is held shared.
+    Locked,
+    /// The blob file is in place, no reference to it written yet.
+    Renamed,
+    /// The references are flushed; the lock is not yet released.
+    Flushed,
+}
+
+/// What a [`PublishHook`] tells the writer to do after a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAction {
+    Continue,
+    /// Stop as a killed process would: nothing more is written, the lock on the segment ends,
+    /// and the segment is left unsealed for a reader to recover.
+    Crash,
+}
+
+/// Observes, pauses or crashes the publication protocol at each step; fixtures use it to prove
+/// the protocol's order. A hook that blocks pauses the publisher.
+pub type PublishHook = Arc<dyn Fn(PublishStep) -> HookAction + Send + Sync>;
+
+/// Called by the segment's owner before each `write(2)` — of the segment, and of its compressed
+/// copy at the seal — with the write's ordinal (1 for the first): fixtures block it to stall the
+/// consumer as a write blocked on the volume would, or return the error a full quota would give,
+/// which fails the write. [`phase`] says which write it is.
+pub type WriteHook = Arc<dyn Fn(u64) -> std::io::Result<()> + Send + Sync>;
+
+/// The writer's clock in unix nanoseconds, injected by fixtures that compare what two runs
+/// recorded; production writers read the monotonic clock from the header's origin.
+pub type ClockHook = Arc<dyn Fn() -> u128 + Send + Sync>;
+
+/// A stream queue of design §7.3: one per observed harness process, drained by the consumer at
+/// every wake, before it writes ([`Writer::attach_stream`]).
+pub trait StreamQueue: Send + Sync {
+    /// Frame and record every queued chunk through `writer`; whether the queue is empty now.
+    fn drain(&self, writer: &Writer) -> bool;
+
+    /// Whether a chunk, or the end of the stream, waits to be drained. Read by the consumer
+    /// before it parks, so a wake that came first is never missed.
+    fn has_pending(&self) -> bool;
+
+    /// Whether the queue has nothing more to give: it is detached after its last drain.
+    fn finished(&self) -> bool;
+
+    /// The seal is being written: give up on what is still queued, and return how many chunks
+    /// this queue lost in all — dropped by its observer, or still queued now — for the seal's
+    /// `dropped_chunks`. Never called for a queue that finished, which counted its drops itself
+    /// ([`Writer::count_dropped_chunks`]).
+    fn discard(&self) -> u64;
+}
+
+/// Registration of the telemetry directory before the first write (design §6).
+#[derive(Debug, Clone)]
+pub struct Registration {
+    /// `$XDG_STATE_HOME/af/telemetry-dirs.v1.json`.
+    pub registry: PathBuf,
+    /// Every directory the storage inventory accounts on its own.
+    pub accounted: Vec<Accounted>,
+    /// Why `accounted` is known incomplete (the Store registry could not be read): the overlap
+    /// check is then unknown and registration refuses, one problem and no telemetry.
+    pub accounted_unknown: Option<String>,
+}
+
+/// Who a configuration record's part belongs to: the execution (segment) that writes it, the
+/// kernel run it describes, and that run's `af.run` span in the execution.
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigOwner<'a> {
+    pub execution_id: &'a str,
+    pub run_id: &'a str,
+    pub run_span_id: &'a str,
+}
+
+/// What a writer is configured with.
+#[derive(Clone)]
+pub struct WriterOptions {
+    pub layout: Layout,
+    pub level: Level,
+    pub flush_bytes: u64,
+    pub segment_max_bytes: u64,
+    pub content_max_blob_bytes: u64,
+    /// `[telemetry] observer_queue_bytes`: the bound of each harness stream observer's queue.
+    pub observer_queue_bytes: u64,
+    /// `[telemetry] content_attempt_max_bytes`: the bound of an Attempt's pending content and of
+    /// the content its blobs retain.
+    pub content_attempt_max_bytes: u64,
+    /// `[telemetry] content_process_max_bytes`: the bound of the content retained outside any
+    /// Attempt.
+    pub content_process_max_bytes: u64,
+    /// `[telemetry] content_reasoning`: keep thinking blocks and reasoning summaries at
+    /// `content`.
+    pub content_reasoning: bool,
+    /// `[telemetry] content_tool_io`: keep tool arguments and results at `content`.
+    pub content_tool_io: bool,
+    pub af_version: String,
+    pub af_commit: String,
+    /// The whole command line, recorded from `spans` on.
+    pub argv: Vec<String>,
+    /// `argv[0]` and the subcommand path (`af task show`), the only command-line words the
+    /// header records at `metrics`: the subcommand chain exactly as the caller's argument
+    /// parser matched it, never guessed from `argv`. Empty, as [`WriterOptions::new`] leaves it
+    /// when no chain is known, the header records `argv[0]` alone.
+    pub command: Vec<String>,
+    /// The working directory, recorded from `spans` on.
+    pub cwd: PathBuf,
+    pub redactor: Redactor,
+    pub registration: Option<Registration>,
+    pub publish_hook: Option<PublishHook>,
+    /// `[telemetry] flush_latency_ms`: the longest a record waits in the buffer while a run is
+    /// open.
+    pub flush_latency_ms: u64,
+    pub write_hook: Option<WriteHook>,
+    pub clock: Option<ClockHook>,
+    /// The segment id, for fixtures that compare what two runs recorded; `None` names a fresh
+    /// one at the first record.
+    pub segment_id: Option<String>,
+}
+
+impl WriterOptions {
+    /// Options with the `[telemetry]` defaults for `level` in `root`, this process's argv and
+    /// working directory, no registration and no hook.
+    pub fn new(root: impl Into<PathBuf>, level: Level) -> Self {
+        let defaults = Settings::default();
+        Self {
+            layout: Layout::new(root),
+            level,
+            flush_bytes: defaults.flush_bytes,
+            segment_max_bytes: defaults.segment_max_bytes,
+            content_max_blob_bytes: defaults.content_max_blob_bytes,
+            observer_queue_bytes: defaults.observer_queue_bytes,
+            content_attempt_max_bytes: defaults.content_attempt_max_bytes,
+            content_process_max_bytes: defaults.content_process_max_bytes,
+            content_reasoning: defaults.content_reasoning,
+            content_tool_io: defaults.content_tool_io,
+            af_version: env!("CARGO_PKG_VERSION").to_string(),
+            af_commit: "unknown".to_string(),
+            argv: std::env::args().collect(),
+            command: Vec::new(),
+            cwd: std::env::current_dir().unwrap_or_default(),
+            redactor: Redactor::for_this_process(),
+            registration: None,
+            publish_hook: None,
+            flush_latency_ms: defaults.flush_latency_ms,
+            write_hook: None,
+            clock: None,
+            segment_id: None,
+        }
+    }
+
+    /// The bounds of `settings`.
+    pub fn with_settings(mut self, settings: &Settings) -> Self {
+        self.level = settings.level;
+        self.flush_bytes = settings.flush_bytes;
+        self.segment_max_bytes = settings.segment_max_bytes;
+        self.content_max_blob_bytes = settings.content_max_blob_bytes;
+        self.observer_queue_bytes = settings.observer_queue_bytes;
+        self.content_attempt_max_bytes = settings.content_attempt_max_bytes;
+        self.content_process_max_bytes = settings.content_process_max_bytes;
+        self.content_reasoning = settings.content_reasoning;
+        self.content_tool_io = settings.content_tool_io;
+        self.flush_latency_ms = settings.flush_latency_ms;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Nothing opened yet: no file, no directory.
+    Unopened,
+    Open,
+    /// The seal is appended; no other record is accepted.
+    Sealing,
+    Sealed,
+    /// A telemetry-only failure: nothing more is written, the run continues.
+    Failed,
+    /// Stopped as a killed process would be.
+    Crashed,
+    /// The consumer thread did not stop within the bounded shutdown: nothing more is written,
+    /// sealed or replaced by any thread, and the segment is left for the next reader.
+    Abandoned,
+}
+
+/// Who owns the segment's writes now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// No consumer thread yet: the appending thread runs the consumer code.
+    Inline,
+    /// The consumer thread owns every write until the segment is sealed or abandoned.
+    Running,
+}
+
+/// The buffer and the in-memory counters, guarded by one mutex. Appending threads hold it only
+/// to encode.
+struct Pending {
+    state: State,
+    segment_id: String,
+    next_seq: u64,
+    /// Full buffers waiting for the consumer, oldest first, each marked when it holds terminal
+    /// records (appended after [`Writer::begin_terminal`]).
+    ready: VecDeque<(Vec<u8>, bool)>,
+    buffer: Vec<u8>,
+    /// Records appended from now on are terminal: the root span's (`af.command`'s) end and what
+    /// follows it.
+    terminal: bool,
+    /// Set by [`Writer::begin_terminal`]: the one bound every wait of the shutdown shares.
+    terminal_deadline: Option<Instant>,
+    /// The seal's bound, once [`Writer::finish`] set it: 2 s from its call or the shutdown's
+    /// start, moved to 2 s beyond each content a released stream publishes under it
+    /// ([`Writer::renew_shutdown`]).
+    shutdown: Option<Instant>,
+    flush_requested: bool,
+    /// Bytes of every record accepted, written or buffered.
+    accepted_bytes: u64,
+    exhausted: bool,
+    spans: u64,
+    events: u64,
+    blobs: u64,
+    dropped: u64,
+    dropped_chunks: u64,
+    problems: BTreeSet<(ProblemWhat, String)>,
+    /// Problems that could not reach the segment (it never opened, or writes failed).
+    unwritten: Vec<(ProblemWhat, String)>,
+    blobs_in_segment: BTreeSet<String>,
+    referenced: BTreeSet<String>,
+    mode: Mode,
+    /// `af.run` spans open in this process.
+    runs_open: u64,
+    /// Records accepted so far; the consumer wakes when it has seen fewer.
+    appends: u64,
+    /// When the oldest record not yet written was accepted.
+    oldest: Option<Instant>,
+    /// Flushes asked for and flushes done: a publication waits for its references.
+    flush_asked: u64,
+    flush_done: u64,
+    /// The stream queue received a chunk since the consumer last drained it.
+    stream_pending: bool,
+    /// The consumer thread has exited.
+    consumer_exited: bool,
+    /// [`Writer::finish`] asks the consumer to seal: the seal's exit, its end time, and the
+    /// deadline after which nothing may be published.
+    seal_request: Option<(SealExit, String, Instant)>,
+    /// What the consumer's seal came to, for [`Writer::finish`].
+    seal_result: Option<Result<Option<Sealed>, String>>,
+}
+
+/// The consumer's own state: the open file and its lock, and the `segments/` directory it was
+/// created in, held open so the manifest, the seal, the compression, the rename and the removal
+/// of the live file happen relative to it whatever later becomes of the paths above it.
+struct Consumer {
+    file: Option<Held>,
+    segments: Option<Confined>,
+}
+
+/// The telemetry root and its `v1/` as the writer opened them at its first write, held for the
+/// writer's whole lifetime with the `blobs/` and prefix directories derived from them: every
+/// blob is staged, placed and removed, and `gc.lock` taken, relative to these descriptors with
+/// no link followed, so a root renamed and replaced by a link afterwards takes nothing outside
+/// the root the writer opened.
+struct Tree {
+    _root: Confined,
+    versioned: Confined,
+    blobs: Mutex<BlobDirs>,
+}
+
+/// `blobs/` and its prefix directories, each opened once from its parent and kept.
+#[derive(Default)]
+struct BlobDirs {
+    blobs: Option<Confined>,
+    prefixes: BTreeMap<String, Confined>,
+}
+
+impl Tree {
+    /// The prefix directory `blobs/<prefix>/`, created when absent, derived from the held
+    /// descriptors.
+    fn prefix(&self, prefix: &str) -> std::io::Result<Confined> {
+        let mut dirs = lock(&self.blobs);
+        let dirs = &mut *dirs;
+        let blobs = match &mut dirs.blobs {
+            Some(blobs) => blobs,
+            empty => empty.insert(self.versioned.create_child_dir("blobs")?),
+        };
+        if !dirs.prefixes.contains_key(prefix) {
+            let opened = blobs.create_child_dir(prefix)?;
+            dirs.prefixes.insert(prefix.to_string(), opened);
+        }
+        dirs.prefixes[prefix].try_clone()
+    }
+}
+
+/// Which write the segment's owner is making, for a fixture's [`WriteHook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Records appended before the terminal ones.
+    Records,
+    /// Terminal records: the `af.command` end and what follows it, before the seal.
+    Terminal,
+    /// The seal record.
+    Seal,
+    /// The compressed copy of the segment, staged before it is published.
+    Compressed,
+    /// A step of the seal's publication: the manifest's rename, the compressed copy's rename
+    /// and the unlink of the live `.jsonl`, in that order. The hooks of all three run, in that
+    /// order, before the first step and before any deadline check of the publication, so none
+    /// sits between a check and the step it guards.
+    Publish,
+}
+
+thread_local! {
+    /// Set on the consumer thread while it makes a write of a later phase than [`Phase::Records`].
+    static PHASE: std::cell::Cell<Phase> = const { std::cell::Cell::new(Phase::Records) };
+}
+
+/// Which write the calling thread is making: a fixture's [`WriteHook`] asks it to hold one.
+pub fn phase() -> Phase {
+    PHASE.with(std::cell::Cell::get)
+}
+
+/// Whether the calling thread is writing a segment's seal record.
+pub fn sealing() -> bool {
+    phase() == Phase::Seal
+}
+
+/// Run `work` in `phase`, then return to the phase before.
+fn in_phase<T>(phase: Phase, work: impl FnOnce() -> T) -> T {
+    let before = PHASE.with(|cell| cell.replace(phase));
+    let value = work();
+    PHASE.with(|cell| cell.set(before));
+    value
+}
+
+/// The problem an abandoned consumer leaves.
+pub const ABANDONED: &str = "the telemetry consumer did not stop within 2 s; the segment is \
+                             left unsealed for the next reader to recover";
+
+/// Shared between every handle of one writer.
+pub struct Shared {
+    options: WriterOptions,
+    clock: Clock,
+    pending: Mutex<Pending>,
+    /// Signalled by the consumer thread after each write and when it exits.
+    done: Condvar,
+    consumer: Mutex<Consumer>,
+    /// The attached stream queues, by the id [`Writer::attach_stream`] gave them.
+    streams: Mutex<Vec<(u64, Arc<dyn StreamQueue>)>>,
+    next_stream: std::sync::atomic::AtomicU64,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The consumer thread, once it runs: every wake unparks it.
+    consumer_thread: OnceLock<std::thread::Thread>,
+    /// Writes made so far, for the write hook.
+    writes: std::sync::atomic::AtomicU64,
+    /// Set once, when the consumer opens the segment.
+    tree: OnceLock<Tree>,
+    /// The content each allowance has retained so far (design §8).
+    allowances: Mutex<Allowances>,
+}
+
+/// The retained content bytes counted against each allowance: an Attempt's by its `af.attempt`
+/// span, and the process's outside any Attempt. An exhausted allowance stays exhausted.
+#[derive(Default)]
+struct Allowances {
+    attempts: BTreeMap<String, u64>,
+    process: u64,
+    exhausted: BTreeSet<Scope>,
+}
+
+/// A sealed segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sealed {
+    pub segment_id: String,
+    pub path: PathBuf,
+    pub refs: PathBuf,
+}
+
+/// One process's segment writer. Cloning shares it.
+#[derive(Clone)]
+pub struct Writer {
+    shared: Arc<Shared>,
+}
+
+/// One encoded line of a batch, with the blob digests its acceptance makes known.
+struct Line {
+    bytes: Vec<u8>,
+    kind: &'static str,
+    /// The digest of a `blob` object: known in this segment once the line is accepted.
+    object: Option<String>,
+    /// The digest a stored `blob_ref` names: in the `.refs` manifest once the line is accepted.
+    referenced: Option<String>,
+}
+
+/// Records encoded under the pending lock, accepted or refused together.
+pub struct Batch<'a> {
+    segment_id: &'a str,
+    base: u64,
+    lines: Vec<Line>,
+    known: &'a BTreeSet<String>,
+    counts: SealCounts,
+}
+
+/// The in-memory counters a seal carries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SealCounts {
+    pub spans: u64,
+    pub events: u64,
+    pub blobs: u64,
+    pub dropped: u64,
+    pub dropped_chunks: u64,
+}
+
+impl Batch<'_> {
+    /// The segment id records are built in.
+    pub fn segment_id(&self) -> &str {
+        self.segment_id
+    }
+
+    /// Whether this segment, or this batch, already holds the `blob` object of `digest`.
+    pub fn knows_blob(&self, digest: &str) -> bool {
+        self.known.contains(digest)
+            || self
+                .lines
+                .iter()
+                .any(|line| line.object.as_deref() == Some(digest))
+    }
+
+    /// The `seq` the next pushed record takes.
+    pub fn seq(&self) -> u64 {
+        self.base + self.lines.len() as u64
+    }
+
+    /// Encode `record` under the bound with the next `seq`; `None` when it cannot fit.
+    pub fn push(&mut self, mut record: Record, counters: Counters) -> Option<u64> {
+        let seq = self.seq();
+        record.set_seq(seq);
+        let kind = record.kind();
+        let (object, referenced) = match &record {
+            Record::Blob(object) => (Some(object.digest.clone()), None),
+            Record::BlobRef(occurrence) if occurrence.state == BlobState::Stored => {
+                (None, occurrence.digest.clone())
+            }
+            _ => (None, None),
+        };
+        let bytes = record::encode(&mut record, counters)?;
+        self.lines.push(Line {
+            bytes,
+            kind,
+            object,
+            referenced,
+        });
+        Some(seq)
+    }
+}
+
+/// Build a batch against `pending` without changing it.
+fn build_batch<T>(
+    pending: &Pending,
+    build: impl FnOnce(&mut Batch<'_>) -> Option<T>,
+) -> (Option<T>, Vec<Line>) {
+    let mut batch = Batch {
+        segment_id: &pending.segment_id,
+        base: pending.next_seq,
+        lines: Vec::new(),
+        known: &pending.blobs_in_segment,
+        counts: SealCounts {
+            spans: pending.spans,
+            events: pending.events,
+            blobs: pending.blobs,
+            dropped: pending.dropped,
+            dropped_chunks: pending.dropped_chunks,
+        },
+    };
+    let value = build(&mut batch);
+    (value, batch.lines)
+}
+
+/// The bytes `lines` take in the segment.
+fn line_bytes(lines: &[Line]) -> u64 {
+    lines.iter().map(|line| line.bytes.len() as u64 + 1).sum()
+}
+
+/// The batch of a publication: the `blob` object of every stored content new to the segment,
+/// one `blob_ref` per content (stored or dropped as `stored` says), then the owning record
+/// `build` makes from the occurrence ids, at the `seq` right after them.
+fn publication<T>(
+    pending: &Pending,
+    contents: &[Content],
+    span: Option<&str>,
+    build: &mut impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
+) -> (Option<T>, Vec<Line>) {
+    build_batch(pending, |batch| {
+        let mut new_objects = BTreeSet::new();
+        for content in contents {
+            if content.stored && !batch.knows_blob(&content.prepared.digest) {
+                new_objects.insert(content.prepared.digest.clone());
+            }
+        }
+        let owner_seq = batch.seq() + new_objects.len() as u64 + contents.len() as u64;
+        let span_id = match span {
+            Some(span) => span.to_string(),
+            None => trace::span_id(batch.segment_id(), owner_seq),
+        };
+        let mut occurrences = Vec::new();
+        for content in contents {
+            let prepared = &content.prepared;
+            if new_objects.remove(&prepared.digest) {
+                batch.push(
+                    Record::Blob(BlobObject {
+                        seq: 0,
+                        schema: schema::BLOB.into(),
+                        digest: prepared.digest.clone(),
+                        bytes: prepared.retained.len() as u64,
+                        stored_bytes: prepared.compressed.len() as u64,
+                        redaction: crate::redact::REDACTION_VERSION.into(),
+                    }),
+                    Counters::default(),
+                )?;
+            }
+            let occurrence = trace::occurrence_id(batch.segment_id(), batch.seq());
+            batch.push(
+                Record::BlobRef(BlobRef {
+                    seq: 0,
+                    schema: schema::BLOB_REF.into(),
+                    occurrence_id: occurrence.clone(),
+                    // Content an exhausted allowance dropped was never redacted or digested.
+                    digest: content.admitted.then(|| prepared.digest.clone()),
+                    span_id: span_id.clone(),
+                    event_seq: owner_seq,
+                    source_digest: prepared.source_digest.clone(),
+                    original_bytes: prepared.original_bytes,
+                    truncated: prepared.truncated,
+                    state: if content.stored {
+                        BlobState::Stored
+                    } else {
+                        BlobState::Dropped
+                    },
+                    media_type: prepared.media_type.into(),
+                    redaction: crate::redact::REDACTION_VERSION.into(),
+                }),
+                Counters::default(),
+            )?;
+            occurrences.push(occurrence);
+        }
+        if batch.seq() != owner_seq {
+            return None;
+        }
+        build(batch, &occurrences)
+    })
+}
+
+/// Why a batch was refused.
+enum Refusal {
+    /// A record of it could not be encoded under the record bound.
+    Unbuilt,
+    /// It did not fit the segment, or the segment no longer takes records: the records it held.
+    Full(u64),
+}
+
+/// When a wait that begins now gives up: [`layout::LOCK_WAIT`] from now, and never after the
+/// shutdown's one bound once it began.
+fn wait_until(pending: &Pending) -> Instant {
+    let own = Instant::now() + layout::LOCK_WAIT;
+    pending
+        .terminal_deadline
+        .map_or(own, |shutdown| own.min(shutdown))
+}
+
+/// The seal's bound now: `deadline`, the one `finish` set, or the later one a released stream's
+/// publication moved it to ([`Writer::renew_shutdown`]).
+fn bound(pending: &Pending, deadline: Instant) -> Instant {
+    pending
+        .shutdown
+        .map_or(deadline, |renewed| renewed.max(deadline))
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn ns(value: u128) -> String {
+    value.to_string()
+}
+
+/// The host facts read once per segment; a fact the platform does not deliver is absent.
+fn host_facts(near: &std::path::Path) -> Host {
+    let cpus = std::thread::available_parallelism()
+        .map(|cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX))
+        .unwrap_or(1);
+    let existing = near.ancestors().find(|path| path.exists());
+    let free_bytes = existing
+        .and_then(|path| nix::sys::statvfs::statvfs(path).ok())
+        .map(free_of);
+    Host {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        cpus,
+        memory_bytes: memory_bytes(),
+        load1: load1(),
+        free_bytes,
+    }
+}
+
+/// The available bytes a `statvfs` reports; its field types differ per platform.
+#[allow(clippy::useless_conversion)]
+fn free_of(stat: nix::sys::statvfs::Statvfs) -> u64 {
+    u64::from(stat.blocks_available()).saturating_mul(u64::from(stat.fragment_size()))
+}
+
+#[cfg(target_os = "linux")]
+fn memory_bytes() -> Option<u64> {
+    use nix::unistd::{SysconfVar, sysconf};
+    let pages = sysconf(SysconfVar::_PHYS_PAGES).ok().flatten()?;
+    let size = sysconf(SysconfVar::PAGE_SIZE).ok().flatten()?;
+    u64::try_from(pages)
+        .ok()?
+        .checked_mul(u64::try_from(size).ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn load1() -> Option<f64> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn load1() -> Option<f64> {
+    None
+}
+
+/// Attributes bounded, with the values that became pending blobs: `named[i]` is the key whose
+/// value `contents[i]` holds.
+struct Bounded {
+    attributes: Attributes,
+    counters: Counters,
+    contents: Vec<Offered>,
+    named: Vec<String>,
+}
+
+/// One content offered for publication: prepared, and whether its allowance admitted it. A
+/// content its allowance refused is published as a `dropped` occurrence, never staged.
+struct Offered {
+    prepared: Prepared,
+    admitted: bool,
+    /// The allowance it counts against: an admitted content's charge stands only once its
+    /// occurrence is stored, and is refunded when staging or publication drops it.
+    scope: Scope,
+}
+
+/// Name each pending blob's occurrence in the attribute that held its value; an attribute
+/// whose content found no occurrence is cut to the marker.
+fn fill(attributes: &mut Attributes, named: &[String], occurrences: &[String]) {
+    for (index, key) in named.iter().enumerate() {
+        if let Some(value) = attributes.get_mut(key) {
+            *value = Value::String(match occurrences.get(index) {
+                Some(occurrence) => format!("{OCCURRENCE_PREFIX}{occurrence}"),
+                None => record::ELLIPSIS.to_string(),
+            });
+        }
+    }
+}
+
+/// One content waiting for publication, and how far it got.
+struct Content {
+    prepared: Prepared,
+    /// Its allowance admitted it; otherwise it is never staged and its occurrence is `dropped`.
+    admitted: bool,
+    staged: Option<blob::Staged>,
+    stored: bool,
+}
+
+/// What an event's own content is: its bytes, how they are judged, whose allowance they count
+/// against, and the rules that judge them when they are not the writer's own (a released
+/// harness stream's, with the Provider grants it received).
+struct Source<'a> {
+    bytes: &'a [u8],
+    media: Media,
+    scope: &'a Scope,
+    redactor: Option<&'a Redactor>,
+    /// Published from a kernel thread inside a Store commit (design §7.5): the thread appends
+    /// and signals, never waiting for the consumer's flush (§6).
+    detached: bool,
+}
+
+impl Writer {
+    /// A writer for `options`; `None` at `off`, where nothing is ever touched.
+    pub fn new(options: WriterOptions) -> Option<Self> {
+        if !options.level.records() {
+            return None;
+        }
+        Some(Self {
+            shared: Arc::new(Shared {
+                clock: Clock::start(),
+                pending: Mutex::new(Pending {
+                    state: State::Unopened,
+                    segment_id: String::new(),
+                    next_seq: 1,
+                    ready: VecDeque::new(),
+                    buffer: Vec::new(),
+                    terminal: false,
+                    terminal_deadline: None,
+                    shutdown: None,
+                    flush_requested: false,
+                    accepted_bytes: 0,
+                    exhausted: false,
+                    spans: 0,
+                    events: 0,
+                    blobs: 0,
+                    dropped: 0,
+                    dropped_chunks: 0,
+                    problems: BTreeSet::new(),
+                    unwritten: Vec::new(),
+                    blobs_in_segment: BTreeSet::new(),
+                    referenced: BTreeSet::new(),
+                    mode: Mode::Inline,
+                    runs_open: 0,
+                    appends: 0,
+                    oldest: None,
+                    flush_asked: 0,
+                    flush_done: 0,
+                    stream_pending: false,
+                    consumer_exited: true,
+                    seal_request: None,
+                    seal_result: None,
+                }),
+                done: Condvar::new(),
+                consumer: Mutex::new(Consumer {
+                    file: None,
+                    segments: None,
+                }),
+                streams: Mutex::new(Vec::new()),
+                next_stream: std::sync::atomic::AtomicU64::new(1),
+                thread: Mutex::new(None),
+                consumer_thread: OnceLock::new(),
+                writes: std::sync::atomic::AtomicU64::new(0),
+                tree: OnceLock::new(),
+                allowances: Mutex::new(Allowances::default()),
+                options,
+            }),
+        })
+    }
+
+    pub fn level(&self) -> Level {
+        self.shared.options.level
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.shared.options.layout
+    }
+
+    /// The bounds this writer was configured with.
+    pub fn options(&self) -> &WriterOptions {
+        &self.shared.options
+    }
+
+    /// Unix nanoseconds now on the writer's clock.
+    pub fn now_unix_ns(&self) -> u128 {
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.now_unix_ns(),
+        }
+    }
+
+    fn origin_unix_ns(&self) -> u128 {
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.origin_unix_ns(),
+        }
+    }
+
+    /// The segment id, once the segment is open.
+    pub fn segment_id(&self) -> Option<String> {
+        let pending = lock(&self.shared.pending);
+        (pending.state != State::Unopened).then(|| pending.segment_id.clone())
+    }
+
+    /// The live segment's path, once it is open.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.segment_id()
+            .map(|id| self.shared.options.layout.live_segment(&id))
+    }
+
+    /// Every distinct problem this writer met, recorded in the segment or not.
+    pub fn problems(&self) -> Vec<(ProblemWhat, String)> {
+        let pending = lock(&self.shared.pending);
+        let mut all: Vec<(ProblemWhat, String)> = pending.problems.iter().cloned().collect();
+        for problem in &pending.unwritten {
+            if !all.contains(problem) {
+                all.push(problem.clone());
+            }
+        }
+        all
+    }
+
+    /// Records and blobs not kept so far.
+    pub fn dropped(&self) -> u64 {
+        lock(&self.shared.pending).dropped
+    }
+
+    /// Whether telemetry stopped after a telemetry-only failure.
+    pub fn failed(&self) -> bool {
+        matches!(
+            lock(&self.shared.pending).state,
+            State::Failed | State::Crashed | State::Abandoned
+        )
+    }
+
+    /// Whether the consumer thread was abandoned at shutdown.
+    pub fn abandoned(&self) -> bool {
+        lock(&self.shared.pending).state == State::Abandoned
+    }
+
+    /// Whether a consumer thread owns the segment's writes now.
+    pub fn consumer_running(&self) -> bool {
+        lock(&self.shared.pending).mode != Mode::Inline
+    }
+
+    fn header(&self, segment_id: &str) -> Record {
+        let options = &self.shared.options;
+        let redactor = &options.redactor;
+        // At `metrics` the command line is `argv[0]` and the subcommand path the caller parsed
+        // (`argv[0]` alone when it named none), and the working directory is not recorded;
+        // from `spans` on both are whole. An option's value under a secret name is withheld
+        // first, then each argument is judged whole and bounded.
+        let whole = options.level >= Level::Spans;
+        let argv = if whole {
+            redact::withhold_option_values(&options.argv).0
+        } else if options.command.is_empty() {
+            options.argv.iter().take(1).cloned().collect()
+        } else {
+            options.command.clone()
+        };
+        let (argv, _) =
+            record::bound_attributes(Attrs::new().texts("argv", argv), redactor, &mut |_, _| None);
+        let argv = match argv.get("argv") {
+            Some(Value::Array(values)) => values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        // Free text is judged whole before it is cut: a credential in the working directory
+        // leaves the marker, never a prefix of itself.
+        let cwd = if whole {
+            record::cut(
+                &redactor.value(&options.cwd.to_string_lossy()).0,
+                MAX_STRING_BYTES,
+            )
+        } else {
+            String::new()
+        };
+        // The build's commit is kept when it is a commit id (40 or 64 lowercase hex digits) or
+        // a kernel identity, and judged as text otherwise.
+        let commit = &options.af_commit;
+        let af_commit = if (matches!(commit.len(), 40 | 64) && redact::is_lower_hex(commit))
+            || redact::is_kernel_identity(commit)
+        {
+            options.af_commit.clone()
+        } else {
+            redactor.value(&options.af_commit).0
+        };
+        Record::Segment(SegmentHeader {
+            seq: 1,
+            schema: schema::SEGMENT.into(),
+            segment_id: segment_id.to_string(),
+            af_version: record::cut(&redactor.value(&options.af_version).0, 128),
+            af_commit: record::cut(&af_commit, 128),
+            pid: std::process::id(),
+            parent_pid: std::os::unix::process::parent_id(),
+            argv,
+            cwd,
+            host: host_facts(options.layout.root()),
+            started_unix_ns: ns(self.now_unix_ns()),
+            mono_origin_unix_ns: ns(self.origin_unix_ns()),
+            level: options.level,
+        })
+    }
+
+    /// Open the segment in memory at the first record: choose its id and buffer its header,
+    /// which the consumer writes at once.
+    fn ensure_open(&self, pending: &mut Pending) -> bool {
+        match pending.state {
+            State::Open => true,
+            State::Unopened => {
+                let segment_id = match &self.shared.options.segment_id {
+                    Some(segment_id) => segment_id.clone(),
+                    None => new_segment_id(self.now_unix_ns()),
+                };
+                let mut header = self.header(&segment_id);
+                let Some(line) = record::encode(&mut header, Counters::default()) else {
+                    pending.state = State::Failed;
+                    pending
+                        .unwritten
+                        .push((ProblemWhat::Write, "the segment header does not fit".into()));
+                    return false;
+                };
+                pending.segment_id = segment_id;
+                pending.next_seq = 2;
+                pending.accepted_bytes = line.len() as u64 + 1;
+                pending.buffer.extend_from_slice(&line);
+                pending.buffer.push(b'\n');
+                // An environment the redactor could not read is one problem right after the
+                // header, never a silent omission.
+                if let Some(reason) = self.shared.options.redactor.home_unknown() {
+                    let mut problem = Record::Problem(Problem {
+                        seq: 2,
+                        schema: schema::PROBLEM.into(),
+                        time_unix_ns: ns(self.now_unix_ns()),
+                        what: ProblemWhat::Redaction,
+                        reason: reason.to_string(),
+                    });
+                    if let Some(line) = record::encode(&mut problem, Counters::default()) {
+                        pending
+                            .problems
+                            .insert((ProblemWhat::Redaction, reason.to_string()));
+                        pending.next_seq = 3;
+                        pending.accepted_bytes += line.len() as u64 + 1;
+                        pending.buffer.extend_from_slice(&line);
+                        pending.buffer.push(b'\n');
+                    }
+                }
+                pending.flush_requested = true;
+                pending.appends += 1;
+                pending.oldest.get_or_insert_with(Instant::now);
+                pending.state = State::Open;
+                true
+            }
+            State::Sealing | State::Sealed | State::Failed | State::Crashed | State::Abandoned => {
+                false
+            }
+        }
+    }
+
+    /// Encode a batch under the pending lock and accept or refuse it whole against the segment
+    /// limit. `terminal` batches (a problem, the seal) may use the reserve.
+    fn commit<T>(
+        &self,
+        terminal: bool,
+        build: impl FnOnce(&mut Batch<'_>) -> Option<T>,
+    ) -> Option<T> {
+        let mut guard = lock(&self.shared.pending);
+        let pending = &mut *guard;
+        if !self.ensure_open(pending) {
+            if pending.state != State::Unopened {
+                pending.dropped += 1;
+            }
+            return None;
+        }
+        let (value, lines) = build_batch(pending, build);
+        let Some(value) = value else {
+            self.refuse(guard, terminal, Refusal::Unbuilt);
+            return None;
+        };
+        if !self.fits(pending, terminal, &lines, 0) {
+            let records = lines.len().max(1) as u64;
+            self.refuse(guard, terminal, Refusal::Full(records));
+            return None;
+        }
+        self.accept(pending, lines);
+        drop(guard);
+        self.signal();
+        Some(value)
+    }
+
+    /// Whether `lines`, and `slack` bytes more, fit the segment. `terminal` batches (a problem,
+    /// the seal) may use the reserve; nothing else is accepted once the segment is exhausted.
+    fn fits(&self, pending: &Pending, terminal: bool, lines: &[Line], slack: u64) -> bool {
+        let bytes = line_bytes(lines) + slack;
+        let limit = self.shared.options.segment_max_bytes;
+        if terminal {
+            // Room for the seal is kept until the seal itself is written.
+            let sealing = lines.iter().any(|line| line.kind == "seal");
+            let room = if sealing {
+                limit
+            } else {
+                limit.saturating_sub(4096)
+            };
+            return pending.accepted_bytes + bytes <= room;
+        }
+        let budget = limit.saturating_sub(TERMINAL_RESERVE_BYTES);
+        !pending.exhausted && pending.accepted_bytes + bytes <= budget
+    }
+
+    /// Count a refused batch; the first non-terminal batch the limit refuses exhausts the
+    /// segment and records its one `problem`.
+    fn refuse(&self, mut guard: MutexGuard<'_, Pending>, terminal: bool, refusal: Refusal) {
+        let records = match refusal {
+            Refusal::Unbuilt => 1,
+            Refusal::Full(records) => records,
+        };
+        guard.dropped += records;
+        if matches!(refusal, Refusal::Full(_)) && !terminal && !guard.exhausted {
+            guard.exhausted = true;
+            drop(guard);
+            self.problem(
+                ProblemWhat::Budget,
+                "segment_max_bytes reached: further records are dropped and counted",
+            );
+        }
+    }
+
+    /// Append an accepted batch to the buffer. The blob objects it carries become known to the
+    /// segment, and the digests its stored occurrences name become referenced, in the same
+    /// critical section, so no other batch can see the digest unknown once this one is in.
+    fn accept(&self, pending: &mut Pending, lines: Vec<Line>) {
+        let flush_bytes = usize::try_from(self.shared.options.flush_bytes).unwrap_or(usize::MAX);
+        for line in lines {
+            match line.kind {
+                "span_start" => pending.spans += 1,
+                "event" => pending.events += 1,
+                "blob" => pending.blobs += 1,
+                _ => {}
+            }
+            if let Some(digest) = line.object {
+                pending.blobs_in_segment.insert(digest);
+            }
+            if let Some(digest) = line.referenced {
+                pending.referenced.insert(digest);
+            }
+            if !pending.buffer.is_empty()
+                && pending.buffer.len() + line.bytes.len() + 1 > flush_bytes
+            {
+                let full = std::mem::take(&mut pending.buffer);
+                let terminal = pending.terminal;
+                pending.ready.push_back((full, terminal));
+            }
+            pending.buffer.extend_from_slice(&line.bytes);
+            pending.buffer.push(b'\n');
+            pending.accepted_bytes += line.bytes.len() as u64 + 1;
+            pending.next_seq += 1;
+            if line.kind == "seal" {
+                // Nothing is accepted after the seal, in the same critical section.
+                pending.state = State::Sealing;
+                pending.flush_requested = true;
+            }
+            pending.appends += 1;
+            pending.oldest.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// The consumer's work: write every full buffer, and the current buffer when `force` or a
+    /// flush point asked for it, each with one write of whole lines. Opens the file (and
+    /// registers the directory) at its first write. Only the segment's owner calls it: the
+    /// consumer thread while one runs, the appending thread otherwise.
+    pub fn consume(&self, force: bool) {
+        let mut consumer = lock(&self.shared.consumer);
+        let (chunks, segment_id) = {
+            let mut pending = lock(&self.shared.pending);
+            if matches!(
+                pending.state,
+                State::Failed | State::Crashed | State::Abandoned
+            ) {
+                return;
+            }
+            let mut chunks: Vec<(Vec<u8>, bool)> = pending.ready.drain(..).collect();
+            if (force || pending.flush_requested) && !pending.buffer.is_empty() {
+                chunks.push((std::mem::take(&mut pending.buffer), pending.terminal));
+            }
+            if pending.buffer.is_empty() {
+                pending.oldest = None;
+            }
+            pending.flush_requested = false;
+            (chunks, pending.segment_id.clone())
+        };
+        if chunks.is_empty() {
+            return;
+        }
+        if consumer.file.is_none()
+            && let Err(reason) = self.open_file(&mut consumer, &segment_id)
+        {
+            self.fail(ProblemWhat::Write, reason);
+            return;
+        }
+        let file = consumer.file.as_mut().expect("opened above");
+        for (chunk, terminal) in chunks {
+            // A terminal chunk is a write of the terminal phase, unless a later one (the seal's)
+            // is already under way.
+            let phase = match phase() {
+                Phase::Records if terminal => Phase::Terminal,
+                phase => phase,
+            };
+            let hooked = in_phase(phase, || self.write_hook());
+            // A write held past the bounded shutdown belongs to an abandoned segment: nothing
+            // more reaches the file.
+            if hooked.is_ok() && lock(&self.shared.pending).state == State::Abandoned {
+                return;
+            }
+            if let Err(error) = hooked.and_then(|()| file.write_all(&chunk)) {
+                drop(consumer);
+                self.fail(
+                    ProblemWhat::Write,
+                    format!("writing the telemetry segment: {error}"),
+                );
+                return;
+            }
+        }
+    }
+
+    /// The write hook before a publication step, with the ordinal of the last write: a step is
+    /// not a write, so it never counts as one.
+    fn publish_hook(&self) -> std::io::Result<()> {
+        match &self.shared.options.write_hook {
+            Some(hook) => hook(
+                self.shared
+                    .writes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            None => Ok(()),
+        }
+    }
+
+    /// The write hook before a write, with the write's ordinal; `Ok` without a hook.
+    fn write_hook(&self) -> std::io::Result<()> {
+        match &self.shared.options.write_hook {
+            Some(hook) => hook(
+                self.shared
+                    .writes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1,
+            ),
+            None => Ok(()),
+        }
+    }
+
+    /// After an append: without a consumer thread the appending thread runs the consumer code
+    /// (`flush` at a flush point); with one, the append has already signalled it.
+    fn after_append(&self, flush: bool) {
+        if lock(&self.shared.pending).mode == Mode::Inline {
+            self.consume(flush);
+        }
+    }
+
+    /// Have everything appended so far written, by whoever owns the writes: at once without a
+    /// consumer thread; with one, by asking it and waiting at most [`layout::LOCK_WAIT`].
+    /// Whether it was written.
+    fn flush_now(&self) -> bool {
+        let mut pending = lock(&self.shared.pending);
+        // The consumer thread publishing a released harness stream's content (design §7.3) is
+        // the segment's owner: it writes its references itself, never waiting on itself.
+        let on_consumer = self
+            .shared
+            .consumer_thread
+            .get()
+            .is_some_and(|thread| thread.id() == std::thread::current().id());
+        if pending.mode == Mode::Inline || on_consumer {
+            drop(pending);
+            self.consume(true);
+            return true;
+        }
+        pending.flush_asked += 1;
+        let ticket = pending.flush_asked;
+        self.signal();
+        let deadline = wait_until(&pending);
+        while pending.flush_done < ticket && !pending.consumer_exited {
+            if matches!(
+                pending.state,
+                State::Failed | State::Crashed | State::Abandoned
+            ) {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            pending = self
+                .shared
+                .done
+                .wait_timeout(pending, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// The process opened an `af.run` span: the first one starts the consumer thread, the
+    /// segment's only writer from then on until it is sealed or abandoned. At `off` there is no
+    /// writer, so no thread.
+    pub fn run_started(&self) {
+        lock(&self.shared.pending).runs_open += 1;
+        self.start_consumer();
+    }
+
+    /// The process ended an `af.run` span. The consumer thread keeps the segment: the records
+    /// after it, the `af.command` end among them, go through it, and [`Self::finish`] seals.
+    pub fn run_ended(&self) {
+        let mut pending = lock(&self.shared.pending);
+        pending.runs_open = pending.runs_open.saturating_sub(1);
+    }
+
+    /// The shutdown begins: the run spans' ends, the `af.command` end and the seal follow. From
+    /// here every wait — a publication's flush, the seal — shares one bound,
+    /// [`layout::LOCK_WAIT`] from now, and the consumer thread is started when no `af.run`
+    /// started it, so every remaining record is its write.
+    pub fn begin_terminal(&self) {
+        {
+            let mut pending = lock(&self.shared.pending);
+            if pending.state != State::Open {
+                return;
+            }
+            pending
+                .terminal_deadline
+                .get_or_insert_with(|| Instant::now() + layout::LOCK_WAIT);
+        }
+        self.start_consumer();
+    }
+
+    /// Start the consumer thread when none runs yet and the segment may still be written;
+    /// whether one runs now. A thread that cannot be started is one problem, and the appending
+    /// thread keeps the writes.
+    fn start_consumer(&self) -> bool {
+        let mut pending = lock(&self.shared.pending);
+        if pending.mode == Mode::Running {
+            return true;
+        }
+        if !matches!(pending.state, State::Unopened | State::Open) {
+            return false;
+        }
+        pending.mode = Mode::Running;
+        pending.consumer_exited = false;
+        drop(pending);
+        let writer = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("af-telemetry".into())
+            .spawn(move || writer.consumer_loop());
+        match spawned {
+            Ok(handle) => {
+                // Known before this returns, so an observer made right after can wake it.
+                let _ = self.shared.consumer_thread.set(handle.thread().clone());
+                *lock(&self.shared.thread) = Some(handle);
+                true
+            }
+            Err(error) => {
+                {
+                    let mut pending = lock(&self.shared.pending);
+                    pending.mode = Mode::Inline;
+                    pending.consumer_exited = true;
+                }
+                self.problem(
+                    ProblemWhat::Write,
+                    &format!(
+                        "the telemetry consumer thread did not start ({}); the appending \
+                         thread writes instead",
+                        error.kind()
+                    ),
+                );
+                false
+            }
+        }
+    }
+
+    /// Wake the consumer thread, when one runs: an unpark, never lost and never blocking.
+    fn signal(&self) {
+        if let Some(thread) = self.shared.consumer_thread.get() {
+            thread.unpark();
+        }
+    }
+
+    /// The consumer thread, once it runs: what a stream observer unparks.
+    pub fn consumer_thread(&self) -> Option<std::thread::Thread> {
+        self.shared.consumer_thread.get().cloned()
+    }
+
+    /// Attach a stream queue the consumer drains at every wake until it is
+    /// [`StreamQueue::finished`]; its id, for [`Self::detach_stream`].
+    pub fn attach_stream(&self, queue: Arc<dyn StreamQueue>) -> u64 {
+        let id = self
+            .shared
+            .next_stream
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        lock(&self.shared.streams).push((id, queue));
+        self.stream_chunk();
+        id
+    }
+
+    /// Detach a stream queue: the consumer drains it no more.
+    pub fn detach_stream(&self, id: u64) {
+        lock(&self.shared.streams).retain(|(attached, _)| *attached != id);
+    }
+
+    /// A stream queue has something new (a chunk, its end, its release decision): wake the
+    /// consumer.
+    pub fn stream_chunk(&self) {
+        lock(&self.shared.pending).stream_pending = true;
+        self.signal();
+    }
+
+    /// Drain every attached stream queue once, detaching the finished ones; whether all are
+    /// empty now.
+    fn drain_streams(&self) -> bool {
+        let streams: Vec<(u64, Arc<dyn StreamQueue>)> = lock(&self.shared.streams).clone();
+        let mut empty = true;
+        for (id, queue) in streams {
+            empty &= queue.drain(self);
+            if queue.finished() {
+                self.detach_stream(id);
+            }
+        }
+        empty
+    }
+
+    /// Whether an attached stream queue waits to be drained.
+    fn streams_pending(&self) -> bool {
+        lock(&self.shared.streams)
+            .iter()
+            .any(|(_, queue)| queue.has_pending())
+    }
+
+    /// The consumer thread: parked with one deadline, no timer and no polling. Every wake is an
+    /// unpark ([`Self::signal`], a stream observer's offer), which is never lost: one given
+    /// before the thread parks makes the park return at once.
+    fn consumer_loop(&self) {
+        let _ = self.shared.consumer_thread.set(std::thread::current());
+        let latency = Duration::from_millis(self.shared.options.flush_latency_ms.max(1));
+        let mut seen = 0_u64;
+        loop {
+            // Wait for an append, a stream chunk, a flush request, the seal, or the deadline.
+            let (asked, due) = {
+                let mut pending = lock(&self.shared.pending);
+                loop {
+                    if matches!(
+                        pending.state,
+                        State::Failed | State::Crashed | State::Abandoned
+                    ) {
+                        self.exit_consumer(pending);
+                        return;
+                    }
+                    let deadline = pending.oldest.map(|oldest| oldest + latency);
+                    let now = Instant::now();
+                    let due = deadline.is_some_and(|deadline| now >= deadline);
+                    if let Some((exit, ended, bound)) = pending.seal_request.take() {
+                        drop(pending);
+                        let sealed = self.seal(exit, ended, bound);
+                        let mut pending = lock(&self.shared.pending);
+                        pending.seal_result = Some(sealed);
+                        pending.flush_done = pending.flush_asked;
+                        self.exit_consumer(pending);
+                        return;
+                    }
+                    let woken = pending.appends != seen
+                        || !pending.ready.is_empty()
+                        || pending.flush_asked > pending.flush_done
+                        || pending.stream_pending
+                        || self.streams_pending();
+                    if woken || due {
+                        seen = pending.appends;
+                        pending.stream_pending = false;
+                        break (pending.flush_asked, due);
+                    }
+                    // A wake given after the check above unparks the park below at once.
+                    drop(pending);
+                    match deadline {
+                        None => std::thread::park(),
+                        Some(deadline) => std::thread::park_timeout(deadline - now),
+                    }
+                    pending = lock(&self.shared.pending);
+                }
+            };
+            // Drain the stream queues, then write: the buffer goes when they are empty, the
+            // deadline has passed or a flush was asked for.
+            let queue_empty = self.drain_streams();
+            let pending_ask = {
+                let pending = lock(&self.shared.pending);
+                asked > pending.flush_done
+            };
+            self.consume(queue_empty || due || pending_ask);
+            {
+                let mut pending = lock(&self.shared.pending);
+                pending.flush_done = pending.flush_done.max(asked);
+            }
+            self.shared.done.notify_all();
+        }
+    }
+
+    /// The consumer thread's last act, once the segment is sealed, failed or abandoned: no
+    /// record is accepted any more, so the writes are nobody's.
+    fn exit_consumer(&self, mut pending: MutexGuard<'_, Pending>) {
+        pending.consumer_exited = true;
+        drop(pending);
+        self.shared.done.notify_all();
+    }
+
+    fn open_file(&self, consumer: &mut Consumer, segment_id: &str) -> Result<(), String> {
+        let options = &self.shared.options;
+        if let Some(registration) = &options.registration {
+            if let Some(reason) = &registration.accounted_unknown {
+                return Err(format!(
+                    "the overlap check of telemetry directory {} is unknown: {reason}",
+                    options.layout.root().display()
+                ));
+            }
+            dirs::register(
+                &registration.registry,
+                options.layout.root(),
+                &registration.accounted,
+            )?;
+        }
+        // Every directory from the root down is created and opened without following a link,
+        // and the live file is created relative to the opened `segments/`. The root and `v1/`
+        // stay open for the writer's lifetime: blobs and `gc.lock` are reached through them.
+        let creating = |path: PathBuf| {
+            move |error: std::io::Error| format!("creating {}: {error}", path.display())
+        };
+        let root = Confined::create_root(options.layout.root())
+            .map_err(creating(options.layout.root().to_path_buf()))?;
+        let versioned = root
+            .create_child_dir(layout::VERSION_DIR)
+            .map_err(creating(options.layout.versioned()))?;
+        let segments = versioned
+            .create_child_dir("segments")
+            .map_err(creating(options.layout.segments()))?;
+        let name = format!("{segment_id}{}", layout::LIVE);
+        let file = segments
+            .create_file(&name, true)
+            .map_err(creating(segments.join(&name)))?;
+        let held = layout::try_lock(file, FlockArg::LockExclusiveNonblock)
+            .map_err(|_| format!("locking {}", segments.join(&name).display()))?;
+        consumer.file = Some(held);
+        consumer.segments = Some(segments);
+        // Opened once: a writer whose segment failed to open never opens another.
+        let _ = self.shared.tree.set(Tree {
+            _root: root,
+            versioned,
+            blobs: Mutex::new(BlobDirs::default()),
+        });
+        Ok(())
+    }
+
+    fn fail(&self, what: ProblemWhat, reason: String) {
+        let mut pending = lock(&self.shared.pending);
+        pending.state = State::Failed;
+        pending.unwritten.push((what, reason));
+    }
+
+    /// Write everything buffered now (with a consumer thread: have it written, waiting at most
+    /// [`layout::LOCK_WAIT`]).
+    pub fn flush(&self) {
+        self.flush_now();
+    }
+
+    /// Stop as a killed process would: nothing buffered is written, the lock on the segment
+    /// ends, the file stays `.jsonl` for a reader to recover.
+    pub fn abandon(&self) {
+        let mut consumer = lock(&self.shared.consumer);
+        lock(&self.shared.pending).state = State::Crashed;
+        consumer.file = None;
+    }
+
+    /// Bound `attrs`; at `content`, a string or string array over its bound becomes a pending
+    /// blob whose occurrence id the attribute will name.
+    fn bound(&self, attrs: Attrs) -> Bounded {
+        let options = &self.shared.options;
+        let mut contents = Vec::new();
+        let mut named = Vec::new();
+        let keep = options.level.keeps_content();
+        let (attributes, counters) =
+            record::bound_attributes(attrs, &options.redactor, &mut |key, value| {
+                if !keep {
+                    return None;
+                }
+                // Both arrive as the writer gave them, so the occurrence's source identity is
+                // the original's: text is redacted per line before it is retained, an array as
+                // one JSON document, measured before it is encoded so an array over the blob
+                // bound is withheld before anything proportional to it is allocated. Either
+                // counts against the process's content allowance.
+                let process = Scope::Process;
+                contents.push(if self.exhausted(&process) {
+                    let source = match value {
+                        Oversized::Text(text) => text.as_bytes().to_vec(),
+                        Oversized::Texts(values) => {
+                            serde_json::to_vec(values).expect("strings serialize")
+                        }
+                    };
+                    let media = match value {
+                        Oversized::Text(_) => Media::Text,
+                        Oversized::Texts(_) => Media::Json,
+                    };
+                    Offered {
+                        prepared: blob::unprepared(&source, media),
+                        admitted: false,
+                        scope: process,
+                    }
+                } else {
+                    let prepared = match value {
+                        Oversized::Text(text) => blob::prepare(
+                            text.as_bytes(),
+                            Media::Text,
+                            options.content_max_blob_bytes,
+                            &options.redactor,
+                        ),
+                        Oversized::Texts(values) => blob::prepare_texts(
+                            values,
+                            options.content_max_blob_bytes,
+                            &options.redactor,
+                        ),
+                    };
+                    let admitted = self.admit(&process, prepared.retained.len() as u64);
+                    Offered {
+                        prepared,
+                        admitted,
+                        scope: process,
+                    }
+                });
+                named.push(key.to_string());
+                Some(String::new())
+            });
+        Bounded {
+            attributes,
+            counters,
+            contents,
+            named,
+        }
+    }
+
+    fn hook(&self, step: PublishStep) -> bool {
+        match &self.shared.options.publish_hook {
+            Some(hook) => {
+                if hook(step) == HookAction::Crash {
+                    self.abandon();
+                    false
+                } else {
+                    true
+                }
+            }
+            None => true,
+        }
+    }
+
+    /// Publish `contents` and append the owning record `build` makes, in the protocol's order.
+    /// `build` gets the batch and the occurrence ids of the contents; the owner takes the `seq`
+    /// right after the occurrences. `span` is the span the contents belong to, or `None` for
+    /// the span the owner itself starts. `build` runs twice for a batch with content: once to
+    /// judge the batch against the segment limit before any file is placed, once for the
+    /// batch accepted.
+    fn publish<T>(
+        &self,
+        contents: Vec<Offered>,
+        span: Option<&str>,
+        flush: bool,
+        wait: bool,
+        build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
+    ) -> Option<T> {
+        // What each admitted content charged its allowance; a content whose occurrence is not
+        // stored — staging or publication dropped it, or the batch was refused — is refunded,
+        // so content that never reached `blobs/` never exhausts an allowance.
+        let charges: Vec<Option<(Scope, u64)>> = contents
+            .iter()
+            .map(|offered| {
+                offered.admitted.then(|| {
+                    (
+                        offered.scope.clone(),
+                        offered.prepared.retained.len() as u64,
+                    )
+                })
+            })
+            .collect();
+        let mut stored = vec![false; contents.len()];
+        let value = self.publish_contents(contents, span, flush, wait, build, &mut stored);
+        for (charge, stored) in charges.into_iter().zip(stored) {
+            if let Some((scope, bytes)) = charge.filter(|_| !stored) {
+                self.refund(&scope, bytes);
+            }
+        }
+        value
+    }
+
+    /// [`Self::publish`]'s protocol; `stored` says, once the batch is accepted, which contents
+    /// were stored. `wait` is the protocol's bounded wait for the consumer's flush at its two
+    /// points (design §6 publication); a detached publication (a Store commit's mirrored
+    /// payload, [`Self::content_event_detached`]) signals the consumer and goes on.
+    fn publish_contents<T>(
+        &self,
+        contents: Vec<Offered>,
+        span: Option<&str>,
+        flush: bool,
+        wait: bool,
+        mut build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
+        stored: &mut [bool],
+    ) -> Option<T> {
+        if contents.is_empty() {
+            let value = self.commit(false, |batch| build(batch, &[]));
+            self.after_append(flush);
+            return value;
+        }
+        // The directory is registered and the segment open before any blob file is written.
+        {
+            let mut pending = lock(&self.shared.pending);
+            if !self.ensure_open(&mut pending) {
+                return None;
+            }
+        }
+        if wait {
+            self.flush_now();
+        } else {
+            self.signal();
+        }
+        if self.failed() {
+            return None;
+        }
+        // Exhaustion is judged before any blob file is staged: past the limit the owning record
+        // is refused anyway, so its content never reaches `blobs/`.
+        {
+            let mut pending = lock(&self.shared.pending);
+            if pending.exhausted {
+                pending.dropped += 1 + contents.len() as u64;
+                return None;
+            }
+        }
+        // The segment is open, so the directories it was opened in are held.
+        let Some(tree) = self.shared.tree.get() else {
+            lock(&self.shared.pending).dropped += 1 + contents.len() as u64;
+            return None;
+        };
+        let mut contents: Vec<Content> = contents
+            .into_iter()
+            .map(|offered| Content {
+                prepared: offered.prepared,
+                admitted: offered.admitted,
+                staged: None,
+                stored: false,
+            })
+            .collect();
+        for content in &mut contents {
+            if !content.admitted {
+                continue;
+            }
+            let staged = tree
+                .prefix(blob::prefix_of(&content.prepared.digest))
+                .and_then(|directory| blob::stage_in(directory, &content.prepared));
+            match staged {
+                Ok(staged) => content.staged = Some(staged),
+                Err(error) => self.problem(
+                    ProblemWhat::Blob,
+                    &format!("staging a blob: {}", error.kind()),
+                ),
+            }
+        }
+        if !self.hook(PublishStep::Staged) {
+            return None;
+        }
+        let gc = if contents.iter().any(|content| content.staged.is_some()) {
+            layout::lock_in(
+                &tree.versioned,
+                layout::GC_LOCK,
+                std::time::Duration::ZERO,
+                FlockArg::LockSharedNonblock,
+            )
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        if gc.is_some() && !self.hook(PublishStep::Locked) {
+            return None;
+        }
+        // From the fit decision to the acceptance, one critical section: the batch is judged
+        // against the segment limit before any file is placed, the files are placed, and the
+        // batch is accepted with the digests it makes known, so no other batch can take the
+        // room it was judged against or see one of its digests unknown.
+        let mut guard = lock(&self.shared.pending);
+        let pending = &mut *guard;
+        if pending.state != State::Open {
+            for content in &mut contents {
+                if let Some(staged) = content.staged.take() {
+                    staged.discard();
+                }
+            }
+            pending.dropped += 1;
+            return None;
+        }
+        let open = !pending.exhausted;
+        for content in &mut contents {
+            content.stored = open && gc.is_some() && content.staged.is_some();
+        }
+        // The batch as it is when every staged content is placed. A content that then fails to
+        // place turns its `stored` into `dropped`, one byte longer, and loses at most its
+        // object record, so one byte per content of slack covers the batch actually accepted.
+        let (planned, lines) = publication(pending, &contents, span, &mut build);
+        let slack = contents.len() as u64;
+        if !open || planned.is_none() || !self.fits(pending, false, &lines, slack) {
+            for content in &mut contents {
+                if let Some(staged) = content.staged.take() {
+                    staged.discard();
+                }
+            }
+            let refusal = if !open || planned.is_some() {
+                Refusal::Full(lines.len().max(1) as u64)
+            } else {
+                Refusal::Unbuilt
+            };
+            self.refuse(guard, false, refusal);
+            return None;
+        }
+        // The files this batch itself renamed into place; a file of the digest that was
+        // already there belongs to whichever batch placed it.
+        let mut renamed = Vec::new();
+        for content in &mut contents {
+            let Some(staged) = content.staged.take() else {
+                continue;
+            };
+            if !content.stored {
+                staged.discard();
+                continue;
+            }
+            match blob::place(&staged) {
+                Ok(blob::Placed::Renamed) => {
+                    renamed.push((content.prepared.digest.clone(), staged));
+                }
+                Ok(blob::Placed::Reused) => {}
+                Err(_) => {
+                    staged.discard();
+                    content.stored = false;
+                }
+            }
+        }
+        let (value, lines) = publication(pending, &contents, span, &mut build);
+        if value.is_none() || !self.fits(pending, false, &lines, 0) {
+            // Refused after placement: the files it renamed go again, still under gc.lock,
+            // except a digest a record of this segment already references.
+            for (digest, staged) in renamed {
+                if !pending.referenced.contains(&digest) {
+                    staged.remove_placed();
+                }
+            }
+            let refusal = if value.is_some() {
+                Refusal::Full(lines.len().max(1) as u64)
+            } else {
+                Refusal::Unbuilt
+            };
+            self.refuse(guard, false, refusal);
+            return None;
+        }
+        self.accept(pending, lines);
+        for (stored, content) in stored.iter_mut().zip(&contents) {
+            *stored = content.stored;
+        }
+        // Dropped because the sweep held gc.lock or the file could not be placed.
+        pending.dropped += contents.iter().filter(|content| !content.stored).count() as u64;
+        drop(guard);
+        self.signal();
+        if gc.is_some() && !self.hook(PublishStep::Renamed) {
+            return None;
+        }
+        // The references are written before gc.lock is released. A consumer that does not
+        // write them within the bounded wait, and a detached publication's consumer, which is
+        // not waited for, leave the blob to its one-hour protection, which `blob::place`
+        // renewed for a digest whose file was already there.
+        if wait {
+            self.flush_now();
+        }
+        if gc.is_some() && !self.hook(PublishStep::Flushed) {
+            return None;
+        }
+        drop(gc);
+        value
+    }
+
+    /// A span's or an event's name: free text like any other, judged whole before it is cut, so
+    /// a credential in it leaves the withheld marker and is counted in `af.redacted`.
+    fn name(&self, name: &str, counters: &mut Counters) -> String {
+        let (name, withheld) = self.shared.options.redactor.value(name);
+        if withheld {
+            counters.redacted += 1;
+        }
+        record::cut(&name, MAX_KEY_BYTES)
+    }
+
+    /// Start a span; returns its `span_id`. `trace_id` is the run's trace, when known.
+    pub fn span_start(
+        &self,
+        trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+        name: &str,
+        kind: SpanKind,
+        attrs: Attrs,
+    ) -> Option<String> {
+        let Bounded {
+            mut attributes,
+            mut counters,
+            contents,
+            named,
+        } = self.bound(attrs);
+        let start = ns(self.now_unix_ns());
+        let name = self.name(name, &mut counters);
+        let trace_id = trace_id.map(|id| self.typed("trace_id", id, MAX_KEY_BYTES));
+        let parent_span_id =
+            parent_span_id.map(|id| self.typed("parent_span_id", id, MAX_KEY_BYTES));
+        self.publish(contents, None, false, true, |batch, occurrences| {
+            fill(&mut attributes, &named, occurrences);
+            let span_id = trace::span_id(batch.segment_id(), batch.seq());
+            batch.push(
+                Record::SpanStart(SpanStart {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    name: name.clone(),
+                    kind,
+                    start_unix_ns: start.clone(),
+                    attributes: attributes.clone(),
+                }),
+                counters,
+            )?;
+            Some(span_id)
+        })
+    }
+
+    /// End a span with the attributes known only at its end. A span of `depth` at most 2 (the
+    /// root is depth 0) is a flush point.
+    pub fn span_end(&self, span_id: &str, status: SpanStatus, attrs: Attrs, depth: usize) {
+        if depth == 0 {
+            self.mark_terminal();
+        }
+        let Bounded {
+            mut attributes,
+            counters,
+            contents,
+            named,
+        } = self.bound(attrs);
+        let end = ns(self.now_unix_ns());
+        self.publish(
+            contents,
+            Some(span_id),
+            depth <= 2,
+            true,
+            |batch, occurrences| {
+                fill(&mut attributes, &named, occurrences);
+                batch.push(
+                    Record::SpanEnd(SpanEnd {
+                        seq: 0,
+                        schema: schema::SPAN.into(),
+                        span_id: span_id.to_string(),
+                        end_unix_ns: Some(end.clone()),
+                        status,
+                        attributes: attributes.clone(),
+                    }),
+                    counters,
+                )
+            },
+        );
+    }
+
+    /// The root span (`af.command`) ends: its end and every later record are terminal, set apart
+    /// from what is buffered before them.
+    fn mark_terminal(&self) {
+        let mut pending = lock(&self.shared.pending);
+        if pending.terminal {
+            return;
+        }
+        if !pending.buffer.is_empty() {
+            let earlier = std::mem::take(&mut pending.buffer);
+            pending.ready.push_back((earlier, false));
+        }
+        pending.terminal = true;
+    }
+
+    /// An event on a span; returns its `seq`.
+    pub fn event(&self, span_id: &str, name: &str, attrs: Attrs) -> Option<u64> {
+        self.event_with(span_id, name, attrs, None, None)
+    }
+
+    /// An event that also carries its own `seq` as the integer attribute `sequence`, first in
+    /// its attributes so the record bound never drops it (the wall series' ordering key,
+    /// design §7.5). Returns the event's `seq`.
+    pub fn event_with_sequence(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        sequence: &'static str,
+    ) -> Option<u64> {
+        self.event_with(span_id, name, attrs, None, Some(sequence))
+    }
+
+    /// An event naming content: at `content` the content becomes a blob occurrence the event
+    /// names, counted against the process's content allowance; at every other level the event
+    /// is recorded without it. Returns the event's `seq`.
+    pub fn event_with_content(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+    ) -> Option<u64> {
+        self.content_event(span_id, name, attrs, content, media, &Scope::Process)
+    }
+
+    /// An event naming content counted against `scope`'s allowance (design §8): at `content`
+    /// the content is redacted whole under the writer's rules, then bounded, and becomes a blob
+    /// occurrence the event names — a `dropped` one, never staged, once the allowance is
+    /// exhausted; at every other level the event is recorded without it. Returns the event's
+    /// `seq`.
+    pub fn content_event(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: None,
+            detached: false,
+        };
+        self.event_with(span_id, name, attrs, Some(source), None)
+    }
+
+    /// [`Self::content_event`] from a kernel thread inside a Store commit — the Store mirror's
+    /// payload at `content` (design §7.5). The thread appends the records and signals the
+    /// consumer, and never waits for its flush (§6: kernel threads only append to the buffer
+    /// and signal it), so a consumer busy publishing a released harness stream delays no Store
+    /// append and no lease renewal. The blob file is placed — renamed over an existing file of
+    /// its digest, so its age restarts — and its references are appended in the protocol's
+    /// order; they reach the segment within `flush_latency_ms` of the consumer's next wake, and
+    /// until then the file is a young blob the sweep never collects.
+    pub fn content_event_detached(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: None,
+            detached: true,
+        };
+        self.event_with(span_id, name, attrs, Some(source), None)
+    }
+
+    /// [`Self::content_event`] judged by `redactor` instead of the writer's own rules: a
+    /// released harness stream's content, whose rules replace the Provider grants the process
+    /// received (design §7.3). The occurrence's source identity is the original bytes'.
+    #[allow(clippy::too_many_arguments)]
+    pub fn content_event_judged(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+        redactor: &Redactor,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: Some(redactor),
+            detached: false,
+        };
+        let seq = self.event_with(span_id, name, attrs, Some(source), None);
+        self.renew_shutdown();
+        seq
+    }
+
+    /// A released stream made progress under the seal — a content judged, published or handed
+    /// on (design §6): the shutdown's bound moves to [`layout::LOCK_WAIT`] from now, so a
+    /// release that outlasts the bound completes while it progresses, and a consumer that makes
+    /// no progress — a write blocked on the volume, a stalled queue — is still abandoned at the
+    /// bound. Nothing moves before [`Self::finish`] set the bound.
+    pub(crate) fn renew_shutdown(&self) {
+        let mut pending = lock(&self.shared.pending);
+        let Some(shutdown) = pending.shutdown else {
+            return;
+        };
+        let renewed = shutdown.max(Instant::now() + layout::LOCK_WAIT);
+        pending.shutdown = Some(renewed);
+        if let Some(terminal) = pending.terminal_deadline.as_mut() {
+            *terminal = (*terminal).max(renewed);
+        }
+    }
+
+    /// Whether `scope`'s content allowance is exhausted.
+    fn exhausted(&self, scope: &Scope) -> bool {
+        lock(&self.shared.allowances).exhausted.contains(scope)
+    }
+
+    /// Count `bytes` of retained content against `scope`'s allowance; whether it fits. The
+    /// first content that does not exhausts the allowance for good and records its one `budget`
+    /// problem.
+    fn admit(&self, scope: &Scope, bytes: u64) -> bool {
+        let options = &self.shared.options;
+        let (limit, reason) = match scope {
+            Scope::Attempt(_) => (
+                options.content_attempt_max_bytes,
+                content::ATTEMPT_EXHAUSTED,
+            ),
+            Scope::Process => (
+                options.content_process_max_bytes,
+                content::PROCESS_EXHAUSTED,
+            ),
+        };
+        {
+            let mut allowances = lock(&self.shared.allowances);
+            let allowances = &mut *allowances;
+            if allowances.exhausted.contains(scope) {
+                return false;
+            }
+            let used = match scope {
+                Scope::Attempt(attempt) => allowances.attempts.entry(attempt.clone()).or_default(),
+                Scope::Process => &mut allowances.process,
+            };
+            if used.saturating_add(bytes) <= limit {
+                *used += bytes;
+                return true;
+            }
+            allowances.exhausted.insert(scope.clone());
+        }
+        self.problem(ProblemWhat::Budget, reason);
+        false
+    }
+
+    /// Give back `bytes` an admitted content charged to `scope` when it was not stored. An
+    /// allowance already exhausted stays exhausted.
+    fn refund(&self, scope: &Scope, bytes: u64) {
+        let mut allowances = lock(&self.shared.allowances);
+        let used = match scope {
+            Scope::Attempt(attempt) => allowances.attempts.get_mut(attempt),
+            Scope::Process => Some(&mut allowances.process),
+        };
+        if let Some(used) = used {
+            *used = used.saturating_sub(bytes);
+        }
+    }
+
+    fn event_with(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: Option<Source<'_>>,
+        sequence: Option<&'static str>,
+    ) -> Option<u64> {
+        let options = &self.shared.options;
+        let Bounded {
+            mut attributes,
+            mut counters,
+            mut contents,
+            named,
+        } = self.bound(attrs);
+        let mut media_type = None;
+        let wait = !content.as_ref().is_some_and(|source| source.detached);
+        if let Some(source) = content
+            && options.level.keeps_content()
+        {
+            // Past its allowance the content is not even judged: the occurrence stands for it.
+            let offered = if self.exhausted(source.scope) {
+                Offered {
+                    prepared: blob::unprepared(source.bytes, source.media),
+                    admitted: false,
+                    scope: source.scope.clone(),
+                }
+            } else {
+                let prepared = blob::prepare(
+                    source.bytes,
+                    source.media,
+                    options.content_max_blob_bytes,
+                    source.redactor.unwrap_or(&options.redactor),
+                );
+                let admitted = self.admit(source.scope, prepared.retained.len() as u64);
+                Offered {
+                    prepared,
+                    admitted,
+                    scope: source.scope.clone(),
+                }
+            };
+            media_type = Some(offered.prepared.media_type.to_string());
+            // The event's own content is the first occurrence.
+            contents.insert(0, offered);
+        }
+        let own = media_type.is_some();
+        let time = ns(self.now_unix_ns());
+        let name = self.name(name, &mut counters);
+        self.publish(
+            contents,
+            Some(span_id),
+            false,
+            wait,
+            |batch, occurrences| {
+                // The attributes' contents follow the event's own.
+                let attribute_occurrences = if own { &occurrences[1..] } else { occurrences };
+                fill(&mut attributes, &named, attribute_occurrences);
+                let mut attributes = attributes.clone();
+                if let Some(key) = sequence {
+                    attributes.shift_insert(
+                        0,
+                        key.to_string(),
+                        serde_json::Value::from(batch.seq()),
+                    );
+                }
+                batch.push(
+                    Record::Event(Event {
+                        seq: 0,
+                        schema: schema::EVENT.into(),
+                        span_id: span_id.to_string(),
+                        time_unix_ns: time.clone(),
+                        name: name.clone(),
+                        attributes,
+                        blob: if own {
+                            occurrences.first().cloned()
+                        } else {
+                            None
+                        },
+                        blob_media_type: media_type.clone(),
+                    }),
+                    counters,
+                )
+            },
+        )
+    }
+
+    /// Unix nanoseconds of `instant` on the writer's clock: a stream observer's arrival time. A
+    /// fixture's injected clock has no instants and gives its own now.
+    pub fn unix_ns_at(&self, instant: Instant) -> u128 {
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.unix_ns_at(instant),
+        }
+    }
+
+    /// Bound `attrs` for a live stream record: as [`Self::bound`], but no value is ever offered
+    /// for a blob, at any level. A harness's content waits for its Attempt's release decision
+    /// (design §7.3) and never reaches a live record, and the consumer, which writes these,
+    /// never waits on a publication of its own.
+    fn bound_live(&self, attrs: Attrs) -> (Attributes, Counters) {
+        record::bound_attributes(attrs, &self.shared.options.redactor, &mut |_, _| None)
+    }
+
+    /// A span start of a harness stream at `start_unix_ns` (the arrival of the line that opened
+    /// it), its attributes bounded and never a blob; its `span_id`.
+    pub fn stream_span_start(
+        &self,
+        trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+        name: &str,
+        kind: SpanKind,
+        attrs: Attrs,
+        start_unix_ns: u128,
+    ) -> Option<String> {
+        let (attributes, mut counters) = self.bound_live(attrs);
+        let name = self.name(name, &mut counters);
+        let trace_id = trace_id.map(|id| self.typed("trace_id", id, MAX_KEY_BYTES));
+        let parent_span_id =
+            parent_span_id.map(|id| self.typed("parent_span_id", id, MAX_KEY_BYTES));
+        let value = self.commit(false, |batch| {
+            let span_id = trace::span_id(batch.segment_id(), batch.seq());
+            batch.push(
+                Record::SpanStart(SpanStart {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    name: name.clone(),
+                    kind,
+                    start_unix_ns: ns(start_unix_ns),
+                    attributes: attributes.clone(),
+                }),
+                counters,
+            )?;
+            Some(span_id)
+        });
+        self.after_append(false);
+        value
+    }
+
+    /// A span end of a harness stream at `end_unix_ns`, its attributes bounded and never a blob.
+    pub fn stream_span_end(
+        &self,
+        span_id: &str,
+        status: SpanStatus,
+        attrs: Attrs,
+        end_unix_ns: u128,
+    ) {
+        let (attributes, counters) = self.bound_live(attrs);
+        self.commit(false, |batch| {
+            batch.push(
+                Record::SpanEnd(SpanEnd {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    span_id: span_id.to_string(),
+                    end_unix_ns: Some(ns(end_unix_ns)),
+                    status,
+                    attributes: attributes.clone(),
+                }),
+                counters,
+            )
+        });
+        self.after_append(false);
+    }
+
+    /// An event of a harness stream at `time_unix_ns`, its attributes bounded and never a blob;
+    /// its `seq`.
+    pub fn stream_event(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        time_unix_ns: u128,
+    ) -> Option<u64> {
+        let (attributes, mut counters) = self.bound_live(attrs);
+        let name = self.name(name, &mut counters);
+        let value = self.commit(false, |batch| {
+            batch.push(
+                Record::Event(Event {
+                    seq: 0,
+                    schema: schema::EVENT.into(),
+                    span_id: span_id.to_string(),
+                    time_unix_ns: ns(time_unix_ns),
+                    name: name.clone(),
+                    attributes: attributes.clone(),
+                    blob: None,
+                    blob_media_type: None,
+                }),
+                counters,
+            )
+        });
+        self.after_append(false);
+        value
+    }
+
+    /// A telemetry-only problem: recorded once per distinct `what` and `reason`, from the
+    /// terminal reserve.
+    pub fn problem(&self, what: ProblemWhat, reason: &str) {
+        let (reason, _) = self.shared.options.redactor.value(reason);
+        let reason = record::cut(&reason, MAX_STRING_BYTES);
+        {
+            let mut pending = lock(&self.shared.pending);
+            if !pending.problems.insert((what, reason.clone())) {
+                return;
+            }
+        }
+        let time = ns(self.now_unix_ns());
+        let written = self.commit(true, |batch| {
+            batch.push(
+                Record::Problem(Problem {
+                    seq: 0,
+                    schema: schema::PROBLEM.into(),
+                    time_unix_ns: time,
+                    what,
+                    reason: reason.clone(),
+                }),
+                Counters::default(),
+            )
+        });
+        if written.is_none() {
+            lock(&self.shared.pending).unwritten.push((what, reason));
+        }
+    }
+
+    /// One section ([`record::CONFIG_SECTIONS`]) of a run's configuration record, owned by
+    /// `owner` — the execution that writes it, the run, and that run's `af.run` span — split
+    /// into as many `config` parts as the record bound needs, in the rows' order. A row whose key is an identity position
+    /// ([`record::is_identity_position`]) keeps a value that is exactly a kernel identity. Each
+    /// row is judged by its original key first: a key the
+    /// credential rule judges a credential (a token prefix, a JSON Web Token, a long secret
+    /// run, an assignment) or the secret-name rule matches (`key`, `token`, `secret`,
+    /// `password`, …) withholds the whole pair: the value and the origin become the withheld
+    /// marker whatever their length or shape, a credential-shaped key becomes it too, and the
+    /// pair counts once in `af.redacted`. Other keys, values, layers and origins are untrusted
+    /// text, each judged whole and only then bounded; each part counts its withheld values in
+    /// `af.redacted`.
+    pub fn config(
+        &self,
+        owner: &ConfigOwner<'_>,
+        section: &str,
+        rows: Vec<ConfigRow>,
+    ) -> Option<u32> {
+        let redactor = &self.shared.options.redactor;
+        let rows: Vec<(ConfigRow, u32)> = rows
+            .into_iter()
+            .map(|row| {
+                let mut redacted = 0;
+                let mut judge = |text: &str| {
+                    let (text, withheld) = redactor.value(text);
+                    redacted += u32::from(withheld);
+                    text
+                };
+                let credential_key = redact::looks_like_credential(&row.key);
+                let pair_withheld = credential_key || redact::secret_name(&row.key);
+                let (key, value, origin) = if pair_withheld {
+                    let key = if credential_key {
+                        redact::WITHHELD.to_string()
+                    } else {
+                        redactor.replace(&row.key)
+                    };
+                    let withheld = row.origin.map(|_| redact::WITHHELD.to_string());
+                    (key, redact::WITHHELD.to_string(), withheld)
+                } else {
+                    // A row keyed by an identity position keeps a value that is exactly a kernel
+                    // identity (a policy revision, a pipeline or file digest), as an attribute
+                    // there does; every other value is judged whole.
+                    let value = if record::is_identity_position(&row.key)
+                        && redact::is_kernel_identity(&row.value)
+                    {
+                        row.value
+                    } else {
+                        judge(&row.value)
+                    };
+                    let key = judge(&row.key);
+                    let origin = row.origin.map(|origin| judge(&origin));
+                    (key, value, origin)
+                };
+                let layer = judge(&row.layer);
+                redacted += u32::from(pair_withheld);
+                let row = ConfigRow {
+                    key: record::cut(&key, MAX_KEY_BYTES),
+                    value: record::cut(&value, MAX_STRING_BYTES),
+                    layer: record::cut(&layer, MAX_KEY_BYTES),
+                    origin: origin.map(|origin| record::cut(&origin, MAX_STRING_BYTES)),
+                };
+                (row, redacted)
+            })
+            .collect();
+        // Pack rows into parts that fit with room for the part's own fields.
+        let room = RECORD_MAX_BYTES - 512;
+        let mut parts: Vec<(Vec<ConfigRow>, u32)> = vec![(Vec::new(), 0)];
+        let mut size = 0;
+        for (row, redacted) in rows {
+            let bytes = serde_json::to_vec(&row).expect("a row serializes").len() + 1;
+            let current = parts.last_mut().expect("one part at least");
+            if !current.0.is_empty() && size + bytes > room {
+                parts.push((Vec::new(), 0));
+                size = 0;
+            }
+            let current = parts.last_mut().expect("pushed");
+            current.0.push(row);
+            current.1 += redacted;
+            size += bytes;
+        }
+        let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
+        let execution_id = self.typed("execution_id", owner.execution_id, MAX_KEY_BYTES);
+        let run_id = self.typed("run_id", owner.run_id, MAX_KEY_BYTES);
+        let run_span_id = self.typed("run_span_id", owner.run_span_id, MAX_KEY_BYTES);
+        let section = self.typed("section", section, MAX_KEY_BYTES);
+        self.commit(false, |batch| {
+            for (index, (rows, redacted)) in parts.into_iter().enumerate() {
+                let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
+                batch.push(
+                    Record::Config(ConfigPart {
+                        seq: 0,
+                        schema: schema::CONFIG.into(),
+                        execution_id: execution_id.clone(),
+                        run_id: run_id.clone(),
+                        run_span_id: run_span_id.clone(),
+                        section: section.clone(),
+                        part,
+                        parts: count,
+                        complete: part == count,
+                        rows,
+                        redacted: (redacted > 0).then_some(redacted),
+                    }),
+                    Counters::default(),
+                )?;
+            }
+            Some(count)
+        })
+    }
+
+    /// A record field: kept as given only when `position` is an identity position
+    /// ([`record::is_identity_position`]) and the value is exactly a kernel identity
+    /// ([`redact::is_kernel_identity`]); judged whole as untrusted text otherwise, so a
+    /// credential in it leaves the withheld marker; then cut to `max`.
+    fn typed(&self, position: &str, value: &str, max: usize) -> String {
+        if record::is_identity_position(position) && redact::is_kernel_identity(value) {
+            record::cut(value, max)
+        } else {
+            record::cut(&self.shared.options.redactor.value(value).0, max)
+        }
+    }
+
+    /// One plan node of an execution. At most 64 `depends_on` ids are kept; every field is a
+    /// kernel identity in its identity position or judged whole.
+    pub fn node(&self, mut node: Node) -> Option<u64> {
+        node.depends_on.truncate(64);
+        for id in &mut node.depends_on {
+            *id = self.typed("depends_on", id, MAX_KEY_BYTES);
+        }
+        node.execution_id = self.typed("execution_id", &node.execution_id, MAX_KEY_BYTES);
+        node.plan_digest = self.typed("plan_digest", &node.plan_digest, MAX_KEY_BYTES);
+        node.node_id = self.typed("node_id", &node.node_id, MAX_KEY_BYTES);
+        node.kind = self.typed("kind", &node.kind, MAX_KEY_BYTES);
+        node.package = node
+            .package
+            .map(|package| self.typed("package", &package, MAX_KEY_BYTES));
+        node.schema = schema::NODE.into();
+        self.commit(false, |batch| {
+            batch.push(Record::Node(node), Counters::default())
+        })
+    }
+
+    /// The bounded summary of a Finding; its free text (title, file) is judged and bounded,
+    /// and every other field is a kernel identity in its identity position or judged whole.
+    pub fn finding(&self, mut finding: Finding) -> Option<u64> {
+        let redactor = &self.shared.options.redactor;
+        finding.schema = schema::FINDING.into();
+        for (position, field) in [
+            ("span_id", &mut finding.span_id),
+            ("log", &mut finding.log),
+            ("finding_key", &mut finding.key),
+            ("severity", &mut finding.severity),
+            ("effective_severity", &mut finding.effective_severity),
+            ("status", &mut finding.status),
+            ("scope", &mut finding.scope),
+            ("report_artifact_id", &mut finding.report_artifact_id),
+            ("node_id", &mut finding.node_id),
+            ("worker", &mut finding.worker),
+        ] {
+            *field = self.typed(position, field, MAX_KEY_BYTES);
+        }
+        finding.model = finding
+            .model
+            .map(|model| self.typed("model", &model, MAX_KEY_BYTES));
+        finding.title = record::cut(&redactor.value(&finding.title).0, MAX_STRING_BYTES);
+        finding.file = finding
+            .file
+            .map(|file| record::cut(&redactor.value(&file).0, MAX_STRING_BYTES));
+        self.commit(false, |batch| {
+            batch.push(Record::Finding(finding), Counters::default())
+        })
+    }
+
+    /// The bounded summary of a Demand, keyed by its id; every field is a kernel identity in
+    /// its identity position or judged whole.
+    pub fn demand(&self, mut demand: Demand) -> Option<u64> {
+        for (position, field) in [
+            ("span_id", &mut demand.span_id),
+            ("log", &mut demand.log),
+            ("demand_id", &mut demand.demand_id),
+            ("kind", &mut demand.kind),
+            ("subject_id", &mut demand.subject_id),
+            ("snapshot_id", &mut demand.snapshot_id),
+            ("status", &mut demand.status),
+        ] {
+            *field = self.typed(position, field, MAX_KEY_BYTES);
+        }
+        demand.schema = schema::DEMAND.into();
+        self.commit(false, |batch| {
+            batch.push(Record::Demand(demand), Counters::default())
+        })
+    }
+
+    /// Count chunks a stream observer dropped, or a stream queue still held at the seal; kept in
+    /// memory and written in the seal (`dropped_chunks`).
+    pub fn count_dropped_chunks(&self, chunks: u64) {
+        lock(&self.shared.pending).dropped_chunks += chunks;
+    }
+
+    /// Seal the segment at exit, `Ok(None)` when nothing was ever opened. The seal is the
+    /// consumer thread's work: the running consumer gets one terminal request — the records
+    /// still pending, the seal record, the manifest, the compression and the publication — or
+    /// one is started for it when none runs, and the caller waits for it once, at most
+    /// [`layout::LOCK_WAIT`] beyond the consumer's last progress — each content a released
+    /// stream publishes under the seal renews the bound ([`Self::renew_shutdown`]) — over all
+    /// of it. A consumer that makes no progress by then is
+    /// abandoned: no other thread seals, compresses, replaces or writes the segment, which the
+    /// next reader recovers, and the consumer itself publishes nothing after the deadline. The
+    /// deadline governs the whole publication: a seal is reported only when the consumer
+    /// unlinked the live `.jsonl` before it, judged under the lock this wait holds, and only
+    /// when the live name still held the writer's own file; otherwise the seal is withdrawn and
+    /// the segment reported unsealed ([`REPLACED`]).
+    pub fn finish(&self, exit: SealExit) -> Result<Option<Sealed>, String> {
+        let ended = ns(self.now_unix_ns());
+        let deadline;
+        {
+            let mut pending = lock(&self.shared.pending);
+            deadline = wait_until(&pending);
+            match pending.state {
+                State::Unopened => return Ok(None),
+                State::Open => {}
+                State::Abandoned => return Err(ABANDONED.into()),
+                State::Failed | State::Crashed | State::Sealing | State::Sealed => {
+                    return Err("the segment is not open".into());
+                }
+            }
+            pending.runs_open = 0;
+            pending.seal_result = None;
+            pending.seal_request = Some((exit, ended, deadline));
+            pending.shutdown = Some(deadline);
+        }
+        if !self.start_consumer() {
+            // No consumer, so no seal: the segment stays for the next reader.
+            let mut pending = lock(&self.shared.pending);
+            pending.seal_request = None;
+            let reason = "the telemetry consumer thread did not start for the seal; the segment \
+                          is left unsealed for the next reader to recover"
+                .to_string();
+            pending.unwritten.push((ProblemWhat::Write, reason.clone()));
+            return Err(reason);
+        }
+        self.signal();
+        let mut pending = lock(&self.shared.pending);
+        while !pending.consumer_exited {
+            let now = Instant::now();
+            // The bound a released stream's publication may have moved since the last wake.
+            let deadline = bound(&pending, deadline);
+            if now >= deadline {
+                // The consumer published the seal before the deadline and has not exited yet.
+                if pending.state == State::Sealed
+                    && let Some(sealed) = pending.seal_result.take()
+                {
+                    return sealed;
+                }
+                pending.state = State::Abandoned;
+                pending
+                    .unwritten
+                    .push((ProblemWhat::Write, ABANDONED.into()));
+                return Err(ABANDONED.into());
+            }
+            pending = self
+                .shared
+                .done
+                .wait_timeout(pending, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        let sealed = pending
+            .seal_result
+            .take()
+            .unwrap_or_else(|| Err("the consumer exited before the seal".into()));
+        drop(pending);
+        if let Some(handle) = lock(&self.shared.thread).take() {
+            // It has exited: the join returns at once.
+            let _ = handle.join();
+        }
+        sealed
+    }
+
+    /// The consumer thread's seal: every pending record written first, so a seal write held on
+    /// the volume leaves every earlier record in the live file; then the seal record from the
+    /// reserve, its write, the `.refs` manifest, the compression and the publication. Nothing
+    /// is published once `deadline` has passed or the caller has abandoned the segment, at any
+    /// step of the publication.
+    fn seal(
+        &self,
+        exit: SealExit,
+        ended: String,
+        deadline: Instant,
+    ) -> Result<Option<Sealed>, String> {
+        // Every stream queue drained, each tap that has its release decision ended; within
+        // the shutdown's bound, which each content a release publishes renews. What a queue
+        // still holds then is never written and counts in the seal as dropped chunks.
+        while !self.drain_streams() && Instant::now() < bound(&lock(&self.shared.pending), deadline)
+        {
+        }
+        let streams: Vec<(u64, Arc<dyn StreamQueue>)> = lock(&self.shared.streams).clone();
+        for (id, queue) in streams {
+            if !queue.finished() {
+                self.count_dropped_chunks(queue.discard());
+            }
+            self.detach_stream(id);
+        }
+        self.consume(true);
+        match lock(&self.shared.pending).state {
+            State::Open => {}
+            State::Abandoned => return Err(ABANDONED.into()),
+            _ => return Err("writing the segment failed before the seal".into()),
+        }
+        let sealed = self.commit(true, |batch| {
+            let refs = format!("{}{}", batch.segment_id(), layout::REFS);
+            let counts = batch.counts;
+            batch.push(
+                Record::Seal(Seal {
+                    seq: 0,
+                    schema: schema::SEAL.into(),
+                    ended_unix_ns: ended.clone(),
+                    exit,
+                    spans: counts.spans,
+                    events: counts.events,
+                    blobs: counts.blobs,
+                    dropped: Some(counts.dropped),
+                    dropped_chunks: Some(counts.dropped_chunks),
+                    discarded_bytes: 0,
+                    refs,
+                }),
+                Counters::default(),
+            )
+        });
+        // A seal that could not be appended leaves the segment for a reader to recover.
+        if sealed.is_none() {
+            return Err("the seal did not fit the segment".into());
+        }
+        in_phase(Phase::Seal, || self.consume(true));
+        let mut consumer = lock(&self.shared.consumer);
+        let (segment_id, referenced) = {
+            let pending = lock(&self.shared.pending);
+            match pending.state {
+                State::Sealing => {}
+                State::Abandoned => return Err(ABANDONED.into()),
+                _ => return Err("writing the segment failed before the seal".into()),
+            }
+            (pending.segment_id.clone(), pending.referenced.clone())
+        };
+        let shared = &self.shared;
+        let steps = SealSteps {
+            write_hook: &|| in_phase(Phase::Compressed, || self.write_hook()),
+            publish_hook: &|| in_phase(Phase::Publish, || self.publish_hook()),
+            expired: &|| {
+                let pending = lock(&shared.pending);
+                pending.state == State::Abandoned || Instant::now() >= bound(&pending, deadline)
+            },
+            last: &|unlink, sealed| {
+                let mut pending = lock(&shared.pending);
+                if pending.state == State::Abandoned || Instant::now() >= bound(&pending, deadline)
+                {
+                    return None;
+                }
+                let unlinked = unlink();
+                // Sealed only when the live `.jsonl` itself was unlinked.
+                if matches!(unlinked, Ok(true)) {
+                    pending.state = State::Sealed;
+                    pending.seal_result = Some(Ok(Some(sealed.clone())));
+                }
+                Some(unlinked)
+            },
+        };
+        let result = seal_file(&mut consumer, &segment_id, &referenced, &steps);
+        let mut pending = lock(&self.shared.pending);
+        if pending.state == State::Abandoned {
+            return Err(ABANDONED.into());
+        }
+        match result {
+            Ok(Published::Sealed(sealed)) => {
+                pending.state = State::Sealed;
+                Ok(Some(sealed))
+            }
+            // The deadline passed before the publication's last step.
+            Ok(Published::Expired) => {
+                pending.state = State::Abandoned;
+                Err(ABANDONED.into())
+            }
+            // The live name holds another file: the seal is withdrawn, the segment unsealed.
+            Ok(Published::Replaced) => {
+                pending.state = State::Abandoned;
+                pending
+                    .unwritten
+                    .push((ProblemWhat::Write, REPLACED.into()));
+                Err(REPLACED.into())
+            }
+            Err(error) => {
+                pending.state = State::Failed;
+                pending.unwritten.push((ProblemWhat::Write, error.clone()));
+                Err(error)
+            }
+        }
+    }
+}
+
+/// The sorted digests, one per line.
+pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
+    let mut text = String::new();
+    for digest in referenced {
+        text.push_str(digest);
+        text.push('\n');
+    }
+    text.into_bytes()
+}
+
+/// What the seal's file work asks of its writer: the write hook before the compressed copy's
+/// write, the publish hook of each publication step (all three run before the first step, so no
+/// hook or wait sits between a deadline check and the step it guards), whether the deadline has
+/// passed or the segment was abandoned, and the last step — the unlink of the live `.jsonl`, run
+/// under the lock the deadline is judged under and only before it (`None` when it has passed),
+/// the segment recorded sealed in the same critical section only when the live file was
+/// actually unlinked.
+struct SealSteps<'a> {
+    write_hook: &'a dyn Fn() -> std::io::Result<()>,
+    publish_hook: &'a dyn Fn() -> std::io::Result<()>,
+    expired: &'a dyn Fn() -> bool,
+    last: &'a LastStep<'a>,
+}
+
+/// The seal's last step: given the unlink (`Ok(true)` when it removed the held file, `Ok(false)`
+/// when the live name no longer identifies it) and the segment it seals, the unlink's result, or
+/// `None` when the deadline has passed.
+type LastStep<'a> =
+    dyn Fn(&dyn Fn() -> std::io::Result<bool>, &Sealed) -> Option<std::io::Result<bool>> + 'a;
+
+/// What the seal's file work came to.
+#[derive(Debug)]
+enum Published {
+    /// The live `.jsonl` was unlinked: the segment is sealed.
+    Sealed(Sealed),
+    /// The deadline passed before the publication completed: nothing of it is left.
+    Expired,
+    /// The live name no longer identified the held file at the last step: nothing of the seal
+    /// is left.
+    Replaced,
+}
+
+/// The problem a seal withdrawn because its live name was replaced leaves.
+pub const REPLACED: &str = "the live telemetry segment's name no longer held the writer's file at \
+                            the seal's last step; the seal is withdrawn and the segment left \
+                            unsealed";
+
+/// Stage `contents` in a new temporary file of `segments`, written and synced; its name.
+fn stage(
+    segments: &Confined,
+    contents: &[u8],
+    hook: &dyn Fn() -> std::io::Result<()>,
+) -> std::io::Result<String> {
+    let temp = layout::temp_name(layout::WRITE_TEMP_LABEL);
+    let written = segments.create_file(&temp, false).and_then(|mut file| {
+        hook()?;
+        file.write_all(contents)?;
+        file.sync_all()
+    });
+    match written {
+        Ok(()) => Ok(temp),
+        Err(error) => {
+            let _ = segments.unlink(&temp);
+            Err(error)
+        }
+    }
+}
+
+/// Write the manifest, compress the segment to `.jsonl.gz` and remove the `.jsonl`, under the
+/// writer's lock, which ends when the file closes. Every step is relative to the `segments/`
+/// directory the live file was created in, and the live bytes are read back through the held
+/// descriptor: a directory above it renamed or replaced by a link since changes nothing
+/// outside the root. The manifest and the compressed copy are staged in temporary files first,
+/// and the deadline is checked after their blocking writes and syncs. Then the publication
+/// hooks of all three steps run, before the first of them, and the steps follow with nothing
+/// between a deadline check and its step: the check is the last thing before each rename and
+/// runs again once the rename returns, and the unlink of the live `.jsonl` is judged under the
+/// lock [`Writer::finish`] judges the deadline under. Once the deadline has passed nothing
+/// further is published and what was renamed into place — the file just placed included — and
+/// what was staged are removed through the held directory: the live segment stays for the next
+/// reader and [`Published::Expired`] says so. A live name that no longer identifies the held
+/// file at the last step withdraws the seal the same way ([`Published::Replaced`]).
+fn seal_file(
+    consumer: &mut Consumer,
+    segment_id: &str,
+    referenced: &BTreeSet<String>,
+    steps: &SealSteps<'_>,
+) -> Result<Published, String> {
+    let segments = consumer
+        .segments
+        .as_ref()
+        .ok_or("the segment was never written")?;
+    let held = consumer
+        .file
+        .as_mut()
+        .ok_or("the segment was never written")?;
+    let live = format!("{segment_id}{}", layout::LIVE);
+    let refs = format!("{segment_id}{}", layout::REFS);
+    let sealed = format!("{segment_id}{}", layout::SEALED);
+    let failed = |name: &str| {
+        let path = segments.join(name);
+        move |error: std::io::Error| format!("{}: {error}", path.display())
+    };
+    held.sync_all().map_err(failed(&live))?;
+    if (steps.expired)() {
+        return Ok(Published::Expired);
+    }
+    let mut bytes = Vec::new();
+    held.seek(SeekFrom::Start(0))
+        .and_then(|_| held.read_to_end(&mut bytes))
+        .map_err(failed(&live))?;
+    // Only the file this writer created is removed: the identity the last step compares.
+    let opened = FileIdentity::of_file(held).map_err(failed(&live))?;
+    let staged_refs = stage(segments, &manifest(referenced), &|| Ok(())).map_err(failed(&refs))?;
+    let staged_sealed = match stage(segments, &blob::compress(&bytes), steps.write_hook) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let _ = segments.unlink(&staged_refs);
+            return Err(failed(&sealed)(error));
+        }
+    };
+    // What was renamed into place so far: withdrawn with the staged files when a later check
+    // finds the deadline passed or a step fails.
+    let mut placed: Vec<&str> = Vec::new();
+    let withdraw = |placed: &[&str]| {
+        for name in placed {
+            let _ = segments.unlink(name);
+        }
+        let _ = segments.unlink(&staged_refs);
+        let _ = segments.unlink(&staged_sealed);
+    };
+    // Every hook of the publication, before its first step: a hook that blocks holds the
+    // publication before anything of it is visible.
+    for name in [&refs, &sealed, &live] {
+        if let Err(error) = (steps.publish_hook)() {
+            withdraw(&placed);
+            return Err(failed(name)(error));
+        }
+    }
+    for (staged, name) in [(&staged_refs, &refs), (&staged_sealed, &sealed)] {
+        if (steps.expired)() {
+            withdraw(&placed);
+            return Ok(Published::Expired);
+        }
+        let renamed = segments.rename(staged, name);
+        if let Err(error) = renamed {
+            withdraw(&placed);
+            return Err(failed(name)(error));
+        }
+        placed.push(name);
+        // A rename that returned after the deadline is withdrawn at once.
+        if (steps.expired)() {
+            withdraw(&placed);
+            return Ok(Published::Expired);
+        }
+    }
+    let published = Sealed {
+        segment_id: segment_id.to_string(),
+        path: segments.join(&sealed),
+        refs: segments.join(&refs),
+    };
+    let unlink = || -> std::io::Result<bool> {
+        if !segments
+            .identity(&live)
+            .is_some_and(|current| current.dev == opened.dev && current.ino == opened.ino)
+        {
+            return Ok(false);
+        }
+        segments.unlink(&live)?;
+        Ok(true)
+    };
+    match (steps.last)(&unlink, &published) {
+        None => {
+            withdraw(&placed);
+            Ok(Published::Expired)
+        }
+        Some(Err(error)) => {
+            withdraw(&placed);
+            Err(failed(&live)(error))
+        }
+        Some(Ok(false)) => {
+            withdraw(&placed);
+            Ok(Published::Replaced)
+        }
+        Some(Ok(true)) => {
+            consumer.file = None;
+            Ok(Published::Sealed(published))
+        }
+    }
+}
