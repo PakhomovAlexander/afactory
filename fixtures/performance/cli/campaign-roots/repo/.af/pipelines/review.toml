@@ -1,0 +1,41 @@
+# The CLI Campaign fixture's review pipeline (fixtures/performance/cli.toml, ADR-0169): one
+# model-free reviewer, reviewer.sh, gathered into the Ledger. Light runs are one Round.
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
+id = "fixture"
+kind = "reviewer"
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/sh", args = [{ value = "reviewer.sh" }] }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{ name = "fixture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "fixture", port = "prior_findings" }
+[[edges]]
+from = { node = "fixture", port = "result" }
+to = { node = "gather", port = "fixture" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+[convergence]
+clean_rounds = 1
+max_rounds = 3
+gate = "major"

@@ -1,0 +1,8 @@
+task run task:sha256:7777777777777777777777777777777777777777777777777777777777777777  store 555555555555  history prefix:2 — retained executions 1–2
+  execution 1 (1700000000000-4242-0a1b2c3d) 2023-11-14T22:13:20.003Z → 2023-11-14T22:13:20.021Z · wall 18.000 ms · sealed
+  execution 2 (1700000100000-4243-0b1c2d3e) 2023-11-14T22:15:00.003Z → 2023-11-14T22:15:00.021Z · wall 18.000 ms · sealed
+offset       total        self         status span
+100.000 s    24.000 ms    5.000 ms     ok     af.command  process.exit_code=0
+100.003 s    18.000 ms    6.000 ms     ok       af.run  af.execution.ordinal=2 af.run.kind=task af.task_id=golden af.epoch=2 af.outcome=finished af.usage.chargeable_tokens=1200
+100.013 s    5.000 ms     3.000 ms     ok         af.node  af.node_id=root.nodes.check af.node.kind=check af.outcome=succeeded
+100.014 s    1.000 ms     1.000 ms     error        af.attempt  af.attempt_id=attempt-2-check-1 af.node_id=root.nodes.check af.usage.chargeable_tokens=0 af.usage.observation=complete af.outcome=failed af.failure.class=failed error.type=failed af.failure.reason=the pagination check failed

@@ -1,0 +1,21 @@
+{
+  "state": "published",
+  "executor": "github-pr",
+  "github": "octo/gate",
+  "workflow": ".github/workflows/ci.yml",
+  "required": [
+    "validation / lint",
+    "validation / check (ubuntu-latest)"
+  ],
+  "snapshot_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "source_snapshot_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "observed_unix_ms": 1791100000000,
+  "reason": "remote_check_missing",
+  "pull_request": {
+    "number": 12,
+    "url": "https://github.com/octo/gate/pull/12"
+  },
+  "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree": "cccccccccccccccccccccccccccccccccccccccc"
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-adapters:1",
+  "title": "af.perf-adapters/1",
+  "description": "fixtures/performance/adapters.toml as parsed TOML (ADR-0166): the reviewed native probe adapters, each a fixed-priority overlay of authority example files into a measured source, at most four per case contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-adapters/1"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "adapters": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "native_probe"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "priority": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            "equivalence_group": {
+              "$ref": "#/$defs/id"
+            },
+            "package": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9-]{1,64}$"
+            },
+            "example": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9-]{1,64}$"
+            },
+            "contracts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true
+            },
+            "closure": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^crates/[a-z0-9-]+/examples/[A-Za-z0-9._/-]+\\.rs$"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "description",
+            "priority",
+            "equivalence_group",
+            "package",
+            "example",
+            "contracts",
+            "closure"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "description",
+    "adapters"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

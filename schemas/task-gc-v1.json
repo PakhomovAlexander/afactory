@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-gc:1",
+  "title": "af/task-gc@1",
+  "description": "What `af task gc --json` prints (ADR-0135): every uncollected Task's disposition and CAS footprint, the Tasks already collected, the live writers that refuse `--apply`, and the bytes a sweep after this plan removes. `applied` is null for a preview, which writes nothing, and records the tombstones and the sweep for `--apply`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "apply",
+    "older_than_days",
+    "keep",
+    "now_unix_ms",
+    "store",
+    "reclaimable_objects",
+    "reclaimable_bytes",
+    "live_writers",
+    "tasks",
+    "collected",
+    "applied"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-gc@1"
+    },
+    "apply": {
+      "type": "boolean"
+    },
+    "older_than_days": {
+      "$ref": "#/$defs/count"
+    },
+    "keep": {
+      "$ref": "#/$defs/count"
+    },
+    "now_unix_ms": {
+      "$ref": "#/$defs/count"
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objects",
+        "bytes",
+        "unreachable_objects",
+        "unreachable_bytes"
+      ],
+      "properties": {
+        "objects": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "unreachable_objects": {
+          "$ref": "#/$defs/count"
+        },
+        "unreachable_bytes": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "reclaimable_objects": {
+      "$ref": "#/$defs/count"
+    },
+    "reclaimable_bytes": {
+      "$ref": "#/$defs/count"
+    },
+    "live_writers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "until_unix_ms"
+        ],
+        "properties": {
+          "task_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "until_unix_ms": {
+            "$ref": "#/$defs/count"
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "collected": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-collected:1"
+      }
+    },
+    "applied": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tombstoned",
+            "swept",
+            "removed_objects",
+            "removed_bytes"
+          ],
+          "properties": {
+            "tombstoned": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              }
+            },
+            "swept": {
+              "type": "boolean"
+            },
+            "removed_objects": {
+              "$ref": "#/$defs/count"
+            },
+            "removed_bytes": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "apply": {
+        "const": false
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "applied": {
+        "type": "null"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "applied": {
+        "type": "object"
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "kind",
+        "outcome",
+        "chargeable_tokens",
+        "last_event_unix_ms",
+        "disposition",
+        "sizes",
+        "collected_bytes"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "kind": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chargeable_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,38})$"
+        },
+        "unknown_usage_attempts": {
+          "description": "Settled Attempts whose usage is unknown (ADR-0143): no usage was reported, so each was charged zero and `chargeable_tokens` is not their spend. A collected Task's tombstone keeps this count. Absent when none.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "last_event_unix_ms": {
+          "$ref": "#/$defs/count"
+        },
+        "disposition": {
+          "description": "`collect`, or why the Task is kept (`kept_newest`, `kept_recent`) or never collected (`running`, `unfinished`, `writer_lease`, `bound_by`).",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "collect",
+                    "kept_newest",
+                    "kept_recent",
+                    "running",
+                    "unfinished"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "until_unix_ms"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "writer_lease"
+                },
+                "until_unix_ms": {
+                  "$ref": "#/$defs/count"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "tasks"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "bound_by"
+                },
+                "tasks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "sizes": {
+          "$ref": "urn:af:schema:task-list-entry:2#/$defs/footprint"
+        },
+        "collected_bytes": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    }
+  }
+}

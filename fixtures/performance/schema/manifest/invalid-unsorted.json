@@ -1,0 +1,15 @@
+{
+  "entries": [
+    {
+      "path": "shard.json",
+      "sha256": "sha256:51785ef1dec43d3ba62fac83ebc6867c40ed5a24b08d3dab31823631341e3680",
+      "size": 765
+    },
+    {
+      "path": "samples.jsonl",
+      "sha256": "sha256:23b7492279f5717e3b345febd447c43cdef62b0b583ad4e8b11effb9e768e51e",
+      "size": 71610
+    }
+  ],
+  "schema": "af.perf-manifest/1"
+}
