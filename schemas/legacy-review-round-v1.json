@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-round:1",
+  "title": "legacy-review-round@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["campaign_id", "round_event_id", "campaign_manifest_id", "subject_id", "head_snapshot_id", "round", "epoch"],
+  "properties": {
+    "campaign_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "round_event_id": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
+    "campaign_manifest_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/digest" },
+    "subject_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/digest" },
+    "head_snapshot_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/digest" },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+  }
+}

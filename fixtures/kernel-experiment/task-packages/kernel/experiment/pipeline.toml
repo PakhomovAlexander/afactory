@@ -1,0 +1,237 @@
+# Measure the source, implement, seal, check, then measure the candidate, compare it with the
+# baseline and evaluate it inside kernel/experiment-trial, which runs only after passed checks.
+schema = "af.pipeline/1"
+name = "kernel/experiment"
+version = "1.0.0"
+# Two model Workers each admit a Provider before their Attempt: baseline measure, the
+# implementer and its admission, the checks, the candidate measure, the evaluator and its
+# admission, and room for a retry. Six held only with command stand-ins, which admit none.
+max_attempts = 10
+# One node at a time: no measurement shares the machine with other work of this Task.
+max_parallel = 1
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.outputs.snapshot]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.snapshot.affinity]
+kind = "derived_from"
+input = "source"
+
+[contract.outputs.verification]
+artifact_type = "af/VerificationResult@1"
+cardinality = "one"
+optional = false
+covers = ["verified"]
+
+[contract.outputs.verification.affinity]
+kind = "derived_from"
+input = "source"
+
+[contract.outputs.baseline]
+artifact_type = "af/Measurement@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.baseline.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.outputs.candidate]
+artifact_type = "af/Measurement@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.outputs.candidate.affinity]
+kind = "derived_from"
+input = "source"
+
+[contract.outputs.comparison]
+artifact_type = "af/MeasurementComparison@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.outputs.comparison.affinity]
+kind = "derived_from"
+input = "source"
+
+[accepts]
+kinds = ["implement"]
+
+[accepts.required_facts]
+
+[slots.evaluator]
+worker = "kernel/experiment-evaluator"
+role = "evaluate"
+input_type = "af/EvaluationInput@1"
+output_type = "af/TaskEvaluation@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = ["implementer"]
+
+[slots.implementer]
+worker = "kernel/implementer"
+role = "implement"
+input_type = "af/ImplementationInput@1"
+output_type = "af/ImplementationReport@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = []
+
+[[nodes]]
+id = "baseline"
+
+[nodes.operator]
+op = "measure"
+measures = ["release_build"]
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "implement"
+
+[nodes.operator]
+op = "worker"
+slot = "implementer"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "seal"
+
+[nodes.operator]
+op = "seal"
+
+[nodes.inputs.candidate]
+kind = "node"
+node = "implement"
+port = "candidate"
+
+[[nodes]]
+id = "checks"
+
+[nodes.operator]
+op = "check"
+checks = ["kernel", "markdownlint"]
+
+[nodes.inputs.source]
+kind = "node"
+node = "seal"
+port = "snapshot"
+
+[[nodes]]
+id = "trial"
+
+[nodes.operator]
+op = "call"
+pipeline = "kernel/experiment-trial"
+
+[nodes.operator.bindings]
+evaluator = "evaluator"
+
+[nodes.inputs.baseline]
+kind = "node"
+node = "baseline"
+port = "release_build"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "node"
+node = "seal"
+port = "snapshot"
+
+[nodes.when]
+node = "checks"
+outcome = "passed"
+
+[[nodes]]
+id = "accept"
+
+[nodes.operator]
+op = "accept"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.evaluation]
+kind = "node"
+node = "trial"
+port = "evaluation"
+
+[nodes.inputs.source]
+kind = "node"
+node = "seal"
+port = "snapshot"
+
+[outputs.baseline]
+kind = "node"
+node = "baseline"
+port = "release_build"
+
+[outputs.candidate]
+kind = "node"
+node = "trial"
+port = "candidate"
+
+[outputs.comparison]
+kind = "node"
+node = "trial"
+port = "comparison"
+
+[outputs.snapshot]
+kind = "node"
+node = "accept"
+port = "snapshot"
+
+[outputs.verification]
+kind = "node"
+node = "accept"
+port = "result"
+
+[coverage.verified]
+kind = "node"
+node = "accept"
+port = "result"

@@ -1,0 +1,82 @@
+//! One integration-test binary for this crate. Every subject file is a module here, so
+//! the crate links its test dependencies once instead of once per file (ADR-0124).
+//! Add a new subject as `tests/it/<subject>.rs` plus a `mod` line below.
+
+// Shared fixtures, declared once for every subject module.
+mod common;
+#[path = "support/fake_models.rs"]
+mod fake_models;
+#[path = "support/provider_cli.rs"]
+mod provider_cli;
+#[path = "support/review_memo.rs"]
+mod review_memo;
+#[path = "support/schemas.rs"]
+mod schemas;
+#[path = "support/sockets.rs"]
+mod sockets;
+#[path = "support/task_cli.rs"]
+mod task_cli;
+
+mod af_layout;
+mod build_metadata;
+mod campaign_loop;
+mod catalog_digest;
+mod cli_surface;
+mod common_review_summaries;
+mod install_script;
+mod lock_af_version;
+mod onboard;
+mod onboarding_quickstart;
+mod perf_kernel_measure;
+mod project;
+mod project_brief;
+mod project_collect;
+mod project_survey;
+mod provider_auth_handoff;
+mod provider_cli_health;
+mod provider_models;
+mod provider_onboarding;
+mod provider_registry;
+mod render;
+mod routing;
+mod self_managed;
+mod self_optimizer;
+mod self_update_check;
+mod setup_docs;
+mod storage_budget;
+mod task_acceptance;
+mod task_catalog;
+mod task_cli_fixture;
+mod task_delivery;
+mod task_developer;
+mod task_document;
+mod task_experiment;
+mod task_file;
+mod task_gc;
+mod task_heavy;
+mod task_human_report;
+mod task_input_bindings;
+mod task_interrupt;
+mod task_issues;
+mod task_planning;
+mod task_preview;
+mod task_public_schemas;
+mod task_refresh;
+mod task_remote_checks;
+mod task_repair;
+mod task_report;
+mod task_report_command;
+mod task_research_chain;
+mod task_selection;
+mod task_starters;
+mod task_warm_checks;
+mod telemetry;
+mod telemetry_bench;
+mod telemetry_config;
+mod telemetry_content;
+mod telemetry_ledger;
+mod telemetry_phases;
+mod telemetry_runs;
+mod telemetry_streams;
+mod tui;
+mod undeclared_af_paths;
