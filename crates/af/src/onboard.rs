@@ -1197,17 +1197,14 @@ Required Gate commands (declared as literal trusted argv; onboarding does not ex
    Provider ID for each Worker without writing a token into this repository.
 3. Fetch the pull request with the normal repository tooling, create a disposable worktree at its
    head, and identify the trusted base revision.
-4. From that worktree run:
+4. From that worktree run `af review plan`. If it refuses, run its returned `next_action`
+   exactly as printed; the command supplies explicit trusted selectors and Provider bindings only
+   when af can determine them unambiguously. Inspect the resulting plan. Then run the returned
+   `af review run` command, adding `--campaign pr-<number>` and `--json` if wanted. For Provider
+   admission before execution, run `af provider doctor` with the same explicit selectors,
+   bindings, and Campaign name. Finish with:
 
    ```sh
-   af review plan --policy-rev <trusted-policy-revision> --base <trusted-base-revision> --uncommitted \
-     --provider correctness=<provider-id> --provider architecture=<provider-id>
-   af provider doctor --campaign pr-<number> --policy-rev <trusted-policy-revision> \
-     --base <trusted-base-revision> --uncommitted \
-     --provider correctness=<provider-id> --provider architecture=<provider-id>
-   af review run --campaign pr-<number> --policy-rev <trusted-policy-revision> \
-     --base <trusted-base-revision> --uncommitted \
-     --provider correctness=<provider-id> --provider architecture=<provider-id> --json
    af review ledger --campaign pr-<number> --long
    af review report --campaign pr-<number> --format md
    ```

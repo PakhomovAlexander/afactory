@@ -848,14 +848,34 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     use cli::ReviewCommand as R;
     let command = match namespace.command {
         Some(command) => command,
-        None => R::Run(namespace.run),
+        None => {
+            let words: Vec<String> = std::env::args().skip(1).collect();
+            if words.len() != 1 || words[0] != "review" {
+                return review_command(cli::ReviewNamespace {
+                    command: Some(R::Run(namespace.run.clone())),
+                    run: namespace.run,
+                });
+            }
+            let options = run_options(namespace.run, "review plan");
+            if let Err(message) = review_selector_refusal(&options, "plan") {
+                eprintln!("{}", terminal_lines(&message));
+            }
+            use clap::CommandFactory as _;
+            cli::Af::command()
+                .find_subcommand_mut("review")
+                .expect("review exists")
+                .print_long_help()
+                .map_err(|error| error.to_string())?;
+            return Ok(2);
+        }
     };
     match command {
         R::Run(args) => {
             if args.task_file.is_some() {
                 return task_execution::start_review(task_review_options(args, false));
             }
-            let verdict = run(&run_options(args, "review run"))?;
+            let options = run_options(args, "review run");
+            let verdict = run(&options)?;
             Ok(match verdict {
                 RunVerdict::Pass => 0,
                 RunVerdict::Fail(_) => 3,
@@ -869,7 +889,9 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             if args.task_file.is_some() {
                 return task_execution::start_review(task_review_options(args, true));
             }
-            print_plan(&run_options(args, "review plan")).map(|()| 0)
+            let options = run_options(args, "review plan");
+            review_selector_refusal(&options, "plan")?;
+            print_plan(&options).map(|()| 0)
         }
         R::Render(args) => {
             if args.task_file.is_some() {
@@ -1133,6 +1155,249 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     }
 }
 
+/// Build a copyable review command from the invocation, keeping every explicit flag.
+fn review_next_command(subcommand: &str, extra: &[String]) -> String {
+    let mut words: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|word| word != "--json")
+        .collect();
+    if words.first().is_some_and(|word| word == "review") {
+        if words
+            .get(1)
+            .is_some_and(|word| word == "plan" || word == "run")
+        {
+            words[1] = subcommand.into();
+        } else {
+            words.insert(1, subcommand.into());
+        }
+    }
+    let mut command = vec!["af".to_string()];
+    command.extend(words);
+    command.extend(extra.iter().cloned());
+    shell_words::join(command)
+}
+
+/// Local Git metadata only. Never consult the candidate's `.af/` to choose authority.
+fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), String> {
+    if options.policy_rev.is_some()
+        || subcommand == "run"
+            && options.campaign.is_some()
+            && options
+                .resolved_state_dir()
+                .ok()
+                .is_some_and(|state| state.join("events.sqlite").is_file())
+    {
+        return Ok(());
+    }
+    let git = |args: &[&str]| -> Option<String> {
+        let output = review_process::reap::output(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&options.repo)
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args),
+        )
+        .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    if git(&["rev-parse", "--is-inside-work-tree"]).as_deref() != Some("true") {
+        return Err(error_document::typed(
+            format!(
+                "{} is not a Git repository; choose a repository with a commit",
+                terminal_text(&options.repo.display().to_string())
+            ),
+            error_document::Detail::new(error_document::Cause::NotRepository)
+                .with("repo", options.repo.display().to_string()),
+        ));
+    }
+    let current = git(&["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    let remote = git(&[
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ])
+    .and_then(|name| name.strip_prefix("origin/").map(str::to_owned));
+    let configured = git(&["config", "--get", "init.defaultBranch"]);
+    let local = ["main", "master"]
+        .into_iter()
+        .find(|name| git(&["show-ref", "--verify", &format!("refs/heads/{name}")]).is_some());
+    let chosen = [remote, configured, local.map(str::to_owned)]
+        .into_iter()
+        .flatten()
+        .find_map(|name| {
+            git(&[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{name}^{{commit}}"),
+            ])
+            .or_else(|| {
+                git(&[
+                    "rev-parse",
+                    "--verify",
+                    &format!("refs/remotes/origin/{name}^{{commit}}"),
+                ])
+            })
+            .map(|commit| (name, commit))
+        });
+    let mut candidate_details = serde_json::Map::new();
+    let next = chosen.as_ref().and_then(|(branch, commit)| {
+        let on_default = current.as_deref() == Some(branch.as_str());
+        let policy = if on_default {
+            "HEAD".to_owned()
+        } else {
+            commit.clone()
+        };
+        let mut flags = vec!["--policy-rev".into(), policy.clone()];
+        if options.base.is_none() {
+            flags.extend(["--base".to_owned(), policy.clone()]);
+        }
+        let mut uncommitted = options.uncommitted;
+        let mut candidate = options.candidate.clone();
+        if on_default {
+            let dirty = git(&["status", "--porcelain"]).is_some_and(|status| !status.is_empty());
+            if !dirty && candidate.is_none() && !uncommitted {
+                return None;
+            }
+            if candidate.is_none() && !uncommitted {
+                flags.push("--uncommitted".into());
+                uncommitted = true;
+            }
+        } else if candidate.is_none() && !uncommitted {
+            flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
+            candidate = Some("HEAD".to_owned());
+        }
+        let mut selected = options.clone();
+        selected.campaign = None;
+        selected.restart_round = false;
+        selected.policy_rev = Some(policy.clone());
+        selected.base = options.base.clone().or(Some(policy));
+        selected.candidate = candidate;
+        selected.uncommitted = uncommitted;
+        let scratch = tempfile::tempdir().ok()?;
+        let cas = Cas::open(scratch.path().join("cas")).ok()?;
+        let git_home = scratch.path().join("git-home");
+        std::fs::create_dir_all(&git_home).ok()?;
+        let repo = Repo::open(&options.repo, &git_home);
+        let resolved = authority::resolve_plan(&selected, &cas, &repo).ok()?;
+        let registered = providers::registered().ok()?.0;
+        let mut unique = true;
+        for (node, kind) in authority::model_workers(&resolved.loaded) {
+            if selected.provider_bindings.contains_key(&node) {
+                continue;
+            }
+            let ids: Vec<String> = registered
+                .iter()
+                .filter(|(id, registered_kind)| {
+                    *registered_kind == kind && providers::availability::check_id(id).is_ok()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            if ids.len() == 1 {
+                flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
+            } else {
+                unique = false;
+            }
+            candidate_details.insert(node, serde_json::json!(ids));
+        }
+        unique
+            .then(|| review_next_command(subcommand, &flags))
+            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control))
+    });
+    let message = if let Some(command) = &next {
+        format!(
+            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
+        )
+    } else {
+        let candidates = if candidate_details.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; Provider candidates: {}",
+                serde_json::Value::Object(candidate_details.clone())
+            )
+        };
+        format!(
+            "af review {subcommand} needs --policy-rev REV; the trusted policy revision must be chosen when the default branch cannot be determined, and Provider bindings must be chosen when ambiguous{candidates}"
+        )
+    };
+    let mut detail = error_document::Detail::new(error_document::Cause::ReviewSelectorsMissing)
+        .with("repo", options.repo.display().to_string())
+        .with("selector", "--policy-rev");
+    if !candidate_details.is_empty() {
+        detail = detail.with("candidates", serde_json::Value::Object(candidate_details));
+    }
+    if let Some(command) = next {
+        detail = detail.next(command);
+    }
+    Err(error_document::typed(message, detail))
+}
+
+fn review_binding_refusal(
+    options: &Options,
+    workers: &[(String, String)],
+    subcommand: &str,
+) -> Result<(), String> {
+    let registered = providers::registered()
+        .map(|(ids, _)| ids)
+        .unwrap_or_default();
+    let mut missing = Vec::new();
+    let mut candidates = serde_json::Map::new();
+    let mut flags = Vec::new();
+    let mut unique = true;
+    for (node, kind) in workers {
+        if options.provider_bindings.contains_key(node) {
+            continue;
+        }
+        missing.push(node.clone());
+        let ids: Vec<String> = registered
+            .iter()
+            .filter(|(id, registered_kind)| {
+                *registered_kind == kind && providers::availability::check_id(id).is_ok()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.len() == 1 {
+            flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
+        } else {
+            unique = false;
+        }
+        candidates.insert(node.clone(), serde_json::json!(ids));
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let next = unique
+        .then(|| review_next_command(subcommand, &flags))
+        .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
+    let message = match &next {
+        Some(command) => format!(
+            "model Workers {} need explicit Provider bindings; run:\n{command}",
+            missing.join(", ")
+        ),
+        None => format!(
+            "model Workers {} need explicit Provider bindings; choose one enabled Provider per Worker from {:?}, then pass --provider NODE=ID",
+            missing.join(", "),
+            candidates
+        ),
+    };
+    let mut detail = error_document::Detail::new(error_document::Cause::ReviewBindingMissing)
+        .with("missing", serde_json::json!(missing))
+        .with("candidates", serde_json::Value::Object(candidates));
+    if let Some(command) = next {
+        detail = detail.next(command);
+    }
+    Err(error_document::typed(message, detail))
+}
+
 fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
     use clap::CommandFactory as _;
     if snippet {
@@ -1146,6 +1411,10 @@ fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
     if words.is_empty() {
         root.print_long_help().map_err(|error| error.to_string())?;
         println!("\n{}", topics::listing());
+        return Ok(0);
+    }
+    if words.first().is_some_and(|word| word == "errors") && words.len() == 2 {
+        println!("{}", error_document::explain(Some(&words[1]))?);
         return Ok(0);
     }
     if words.len() == 1
@@ -1240,7 +1509,19 @@ fn main() {
         Err(error) => {
             drop(startup);
             perf_trace::finish();
-            // Under --json a usage error is the one `af/error@1` document `af help json`
+            if argv.len() == 2
+                && argv[1] == "review"
+                && let Ok(cli::Af {
+                    command: Some(cli::Command::Review(namespace)),
+                    ..
+                }) = cli::Af::try_parse_from(["af", "review", "plan"])
+                && let Some(cli::ReviewCommand::Plan(args)) = namespace.command
+                && let Err(suggestion) =
+                    review_selector_refusal(&run_options(args, "review plan"), "plan")
+            {
+                eprintln!("{}", terminal_lines(&suggestion));
+            }
+            // Under --json a usage error is the one `af/error@2` document `af help json`
             // promises, beside clap's own message on stderr and with its exit code.
             if let Some(document) = error_document::usage(&argv, &error) {
                 println!("{document}");
@@ -2155,7 +2436,7 @@ fn exit_interrupted(
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
             let document = serde_json::json!({
-                "schema": "af/error@1",
+                "schema": "af/error@2",
                 "command": prefix,
                 "error": message,
                 "exit_code": code,
@@ -2354,6 +2635,19 @@ fn print_plan(options: &Options) -> Result<(), String> {
     let repo = Repo::open(repository, git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let (mut plan, models) = authority::plan(options, &cas, &repo)?;
+    let workers: Vec<(String, String)> = plan["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|provider| provider["required"] == true)
+        .map(|provider| {
+            (
+                provider["node"].as_str().unwrap_or("?").to_owned(),
+                provider["runner"].as_str().unwrap_or("?").to_owned(),
+            )
+        })
+        .collect();
+    review_binding_refusal(options, &workers, "plan")?;
     let empty = plan["subject"]["empty"].as_bool() == Some(true);
     let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
     let missing = missing_bindings(&plan);
@@ -2397,6 +2691,15 @@ fn print_plan(options: &Options) -> Result<(), String> {
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
         terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
+    for provider in plan["providers"].as_array().into_iter().flatten() {
+        if provider["required"] == true {
+            plan_line!(
+                "binding  {} => {}",
+                terminal_text(provider["node"].as_str().unwrap_or("?")),
+                terminal_text(provider["binding"].as_str().unwrap_or("?"))
+            );
+        }
+    }
     plan_line!(
         "subject  {} ({} paths, {} patch{})",
         terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
@@ -4423,7 +4726,7 @@ fn one_line(value: &str) -> String {
 /// `review_runner::cli::bounded_cli_line` removes; unlike that line, nothing here is dropped,
 /// collapsed, bounded or withheld, so two distinct paths stay two distinct lines. `--json`
 /// documents never pass through it: JSON escapes them itself.
-fn terminal_text(value: &str) -> String {
+pub(crate) fn terminal_text(value: &str) -> String {
     let mut shown = String::with_capacity(value.len());
     for c in value.chars() {
         if c.is_control() {
@@ -5028,6 +5331,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
     review_task::require_common_campaign(&cas, &store, &campaign)?;
+    review_selector_refusal(options, "run")?;
     review_task::run(options, &cas, &mut store, &repo, &campaign)
 }
 

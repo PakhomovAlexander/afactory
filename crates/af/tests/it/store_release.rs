@@ -101,7 +101,7 @@ fn a_store_another_release_wrote_is_refused_by_name_with_the_fix() {
     let json = af(&["task", "list", "--state", newer.to_str().unwrap(), "--json"]);
     assert_eq!(json.status.code(), Some(1));
     let document: Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"].as_str().unwrap().contains(&format!(
             "Store {} was written by af 99.1.0 (this is af {VERSION}); fix: AF_VERSION=99.1.0 \

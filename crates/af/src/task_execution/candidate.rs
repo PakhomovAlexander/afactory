@@ -365,10 +365,14 @@ pub(crate) fn materialize(
         } else {
             String::new()
         };
-        return Err(format!(
-            "--into {shown} has uncommitted changes ({shown_paths}{more}), which materializing \
+        return Err(crate::error_document::typed(
+            format!(
+                "--into {shown} has uncommitted changes ({shown_paths}{more}), which materializing \
              Task {id} would overwrite; commit or stash them (`git -C {shown} status`), or pass \
              --force to overwrite them"
+            ),
+            crate::error_document::Detail::new(crate::error_document::Cause::DirtySource)
+                .with("repo", shown.clone()),
         ));
     }
     let (_, candidate) =

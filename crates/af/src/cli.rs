@@ -72,11 +72,11 @@ Start here (`af help start` explains each step):
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
   4. af review plan --policy-rev HEAD --base HEAD --uncommitted
-                                  token-free; `af review` with --provider NODE=ID runs it
+                                  token-free; pass --provider NODE=ID for each model Worker
   af doctor                       check this machine and repository, token-free
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
-`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
+`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, errors, \
 providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
 opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
 review Campaigns: `?` there lists its keys, and `:` runs any af command.";
@@ -89,6 +89,7 @@ Exit codes (`af help exit-codes`):
 Examples:
   # preview `.af/` for this repository, token-free\n  af onboard
   af onboard --apply             # needs: a repository without `.af/`
+  # needs: one registered Provider for every model Worker
   af review plan --policy-rev HEAD --base HEAD --uncommitted
   # needs: Providers claude-main and codex-main (af provider setup)
   af review --policy-rev HEAD --base HEAD --uncommitted \\
@@ -159,7 +160,8 @@ ledger; the remaining commands read or resolve that ledger. Flags given directly
 are shorthand for `af review run`.",
         after_long_help = "HEAD must contain trusted, committed `.af/`; make candidate changes first. To \
 execute, also supply --provider NODE=ID for every model Worker the policy names; `af review plan` \
-lists them.\n\nExamples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
+lists them.\n\nExamples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
 # needs: Providers claude-main and codex-main (af provider setup)\n  \
 af review --policy-rev HEAD --base HEAD --uncommitted \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main\n  \
@@ -300,7 +302,7 @@ fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, t
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
 (`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2`, \
 `af/project-history@2` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
-names the next action; `af/error@1` under --json), 2 usage error.",
+names the next action; `af/error@2` under --json), 2 usage error.",
         after_long_help = "Examples:\n  \
 af project show\n  \
 af project refresh\n  \
@@ -493,7 +495,7 @@ document, each check with its `fix` and `hint`.",
 `af help` alone lists every topic with what it explains; start with `af help start` and \
 `af help concepts`. A word that is not a topic is a command path, so `af help review run` \
 equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help review ledger"
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger"
     )]
     Help {
         /// A topic name or a command path
@@ -793,8 +795,11 @@ af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate
 plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
         override_usage = "af review plan [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+        after_long_help = "Examples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+# needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
+# needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD"
     )]
     Plan(RunArgs),

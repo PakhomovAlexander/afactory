@@ -268,7 +268,7 @@ fn usage(json: bool, message: &str) -> Result<i32, String> {
         println!(
             "{}",
             serde_json::json!({
-                "schema": "af/error@1",
+                "schema": "af/error@2",
                 "command": "af provider detect",
                 "error": message,
                 "exit_code": 2,
@@ -337,7 +337,7 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
         }
     };
     // `--apply` chooses IDs and registers against the registry: one that cannot be read refuses
-    // it before anything is scanned (exit 1; `af/error@1` under `--json`).
+    // it before anything is scanned (exit 1; `af/error@2` under `--json`).
     if options.apply
         && let Some(error) = &registry_unknown
     {

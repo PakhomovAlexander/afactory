@@ -71,7 +71,7 @@ are at any point, token-free.
    bindings the onboard preview printed:
 
    ```sh
-   af review plan --policy-rev HEAD --base HEAD --uncommitted
+   af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    ```
 

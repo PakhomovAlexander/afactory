@@ -413,7 +413,7 @@ fn missing_common_task_refuses_without_reopening_legacy_execution() {
 
     let output = checked(invoke(&repo, &home, &args), 1);
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert_eq!(document["exit_code"], 1);
     assert!(document.get("outcome").is_none());
     assert!(

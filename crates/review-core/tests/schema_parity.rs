@@ -31,7 +31,7 @@ use review_core::{
 use serde_json::{Value, json};
 
 const SCHEMAS: [&str; 230] = [
-    "error-v1.json",
+    "error-v2.json",
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",

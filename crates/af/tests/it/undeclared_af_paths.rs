@@ -186,7 +186,7 @@ fn delivery_under_refuse_stops_before_a_branch_a_worktree_or_a_record() {
     assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
 
     let error = document(&refused);
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     let reason = error["error"].as_str().unwrap();
     assert!(reason.contains(".af/tasks/x/candidate.patch"), "{reason}");
     assert!(reason.contains(".af/tasks/x/reviews.json"), "{reason}");

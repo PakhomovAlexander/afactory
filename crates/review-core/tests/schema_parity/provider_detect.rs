@@ -437,7 +437,7 @@ fn causes_unknown_registrations_and_off_path_logins_are_stated() {
     assert_valid(SCHEMA, &unknown);
     let mut refused = unknown.clone();
     refused["exit_code"] = json!(1);
-    assert_invalid(SCHEMA, &refused, "a refusal is an af/error@1 document");
+    assert_invalid(SCHEMA, &refused, "a refusal is an af/error@2 document");
 
     let mut off_path = scan();
     off_path["exit_code"] = json!(4);

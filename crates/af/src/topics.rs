@@ -24,6 +24,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ("exit-codes", "What every exit code means", EXIT_CODES),
     ("json", "The --json contract", JSON),
     (
+        "errors",
+        "Stable error causes and their next steps",
+        "Run `af help errors CAUSE` for one explanation.",
+    ),
+    (
         "providers",
         "Provider logins: the registry, detect, setup, add, status and doctor",
         PROVIDERS,
@@ -95,6 +100,10 @@ pub(crate) fn body(topic: &str, text: &str) -> String {
         // the binary cannot say different things.
         "task-states" => format!("{text}\n\n{}", task_state_tables()),
         "exit-codes" => format!("{text}\n\n{}", task_exit_codes()),
+        "errors" => format!(
+            "{text}\n\n{}",
+            crate::error_document::explain(None).expect("cause table")
+        ),
         _ => text.to_string(),
     }
 }
@@ -457,7 +466,7 @@ Examples:
 const JSON: &str = "\
 stdout is the result, stderr is progress. With --json every reading command prints exactly one
 JSON document on stdout — no banner, no trailing text — so `af … --json | jq` always works.
-Errors under --json are one af/error@1 document on stdout (schemas/error-v1.json) with the same
+Errors under --json are one af/error@2 document on stdout (schemas/error-v2.json) with the same
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
 classifies adds `cause`, `next_action` (the one af command to run next, with the --repo, --state
@@ -470,6 +479,11 @@ the cause:
   refresh_refused      exit 4: no Pipeline can run the refreshed source; decision
   task_file_invalid    a Task file field af refuses: file, field, value
   input_unreadable     a file the command names cannot be read: file, what
+
+Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
+`not_repository`, `provider_not_registered`, `unknown_review_node`, `plan_mismatch`,
+`dirty_source`, `review_selectors_missing` and `review_binding_missing`. Run
+`af help errors` for the full cause table and `af help errors CAUSE` for one explanation.
 
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
