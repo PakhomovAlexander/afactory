@@ -1,0 +1,96 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checks",
+    "requirements",
+    "source"
+  ],
+  "properties": {
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload",
+          "snapshot_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "artifact_type": {
+            "const": "af/TaskCheckReceipt@1"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "artifact_type": {
+            "const": "af/Requirements@1"
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload",
+          "snapshot_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "artifact_type": {
+            "const": "af/SourceTree@1"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

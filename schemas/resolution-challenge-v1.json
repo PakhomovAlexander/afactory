@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:resolution-challenge:1",
+  "title": "ResolutionChallenge@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "resolution_id", "subject_id", "kind", "actor", "reason", "evidence_ids"],
+  "properties": {
+    "finding_id": {"type": "string", "minLength": 1},
+    "resolution_id": {"$ref": "#/$defs/id"},
+    "subject_id": {"$ref": "#/$defs/id"},
+    "kind": {"enum": ["new_evidence", "higher_severity", "outside_scope", "expired"]},
+    "actor": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

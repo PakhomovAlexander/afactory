@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-continuation:1",
+  "title": "task-review-continuation@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "original_round_report_id",
+    "prior_history_id",
+    "assessment"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "original_round_report_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "prior_history_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "assessment": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/repairAssessment"
+    }
+  }
+}

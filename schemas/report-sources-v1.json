@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:report-sources:1",
+  "$comment": "The af.document-sources/1 file shape with the report profile's bounds: zero to 256 entries, each text at most 256 KiB. The kernel also refuses more than 4 MiB of text in total, which JSON Schema cannot express.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.document-sources/1"
+    },
+    "sources": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "uri",
+          "revision",
+          "text"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S",
+            "allOf": [
+              {
+                "not": {
+                  "pattern": "[\\x00-\\x1f\\x7f]"
+                }
+              }
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 262144,
+            "pattern": "\\S"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+name = "correctness"
+version = "1.2.0"
+subjects = ["diff", "whole-tree"]
+
+[runner]
+program = "claude"
+args = [{ value = "--model" }, { value = "claude-opus-5-5" }, { value = "--effort" }, { value = "high" }]
