@@ -1,0 +1,10 @@
+{
+  "name": "af-markdownlint-tool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The exact markdownlint-cli2 closure the markdownlint gate runs offline (ADR-0145).",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "markdownlint-cli2": "0.22.1"
+  }
+}

@@ -255,3 +255,5 @@ future readers need.
 - [0143 — Charge zero and record unknown usage when no usage is
   reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)
 - [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)
+- [0145 — Run the markdownlint gate from a pinned offline
+  closure](0145-run-the-markdownlint-gate-from-a-pinned-offline-closure.md)

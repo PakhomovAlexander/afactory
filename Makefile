@@ -1,4 +1,5 @@
-.PHONY: release-check preflight-check check fmt lint test release review-kernel-container-probes
+.PHONY: release-check preflight-check check fmt lint test release review-kernel-container-probes \
+	markdownlint-tool markdownlint-tool-e2e
 
 # nextest is the gate (ADR-0124): one process per test, scheduled across every test binary.
 # `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
@@ -51,11 +52,23 @@ release-check:
 	$(CI_STEP) af-pin-tests python3 scripts/test-af-pin.py
 	$(CI_STEP) af-pin python3 scripts/af-pin.py --check
 
-# Offline advisory orchestration checks against the native inspection fixture, and the pull
-# request description check against the `af task report` renderer's fixture (ADR-0142).
+# Offline advisory orchestration checks against the native inspection fixture, the pull
+# request description check against the `af task report` renderer's fixture (ADR-0142), and the
+# offline markdownlint tool's installer and verifier against a synthetic closure (ADR-0145).
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py
+	$(CI_STEP) markdownlint-tool python3 scripts/test-markdownlint-tool.py
+
+# The markdownlint gate's tool (ADR-0145). `markdownlint-tool` is the one networked step: it
+# installs the pinned closure read-only below $XDG_DATA_HOME/af-tools (PREFIX overrides) and
+# prints the bin directory to put on PATH. `markdownlint-tool-e2e` installs it into a temporary
+# prefix and lints fixtures through it offline; it stays outside `make check` because it fetches.
+markdownlint-tool:
+	python3 scripts/markdownlint-tool.py install $(if $(PREFIX),--prefix "$(PREFIX)")
+
+markdownlint-tool-e2e:
+	AF_MARKDOWNLINT_E2E=1 python3 scripts/test-markdownlint-tool.py
