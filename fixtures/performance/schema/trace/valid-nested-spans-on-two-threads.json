@@ -1,0 +1,75 @@
+{
+  "schema": "af.perf-trace/1",
+  "pid": 4242,
+  "clock": "monotonic_ns",
+  "epoch_unix_ns": "1760000000000000000",
+  "capacity": 65536,
+  "dropped": 3,
+  "open": 1,
+  "spans": [
+    {
+      "id": 1,
+      "parent": null,
+      "phase": "probe_setup",
+      "tid": 1,
+      "start_ns": 1000,
+      "end_ns": 900000
+    },
+    {
+      "id": 2,
+      "parent": 1,
+      "phase": "cas_put",
+      "tid": 1,
+      "start_ns": 2000,
+      "end_ns": 40000
+    },
+    {
+      "id": 3,
+      "parent": 2,
+      "phase": "canonicalize",
+      "tid": 1,
+      "start_ns": 2500,
+      "end_ns": 9000
+    },
+    {
+      "id": 4,
+      "parent": null,
+      "phase": "probe_region",
+      "tid": 1,
+      "start_ns": 950000,
+      "end_ns": 1950000
+    },
+    {
+      "id": 5,
+      "parent": 4,
+      "phase": "cas_get_artifact",
+      "tid": 1,
+      "start_ns": 951000,
+      "end_ns": 1500000
+    },
+    {
+      "id": 6,
+      "parent": 5,
+      "phase": "cas_get",
+      "tid": 1,
+      "start_ns": 952000,
+      "end_ns": 1100000
+    },
+    {
+      "id": 8,
+      "parent": null,
+      "phase": "task_projection",
+      "tid": 2,
+      "start_ns": 960000,
+      "end_ns": 1200000
+    },
+    {
+      "id": 7,
+      "parent": 5,
+      "phase": "envelope_validate",
+      "tid": 1,
+      "start_ns": 1100500,
+      "end_ns": 1499000
+    }
+  ]
+}

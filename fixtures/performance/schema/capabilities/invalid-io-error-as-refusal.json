@@ -1,0 +1,87 @@
+{
+  "environments": {
+    "linux_x86_64_gnu_hosted": {
+      "reasons": [
+        "declares x86_64, this host is aarch64",
+        "registry: p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+      ],
+      "status": "unavailable"
+    },
+    "linux_x86_64_musl_hosted": {
+      "reasons": [
+        "declares x86_64, this host is aarch64",
+        "registry: p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+      ],
+      "status": "unavailable"
+    },
+    "macos_arm64_local": {
+      "reasons": [
+        "registry: p3b: trusted local process-group execution and host fingerprint."
+      ],
+      "status": "unavailable"
+    }
+  },
+  "host": {
+    "arch": "aarch64",
+    "kernel": "6.10.14-linuxkit",
+    "platform": "linux",
+    "python": "3.11.0"
+  },
+  "linux_container": {
+    "capability": {
+      "reasons": [],
+      "status": "available"
+    },
+    "scratch": {
+      "backend": "dedicated_filesystem",
+      "capability": {
+        "reasons": [],
+        "status": "available"
+      },
+      "capacity_bytes": 2081157120,
+      "enforcement": "verified",
+      "filesystem": "ext4",
+      "fill": {
+        "available_bytes_at_stop": 2071000000,
+        "available_unknown": null,
+        "cleanup": null,
+        "detail": "EIO: Input/output error",
+        "elapsed_ms": 18342,
+        "errno": "EIO",
+        "stage": "write",
+        "stopped": "refused",
+        "written_bytes": 0
+      },
+      "path": "/srv/perf-scratch"
+    }
+  },
+  "schema": "af.perf-capabilities/2",
+  "tools": {
+    "docker_client": {
+      "identity": "27.4.0",
+      "unavailable": null
+    },
+    "docker_server": {
+      "identity": "linux aarch64 cgroup2 27.4.0",
+      "unavailable": null
+    },
+    "git": {
+      "identity": "git version 2.54.0 (Apple Git-157)",
+      "unavailable": null
+    },
+    "rustc": {
+      "identity": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+      "unavailable": null
+    }
+  },
+  "trusted_local": {
+    "capability": {
+      "reasons": [
+        "trusted local execution is the explicit macOS capability; Linux samples run in containers"
+      ],
+      "status": "unavailable"
+    },
+    "same_user_isolation": "not_provided",
+    "scope": "discovery_and_nonspawning_library_cases"
+  }
+}

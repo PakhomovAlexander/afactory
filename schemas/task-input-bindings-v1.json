@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-input-bindings:1",
+  "title": "TaskInputBindings af/TaskInputBindings@1",
+  "$comment": "The durable record of a Task file's `inputs` table, referenced from TaskRevisionV1.provenance.input_artifact_ids and written only when the Task file carried one. Provenance and display data: the referenced Task's acceptance and domain conclusion cross no Task boundary as authority (ADR-0117). Only a re-rooted `source` carries resolved_artifact_id and rerooted_snapshot_id. A `many` port bound from several recorded outputs (ADR-0134) keeps its first reference in the binding and every further one, in Task-file order, in `also`; a port bound from one reference carries no `also`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "bindings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-input-bindings/1"
+    },
+    "bindings": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
+    }
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "resolved_artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "rerooted_snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "task": {
+          "$ref": "#/$defs/referencedTask"
+        },
+        "also": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1023,
+          "items": {
+            "$ref": "#/$defs/furtherOutput"
+          }
+        }
+      },
+      "dependentRequired": {
+        "rerooted_snapshot_id": [
+          "snapshot_id",
+          "resolved_artifact_id"
+        ],
+        "also": [
+          "task"
+        ]
+      },
+      "if": {
+        "required": [
+          "also"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "resolved_artifact_id"
+              ]
+            },
+            {
+              "required": [
+                "rerooted_snapshot_id"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "furtherOutput": {
+      "$comment": "One further recorded Task output bound into the same `many` port: its first artifact, the Snapshot the output recorded, and the Task it came from. Never re-rooted, never nested.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "task"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "task": {
+          "$ref": "#/$defs/referencedTask"
+        }
+      }
+    },
+    "referencedTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_revision_id",
+        "result_id",
+        "port",
+        "acceptance",
+        "domain_conclusion"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "task_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "port": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "acceptance": {
+          "enum": [
+            "satisfied",
+            "unsatisfied",
+            "inconclusive"
+          ]
+        },
+        "domain_conclusion": {
+          "type": "string",
+          "pattern": "\\S",
+          "maxLength": 256
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "captures": [
+    {
+      "artifact_id": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "payload": {
+        "schema": "af.optimization-history/1",
+        "project_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "cutoff_unix_ms": "1000",
+        "receipts": [
+          {
+            "receipt_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "adapter": "fixture",
+            "adapter_version": "v1",
+            "project_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "source_id": "website.jsonl",
+            "execution_id": "website-session",
+            "byte_start": "0",
+            "byte_end": "1000",
+            "prefix_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "cutoff_unix_ms": "1000",
+            "redaction_version": "v1",
+            "completeness": "complete"
+          }
+        ],
+        "observations": [
+          {
+            "observation_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "source_receipt_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "attribution": {
+              "project_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "case_family": "website-harness",
+              "execution_id": "task-attempt",
+              "task_id": "website-task"
+            },
+            "tokens": {
+              "cumulative_key": "provider-invocation",
+              "usage": {"input_tokens": "80", "output_tokens": "20", "chargeable_tokens": "100"},
+              "status": "exact",
+              "outer_session": false
+            },
+            "spans": [
+              {
+                "span_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "kind": "end_to_end",
+                "start_unix_ms": "0",
+                "end_unix_ms": "100",
+                "clock": "host",
+                "status": "exact"
+              },
+              {
+                "span_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "kind": "active",
+                "start_unix_ms": "0",
+                "end_unix_ms": "70",
+                "clock": "host",
+                "status": "exact"
+              },
+              {
+                "span_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "kind": "check",
+                "start_unix_ms": "50",
+                "end_unix_ms": "90",
+                "clock": "host",
+                "status": "exact"
+              }
+            ],
+            "caches": [{
+              "kind": "build",
+              "eligible": true,
+              "result": "hit",
+              "temperature": "warm",
+              "invalidation_id": "toolchain-and-source-v1",
+              "bytes_reused": "4096",
+              "tokens_reused": "0",
+              "lookup_ms": "3",
+              "warmup_ms": "0"
+            }],
+            "outcome": {"outcome": "failed", "retries": 1, "repairs": 0, "later_defects": 0}
+          },
+          {
+            "observation_id": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "source_receipt_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "attribution": {
+              "project_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "case_family": "website-harness",
+              "execution_id": "task-attempt",
+              "outer_execution_id": "website-session"
+            },
+            "tokens": {
+              "cumulative_key": "provider-invocation",
+              "usage": {"input_tokens": "100", "output_tokens": "25", "chargeable_tokens": "125"},
+              "status": "exact",
+              "outer_session": false
+            },
+            "outcome": {"outcome": "failed", "retries": 1, "repairs": 0, "later_defects": 0}
+          },
+          {
+            "observation_id": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "source_receipt_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "attribution": {
+              "project_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "case_family": "website-harness",
+              "execution_id": "task-attempt",
+              "outer_execution_id": "website-session"
+            },
+            "tokens": {
+              "cumulative_key": "outer-session",
+              "usage": {"chargeable_tokens": "40"},
+              "status": "exact",
+              "outer_session": true
+            }
+          }
+        ],
+        "gaps": ["billing_money"],
+        "exposed_case_families": ["website-harness"]
+      }
+    }
+  ],
+  "expected": {
+    "af_chargeable_tokens": "125",
+    "outer_chargeable_tokens": "40",
+    "elapsed_ms": "100",
+    "active_ms": "70",
+    "summed_work_ms": "110",
+    "repeated_failures": 1,
+    "missing_fields": [
+      "billing_money",
+      "context_tokens",
+      "repeated_context_tokens",
+      "retrieval_tokens"
+    ]
+  }
+}

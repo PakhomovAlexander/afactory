@@ -1,0 +1,587 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-status:4",
+  "title": "Provider status@4",
+  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. `installation_failed` means the Provider's official CLI cannot start \u2014 it is missing, not executable, or exits non-zero on its own version check \u2014 so nothing about the login could be learned. `incompatible` means the CLI starts but its help page does not declare every option af's invocation passes, so af will not dispatch to it whatever its login is (ADR-0146): authentication success never implies invocation compatibility. The CLI's own error line, detected version, suggested fix and the missing options are reported only on stderr and in the human table. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind \u2014 quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored. Disabled Providers are not probed: disabled_until is an absolute Unix timestamp including nanoseconds, auth is not_probed, usability is unusable and enable_command names the immediate recovery action. Version 3 also adds `found_unregistered`, the auth directories a names-only scan found that no row lists (the line `found but not registered: \u2026 \u2192 af provider detect` of the table), with `next_action` `af provider detect` whenever it is not empty, and per quota window `reset_reported`, false when the Provider does not report when the window resets (`resets_at_unix` is then null); version 2 is neither printed nor read. Version 4 adds probe_denied for a host permission refusal before compatibility or login could be established (ADR-0240), with exit 8; versions 1-3 are neither printed nor read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "exit_code",
+    "usage_requested",
+    "registry",
+    "providers",
+    "found_unregistered",
+    "next_action"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/provider-status@4"
+    },
+    "exit_code": {
+      "$comment": "0 fine; 4 some Provider's CLI as installed cannot serve af (installation_failed or incompatible), which outranks 7; 7 optional usage probing was requested and did not answer. 8 a host denied a capability probe, outranking 4 and 7.",
+      "enum": [
+        0,
+        4,
+        7,
+        8
+      ]
+    },
+    "usage_requested": {
+      "type": "boolean"
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "warning"
+      ],
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "warning": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "registered",
+          "auth_context",
+          "auth",
+          "credential",
+          "usability",
+          "usage",
+          "disabled_until",
+          "enable_command"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "registered": {
+            "$comment": "Only a registered Provider is selectable by `--provider NODE=ID`; an ambient discovery label is not.",
+            "type": "boolean"
+          },
+          "auth_context": {
+            "$comment": "The machine-local auth directory, or null for the Provider CLI's own default.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "auth": {
+            "enum": [
+              "authenticated",
+              "not_authenticated",
+              "unknown",
+              "unavailable",
+              "installation_failed",
+              "incompatible",
+              "not_probed",
+              "probe_denied"
+            ]
+          },
+          "credential": {
+            "$comment": "What kind of capability the context holds, never whose it is.",
+            "enum": [
+              "none",
+              "api_key",
+              "subscription",
+              "other"
+            ]
+          },
+          "usability": {
+            "enum": [
+              "usable_or_untested",
+              "unusable",
+              "unknown"
+            ]
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "windows"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "not_applicable",
+                  "unsupported",
+                  "available",
+                  "unavailable"
+                ]
+              },
+              "windows": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "window_minutes",
+                    "used_percent",
+                    "resets_at_unix",
+                    "reset_reported"
+                  ],
+                  "properties": {
+                    "window_minutes": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "used_percent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "resets_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "reset_reported": {
+                      "$comment": "Whether the Provider reported when this window resets; false exactly when `resets_at_unix` is null.",
+                      "type": "boolean"
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "reset_reported": {
+                            "const": false
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "resets_at_unix": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "resets_at_unix": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "allOf": [
+              {
+                "$comment": "Only a probe that answered may carry windows.",
+                "if": {
+                  "properties": {
+                    "state": {
+                      "not": {
+                        "const": "available"
+                      }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "windows": {
+                      "maxItems": 0
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "disabled_until": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "unix_seconds",
+                  "nanoseconds"
+                ],
+                "properties": {
+                  "unix_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  },
+                  "nanoseconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999999
+                  }
+                }
+              }
+            ]
+          },
+          "enable_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^af provider enable [A-Za-z0-9][A-Za-z0-9_-]*$"
+          }
+        },
+        "allOf": [
+          {
+            "$comment": "A CLI that cannot start or does not accept af's invocation makes its Provider unusable, never unknown.",
+            "if": {
+              "properties": {
+                "auth": {
+                  "enum": [
+                    "installation_failed",
+                    "incompatible",
+                    "probe_denied"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "usability": {
+                  "const": "unusable"
+                }
+              }
+            }
+          },
+          {
+            "$comment": "Status never claims usable; authentication and usability stay aligned.",
+            "if": {
+              "properties": {
+                "auth": {
+                  "const": "authenticated"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "usability": {
+                  "const": "usable_or_untested"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "usability": {
+                  "enum": [
+                    "unusable",
+                    "unknown"
+                  ]
+                },
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "not_applicable",
+                        "not_requested"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "disabled_until": {
+                  "type": "object"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "auth": {
+                  "const": "not_probed"
+                },
+                "usability": {
+                  "const": "unusable"
+                },
+                "credential": {
+                  "const": "none"
+                },
+                "enable_command": {
+                  "type": "string"
+                },
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "const": "not_applicable"
+                    },
+                    "windows": {
+                      "maxItems": 0
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "enable_command": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "auth": {
+                  "const": "probe_denied"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "credential": {
+                  "const": "none"
+                },
+                "usability": {
+                  "const": "unusable"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "found_unregistered": {
+      "$comment": "Auth directories found by name only (selector variables, the CLIs' defaults, the sibling names) that no row lists; nothing below them was read and none was probed.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "next_action": {
+      "$comment": "`af provider detect` whenever `found_unregistered` is not empty, else null.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "const": "af provider detect"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Usage states exist only under an explicit --usage request.",
+      "if": {
+        "properties": {
+          "usage_requested": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              0,
+              4,
+              8
+            ]
+          },
+          "providers": {
+            "items": {
+              "properties": {
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "not_requested",
+                        "not_applicable"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Exit 4 is claimed exactly when some Provider's CLI cannot start or does not accept af's invocation.",
+      "if": {
+        "properties": {
+          "providers": {
+            "contains": {
+              "properties": {
+                "auth": {
+                  "enum": [
+                    "installation_failed",
+                    "incompatible"
+                  ]
+                }
+              },
+              "required": [
+                "auth"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              4,
+              8
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              0,
+              7,
+              8
+            ]
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Exit 7 is claimed only when some requested usage probe did not answer.",
+      "if": {
+        "properties": {
+          "exit_code": {
+            "const": 7
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "usage_requested": {
+            "const": true
+          },
+          "providers": {
+            "contains": {
+              "properties": {
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                }
+              },
+              "required": [
+                "usage"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A next action exactly when something was found.",
+      "if": {
+        "properties": {
+          "found_unregistered": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_action": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "next_action": {
+            "const": "af provider detect"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "providers": {
+            "contains": {
+              "properties": {
+                "auth": {
+                  "const": "probe_denied"
+                }
+              },
+              "required": [
+                "auth"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exit_code": {
+            "const": 8
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              0,
+              4,
+              7
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

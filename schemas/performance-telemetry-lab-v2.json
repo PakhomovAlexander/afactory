@@ -1,0 +1,738 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-lab:2",
+  "title": "af.perf-telemetry-lab/2",
+  "description": "fixtures/performance/telemetry.toml as parsed TOML (ADR-0214): the telemetry experiments, each exactly a bench script of design section 12 with its document, the product schema it is read through and its levels, the inputs its measurement authority is identified by, and each trigger's bounded profile of rounds, pairs, scale, corpus size, timeout, work bytes and retention.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-lab/2"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logical_cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "memory_limit_bytes": {
+          "type": "integer",
+          "minimum": 268435456,
+          "maximum": 68719476736
+        },
+        "pid_limit": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 4096
+        }
+      },
+      "required": [
+        "logical_cpus",
+        "memory_limit_bytes",
+        "pid_limit"
+      ]
+    },
+    "experiments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overhead": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "script": {
+              "type": "string",
+              "maxLength": 256,
+              "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+            },
+            "document": {
+              "type": "string",
+              "enum": [
+                "af/telemetry-invocation-cost@1",
+                "af/telemetry-overhead@1",
+                "af/telemetry-read-latency@2"
+              ]
+            },
+            "schema_file": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^telemetry-[a-z-]{1,48}-v[1-9][0-9]{0,2}\\.json$"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "spans",
+                  "content"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "description",
+            "script",
+            "document",
+            "schema_file",
+            "inputs",
+            "levels"
+          ]
+        },
+        "invocation_cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "script": {
+              "type": "string",
+              "maxLength": 256,
+              "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+            },
+            "document": {
+              "type": "string",
+              "enum": [
+                "af/telemetry-invocation-cost@1",
+                "af/telemetry-overhead@1",
+                "af/telemetry-read-latency@2"
+              ]
+            },
+            "schema_file": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^telemetry-[a-z-]{1,48}-v[1-9][0-9]{0,2}\\.json$"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "spans",
+                  "content"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "description",
+            "script",
+            "document",
+            "schema_file",
+            "inputs",
+            "levels"
+          ]
+        },
+        "read_latency": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "script": {
+              "type": "string",
+              "maxLength": 256,
+              "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+            },
+            "document": {
+              "type": "string",
+              "enum": [
+                "af/telemetry-invocation-cost@1",
+                "af/telemetry-overhead@1",
+                "af/telemetry-read-latency@2"
+              ]
+            },
+            "schema_file": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^telemetry-[a-z-]{1,48}-v[1-9][0-9]{0,2}\\.json$"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "spans",
+                  "content"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "description",
+            "script",
+            "document",
+            "schema_file",
+            "inputs",
+            "levels"
+          ]
+        }
+      },
+      "required": [
+        "overhead",
+        "invocation_cost",
+        "read_latency"
+      ]
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pr": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "timeout_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 355
+            },
+            "work_bytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 68719476736
+            },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90
+            },
+            "experiments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "overhead",
+                  "invocation_cost",
+                  "read_latency"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "overhead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "invocation_cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "read_latency": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runs": {
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 10000
+                },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9
+                }
+              },
+              "required": [
+                "runs",
+                "repeat"
+              ]
+            }
+          },
+          "required": [
+            "description",
+            "rounds",
+            "timeout_minutes",
+            "work_bytes",
+            "retention_days",
+            "experiments",
+            "overhead",
+            "invocation_cost",
+            "read_latency"
+          ]
+        },
+        "nightly": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "timeout_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 355
+            },
+            "work_bytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 68719476736
+            },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90
+            },
+            "experiments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "overhead",
+                  "invocation_cost",
+                  "read_latency"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "overhead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "invocation_cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "read_latency": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runs": {
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 10000
+                },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9
+                }
+              },
+              "required": [
+                "runs",
+                "repeat"
+              ]
+            }
+          },
+          "required": [
+            "description",
+            "rounds",
+            "timeout_minutes",
+            "work_bytes",
+            "retention_days",
+            "experiments",
+            "overhead",
+            "invocation_cost",
+            "read_latency"
+          ]
+        },
+        "release": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "timeout_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 355
+            },
+            "work_bytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 68719476736
+            },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90
+            },
+            "experiments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "overhead",
+                  "invocation_cost",
+                  "read_latency"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "overhead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "invocation_cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "read_latency": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runs": {
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 10000
+                },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9
+                }
+              },
+              "required": [
+                "runs",
+                "repeat"
+              ]
+            }
+          },
+          "required": [
+            "description",
+            "rounds",
+            "timeout_minutes",
+            "work_bytes",
+            "retention_days",
+            "experiments",
+            "overhead",
+            "invocation_cost",
+            "read_latency"
+          ]
+        },
+        "manual": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "rounds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "timeout_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 355
+            },
+            "work_bytes": {
+              "type": "integer",
+              "minimum": 1048576,
+              "maximum": 68719476736
+            },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90
+            },
+            "experiments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "overhead",
+                  "invocation_cost",
+                  "read_latency"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "overhead": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "invocation_cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 40
+                },
+                "scale": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "smoke"
+                  ]
+                }
+              },
+              "required": [
+                "pairs",
+                "scale"
+              ]
+            },
+            "read_latency": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runs": {
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 10000
+                },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9
+                }
+              },
+              "required": [
+                "runs",
+                "repeat"
+              ]
+            }
+          },
+          "required": [
+            "description",
+            "rounds",
+            "timeout_minutes",
+            "work_bytes",
+            "retention_days",
+            "experiments",
+            "overhead",
+            "invocation_cost",
+            "read_latency"
+          ]
+        }
+      },
+      "required": [
+        "pr",
+        "nightly",
+        "release",
+        "manual"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "description",
+    "seed",
+    "containment",
+    "experiments",
+    "profiles"
+  ]
+}

@@ -1,0 +1,92 @@
+# Telemetry experiments of the AF performance laboratory (ADR-0196, docs/performance-telemetry.md).
+#
+# `python3 scripts/performance/cli.py telemetry-run --profile ID ...` measures Telemetry itself
+# with the credential-free bench scripts and fixtures of design §12 (docs/telemetry.md
+# "Performance"), each run of a script one side's binary, both sides on the same host with the
+# same scripts, fixtures, seeds and settings from this checkout, the sides' order alternating by
+# round. Every script judges its own document by its own rule: full scale and the minimum pairs
+# are the script's, never this file's. Nothing here is a verdict sample or changes the timing
+# verdict, the frozen quick calibration or its workflow; results are advisory.
+#
+# The level is an explicit dimension: `off` (the core) and `spans` (the product default) are
+# measured and compared separately, finalization included in every wall time; `content` is
+# never measured here (it is diagnostic only and perturbing: cli.py profile --telemetry content).
+
+schema = "af.perf-telemetry-lab/2"
+description = "Telemetry's own cost and read latency, measured beside the comparison, advisory."
+seed = 20261021
+
+[containment]
+logical_cpus = 2
+memory_limit_bytes = 8589934592
+pid_limit = 1024
+
+[experiments.overhead]
+description = "Within-binary `off` against `spans` on the three bench fixtures, wall time from exec to exit (finalization included), and the dense fixture's drain latency; each side judged by the script's own gate."
+script = "scripts/telemetry-overhead.py"
+document = "af/telemetry-overhead@1"
+schema_file = "telemetry-overhead-v1.json"
+inputs = ["scripts/telemetry-overhead.py", "fixtures/telemetry-bench"]
+levels = ["off", "spans"]
+
+[experiments.invocation_cost]
+description = "Claude `json` against `stream-json` at `off` and at `spans`, wall time and peak RSS, one and four Attempts; each side judged by the script's own gate."
+script = "scripts/telemetry-invocation-cost.py"
+document = "af/telemetry-invocation-cost@1"
+schema_file = "telemetry-invocation-cost-v1.json"
+inputs = ["scripts/telemetry-invocation-cost.py", "scripts/telemetry-overhead.py", "fixtures/telemetry-bench"]
+levels = ["off", "spans"]
+
+[experiments.read_latency]
+description = "`af telemetry status` on a fresh and an unchanged index and `show` of one run over one deterministic corpus this checkout generates once, warm (and cold where the host may drop its page cache); latency, peak RSS and index size."
+script = "scripts/telemetry-corpus.py"
+document = "af/telemetry-read-latency@2"
+schema_file = "telemetry-read-latency-v2.json"
+inputs = ["scripts/telemetry-corpus.py"]
+levels = ["content"]
+
+# Profiles: what one trigger measures, within the hard caps of perflab/telemetrylab.py. -----------
+
+[profiles.pr]
+description = "Pull requests: every experiment, bounded to fit beside the comparison; descriptive, never judged at the full gate's scale."
+rounds = 2
+timeout_minutes = 120
+work_bytes = 4294967296
+retention_days = 14
+experiments = ["overhead", "invocation_cost", "read_latency"]
+overhead = { pairs = 3, scale = "full" }
+invocation_cost = { pairs = 2, scale = "smoke" }
+read_latency = { runs = 200, repeat = 3 }
+
+[profiles.nightly]
+description = "Nightly against the highest reachable stable release: the overhead gate at full scale with its 20 pairs per round, the invocation cost at full scale, and the 1,000-run corpus."
+rounds = 9
+timeout_minutes = 340
+work_bytes = 8589934592
+retention_days = 30
+experiments = ["overhead", "invocation_cost", "read_latency"]
+overhead = { pairs = 20, scale = "full" }
+invocation_cost = { pairs = 5, scale = "full" }
+read_latency = { runs = 1000, repeat = 3 }
+
+[profiles.release]
+description = "A published release against its predecessor: the overhead gate and the invocation cost at full scale with 20 pairs, and the full 10,000-run corpus."
+rounds = 2
+timeout_minutes = 355
+work_bytes = 12884901888
+retention_days = 90
+experiments = ["overhead", "invocation_cost", "read_latency"]
+overhead = { pairs = 20, scale = "full" }
+invocation_cost = { pairs = 20, scale = "full" }
+read_latency = { runs = 10000, repeat = 3 }
+
+[profiles.manual]
+description = "An operator's experiment: explicit SHAs, experiments, rounds and pairs within the caps; the defaults are the pull request's."
+rounds = 2
+timeout_minutes = 240
+work_bytes = 8589934592
+retention_days = 30
+experiments = ["overhead", "invocation_cost", "read_latency"]
+overhead = { pairs = 3, scale = "full" }
+invocation_cost = { pairs = 2, scale = "smoke" }
+read_latency = { runs = 200, repeat = 3 }
