@@ -1,0 +1,24 @@
+[package]
+name = "review-process"
+description = "Bounded subprocess supervision shared across Review Kernel infrastructure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# No crate in this workspace has a doctest, and each empty rustdoc run still costs a
+# compile; the first doctest sets this back to true for its crate (ADR-0124).
+doctest = false
+
+[dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["signal", "process"] }
+
+# Observing a child's exit without reaping it is `waitid(WNOWAIT)` on Linux and a kqueue
+# `NOTE_EXIT` on the BSDs and macOS; see `wait_without_reaping`.
+[target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["signal", "process", "event"] }
+
+[lints]
+workspace = true
