@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:evidence-reuse-admission:1",
+  "title": "EvidenceReuseAdmission@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["demand_id", "satisfaction_id", "subject_id", "actor", "policy_revision", "reason"],
+  "properties": {
+    "demand_id": { "$ref": "#/$defs/digest" },
+    "satisfaction_id": { "$ref": "#/$defs/digest" },
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "actor": { "type": "string", "minLength": 1 },
+    "policy_revision": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "minLength": 1 }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

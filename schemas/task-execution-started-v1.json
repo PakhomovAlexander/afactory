@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-execution-started:1",
+  "title": "af/TaskExecutionStarted@1",
+  "description": "The marker that a lease began kernel execution of its Task (ADR-0153, design §5 \"Retained history\"): the payload of the Task log's own event kind `TaskExecutionStarted@1`, beside `TaskTransition@5`, whose shape it leaves unchanged (ADR-0145). The Task runtime commits it once per lease, before anything else it does under that lease; it references no artifact, never changes the Task's result, names the lease (`writer`, `epoch`) judged against the Task's current lease as a transition's is, and the Store refuses it on a finished Task. A lease that only planned (`af task start` without `--execute`), decided, refreshed or swept writes none, so the markers before a lease count exactly the executions before it; Telemetry numbers a run's executions from them. It is written identically at every telemetry level.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "writer",
+    "epoch",
+    "now_unix_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskExecutionStarted@1"
+    },
+    "writer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

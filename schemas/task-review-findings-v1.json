@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-findings:1",
+  "title": "TaskReviewFindings af/TaskReviewFindings@1",
+  "$comment": "The findings a continued Task's implementer receives on its optional `findings` input port (ADR-0212): every report of the continued review round's selected reviewer results and, when it did not pass, the evaluator's verdict, each under the ID the implementer's reply answers by. Typed input data carried as an artifact, outside the 64 KiB Requirements cap; no acceptance, verification or budget crosses the Task boundary through it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "continues",
+    "findings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-review-findings/1"
+    },
+    "continues": {
+      "$ref": "#/$defs/continues"
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "missing_reviewers": {
+      "description": "Required reviewers the round recorded no result for. Absent when every reviewer answered.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      }
+    }
+  },
+  "$defs": {
+    "continues": {
+      "description": "The Task continued, the exact revision, result and review round read, and the candidate Snapshot that round reviewed, which is the continuing Task's source.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_revision_id",
+        "result_id",
+        "round",
+        "round_id",
+        "snapshot_id"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "task_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "round_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    "line": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*\\S[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S"
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "by",
+        "artifact_id",
+        "title",
+        "body"
+      ],
+      "properties": {
+        "id": {
+          "description": "`bugs-1`: the reviewer slot and the report's position from one; `evaluator` for the evaluator's verdict.",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "origin": {
+          "enum": [
+            "reviewer",
+            "evaluator"
+          ]
+        },
+        "by": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "artifact_id": {
+          "description": "The review.kernel/ReviewerResult@2 or af/TaskEvaluation@1 artifact the finding came from.",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "severity": {
+          "enum": [
+            "blocker",
+            "major",
+            "minor"
+          ]
+        },
+        "file": {
+          "$ref": "#/$defs/line"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "$ref": "#/$defs/line"
+        },
+        "body": {
+          "$ref": "#/$defs/text"
+        },
+        "fix": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "if": {
+        "properties": {
+          "origin": {
+            "const": "evaluator"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "id": {
+            "const": "evaluator"
+          },
+          "by": {
+            "const": "evaluator"
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "severity"
+              ]
+            },
+            {
+              "required": [
+                "file"
+              ]
+            },
+            {
+              "required": [
+                "line"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "severity"
+        ],
+        "properties": {
+          "by": {
+            "not": {
+              "const": "evaluator"
+            }
+          }
+        }
+      }
+    }
+  }
+}

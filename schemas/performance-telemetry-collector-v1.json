@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-collector:1",
+  "title": "af.perf-telemetry-collector/1",
+  "description": "The trusted telemetry collector's configuration as parsed TOML (ADR-0215): the repository and its Performance telemetry workflow, the credential's environment name, the durable root, the trusted repository and refs its measurement authorities are read from, and the cycle's time, run, artifact, byte, result and retention bounds.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-collector/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "workflow": {
+      "const": "performance-telemetry.yml"
+    },
+    "api_url": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/api/v3)?$"
+    },
+    "token_env": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
+    },
+    "root": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "authority_repository": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "trusted_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 256,
+        "pattern": "^refs/(?:remotes/[A-Za-z0-9._-]+|heads|tags)/[A-Za-z0-9._/-]{1,200}$"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "lookback_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 89
+    },
+    "collection_seconds": {
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 3600
+    },
+    "runs_max": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "artifact_bytes_max": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 2147483648
+    },
+    "bytes_max": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 1099511627776
+    },
+    "results_max": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    },
+    "retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "workflow",
+    "api_url",
+    "token_env",
+    "root",
+    "authority_repository",
+    "trusted_refs",
+    "lookback_days",
+    "collection_seconds",
+    "runs_max",
+    "artifact_bytes_max",
+    "bytes_max",
+    "results_max",
+    "retention_days"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:warm-sources:1",
+  "title": "af.warm-sources/1",
+  "description": "What one toolchain key of the Warm Check Cache last built, kept beside the key as `<project>/<toolchain>.sources` (ADR-0207). Per source group of the Snapshot (a Cargo package directory as a Manifest path, or the empty string for the files no package directory holds): the domain-separated digest of the group's paths, kinds and content IDs, and the modification time the kernel gave the group's files, in nanoseconds since the Unix epoch as a canonical decimal string. A check whose group digest matches gives the group's files that time back, so Cargo keeps what it built from the same content; every other group is stamped now and rebuilt. The kernel writes the record under the key's lock before the check starts, never after.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "groups"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.warm-sources/1"
+    },
+    "groups": {
+      "type": "object",
+      "maxProperties": 100000,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 4096,
+        "pattern": "^$|^(?!/)(?!.*//)(?!.*/$)(?!(.*/)?\\.\\.?(/|$))[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "stamp_unix_ns"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "stamp_unix_ns": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,29}$"
+          }
+        }
+      }
+    }
+  }
+}

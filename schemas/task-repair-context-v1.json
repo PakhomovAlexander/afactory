@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-repair-context:1",
+  "title": "task-repair-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "continuation_id",
+    "continuation",
+    "subject",
+    "previous_snapshot_id",
+    "claims"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "continuation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "continuation": {
+      "$ref": "urn:af:schema:verification-continuation:1"
+    },
+    "subject": {
+      "$ref": "urn:review-kernel:schema:subject:1"
+    },
+    "previous_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "claims": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "original_view_id",
+          "current_view_id",
+          "title",
+          "body",
+          "remedy",
+          "attestation_id",
+          "attestation",
+          "file"
+        ],
+        "properties": {
+          "original_view_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "current_view_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "remedy": {
+            "type": "string"
+          },
+          "attestation_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "attestation": {
+            "$ref": "urn:review-kernel:schema:change-attestation:1"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

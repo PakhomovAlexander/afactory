@@ -1,0 +1,26 @@
+# Advisories, duplicate dependencies and crate sources, as deny.toml configures them. The RustSec
+# database changes without any commit here, so the check runs every week and on demand rather
+# than on pull requests; Dependabot proposes the updates it asks for.
+name: Dependencies
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          command-arguments: advisories bans sources
+          rust-version: "1.88.0"

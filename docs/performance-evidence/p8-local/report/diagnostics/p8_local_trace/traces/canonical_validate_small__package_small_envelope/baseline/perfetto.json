@@ -1,0 +1,21 @@
+{"displayTimeUnit":"ns","metadata":{"schema":"af.perf-trace/1","dropped":0,"open":0,"capacity":65536,"epoch_unix_ns":"1792563423164826000"},"traceEvents":[
+{"name":"process_name","ph":"M","pid":85340,"tid":0,"args":{"name":"canonical_validate_small__package_small_envelope baseline"}},
+{"name":"probe_setup","cat":"af","ph":"X","ts":30.500,"dur":1722.208,"pid":85340,"tid":1,"args":{"id":1,"parent":null}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":316.292,"dur":37.541,"pid":85340,"tid":1,"args":{"id":2,"parent":1}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":480.250,"dur":15.583,"pid":85340,"tid":1,"args":{"id":3,"parent":1}},
+{"name":"envelope_validate","cat":"af","ph":"X","ts":519.875,"dur":43.833,"pid":85340,"tid":1,"args":{"id":4,"parent":1}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":550.667,"dur":2.708,"pid":85340,"tid":1,"args":{"id":5,"parent":4}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":557.083,"dur":3.667,"pid":85340,"tid":1,"args":{"id":6,"parent":4}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":588.167,"dur":4.000,"pid":85340,"tid":1,"args":{"id":7,"parent":1}},
+{"name":"cas_put","cat":"af","ph":"X","ts":602.333,"dur":418.959,"pid":85340,"tid":1,"args":{"id":8,"parent":1}},
+{"name":"cas_get","cat":"af","ph":"X","ts":1438.958,"dur":313.000,"pid":85340,"tid":1,"args":{"id":9,"parent":1}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1555.250,"dur":4.167,"pid":85340,"tid":1,"args":{"id":10,"parent":9}},
+{"name":"envelope_validate","cat":"af","ph":"X","ts":1728.958,"dur":12.875,"pid":85340,"tid":1,"args":{"id":11,"parent":9}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1729.375,"dur":2.625,"pid":85340,"tid":1,"args":{"id":12,"parent":11}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1735.667,"dur":3.333,"pid":85340,"tid":1,"args":{"id":13,"parent":11}},
+{"name":"probe_region","cat":"af","ph":"X","ts":1752.792,"dur":108.958,"pid":85340,"tid":1,"args":{"id":14,"parent":null}},
+{"name":"envelope_validate","cat":"af","ph":"X","ts":1843.792,"dur":17.875,"pid":85340,"tid":1,"args":{"id":15,"parent":14}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1844.167,"dur":3.208,"pid":85340,"tid":1,"args":{"id":16,"parent":15}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1851.250,"dur":5.292,"pid":85340,"tid":1,"args":{"id":17,"parent":15}},
+{"name":"canonicalize","cat":"af","ph":"X","ts":1862.958,"dur":1.500,"pid":85340,"tid":1,"args":{"id":18,"parent":null}}
+]}
