@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:patch-proposal:1",
+  "title": "PatchProposal@1 payload",
+  "description": "An ATOMIC proposed change set, not a bag of independently selectable hunks. A proposal is a claim about a fix; it never resolves a Finding by itself — only positive derived-snapshot verification does. Automatic application is granted by the Reviewer Binding alone: a reviewer may nominate, and cannot infer eligibility from its own severity or confidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["base_snapshot_id", "patch_artifact_id", "finding_refs", "paths", "description"],
+  "properties": {
+    "base_snapshot_id": {
+      "description": "Exact snapshot the patch applies to. Validation rejects a proposal whose base is not the snapshot the attempt reviewed.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "patch_artifact_id": {
+      "description": "Content object holding the patch itself.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "finding_refs": {
+      "description": "The exact claims this patch covers. A same-attempt proposal cannot know the canonical Finding ID assigned after reduction, so a Report ID from the same selected attempt is accepted and mapped deterministically at the later ledger barrier.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/claim_ref" }
+    },
+    "evidence_ids": {
+      "description": "Evidence artifacts supporting the fix — a reproduced failure, a red-first test, a measurement.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "paths": {
+      "description": "Declared path set. Must equal the paths the patch actually changes; a declared set differing from the computed diff makes the proposal ineligible for automatic application.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "description": {
+      "description": "What the patch does and why it is the right fix.",
+      "type": "string",
+      "minLength": 1
+    },
+    "auto_apply_nominated": {
+      "description": "The attempt nominates this proposal for automatic integration. At most one per attempt in v1, and the patch must equal the kernel-computed final sandbox diff byte-for-byte after canonical normalization — diagnostic mutations must be reverted before completion. A nomination is a request; the binding's patch policy decides.",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "$defs": {
+    "claim_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["finding", "report"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+"schema" = "af.task-catalog/2"
+"code_policy" = ".af/code-policy.toml"
+
+["packages"]
+
+["packages"."fixture/bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:5225a499f238068b2575846a35be88788f94be6203613cb8f35a237e808275f7"
+"path" = ".af/task-packages/fixture/bugs"
+
+["packages"."fixture/correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:8452ce09583da8062989de40d2ca96ac3645f97b1c1e8b5d17aaaa5a72d38a75"
+"path" = ".af/task-packages/fixture/correctness"
+
+# Placeholders: this repository is `embedded-review` with a `history` output added to the
+# reviewed Pipeline, a `fixture/plain` Pipeline for the two successors and an optional
+# `history` input on the implementer. The test pins every digest from the copied tree before
+# it commits, exactly as `crates/af/tests/task_acceptance.rs` does for the fixtures it edits.
+["packages"."fixture/implementation"]
+"version" = "1.0.0"
+"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+"path" = ".af/task-packages/fixture/implementation"
+
+["packages"."fixture/plain"]
+"version" = "1.0.0"
+"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+"path" = ".af/task-packages/fixture/plain"
+
+["packages"."fixture/implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+"path" = ".af/task-packages/fixture/implementer"
+
+["packages"."fixture/review"]
+"version" = "1.0.0"
+"digest" = "sha256:dbe057cc236174bc9b3a0fc2d019905d4a7e24f91bbc73aae9c03556f4ca64ab"
+"path" = ".af/task-packages/fixture/review"
+
+["packages"."fixture/evaluator"]
+"version" = "1.0.0"
+"digest" = "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
+"path" = ".af/task-packages/fixture/evaluator"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = true
+"distinct_providers" = false
+"distinct_models" = false
+
+["review"]
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 1
+
+["review"."reviewers"]
+"bugs" = "required"
+"correctness" = "required"
