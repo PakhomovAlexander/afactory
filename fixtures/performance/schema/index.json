@@ -1,0 +1,2366 @@
+{
+  "schema": "af.perf-schema-fixtures/1",
+  "fixtures": [
+    {
+      "path": "../../../scripts/performance/service/telemetry-collector.example.toml",
+      "contract": "telemetry-collector",
+      "valid": true
+    },
+    {
+      "path": "../adapters.toml",
+      "contract": "adapters",
+      "valid": true
+    },
+    {
+      "path": "../cli.toml",
+      "contract": "cli",
+      "valid": true
+    },
+    {
+      "path": "../diagnostics.toml",
+      "contract": "diagnostics",
+      "valid": true
+    },
+    {
+      "path": "../golden/native.json",
+      "contract": "golden",
+      "valid": true
+    },
+    {
+      "path": "../suite.toml",
+      "contract": "suite",
+      "valid": true
+    },
+    {
+      "path": "../synthetic/suite.toml",
+      "contract": "suite",
+      "valid": true
+    },
+    {
+      "path": "../telemetry.toml",
+      "contract": "telemetry-lab",
+      "valid": true
+    },
+    {
+      "path": "activation-verification/invalid-dropped-obligations.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "pending: the obligations",
+      "shape": false
+    },
+    {
+      "path": "activation-verification/invalid-fetched-bridge-without-provenance.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "exactly a fetched verification binds",
+      "shape": false
+    },
+    {
+      "path": "activation-verification/invalid-golden-of-one-source.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "the golden check measures the calibrated and the bridged product sources",
+      "shape": false
+    },
+    {
+      "path": "activation-verification/invalid-mode.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "activation-verification/invalid-not-ready.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "a verified activation is ready",
+      "shape": false
+    },
+    {
+      "path": "activation-verification/invalid-uncalibrated-presented.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "a group is calibrated or not",
+      "shape": false
+    },
+    {
+      "path": "activation-verification/invalid-unreviewed-bridge-producer.json",
+      "contract": "activation-verification",
+      "valid": false,
+      "error": "expected",
+      "shape": true
+    },
+    {
+      "path": "activation-verification/valid-equivalent-adapter.json",
+      "contract": "activation-verification",
+      "valid": true
+    },
+    {
+      "path": "activation-verification/valid-fetched-equivalent-adapter.json",
+      "contract": "activation-verification",
+      "valid": true
+    },
+    {
+      "path": "activation-verification/valid-fetched.json",
+      "contract": "activation-verification",
+      "valid": true
+    },
+    {
+      "path": "activation/invalid-bridge-without-evidence.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "missing field equivalence_path",
+      "shape": true
+    },
+    {
+      "path": "activation/invalid-no-cohort-runs.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "must hold 1..256 items",
+      "shape": true
+    },
+    {
+      "path": "activation/invalid-self-approved.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "expected one of calibrated, equivalent_adapter",
+      "shape": true
+    },
+    {
+      "path": "activation/invalid-unbound-readiness.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "readiness_sha256",
+      "shape": true
+    },
+    {
+      "path": "activation/invalid-unsorted-adapter-files.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "adapter_files: sorted",
+      "shape": false
+    },
+    {
+      "path": "activation/invalid-unsorted-runs.toml",
+      "contract": "activation",
+      "valid": false,
+      "error": "cohort_actions_run_ids: ascending",
+      "shape": false
+    },
+    {
+      "path": "activation/valid-calibrated.toml",
+      "contract": "activation",
+      "valid": true
+    },
+    {
+      "path": "activation/valid-equivalent-adapter.toml",
+      "contract": "activation",
+      "valid": true
+    },
+    {
+      "path": "adapters/invalid-duplicate-priority.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "every adapter has its own fixed priority",
+      "shape": false
+    },
+    {
+      "path": "adapters/invalid-fifth-priority.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "must be within 1..4",
+      "shape": true
+    },
+    {
+      "path": "adapters/invalid-missing-entry-point.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "holds its example's entry point",
+      "shape": false
+    },
+    {
+      "path": "adapters/invalid-product-path.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "adapters/valid-two-priorities.toml",
+      "contract": "adapters",
+      "valid": true
+    },
+    {
+      "path": "archive-collection/invalid-exhaustion-without-bytes.json",
+      "contract": "archive-collection",
+      "valid": false,
+      "error": "capacity exhaustion states what was needed",
+      "shape": false
+    },
+    {
+      "path": "archive-collection/valid-imported.json",
+      "contract": "archive-collection",
+      "valid": true
+    },
+    {
+      "path": "archive-collection/valid-transport-failed.json",
+      "contract": "archive-collection",
+      "valid": true
+    },
+    {
+      "path": "archive-event/invalid-expired-and-available.json",
+      "contract": "archive-event",
+      "valid": false,
+      "error": "expired and available members are disjoint",
+      "shape": false
+    },
+    {
+      "path": "archive-event/invalid-freed-bytes.json",
+      "contract": "archive-event",
+      "valid": false,
+      "error": "the removed objects' sizes",
+      "shape": false
+    },
+    {
+      "path": "archive-event/invalid-pin-reason.json",
+      "contract": "archive-event",
+      "valid": false,
+      "error": "expected one of active_cohort, release_budget",
+      "shape": true
+    },
+    {
+      "path": "archive-event/invalid-unsorted-members.json",
+      "contract": "archive-event",
+      "valid": false,
+      "error": "sorted, each path once",
+      "shape": false
+    },
+    {
+      "path": "archive-event/valid-gc.json",
+      "contract": "archive-event",
+      "valid": true
+    },
+    {
+      "path": "archive-event/valid-pin.json",
+      "contract": "archive-event",
+      "valid": true
+    },
+    {
+      "path": "archive-event/valid-retention.json",
+      "contract": "archive-event",
+      "valid": true
+    },
+    {
+      "path": "archive-event/valid-run.json",
+      "contract": "archive-event",
+      "valid": true
+    },
+    {
+      "path": "archive-status/invalid-available-bytes.json",
+      "contract": "archive-status",
+      "valid": false,
+      "error": "the capacity less what is used",
+      "shape": false
+    },
+    {
+      "path": "archive-status/invalid-healthy-with-problems.json",
+      "contract": "archive-status",
+      "valid": false,
+      "error": "failed exactly with its problems",
+      "shape": false
+    },
+    {
+      "path": "archive-status/valid-healthy.json",
+      "contract": "archive-status",
+      "valid": true
+    },
+    {
+      "path": "archive/invalid-capacity-above-1-tib.json",
+      "contract": "archive",
+      "valid": false,
+      "error": "must be within 1..1099511627776",
+      "shape": true
+    },
+    {
+      "path": "archive/valid-default-capacity.json",
+      "contract": "archive",
+      "valid": true
+    },
+    {
+      "path": "build-pack/invalid-builds-hash.json",
+      "contract": "build-pack",
+      "valid": false,
+      "error": "the packed builds.json",
+      "shape": false
+    },
+    {
+      "path": "build-pack/invalid-executable-text.json",
+      "contract": "build-pack",
+      "valid": false,
+      "error": "expected a boolean",
+      "shape": true
+    },
+    {
+      "path": "build-pack/valid-two-files.json",
+      "contract": "build-pack",
+      "valid": true
+    },
+    {
+      "path": "builds/invalid-artifact-hash.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "the artifact is not the hashed binary",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-attempt-after-chosen.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "no adapter after the chosen one is attempted",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-caller-deadline-ignored.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "the earlier of the run's and the caller's",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-cold-not-empty.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "starts from observed empty targets",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-container-without-image.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "a container build names its pinned image",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-credential-variable.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "is not a sanitized build variable",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-missing-supervisor.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "missing field supervisor",
+      "shape": true
+    },
+    {
+      "path": "builds/invalid-not-first-adapter.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "the first compiling adapter",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-run-deadline.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "the run's deadline is its start plus its frozen total minutes",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-shared-different-inputs.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "identical frozen build inputs",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-supervisor-lock.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "supervisor.cargo_lock_sha256: a successful build binds its Cargo.lock",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-unbound-adapter-selection.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "records both sides' selections",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-unverified-embedded-commit.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "embeds its own source commit",
+      "shape": false
+    },
+    {
+      "path": "builds/invalid-version.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "expected af.perf-builds/6",
+      "shape": true
+    },
+    {
+      "path": "builds/invalid-warm-unprimed.json",
+      "contract": "builds",
+      "valid": false,
+      "error": "measured pass found every target primed",
+      "shape": false
+    },
+    {
+      "path": "builds/valid-container.json",
+      "contract": "builds",
+      "valid": true
+    },
+    {
+      "path": "builds/valid-named-image.json",
+      "contract": "builds",
+      "valid": true
+    },
+    {
+      "path": "builds/valid-same-source-shared.json",
+      "contract": "builds",
+      "valid": true
+    },
+    {
+      "path": "builds/valid-synthetic.json",
+      "contract": "builds",
+      "valid": true
+    },
+    {
+      "path": "builds/valid-warm-primed.json",
+      "contract": "builds",
+      "valid": true
+    },
+    {
+      "path": "calibration-parameters/invalid-efficiency.json",
+      "contract": "calibration-parameters",
+      "valid": false,
+      "error": "must equal max(r, a/A0)",
+      "shape": false
+    },
+    {
+      "path": "calibration-parameters/invalid-negative-a0.json",
+      "contract": "calibration-parameters",
+      "valid": false,
+      "error": "zero A0 prevents readiness",
+      "shape": false
+    },
+    {
+      "path": "calibration-parameters/invalid-retuned-loop-count.json",
+      "contract": "calibration-parameters",
+      "valid": false,
+      "error": "loop count nearest its target",
+      "shape": false
+    },
+    {
+      "path": "calibration-parameters/invalid-zero-a0.json",
+      "contract": "calibration-parameters",
+      "valid": false,
+      "error": "zero A0 prevents readiness",
+      "shape": false
+    },
+    {
+      "path": "calibration-parameters/valid-synthetic.json",
+      "contract": "calibration-parameters",
+      "valid": true,
+      "companion": "cohort/valid-synthetic.json"
+    },
+    {
+      "path": "capabilities/invalid-available-with-reasons.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "unavailable exactly with its reasons",
+      "shape": false
+    },
+    {
+      "path": "capabilities/invalid-io-error-as-refusal.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "a refusal is a capacity or quota error",
+      "shape": false
+    },
+    {
+      "path": "capabilities/invalid-same-user-claim.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "expected 'not_provided'",
+      "shape": true
+    },
+    {
+      "path": "capabilities/invalid-tool-without-reason.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "an identity or the reason there is none",
+      "shape": false
+    },
+    {
+      "path": "capabilities/invalid-unverified-scratch.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "available only with verified enforcement",
+      "shape": false
+    },
+    {
+      "path": "capabilities/invalid-verified-without-progress.json",
+      "contract": "capabilities",
+      "valid": false,
+      "error": "verified only by a capacity refusal after progress",
+      "shape": false
+    },
+    {
+      "path": "capabilities/valid-local-macos.json",
+      "contract": "capabilities",
+      "valid": true
+    },
+    {
+      "path": "capabilities/valid-verified-scratch.json",
+      "contract": "capabilities",
+      "valid": true
+    },
+    {
+      "path": "cli/invalid-enumeration-without-identity.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "identifies each item by its number",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-enumeration-without-number.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "names group n",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-exit-status-only.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "an exit status alone never passes",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-pending-with-argv.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "a pending command declares nothing to run",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-placeholder.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "undeclared placeholder {home}",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-seed-copy-without-seed.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "named exactly by a seed_copy setup",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-sequence-order.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "a sequence runs first..last at an object member",
+      "shape": false
+    },
+    {
+      "path": "cli/invalid-unknown-rule.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "kind: expected one of exit_code",
+      "shape": true
+    },
+    {
+      "path": "cli/invalid-version.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "expected af.perf-cli/5",
+      "shape": true
+    },
+    {
+      "path": "cli/valid-version-and-pending.toml",
+      "contract": "cli",
+      "valid": true
+    },
+    {
+      "path": "cohort/invalid-actions-run-id.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "unknown field actions_run_id",
+      "shape": true
+    },
+    {
+      "path": "cohort/invalid-injection-level.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "one of 2, 5 or 10",
+      "shape": false
+    },
+    {
+      "path": "cohort/invalid-member-kind.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "cohort/invalid-nineteen-aa.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "exactly 20 aa members",
+      "shape": false
+    },
+    {
+      "path": "cohort/invalid-short-schedule.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "must be within 5..365",
+      "shape": true
+    },
+    {
+      "path": "cohort/invalid-trial-before-preparation.json",
+      "contract": "cohort",
+      "valid": false,
+      "error": "precede every trial",
+      "shape": false
+    },
+    {
+      "path": "cohort/valid-synthetic.json",
+      "contract": "cohort",
+      "valid": true
+    },
+    {
+      "path": "cost/invalid-cache.json",
+      "contract": "cost",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "cost/invalid-failed-attempt-counted.json",
+      "contract": "cost",
+      "valid": false,
+      "error": "complete exactly without any execution failure",
+      "shape": false
+    },
+    {
+      "path": "cost/invalid-forged-status.json",
+      "contract": "cost",
+      "valid": false,
+      "error": "status: does not match",
+      "shape": false
+    },
+    {
+      "path": "cost/invalid-warm-without-priming.json",
+      "contract": "cost",
+      "valid": false,
+      "error": "an observed warm build records its priming",
+      "shape": false
+    },
+    {
+      "path": "cost/valid-pending.json",
+      "contract": "cost",
+      "valid": true
+    },
+    {
+      "path": "diagnostics/invalid-frequency-over-cap.toml",
+      "contract": "diagnostics",
+      "valid": false,
+      "error": "must be within 1..1999",
+      "shape": true
+    },
+    {
+      "path": "diagnostics/invalid-pin-without-checksum.toml",
+      "contract": "diagnostics",
+      "valid": false,
+      "error": "a pinned version names its source and that source's checksum",
+      "shape": false
+    },
+    {
+      "path": "diagnostics/invalid-profile-without-frame-pointers.toml",
+      "contract": "diagnostics",
+      "valid": false,
+      "error": "keeps frame pointers and debug symbols",
+      "shape": false
+    },
+    {
+      "path": "diagnostics/invalid-unknown-tool-field.toml",
+      "contract": "diagnostics",
+      "valid": false,
+      "error": "unknown field install",
+      "shape": true
+    },
+    {
+      "path": "enforcement/invalid-disabled.json",
+      "contract": "enforcement",
+      "valid": false,
+      "shape": true,
+      "error": "mode"
+    },
+    {
+      "path": "enforcement/valid-advisory.json",
+      "contract": "enforcement",
+      "valid": true
+    },
+    {
+      "path": "enforcement/valid-required.json",
+      "contract": "enforcement",
+      "valid": true
+    },
+    {
+      "path": "equivalence/invalid-authored-approval.json",
+      "contract": "equivalence",
+      "valid": false,
+      "error": "unknown field owner_approved",
+      "shape": true
+    },
+    {
+      "path": "equivalence/invalid-reasons-not-derived.json",
+      "contract": "equivalence",
+      "valid": false,
+      "error": "golden.reasons: do not follow from the recorded run",
+      "shape": false
+    },
+    {
+      "path": "equivalence/invalid-verified-with-reasons.json",
+      "contract": "equivalence",
+      "valid": false,
+      "error": "post_merge_aa.verified: exactly a check without reasons",
+      "shape": false
+    },
+    {
+      "path": "equivalence/valid-verified.json",
+      "contract": "equivalence",
+      "valid": true
+    },
+    {
+      "path": "golden/invalid-semantic-digest.json",
+      "contract": "golden",
+      "valid": false,
+      "error": "is not the content ID of its semantic projection",
+      "shape": false
+    },
+    {
+      "path": "golden/invalid-unknown-field.json",
+      "contract": "golden",
+      "valid": false,
+      "error": "unknown field learned_from",
+      "shape": true
+    },
+    {
+      "path": "history/invalid-group-identity.json",
+      "contract": "history",
+      "valid": false,
+      "error": "each group once",
+      "shape": false
+    },
+    {
+      "path": "history/invalid-paired-trend.json",
+      "contract": "history",
+      "valid": false,
+      "error": "expected 'trend_across_runs'",
+      "shape": true
+    },
+    {
+      "path": "history/valid-fixture-split.json",
+      "contract": "history",
+      "valid": true
+    },
+    {
+      "path": "kernel-inventory/invalid-digest.json",
+      "contract": "kernel-inventory",
+      "valid": false,
+      "error": "not the bootstrap's digest",
+      "shape": false
+    },
+    {
+      "path": "kernel-inventory/invalid-inner-metric-selected.json",
+      "contract": "kernel-inventory",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "kernel-inventory/invalid-missing-lock.json",
+      "contract": "kernel-inventory",
+      "valid": false,
+      "error": "every required protected file",
+      "shape": false
+    },
+    {
+      "path": "kernel-inventory/invalid-staged-subtree.json",
+      "contract": "kernel-inventory",
+      "valid": false,
+      "error": "never the staged policy subtree",
+      "shape": false
+    },
+    {
+      "path": "kernel-inventory/valid-fixture.json",
+      "contract": "kernel-inventory",
+      "valid": true
+    },
+    {
+      "path": "kernel-receipts/invalid-blank-conclusion.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "domain_conclusion: blank",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-blank-operation.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "producer.operation_id: blank",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-blank-producer.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "producer.run_id: blank",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-duplicate-evidence.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "evidence: items must be unique",
+      "shape": true
+    },
+    {
+      "path": "kernel-receipts/invalid-duplicate-missing-obligations.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "missing_obligations: items must be unique",
+      "shape": true
+    },
+    {
+      "path": "kernel-receipts/invalid-empty-output.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "cardinality one names exactly one artifact",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-envelope-identity.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "the artifact, type and Snapshot it names",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-envelope-names.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "the artifact, type and Snapshot it names",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-missing-repetition.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "one per run, in order",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-mutated-payload.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "not the kernel's content ID of the payload",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-mutated-provenance.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "not the kernel's artifact ID of the envelope",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-null-subject.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "expected a string",
+      "shape": true
+    },
+    {
+      "path": "kernel-receipts/invalid-output-cardinality.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "cardinality one names exactly one artifact",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-retained-claim.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "whole exactly when no byte is omitted",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-satisfied-incomplete.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "satisfied acceptance requires completed execution",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-stream-bytes.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "head, tail and omitted bytes are the stream's bytes",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-stream-id.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "not the kernel's content ID of the whole stream",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-stream-part-bytes.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "a retained part holds at most 32768 bytes",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-task-artifact.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "the Task result's artifact, type and Snapshot are this output's",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-unnamed-output.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "the Task result names no output on this port",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-unretained-output.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "names an output on this port that is not retained",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-unsorted-evidence.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "evidence: set entries must be sorted and unique",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-unsorted-missing-obligations.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "missing_obligations: set entries must be sorted and unique",
+      "shape": false
+    },
+    {
+      "path": "kernel-receipts/invalid-version-2.json",
+      "contract": "kernel-receipts",
+      "valid": false,
+      "error": "expected af.perf-kernel-receipts/3",
+      "shape": true
+    },
+    {
+      "path": "kernel-receipts/valid-fixture.json",
+      "contract": "kernel-receipts",
+      "valid": true
+    },
+    {
+      "path": "manifest/invalid-absolute.json",
+      "contract": "manifest",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "manifest/invalid-lists-itself.json",
+      "contract": "manifest",
+      "valid": false,
+      "error": "does not list itself",
+      "shape": false
+    },
+    {
+      "path": "manifest/invalid-traversal.json",
+      "contract": "manifest",
+      "valid": false,
+      "error": "path segment",
+      "shape": false
+    },
+    {
+      "path": "manifest/invalid-unsorted.json",
+      "contract": "manifest",
+      "valid": false,
+      "error": "paths are unique and sorted",
+      "shape": false
+    },
+    {
+      "path": "manifest/valid-shard.json",
+      "contract": "manifest",
+      "valid": true
+    },
+    {
+      "path": "plan-refusal/invalid-status.json",
+      "contract": "plan-refusal",
+      "valid": false,
+      "error": "expected one of invalid, unavailable",
+      "shape": true
+    },
+    {
+      "path": "plan-refusal/valid-unavailable.json",
+      "contract": "plan-refusal",
+      "valid": true
+    },
+    {
+      "path": "probe-request/invalid-instance.json",
+      "contract": "probe-request",
+      "valid": false,
+      "error": "does not name the assignment",
+      "shape": false
+    },
+    {
+      "path": "probe-request/invalid-relative-scratch.json",
+      "contract": "probe-request",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "probe-request/invalid-seed-in-scratch.json",
+      "contract": "probe-request",
+      "valid": false,
+      "error": "the seed copy lies outside the probe's scratch",
+      "shape": false
+    },
+    {
+      "path": "probe-request/invalid-unknown-field.json",
+      "contract": "probe-request",
+      "valid": false,
+      "error": "unknown field fixture_bytes",
+      "shape": true
+    },
+    {
+      "path": "probe-request/valid-canonical-serialize.json",
+      "contract": "probe-request",
+      "valid": true
+    },
+    {
+      "path": "probe-request/valid-seeded-source-capture.json",
+      "contract": "probe-request",
+      "valid": true
+    },
+    {
+      "path": "probe/invalid-no-metrics.json",
+      "contract": "probe",
+      "valid": false,
+      "error": "must hold 1..32 entries",
+      "shape": true
+    },
+    {
+      "path": "probe/invalid-unchecked-correctness.json",
+      "contract": "probe",
+      "valid": false,
+      "error": "names a digest or a count",
+      "shape": false
+    },
+    {
+      "path": "probe/valid-synthetic-example.json",
+      "contract": "probe",
+      "valid": true
+    },
+    {
+      "path": "profiles/invalid-bytes-overage-hidden.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly their overage",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-as-a-bracketed-region.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly perf's capture of a probe records its acknowledged region",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-contained-without-its-container.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly a contained run has PID-namespace containment",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-difference-colored-by-time.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "by sample share change",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-frequency.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "must be within 1..1999",
+      "shape": true
+    },
+    {
+      "path": "profiles/invalid-losses-decoded-without-payload.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "every decoded count",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-losses-payload-without-records.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "no payload without its records",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-one-direction-difference.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "rendered in both directions",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-perf-repetitions-not-fresh-executions.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "fresh executions",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-previous-version.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "expected af.perf-profiles/5",
+      "shape": true
+    },
+    {
+      "path": "profiles/invalid-second-capture-not-dwarf.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "the one additional capture is perf's declared DWARF alternative",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-selection-order.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "regressed, then inconclusive",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-setup-only-trace-labelled-complete.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "the region is missing exactly when no span of it was kept",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-silent-omission.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "a capture without omission observed its region",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-stop-reason-without-repetition.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "observed exactly when a repetition ran",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-tool-version-invented.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "a tool-reported version is exactly one the tool printed",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-trace-counter-without-omission.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "a counter value or an omission",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-trace-overhead-label.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "follows from the target",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-unknown-ratio.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "unknown frames over all frames",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-unobserved-region.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "a capture without omission observed its region",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-verdict-effect.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "expected 'none'",
+      "shape": true
+    },
+    {
+      "path": "profiles/valid-contained-cli-capture-and-trace.json",
+      "contract": "profiles",
+      "valid": true
+    },
+    {
+      "path": "profiles/valid-perf-with-dwarf-alternative.json",
+      "contract": "profiles",
+      "valid": true
+    },
+    {
+      "path": "profiles/valid-trace-overhead-and-counters.json",
+      "contract": "profiles",
+      "valid": true
+    },
+    {
+      "path": "readiness/invalid-author-tallies.json",
+      "contract": "readiness",
+      "valid": false,
+      "error": "tallies: do not match the recomputation",
+      "shape": false,
+      "companion": "cohort/valid-synthetic.json",
+      "calibration": "calibration-parameters/valid-synthetic.json"
+    },
+    {
+      "path": "readiness/invalid-other-members-dispatch.json",
+      "contract": "readiness",
+      "valid": false,
+      "error": "the run name of this member's dispatch",
+      "shape": false,
+      "companion": "cohort/valid-synthetic.json",
+      "calibration": "calibration-parameters/valid-synthetic.json"
+    },
+    {
+      "path": "readiness/invalid-status.json",
+      "contract": "readiness",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "readiness/valid-ten-of-ten.json",
+      "contract": "readiness",
+      "valid": true,
+      "companion": "cohort/valid-synthetic.json",
+      "calibration": "calibration-parameters/valid-synthetic.json"
+    },
+    {
+      "path": "release-claim/invalid-attempt-in-identity.json",
+      "contract": "release-claim",
+      "valid": false,
+      "error": "unknown field run_attempt",
+      "shape": true
+    },
+    {
+      "path": "release-claim/invalid-key-of-another-identity.json",
+      "contract": "release-claim",
+      "valid": false,
+      "error": "the SHA-256 of the identity's canonical serialization",
+      "shape": false
+    },
+    {
+      "path": "release-claim/invalid-remeasure-replaces-its-parent.json",
+      "contract": "release-claim",
+      "valid": false,
+      "error": "a parent claim of the same identity, by another run",
+      "shape": false
+    },
+    {
+      "path": "release-claim/valid-first-claim.json",
+      "contract": "release-claim",
+      "valid": true
+    },
+    {
+      "path": "release-claim/valid-remeasure-keeps-its-parent.json",
+      "contract": "release-claim",
+      "valid": true
+    },
+    {
+      "path": "release-handoff/invalid-link-to-an-expired-result.json",
+      "contract": "release-handoff",
+      "valid": false,
+      "error": "a duplicate links the first claim's retained result",
+      "shape": false
+    },
+    {
+      "path": "release-handoff/invalid-measure-before-confirmation.json",
+      "contract": "release-handoff",
+      "valid": false,
+      "error": "only the confirmation measures",
+      "shape": false
+    },
+    {
+      "path": "release-handoff/invalid-required-enforcement.json",
+      "contract": "release-handoff",
+      "valid": false,
+      "error": "expected 'advisory'",
+      "shape": true
+    },
+    {
+      "path": "release-handoff/valid-main-push-without-a-tag.json",
+      "contract": "release-handoff",
+      "valid": true
+    },
+    {
+      "path": "release-handoff/valid-pin-rerun-links-the-first-result.json",
+      "contract": "release-handoff",
+      "valid": true
+    },
+    {
+      "path": "report/invalid-comparison.json",
+      "contract": "report",
+      "valid": false,
+      "error": "expected 'same_host_paired'",
+      "shape": true
+    },
+    {
+      "path": "report/invalid-item-of-an-unlinked-child.json",
+      "contract": "report",
+      "valid": false,
+      "error": "names only linked child runs that selected it",
+      "shape": false
+    },
+    {
+      "path": "report/invalid-satisfied-without-the-verdict.json",
+      "contract": "report",
+      "valid": false,
+      "error": "satisfied exactly when the verdict satisfies it",
+      "shape": false
+    },
+    {
+      "path": "report/valid-linked-trace-child.json",
+      "contract": "report",
+      "valid": true
+    },
+    {
+      "path": "report/valid-partial-scope.json",
+      "contract": "report",
+      "valid": true
+    },
+    {
+      "path": "run/invalid-aa-injection.json",
+      "contract": "run",
+      "valid": false,
+      "error": "an A/A member is uninstrumented and injects nothing",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-build-inputs.json",
+      "contract": "run",
+      "valid": false,
+      "error": "name one commit, so one Cargo.lock",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-calibrated-group-twice.json",
+      "contract": "run",
+      "valid": false,
+      "error": "calibrated_groups: sorted unique groups, one per CPU model and image",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-diagnostic-kind-not-its-recipe.json",
+      "contract": "run",
+      "valid": false,
+      "error": "diagnostic.recipe: a CPU profile recipe keeps frame pointers and debug symbols",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-family-size.json",
+      "contract": "run",
+      "valid": false,
+      "error": "K counts exactly the critical instances",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-pairs-bound.json",
+      "contract": "run",
+      "valid": false,
+      "error": "must be within 12..200",
+      "shape": true
+    },
+    {
+      "path": "run/invalid-rank.json",
+      "contract": "run",
+      "valid": false,
+      "error": "is not the largest admissible rank",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-stale-digest.json",
+      "contract": "run",
+      "valid": false,
+      "error": "plan_digest: does not match",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-stale-recipe-identity.json",
+      "contract": "run",
+      "valid": false,
+      "error": "recipe_digest: does not match the recipe and its frozen build",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-tagged-build-image.json",
+      "contract": "run",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "run/invalid-unfrozen-linux-build.json",
+      "contract": "run",
+      "valid": false,
+      "error": "an unpinned Linux recipe builds in a configured image",
+      "shape": false
+    },
+    {
+      "path": "run/invalid-unknown-field.json",
+      "contract": "run",
+      "valid": false,
+      "error": "unknown field surprise",
+      "shape": true
+    },
+    {
+      "path": "run/invalid-version.json",
+      "contract": "run",
+      "valid": false,
+      "error": "expected af.perf-run/6",
+      "shape": true
+    },
+    {
+      "path": "run/valid-bootstrap.json",
+      "contract": "run",
+      "valid": true
+    },
+    {
+      "path": "run/valid-calibration-power.json",
+      "contract": "run",
+      "valid": true
+    },
+    {
+      "path": "run/valid-configured-build-image.json",
+      "contract": "run",
+      "valid": true
+    },
+    {
+      "path": "run/valid-diagnostic-trace-recipe.json",
+      "contract": "run",
+      "valid": true
+    },
+    {
+      "path": "run/valid-full-calibrated-groups.json",
+      "contract": "run",
+      "valid": true
+    },
+    {
+      "path": "sample/invalid-candidate-sentinel.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "sentinels run the baseline binary",
+      "shape": false
+    },
+    {
+      "path": "sample/invalid-mismatch-without-failed-oracle.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "records a failed oracle",
+      "shape": false
+    },
+    {
+      "path": "sample/invalid-ok-with-failure.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "records no failure",
+      "shape": false
+    },
+    {
+      "path": "sample/invalid-redundant-zero.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "sample/invalid-too-many-digits.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "at most 38 significant digits",
+      "shape": false
+    },
+    {
+      "path": "sample/invalid-unit.json",
+      "contract": "sample",
+      "valid": false,
+      "error": "expected one of ms, bytes, count, ratio",
+      "shape": true
+    },
+    {
+      "path": "sample/valid-measured.json",
+      "contract": "sample",
+      "valid": true
+    },
+    {
+      "path": "sample/valid-oracle-failure.json",
+      "contract": "sample",
+      "valid": true
+    },
+    {
+      "path": "schedule/invalid-release-claim-on-a-push.json",
+      "contract": "schedule",
+      "valid": false,
+      "error": "a release claim is scheduled from its own handoff's event",
+      "shape": false
+    },
+    {
+      "path": "schedule/invalid-required-enforcement.json",
+      "contract": "schedule",
+      "valid": false,
+      "error": "expected 'advisory'",
+      "shape": true
+    },
+    {
+      "path": "schedule/invalid-untrusted-dedicated.json",
+      "contract": "schedule",
+      "valid": false,
+      "error": "an untrusted event runs only on ephemeral hosted runners",
+      "shape": false
+    },
+    {
+      "path": "schedule/valid-gate-branch-skipped.json",
+      "contract": "schedule",
+      "valid": true
+    },
+    {
+      "path": "schedule/valid-push-without-a-parent.json",
+      "contract": "schedule",
+      "valid": true
+    },
+    {
+      "path": "schedule/valid-release-claim-whose-tag-moved.json",
+      "contract": "schedule",
+      "valid": true
+    },
+    {
+      "path": "shard/invalid-complete-but-short.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "a complete shard holds every expected record",
+      "shape": false
+    },
+    {
+      "path": "shard/invalid-deadline-past-the-run.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "the earliest of the run's total deadline",
+      "shape": false
+    },
+    {
+      "path": "shard/invalid-host-identity.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "host_id: does not match the host",
+      "shape": false
+    },
+    {
+      "path": "shard/invalid-measured-without-lock.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "named exactly by measured evidence",
+      "shape": false
+    },
+    {
+      "path": "shard/invalid-native-seed-with-af.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "a native seed is written by the side's probe alone",
+      "shape": false
+    },
+    {
+      "path": "shard/invalid-provenance.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "expected one of measured, synthetic",
+      "shape": true
+    },
+    {
+      "path": "shard/invalid-ready-seed-without-digest.json",
+      "contract": "shard",
+      "valid": false,
+      "error": "a ready seed has its digest",
+      "shape": false
+    },
+    {
+      "path": "shard/valid-measured-seeds.json",
+      "contract": "shard",
+      "valid": true
+    },
+    {
+      "path": "shard/valid-native-seed.json",
+      "contract": "shard",
+      "valid": true
+    },
+    {
+      "path": "shard/valid-synthetic.json",
+      "contract": "shard",
+      "valid": true
+    },
+    {
+      "path": "shipping/invalid-at-the-limit.json",
+      "contract": "shipping",
+      "valid": false,
+      "error": "every sample strictly below",
+      "shape": false
+    },
+    {
+      "path": "shipping/invalid-distribution.json",
+      "contract": "shipping",
+      "valid": false,
+      "error": "nearest-rank p95",
+      "shape": false
+    },
+    {
+      "path": "shipping/invalid-pooled-identities.json",
+      "contract": "shipping",
+      "valid": false,
+      "error": "not of this target's product identity",
+      "shape": false
+    },
+    {
+      "path": "shipping/invalid-result.json",
+      "contract": "shipping",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "shipping/invalid-unaccounted-slots.json",
+      "contract": "shipping",
+      "valid": false,
+      "error": "planned: every planned slot",
+      "shape": false
+    },
+    {
+      "path": "shipping/valid-pending.json",
+      "contract": "shipping",
+      "valid": true
+    },
+    {
+      "path": "suite/invalid-float.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "TOML floats are not allowed",
+      "shape": true
+    },
+    {
+      "path": "suite/invalid-uncalibrated-tolerance.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "must be calibrated",
+      "shape": false
+    },
+    {
+      "path": "suite/invalid-unknown-field.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "unknown field owner",
+      "shape": true
+    },
+    {
+      "path": "suite/invalid-unknown-policy.toml",
+      "contract": "suite",
+      "valid": false,
+      "error": "unknown policy",
+      "shape": false
+    },
+    {
+      "path": "supervisor-request/invalid-caps.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "covers stdout and stderr together",
+      "shape": false
+    },
+    {
+      "path": "supervisor-request/invalid-deadline.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "must be within 1..120000",
+      "shape": true
+    },
+    {
+      "path": "supervisor-request/invalid-integer-selector-values.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "an integer selector declares no values",
+      "shape": false
+    },
+    {
+      "path": "supervisor-request/invalid-json-selectors.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "stdout_json",
+      "shape": true
+    },
+    {
+      "path": "supervisor-request/invalid-relative-program.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "the program is an absolute path",
+      "shape": false
+    },
+    {
+      "path": "supervisor-request/invalid-scratch-without-namespace.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "only pid_namespace containment owns a scratch",
+      "shape": false
+    },
+    {
+      "path": "supervisor-request/invalid-unknown-field.json",
+      "contract": "supervisor-request",
+      "valid": false,
+      "error": "unknown field shell",
+      "shape": true
+    },
+    {
+      "path": "supervisor-request/valid-json-selectors.json",
+      "contract": "supervisor-request",
+      "valid": true
+    },
+    {
+      "path": "supervisor-request/valid-namespace.json",
+      "contract": "supervisor-request",
+      "valid": true
+    },
+    {
+      "path": "supervisor-request/valid-trusted-local.json",
+      "contract": "supervisor-request",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/invalid-clean-from-pipes.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "pipes alone never establish a clean lifecycle",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-enumeration-failure-clean.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "verified only when nothing remained and no pipe was held",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-json-break.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "breaks are later values, the first of them named",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-json-complete-with-offset.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "an offset within stdout exactly when it is not complete",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-missing-rusage-reason.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "present, or unavailable with its reason",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-polled-interval.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "whose exit was observed unreaped",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-timeout-with-wall.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "exactly for a child that ended by itself",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-truncation.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "truncated counts exactly what was not retained",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/invalid-unknown-status.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "supervisor-result/invalid-unobserved-clean.json",
+      "contract": "supervisor-result",
+      "valid": false,
+      "error": "leaves the cleanup uncertain",
+      "shape": false
+    },
+    {
+      "path": "supervisor-result/valid-json-incomplete.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/valid-json.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/valid-namespace.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/valid-timeout.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/valid-trusted-local.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "supervisor-result/valid-unobserved.json",
+      "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-binding/invalid-version.json",
+      "contract": "telemetry-binding",
+      "valid": false,
+      "error": "expected af.perf-telemetry-binding/1",
+      "shape": true
+    },
+    {
+      "path": "telemetry-binding/valid-pr-merge.json",
+      "contract": "telemetry-binding",
+      "valid": true
+    },
+    {
+      "path": "telemetry-build/invalid-side.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "expected one of baseline, candidate",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-unpinned-image.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/valid-candidate.json",
+      "contract": "telemetry-build",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collection-position/invalid-run-id.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "must be within 1..",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection-position/invalid-upper-id.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "within the rotation's upper ID",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection-position/invalid-version.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "expected af.perf-telemetry-collection-position/1",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection-position/valid-position.json",
+      "contract": "telemetry-collection-position",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collection/invalid-collected-without-its-result.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "exactly a collected result names its result",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection/invalid-ok-with-a-refusal.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "failed exactly when the cycle ended early or refused an artifact",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection/invalid-prior-version.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "schema",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection/invalid-unknown-field.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "unknown field token",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection/valid-incomplete.json",
+      "contract": "telemetry-collection",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collection/valid-one-cycle.json",
+      "contract": "telemetry-collection",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collector/invalid-archive-workflow.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "expected 'performance-telemetry.yml'",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collector/invalid-float-bound.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "float",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collector/invalid-root-inside-the-trusted-repository.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "the trusted repository lies apart from the durable root",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-group-id.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "identified by its configuration, authority, execution mode, image and host",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-mode-of-another-group.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "each result in a group of its execution mode",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-point-of-another-group.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "holds only its group's results",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-prior-version.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "schema",
+      "shape": true
+    },
+    {
+      "path": "telemetry-history/invalid-results-bound.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "must be within 1..4096",
+      "shape": true
+    },
+    {
+      "path": "telemetry-history/invalid-unknown-field.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "unknown field trend",
+      "shape": true
+    },
+    {
+      "path": "telemetry-history/valid-one-group.json",
+      "contract": "telemetry-history",
+      "valid": true
+    },
+    {
+      "path": "telemetry-lab/invalid-content-in-a-cost-comparison.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": ".levels: exactly off, spans",
+      "shape": false
+    },
+    {
+      "path": "telemetry-lab/invalid-prior-version.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "schema",
+      "shape": true
+    },
+    {
+      "path": "telemetry-lab/invalid-rounds-over-cap.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "must be within 1..8",
+      "shape": true
+    },
+    {
+      "path": "telemetry-lab/invalid-script-elsewhere.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "names scripts/telemetry-overhead.py",
+      "shape": false
+    },
+    {
+      "path": "telemetry-lab/invalid-unknown-profile-field.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "unknown field note",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-active-without-container.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "only pre-launch or retired ownership has no execution",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/invalid-active-without-launch.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "launch accounting disagrees",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/invalid-control-identity.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "control: must hold 2..2 items",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-phase.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-ready-after-launch.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "launch accounting disagrees",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/valid-active.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-ready.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-removed-after-launch.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-removed-before-launch.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-stopped.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-uncertain.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/invalid-a-planned-run-dropped.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "every planned run, a run that never ran included",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-build-of-another-binary.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "the build of this side's source and binary",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-compared-change.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "each change is (candidate - baseline) / baseline",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-a-changed-binary.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "nothing protected changed",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-a-failed-run.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "complete only when every planned run succeeded",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-an-uncertain-cleanup.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "every cleanup was confirmed",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-configuration-digest.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "the digest of the configuration",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-position.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "baseline first in even rounds",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-same-host-claimed-otherwise.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "exactly when the host was observed the same",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-trusted-local-pull-request.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "a pull request's candidate is measured only contained",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-verdict-effect.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "expected 'none'",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/valid-one-round.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "trace/invalid-duplicate-span.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "duplicate span",
+      "shape": false
+    },
+    {
+      "path": "trace/invalid-ends-before-it-starts.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "ends before it starts",
+      "shape": false
+    },
+    {
+      "path": "trace/invalid-free-text-phase.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "trace/invalid-over-capacity.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "more spans than the recorder's capacity",
+      "shape": false
+    },
+    {
+      "path": "trace/invalid-parent-on-another-thread.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "a span on another thread",
+      "shape": false
+    },
+    {
+      "path": "trace/invalid-payload-field.json",
+      "contract": "trace",
+      "valid": false,
+      "error": "unknown field payload",
+      "shape": true
+    },
+    {
+      "path": "trace/valid-nested-spans-on-two-threads.json",
+      "contract": "trace",
+      "valid": true
+    },
+    {
+      "path": "transport/invalid-shard-without-index.json",
+      "contract": "transport",
+      "valid": false,
+      "error": "named exactly by a shard bundle",
+      "shape": false
+    },
+    {
+      "path": "transport/invalid-traversing-view.json",
+      "contract": "transport",
+      "valid": false,
+      "error": "path segment '..' is not allowed",
+      "shape": false
+    },
+    {
+      "path": "transport/valid-run-bundle.json",
+      "contract": "transport",
+      "valid": true
+    },
+    {
+      "path": "transport/valid-shard-bundle.json",
+      "contract": "transport",
+      "valid": true
+    },
+    {
+      "path": "verdict/invalid-classification.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "does not follow from the interval",
+      "shape": false
+    },
+    {
+      "path": "verdict/invalid-exit-code.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "pass is 0, fail 3, incomplete 4",
+      "shape": false
+    },
+    {
+      "path": "verdict/invalid-pass-with-missing-record.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "a passing verdict matches every planned record",
+      "shape": false
+    },
+    {
+      "path": "verdict/invalid-status.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "verdict/invalid-synthetic-satisfies-check.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "only a measured passing full verdict",
+      "shape": false
+    },
+    {
+      "path": "verdict/invalid-version.json",
+      "contract": "verdict",
+      "valid": false,
+      "error": "expected af.perf-verdict/2",
+      "shape": true
+    },
+    {
+      "path": "verdict/valid-synthetic-regression.json",
+      "contract": "verdict",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-ready-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-stopped-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/invalid-missing-filesystem-fence.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "filesystem_pending",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-version.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "expected af.perf-telemetry-owner/2",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-removed-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "retired ownership",
+      "shape": false
+    }
+  ]
+}

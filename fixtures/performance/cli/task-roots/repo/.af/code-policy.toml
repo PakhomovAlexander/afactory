@@ -1,0 +1,13 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 5000
+require_container = false
+
+# check(`true`): the Task's one check. Its execution is proved by the check span the Task
+# records for node root.nodes.checks, not by any output of its own.
+[checks.truth]
+name = "truth"
+required = true
+
+[checks.truth.command]
+program = "/bin/true"
+args = []

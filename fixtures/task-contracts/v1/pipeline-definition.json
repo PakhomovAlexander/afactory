@@ -1,0 +1,82 @@
+{
+  "schema": "af.pipeline/1",
+  "name": "builtin/document",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": {
+      "requirements": {
+        "artifact_type": "af/Requirements@1",
+        "cardinality": "one",
+        "optional": false,
+        "affinity": {
+          "kind": "unbound"
+        },
+        "covers": []
+      }
+    },
+    "outputs": {
+      "document": {
+        "artifact_type": "af/CheckedDocument@1",
+        "cardinality": "one",
+        "optional": false,
+        "affinity": {
+          "kind": "unbound"
+        },
+        "covers": [
+          "checked"
+        ]
+      }
+    }
+  },
+  "accepts": {
+    "kinds": [
+      "document"
+    ],
+    "required_facts": {
+      "small": true
+    }
+  },
+  "slots": {
+    "author": {
+      "worker": "builtin/document-author",
+      "role": "author",
+      "input_type": "af/Requirements@1",
+      "output_type": "af/CheckedDocument@1",
+      "min_attempts": 1,
+      "max_attempts": 2,
+      "allow_local_replacement": true,
+      "independent_from": []
+    }
+  },
+  "nodes": [
+    {
+      "id": "write",
+      "operator": {
+        "op": "worker",
+        "slot": "author"
+      },
+      "inputs": {
+        "input": {
+          "kind": "input",
+          "port": "requirements"
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "document": {
+      "kind": "node",
+      "node": "write",
+      "port": "output"
+    }
+  },
+  "coverage": {
+    "checked": {
+      "kind": "node",
+      "node": "write",
+      "port": "output"
+    }
+  },
+  "max_attempts": 3,
+  "max_parallel": 1
+}

@@ -1,0 +1,205 @@
+{
+  "schema": "af.perf-profiles/5",
+  "run_id": "diag_child",
+  "parent_run_id": "schema_fixture_run",
+  "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",
+  "plan_digest": "sha256:f0c587a00fcbb256b20d2055d3935ea553f426cafafc3629b71e916ccb54d696",
+  "registry_sha256": "sha256:a3d321ed024893ee3caad198fb423a67d3207cd1b006e25d95874598c293844c",
+  "verdict_effect": "none",
+  "selection": {
+    "mode": "explicit",
+    "limit": 8,
+    "parent_verdict_sha256": null,
+    "cases": [
+      {
+        "instance_id": "canonical_serialize_small__package_small_envelope",
+        "case_id": "canonical_serialize_small",
+        "reason": "explicit"
+      }
+    ],
+    "not_selected": []
+  },
+  "sources": {
+    "baseline_sha": "1111111111111111111111111111111111111111",
+    "candidate_sha": "2222222222222222222222222222222222222222",
+    "authority_sha": "2222222222222222222222222222222222222222"
+  },
+  "recipe": {
+    "recipe_id": "linux_gnu_trace",
+    "kind": "trace",
+    "recipe_digest": "sha256:e1d8e552330911f9f779f85b6f2c00a15e790dcc3fbb3b28f5da1d660a30c5b8",
+    "base_recipe": "linux_gnu_native_release",
+    "features": [
+      "perf-trace"
+    ],
+    "debug_symbols": false,
+    "frame_pointers": false,
+    "builds_sha256": "sha256:8459419d4cfe6b1acac1499410aacffaf38450db924d1002c9dd1f563d1bda55"
+  },
+  "capture": {
+    "frequency_hz": 997,
+    "duration_ms": 10000,
+    "event": "task-clock:u",
+    "dwarf_stack_bytes": 32768
+  },
+  "budgets": {
+    "wall_ms": {
+      "limit": 900000,
+      "used": 312000
+    },
+    "bytes": {
+      "limit": 134217728,
+      "administrative_reserve": 8388608,
+      "evidence_used": 52428800,
+      "evidence_overage": 0
+    },
+    "cases": {
+      "limit": 8,
+      "used": 1
+    },
+    "builds": {
+      "limit": 4,
+      "used": 2
+    }
+  },
+  "execution": {
+    "mode": "trusted_local",
+    "containment": "process_group",
+    "declared_containment": "linux_container",
+    "matches_environment": false,
+    "supervisor_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "machine_lock": "/tmp/af-perf-machine.lock",
+    "scratch_bound": "not_enforced_in_trusted_local_mode",
+    "container": null,
+    "retained_scratch": 0,
+    "started_unix_ms": 1760000000000,
+    "ended_unix_ms": 1760000312000,
+    "deadline_unix_ms": 1760000900000,
+    "host": "fixture-host"
+  },
+  "tools": [],
+  "captures": [],
+  "renders": [],
+  "traces": [
+    {
+      "instance_id": "canonical_serialize_small__package_small_envelope",
+      "side": "baseline",
+      "subject": "probe_region",
+      "region_phase": "probe_region",
+      "region_spans": 1,
+      "coverage": "complete",
+      "spans": 120,
+      "dropped": 0,
+      "open": 0,
+      "async_spans": 0,
+      "overhead": {
+        "pairs": 12,
+        "off_recipe_digest": "sha256:0f600e85af95634936c6e61251b652c0ebaf840c948340d7d635a5977994f2b0",
+        "on_recipe_digest": "sha256:7dc0ac50e0506ea32aa5ad6c1918c3cf5ab19fc0435aecaecc5e54be1fd51f25",
+        "off_binary_sha256": "sha256:b4dc66dde806261bdda8607d8707aa727d308cd80272381a5583f63899918467",
+        "on_binary_sha256": "sha256:b8d31e852725afb1e26d53bab6095b2bff1749c9275be13ed1c05a56ed31ec09",
+        "off_ms": [
+          "10",
+          "10.2",
+          "9.8",
+          "10",
+          "10.1",
+          "10",
+          "9.9",
+          "10",
+          "10",
+          "10.3",
+          "10",
+          "10"
+        ],
+        "on_ms": [
+          "10.1",
+          "10.5",
+          "9.9",
+          "10.1",
+          "10.2",
+          "10.4",
+          "10",
+          "10.2",
+          "10.1",
+          "10.4",
+          "10.1",
+          "10.2"
+        ],
+        "median_overhead": "199/19800",
+        "target": "0.02",
+        "label": "within_target"
+      },
+      "artifacts": [
+        {
+          "path": "traces/c/baseline/perfetto.json",
+          "bytes": 100,
+          "sha256": "sha256:f1f16e66741b424868b9f67bc428b96c8d4553f72f41773c0cedf02983d82156"
+        },
+        {
+          "path": "traces/c/baseline/trace.json",
+          "bytes": 100,
+          "sha256": "sha256:adced39981b580188b5e6fa39e938a3037702e2cee0575984f37dd74ed7d531c"
+        }
+      ],
+      "omission": null
+    },
+    {
+      "instance_id": "canonical_serialize_small__package_small_envelope",
+      "side": "candidate",
+      "subject": "probe_region",
+      "region_phase": "probe_region",
+      "region_spans": 0,
+      "coverage": null,
+      "spans": 0,
+      "dropped": 0,
+      "open": 0,
+      "async_spans": 0,
+      "overhead": null,
+      "artifacts": [],
+      "omission": {
+        "reason": "trace_missing",
+        "detail": "the perf-trace probe exported no trace"
+      }
+    }
+  ],
+  "counters": [
+    {
+      "instance_id": "canonical_serialize_small__package_small_envelope",
+      "side": "baseline",
+      "tool": "callgrind",
+      "metric": "instructions",
+      "scope": "region",
+      "value": 1234567,
+      "duration_ms": "812.25",
+      "interpretation": "explanatory_proxy_not_wall_time",
+      "artifacts": [
+        {
+          "path": "counters/c/baseline/callgrind.out",
+          "bytes": 100,
+          "sha256": "sha256:c98664e5492fb1539899b790eba959553fe48eb889b634c8da1f9b17b46395c5"
+        }
+      ],
+      "omission": null
+    },
+    {
+      "instance_id": "canonical_serialize_small__package_small_envelope",
+      "side": "baseline",
+      "tool": "dhat",
+      "metric": "allocations",
+      "scope": "whole_process",
+      "value": null,
+      "duration_ms": null,
+      "interpretation": "explanatory_proxy_not_wall_time",
+      "artifacts": [],
+      "omission": null
+    }
+  ],
+  "telemetry": {
+    "level": null,
+    "perturbing": false,
+    "verdict_effect": "none",
+    "captures": []
+  },
+  "omissions": []
+}

@@ -1,0 +1,514 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-sample:2",
+  "title": "af.perf-sample/2",
+  "description": "One record of samples.jsonl: one execution, failed or not, in its planned slot, with exact decimal metrics, oracle outcome and log hashes; at most 64 KiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-sample/2"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "shard": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "sentinel_start",
+        "warmup",
+        "measured",
+        "sentinel_end"
+      ]
+    },
+    "instance_id": {
+      "$ref": "#/$defs/id"
+    },
+    "pair": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "position": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "source_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "binary_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "host_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "failed"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "contract_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "adapter": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "minProperties": 0,
+          "maxProperties": 4,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000000
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "fixture_digest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        }
+      },
+      "required": [
+        "case_id",
+        "contract_id",
+        "adapter",
+        "parameters",
+        "fixture_digest"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "$ref": "#/$defs/metric"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metric_scopes": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "string",
+          "enum": [
+            "child_process_lifetime",
+            "library_region",
+            "probe_fixture_setup",
+            "reaped_child_rusage",
+            "sample_cgroup",
+            "probe_reported"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "unavailable_metrics": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "golden_canonical_digest",
+            "golden_cas_digest",
+            "golden_source_manifest",
+            "golden_semantic_projection",
+            "golden_authority_outcome",
+            "cli_version_and_usage_tokens",
+            "cli_task_outcome",
+            "cli_state_fields",
+            "persistence_round_trip"
+          ]
+        },
+        "observed_digest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "status",
+        "kind",
+        "observed_digest",
+        "detail"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "containment": {
+          "type": "string",
+          "enum": [
+            "process_group",
+            "pid_namespace"
+          ]
+        },
+        "termination": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "exited",
+                "signalled",
+                "timeout",
+                "cancelled",
+                "launch_failed",
+                "status_unknown",
+                "setup_failed"
+              ]
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": -1,
+              "maximum": 255
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            }
+          ]
+        },
+        "exit_observation": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "unreaped",
+                "reaped_by_polling",
+                "unobserved",
+                "none"
+              ]
+            }
+          ]
+        },
+        "lifecycle": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "clean",
+                "no_observed_descendants",
+                "unexpected_descendants",
+                "cleanup_uncertain"
+              ]
+            }
+          ]
+        },
+        "host_wall_ns": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 31,
+              "pattern": "^(?:0|[1-9][0-9]{0,30})$"
+            }
+          ]
+        },
+        "fixture_setup_ns": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 31,
+              "pattern": "^(?:0|[1-9][0-9]{0,30})$"
+            }
+          ]
+        }
+      },
+      "required": [
+        "containment",
+        "termination",
+        "exit_code",
+        "signal",
+        "exit_observation",
+        "lifecycle",
+        "host_wall_ns",
+        "fixture_setup_ns"
+      ]
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "oracle_mismatch",
+                "timeout",
+                "lease_expired",
+                "nonzero_exit",
+                "missing_required_metric",
+                "lifecycle_violation",
+                "launch_failure"
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "logs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stdout_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "stderr_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "stdout_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "stderr_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "truncated_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "retained": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/relative_path"
+            }
+          ]
+        }
+      },
+      "required": [
+        "stdout_bytes",
+        "stderr_bytes",
+        "stdout_sha256",
+        "stderr_sha256",
+        "truncated_bytes",
+        "retained"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "plan_digest",
+    "shard",
+    "sequence",
+    "phase",
+    "instance_id",
+    "pair",
+    "position",
+    "side",
+    "source_sha",
+    "binary_sha256",
+    "host_id",
+    "started_unix_ms",
+    "status",
+    "identity",
+    "metrics",
+    "metric_scopes",
+    "unavailable_metrics",
+    "oracle",
+    "execution",
+    "failure",
+    "logs"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/decimal"
+        },
+        "unit": {
+          "$ref": "#/$defs/unit"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ]
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "ms",
+        "bytes",
+        "count",
+        "ratio"
+      ]
+    }
+  }
+}

@@ -1,0 +1,611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-history:1",
+  "title": "af.perf-history/1",
+  "description": "Compatible history across runs (ADR-0172): every run with its source, result and retention, groups of one case under one workload, fixture, policy, recipe, environment and provenance identity with each run's point and seed provenance, how incompatible groups of a case differ, and what could not be shown.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-history/1"
+    },
+    "comparison": {
+      "const": "trend_across_runs"
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "$ref": "#/$defs/id"
+          },
+          "plan_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "run_dir",
+              "archive",
+              "archive_summary"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial_scope",
+              "bootstrap",
+              "calibration",
+              "diagnostic"
+            ]
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "quick",
+              "nightly",
+              "release"
+            ]
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "pr",
+              "main_push",
+              "nightly",
+              "release",
+              "manual"
+            ]
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "synthetic",
+              "mixed",
+              "none"
+            ]
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "incomplete"
+            ]
+          },
+          "satisfies_required_check": {
+            "type": "boolean"
+          },
+          "baseline_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "candidate_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "started_unix_ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            ]
+          },
+          "report": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "numeric": {
+                    "type": "string",
+                    "enum": [
+                      "complete",
+                      "expired"
+                    ]
+                  },
+                  "profile_reproduction": {
+                    "type": "string",
+                    "enum": [
+                      "not_applicable",
+                      "available",
+                      "expired"
+                    ]
+                  },
+                  "expired": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "plan",
+                        "build_manifest",
+                        "manifest",
+                        "shard",
+                        "samples",
+                        "verdict",
+                        "summary",
+                        "log",
+                        "transported_view",
+                        "profile",
+                        "symbol"
+                      ]
+                    },
+                    "minItems": 0,
+                    "maxItems": 11,
+                    "uniqueItems": true
+                  }
+                },
+                "required": [
+                  "numeric",
+                  "profile_reproduction",
+                  "expired"
+                ]
+              }
+            ]
+          },
+          "views": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "$ref": "#/$defs/relative_path"
+                },
+                "path": {
+                  "$ref": "#/$defs/relative_path"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/digest"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "sha256",
+                "size"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 64
+          }
+        },
+        "required": [
+          "run_id",
+          "plan_digest",
+          "input",
+          "source",
+          "scope",
+          "tier",
+          "trigger",
+          "provenance",
+          "result",
+          "satisfies_required_check",
+          "baseline_sha",
+          "candidate_sha",
+          "started_unix_ms",
+          "report",
+          "retention",
+          "views"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 100000
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "$ref": "#/$defs/digest"
+          },
+          "identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "case_id": {
+                "$ref": "#/$defs/id"
+              },
+              "instance_id": {
+                "$ref": "#/$defs/id"
+              },
+              "parameters": {
+                "type": "object",
+                "minProperties": 0,
+                "maxProperties": 4,
+                "patternProperties": {
+                  "^[a-z][a-z0-9_]{0,63}$": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/id"
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000000000
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "workload": {
+                "$ref": "#/$defs/digest"
+              },
+              "fixture": {
+                "$ref": "#/$defs/digest"
+              },
+              "policy": {
+                "$ref": "#/$defs/digest"
+              },
+              "recipe": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "environment": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "provenance": {
+                "type": "string",
+                "enum": [
+                  "measured",
+                  "synthetic",
+                  "mixed",
+                  "none"
+                ]
+              }
+            },
+            "required": [
+              "case_id",
+              "instance_id",
+              "parameters",
+              "workload",
+              "fixture",
+              "policy",
+              "recipe",
+              "environment",
+              "provenance"
+            ]
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "run_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "started_unix_ms": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740992
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "regression",
+                    "improvement",
+                    "within_tolerance",
+                    "non_regression",
+                    "inconclusive",
+                    "candidate_failure",
+                    "baseline_failure",
+                    "environment_unstable",
+                    "missing_records",
+                    "budget_missed",
+                    "shard_not_complete"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "incomplete"
+                  ]
+                },
+                "classification": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "regression",
+                        "improvement",
+                        "within_tolerance",
+                        "non_regression",
+                        "inconclusive"
+                      ]
+                    }
+                  ]
+                },
+                "interval": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "lower": {
+                          "$ref": "#/$defs/rational"
+                        },
+                        "upper": {
+                          "$ref": "#/$defs/rational"
+                        }
+                      },
+                      "required": [
+                        "lower",
+                        "upper"
+                      ]
+                    }
+                  ]
+                },
+                "baseline_median": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "candidate_median": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "change": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "missing_records": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "failures": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseline": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "candidate": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    }
+                  },
+                  "required": [
+                    "baseline",
+                    "candidate"
+                  ]
+                },
+                "baseline_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "candidate_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "seeds": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "side": {
+                        "type": "string",
+                        "enum": [
+                          "baseline",
+                          "candidate"
+                        ]
+                      },
+                      "seed": {
+                        "$ref": "#/$defs/id"
+                      },
+                      "digest": {
+                        "$ref": "#/$defs/digest"
+                      }
+                    },
+                    "required": [
+                      "side",
+                      "seed",
+                      "digest"
+                    ]
+                  },
+                  "minItems": 0,
+                  "maxItems": 16
+                }
+              },
+              "required": [
+                "run_id",
+                "started_unix_ms",
+                "status",
+                "outcome",
+                "classification",
+                "interval",
+                "baseline_median",
+                "candidate_median",
+                "change",
+                "missing_records",
+                "failures",
+                "baseline_sha",
+                "candidate_sha",
+                "seeds"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100000
+          },
+          "related": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "group_id": {
+                  "$ref": "#/$defs/digest"
+                },
+                "differs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "workload",
+                      "fixture",
+                      "policy",
+                      "recipe",
+                      "environment",
+                      "provenance"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 6,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "group_id",
+                "differs"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 1000
+          }
+        },
+        "required": [
+          "group_id",
+          "identity",
+          "points",
+          "related"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 100000
+    },
+    "unavailable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "input",
+          "run_id",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 100000
+    }
+  },
+  "required": [
+    "schema",
+    "comparison",
+    "runs",
+    "groups",
+    "unavailable"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

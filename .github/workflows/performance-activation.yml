@@ -1,0 +1,76 @@
+# Trusted verification of a proposed performance activation (ADR-0184). A pull request to main
+# that touches the laboratory's reviewed records is checked here by the trusted control code of
+# its base revision, never by the candidate's: the base is checked out as its own worktree and
+# its cli.py reads the proposal only as Git objects. When the proposed
+# fixtures/performance/activation.toml or any record it names differs from the base, that code
+# fetches the cohort's retained Actions evidence (and an equivalent-adapter bridge's two runs)
+# with this job's own read-only token, refuses unavailable, expired, capped or inconsistent
+# evidence, and recomputes readiness and the bridge's evidence from it; author-written success is
+# never taken. An unchanged activation is verified locally, its old cohort not fetched again.
+#
+# This collector is separate from the Performance workflow: it builds and runs no candidate
+# code, holds no secret, and its token reaches only the verification step, scoped to contents
+# and Actions read. The Performance workflow's measuring jobs keep contents: read and no token.
+# The check is advisory: nothing here activates anything, edits a ruleset or branch protection;
+# hosted execution of this job remains operational evidence.
+name: Performance activation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "fixtures/performance/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-activation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  verify:
+    name: verify proposed activation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the trusted control
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if ! printf '%s' "$PR_BASE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "the pull request's base '$PR_BASE_SHA' is not a full commit SHA" >&2
+            exit 1
+          fi
+          git worktree add --detach "$RUNNER_TEMP/control" "$PR_BASE_SHA"
+          echo "trusted control $PR_BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify the proposed activation from retained evidence
+        env:
+          AF_PERF_ACTIVATION_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ ! -f "$RUNNER_TEMP/control/scripts/performance/cli.py" ]; then
+            if git cat-file -e "$GITHUB_SHA:fixtures/performance/activation.toml" 2>/dev/null; then
+              echo "Cannot verify an activation before the trusted laboratory is installed." >&2
+              exit 1
+            fi
+            echo "Initial laboratory installation: no activation proposed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 -I "$RUNNER_TEMP/control/scripts/performance/cli.py" activate --verify-proposed \
+            --repo . --base "$PR_BASE_SHA" --revision "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" --token-env AF_PERF_ACTIVATION_TOKEN \
+            --output "$RUNNER_TEMP/activation-verification.json" \
+            --job-summary "$GITHUB_STEP_SUMMARY"
