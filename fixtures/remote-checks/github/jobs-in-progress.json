@@ -1,0 +1,24 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 1004,
+      "run_id": 80,
+      "run_attempt": 1,
+      "name": "slow / build",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-10-04T10:00:00Z",
+      "completed_at": null,
+      "html_url": "https://github.com/octo/gate/actions/runs/80/job/1004",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        }
+      ]
+    }
+  ]
+}

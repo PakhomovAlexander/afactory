@@ -1,0 +1,93 @@
+{
+  "schema": "af/scenario-bundle@5",
+  "root": "optimization",
+  "definitions": {
+    "optimization": {
+      "schema": "af/scenario@5",
+      "admission": null,
+      "inputs": {},
+      "outputs": {
+        "accepted": "task"
+      },
+      "steps": [
+        {
+          "id": "complete-loop",
+          "operation": {
+            "kind": "fresh_task",
+            "template": {
+              "schema": "af/scenario-task-template@1",
+              "repo": "/replace/project",
+              "state": "/replace/private-tasks",
+              "authority_commit": "0000000000000000000000000000000000000000",
+              "repository_id": "0000000000000000000000000000000000000000",
+              "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "authority_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "document": {
+                "schema": "af.task-file/1",
+                "task_id": "template-placeholder",
+                "kind": "implement",
+                "goal": "Complete the optimization loop specified in scenario_goal; retain native evidence for every acceptance criterion.",
+                "pipeline": {
+                  "name": "project/performance-loop",
+                  "fallback": "refuse"
+                },
+                "strategy": "reviewed",
+                "verification": "review",
+                "limits": {
+                  "tokens": 10000,
+                  "max_attempts": 8,
+                  "wall_ms": 3600000,
+                  "verification": {
+                    "tokens": 4000,
+                    "attempts": 4,
+                    "wall_ms": 1800000
+                  }
+                }
+              },
+              "bindings": null,
+              "max_tokens": 10000
+            },
+            "bindings": {}
+          },
+          "inputs": {},
+          "outputs": {
+            "result": "task"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 3600000,
+          "on_timeout": "fail"
+        }
+      ],
+      "result": {
+        "accepted": {
+          "source": "step",
+          "step": "complete-loop",
+          "port": "result"
+        }
+      },
+      "completion": [
+        {
+          "source": "literal",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "authority": {
+        "task_plans": [],
+        "task_templates": [
+          "sha256:bb5497ca9740e2aefda2f348b1cc946dae0b1b3aa0195a64e1c1ad82831e8124"
+        ],
+        "grants": [],
+        "decision_owners": []
+      },
+      "limits": {
+        "max_tokens": 10000,
+        "max_wall_ms": 7200000,
+        "max_dispatches": 4
+      }
+    }
+  }
+}

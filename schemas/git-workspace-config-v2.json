@@ -1,0 +1,301 @@
+{
+  "$id": "urn:af:schema:git-workspace-config:2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "login": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\\[bot\\])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login"
+      ],
+      "type": "object"
+    },
+    "af": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "af_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "author_email": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "author_name": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "base": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "type": "string"
+    },
+    "branch_prefix": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "type": "string"
+    },
+    "git": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "git_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "enum": [
+          "cleanup_workspace_v1",
+          "followup",
+          "notify",
+          "observe",
+          "prepare_candidate_v1",
+          "publish_performance_pr_v1",
+          "publish_pr"
+        ]
+      },
+      "maxItems": 7,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "performance": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string"
+        },
+        "digest": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "executable": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^/[^\\x00]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "executable",
+        "digest",
+        "destination"
+      ],
+      "type": "object"
+    },
+    "publication_mode": {
+      "const": "exclusive_owned_writer"
+    },
+    "repo": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "repository": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$",
+      "type": "string"
+    },
+    "repository_id": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "required_checks": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "app_id": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "check"
+              },
+              "name": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "app_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "creator_id": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "status"
+              }
+            },
+            "required": [
+              "kind",
+              "context",
+              "creator_id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "reviewers": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "login": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\\[bot\\])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "login"
+        ],
+        "type": "object"
+      },
+      "maxItems": 15,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema": {
+      "const": "af/git-workspace-config@2"
+    },
+    "source_commit": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "source_content_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ssh_config": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "ssh_config_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "state_dir": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "task_store": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "token_file": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "worktree_root": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "repository_id",
+    "actor",
+    "token_file",
+    "state_dir",
+    "repo",
+    "task_store",
+    "worktree_root",
+    "base",
+    "branch_prefix",
+    "source_commit",
+    "source_content_digest",
+    "af",
+    "af_digest",
+    "git",
+    "git_digest",
+    "ssh_config",
+    "ssh_config_digest",
+    "author_name",
+    "author_email",
+    "required_checks",
+    "reviewers",
+    "publication_mode",
+    "operations"
+  ],
+  "title": "git-workspace-config v2",
+  "type": "object"
+}

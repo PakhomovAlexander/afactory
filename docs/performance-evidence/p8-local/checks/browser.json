@@ -1,0 +1,80 @@
+{
+  "browser": "Chrome/155.0.8059.85",
+  "browser_shutdown": {
+    "exit_code": 2,
+    "processes_with_this_profile_after_exit": 0,
+    "requested": "Browser.close",
+    "seconds": 10.51,
+    "stderr_watchdog_lines": [
+      "Teardown watchdog expired; recording dump and terminating."
+    ]
+  },
+  "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "console_and_csp_messages": [],
+  "note": "page_interaction_status describes the page; browser_shutdown describes how Chrome ended after Browser.close. Neither changes the other.",
+  "page": "$WORK/report/report.html",
+  "page_interaction": {
+    "details": 3,
+    "details_closed_at_load": 3,
+    "details_open_after_click": [
+      true,
+      true,
+      true
+    ],
+    "first_section": "Verdictpass (exit 0): 0 of 3 cases failed or incomplete; partial_scope scope, measured evidence, authority proposed.Measured evidence: every planned record was admitted and succeeded; each pair's baseline and candidate samples were recorded within one shard, on one host, the one its terminal record names (see Shards), interleaved in the plan's seeded AB/BA order; intervals are this run's own paired comparison.Required check: this run does not satisfy the required check:only full scope can satisfy it; this run's scope is partial_scopeonly an activated policy can; this plan's authority mode is proposedNo case failed or is incomplete: every case passed (3 within tolerance); see Cases for each case's values.",
+    "images": [],
+    "links": [
+      "diagnostics/p8_local_trace/traces/canonical_validate_small__package_small_envelope/baseline/perfetto.json",
+      "diagnostics/p8_local_trace/traces/canonical_validate_small__package_small_envelope/baseline/trace.json",
+      "diagnostics/p8_local_trace/diagnostic.html",
+      "diagnostics/p8_local_trace/traces/canonical_validate_small__package_small_envelope/candidate/perfetto.json",
+      "diagnostics/p8_local_trace/traces/canonical_validate_small__package_small_envelope/candidate/trace.json",
+      "diagnostics/p8_local_trace/diagnostic.html",
+      "diagnostics/p8_local_trace/traces/cli_discovery__command_version/baseline/perfetto.json",
+      "diagnostics/p8_local_trace/traces/cli_discovery__command_version/baseline/trace.json",
+      "diagnostics/p8_local_trace/diagnostic.html",
+      "diagnostics/p8_local_trace/traces/cli_discovery__command_version/candidate/perfetto.json",
+      "diagnostics/p8_local_trace/traces/cli_discovery__command_version/candidate/trace.json",
+      "diagnostics/p8_local_trace/diagnostic.html",
+      "diagnostics/p8_local_trace/diagnostic.html",
+      "evidence/builds.json",
+      "evidence/manifest.json",
+      "evidence/run.json",
+      "evidence/shards/0/manifest.json",
+      "evidence/shards/0/samples.jsonl",
+      "evidence/shards/0/shard.json",
+      "verdict.json"
+    ],
+    "rows_before": [
+      190,
+      190
+    ],
+    "rows_cleared": [
+      190,
+      190
+    ],
+    "rows_filtered_absent": [
+      190,
+      0
+    ],
+    "rows_filtered_cli_discovery": [
+      190,
+      3
+    ],
+    "sections": [
+      "Verdict",
+      "Cases",
+      "Statistics",
+      "Coverage and reasons",
+      "Health",
+      "Provenance",
+      "Shards",
+      "Raw sequences",
+      "Profiles and traces",
+      "Downloads and reproduction"
+    ],
+    "title": "AF performance run p8_local_aa"
+  },
+  "page_interaction_status": "completed",
+  "report_directory_unchanged": true
+}

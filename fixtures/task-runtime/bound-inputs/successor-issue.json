@@ -1,0 +1,32 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "chain-issue",
+  "kind": "implement",
+  "goal": "Carry the reviewed ledger forward for a captured issue",
+  "inputs": {
+    "history": {
+      "task": "chain-base",
+      "port": "history"
+    }
+  },
+  "issue": {
+    "kind": "local",
+    "path": "issue.json"
+  },
+  "pipeline": {
+    "name": "fixture/plain",
+    "fallback": "refuse"
+  },
+  "strategy": "small",
+  "facts": {},
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 3,
+    "wall_ms": 60000,
+    "verification": {
+      "tokens": 200,
+      "attempts": 2,
+      "wall_ms": 10000
+    }
+  }
+}

@@ -1,0 +1,116 @@
+# ADR-0221: Integrate the Performance Lab with GA and control short Attempt fixtures
+
+**Status:** proposed (2026-10-25).
+
+## Context
+
+The accepted laboratory producer at `2ede1a88d0fe157b62afffb15cad99965d68ea87`
+and published main at `ab5bc610183fcb4211ffe6051c158723674d3b0d` changed overlapping
+gate, Store and performance-fixture files. Their mechanical merge retained seven conflicted
+files. Component acceptance did not establish acceptance of their integrated source.
+
+The preceding whole-source gate also reported `rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes`
+and `retry::captured_retry_policy_checks_durable_failures_before_any_new_reservation`
+failing at dispatch. Both use `Fixture::with_execution_graph`: its operator allowance is
+1,000 ms, whereas its writer lease and Task deadline are 1,000,000 ms. Reservation starts
+the short deadline before context binding. Real CAS, SQLite and scheduling time can spend
+it before `TaskBudget::begin`; neither a live lease nor retry policy extends it.
+
+## Considered options
+
+- Restore the laboratory's former lease, goldens or abandoned-usage floor: rejected because
+  these are intentional published-main changes, not merge damage.
+- Increase fixture allowances, serialize tests or forgive repeat failures: rejected because
+  these conceal the short-reservation race without making its intended scenario deterministic.
+- Replace main's gate with the laboratory's predecessor: rejected because main's stage,
+  isolated-failure reporting and same-candidate gate retry are required behavior.
+- Integrate both behaviors and extend the existing scoped Store test clock: selected.
+
+## Decision
+
+Keep published `.af/`, `AGENTS.md`, `CONTEXT.md` and all published ADR files byte-identical
+to main. Renumber only the seven unpublished laboratory decisions to ADR-0214–0220 and
+repair their references. Retain production's 60,000 ms lease and main's exact suite and
+golden bytes. Recompute the protected inventory and staged policy with the unchanged
+checked-in generator after protected edits; never copy an earlier parent's digest.
+
+The complete gate still runs through the laboratory's child owner, with main's gate body,
+stage metadata, prerequisite tests, repair recipe and failed-test reporting. Repeat mode
+remains strict: any failed repetition fails. The bounded renewal-only accounting retry and
+release of a cancelled, unstarted capability coexist with main's writer heartbeat, recovery,
+Task continuation and warm-layer behavior. No production budget or fencing rule changes.
+
+Both named Store fixtures now run their original assertions with the scoped thread clock of
+[ADR-0220](0220-control-store-fixture-time-with-a-scoped-thread-clock.md). After actual
+reservation, context binding and reopening, they start at the recorded deadline minus one
+millisecond. A regression invokes those same fixture paths at the deadline and one
+millisecond after it: dispatch must refuse with main's exact node/time diagnostic, append
+nothing and spend nothing, with the writer lease and Task deadline still live. Explicit
+release restores the reservation credit on replay. The existing general boundary regression
+also retains its effect-expiry and post-expiry settlement assertions.
+
+Adjacent short-Attempt tests in the lifecycle, retry, reservation and renewal-race modules
+use the same scoped clock. The renewal-race fixture advances it one millisecond before its
+real second-connection renewal: main correctly requires renewal to advance expiry. Its
+takeover, usage-change, expiry, exact accounting and cold-replay assertions remain intact.
+The slow accounting integration fixture retains its three-second lease and real takeover;
+its abandoned Attempt now retains the seven observed tokens, as published ADR-0209 requires,
+instead of the laboratory predecessor's ten-token reservation floor.
+
+Admission tests keep both deliberate writer-mode refusal cases and main's restrictive-umask
+portability test. Diagnostic tests keep all canonical macOS protected prefixes, symlink
+resolution and main's multicall executable refusals. Source-only authority, containment,
+collection deadlines, diagnostics, calibration producer equality and disabled dry-run guards
+remain required; no new cohort or compatibility reader is introduced.
+
+## Published release and report integration
+
+The subsequent mechanical merge with published main
+`7d52f39bb6d3a7eedacc00242e14f6075eee4411` retains the released version, lock,
+changelog and released fragment removals. Both parents' workflow assertions survive.
+The trusted PR report job, numeric verdict table, exact-plan binding, advisory versus
+qualified presentation and unavailable/exempt states coexist with telemetry diagnostics
+and calibration's pre-checkout source guard. The unchanged generator regenerates the
+protected inventory and staged measure policy from this integrated source.
+
+The complete native gate reported 852 Python passes and 3,670 Rust passes with three
+Rust failures. The binary-copy execute-bit failure was reproduced with identical bytes
+under differing orchestration umasks; the coordinator corrected its service umask to
+0022 inside private 0700 roots. No product or binary-copy test change addresses it.
+The two new-main recovery fixtures failed at dispatch after their 1,000 ms Attempt
+windows elapsed during setup; their isolated native reruns passed and remain recorded
+as flaky historical results.
+
+Those exact observed-usage recovery fixtures, plus their short-Attempt neighbors, now
+use ADR-0220's scoped test clock. Actual CAS binding and cold reopening precede dispatch
+at deadline minus one millisecond. Equality and one millisecond later refuse dispatch
+without appending or spending, and explicit release restores reservation credit on
+cold replay. The takeover helper refuses one millisecond before lease expiry, advances
+Store time explicitly to expiry plus one, then recovers through the existing path.
+Cold reopen retains observed charges and recovery accounting; the old writer cannot
+renew or recover, and repeated successor recovery appends nothing. Original reservations,
+leases, recovery limits and incomplete-usage floor assertions remain. No real-time wait
+runs on a frozen clock, and production time and executable behavior are unchanged.
+
+Published main `5a17f3c1b4797048b457d3c6fb97b7c2666b25b2` then assigns ADR-0213 to
+CLI usage test isolation. Keep that decision, its changelog and CLI fixture byte-identical.
+Move only the eight unpublished laboratory ADRs from 0213–0220 to 0214–0221, including this
+decision. Resolve the index with both sides, and align every corresponding filename, title
+and reference, including comments, help and generated schema descriptions. Regenerate the
+protected inventory and staged policy with the existing generator. No substantive decision,
+behavior, old cohort evidence or published release/policy bytes change. The final producer
+must still be accepted, committed and independently verified before a new cohort is declared.
+
+## Consequences and limits
+
+Focused Rust repeats, affected and neighboring tests, current-runtime Python tests, schema/inventory
+parity and Markdown checks precede sealing. They do not replace the enclosing full native
+gate or the independent reviews and evaluator. A source-only sandbox whose empty `.git`
+placeholder prevents Git enumeration can run the same generator on an exact owned source
+copy without that placeholder, using its existing `--root` interface; generated bytes are
+copied back and the source closure is compared. The generator and its classification rules
+remain unchanged.
+
+The coordinator must obtain acceptance, exact delivery/commit and whole-source verification
+before exporting a producer or declaring a replacement cohort. The old cohort bytes remain
+unchanged. This integration supplies no hosted measurement, speedup, publication or deployment.

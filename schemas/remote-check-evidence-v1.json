@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:remote-check-evidence:1",
+  "title": "af/RemoteCheckEvidence@1 payload",
+  "description": "Every remote fact one remote check's decision used (ADR-0140), recorded once: replay reads this document and never asks the remote again. `refused` means nothing was written to the remote for the check; `published` means the gate branches (and perhaps the pull request) exist but no job decided it; `observed` means the required jobs of the declared workflow's `pull_request` run for that pull request and head commit decided it, after the pull request and its merge ref were read back. No job log, push URL or mapping path appears here; a kept diagnostic is redacted and bounded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state",
+    "executor",
+    "github",
+    "workflow",
+    "required",
+    "snapshot_id",
+    "source_snapshot_id",
+    "observed_unix_ms"
+  ],
+  "properties": {
+    "state": { "enum": ["refused", "published", "observed"] },
+    "executor": { "enum": ["github-pr"] },
+    "github": {
+      "description": "The `owner/name` GitHub repository of the mapping entry.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$"
+    },
+    "workflow": { "$ref": "#/$defs/workflow" },
+    "required": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/name" }
+    },
+    "snapshot_id": { "$ref": "#/$defs/digest" },
+    "source_snapshot_id": {
+      "description": "The Task's captured source: the candidate's root ancestor, whose tree is the gate base.",
+      "$ref": "#/$defs/digest"
+    },
+    "observed_unix_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "reason": {
+      "enum": [
+        "remote_skipped_local_failed",
+        "remote_candidate_changes_ci",
+        "remote_tool_unavailable",
+        "remote_ref_invalid",
+        "remote_ref_conflict",
+        "remote_push_refused",
+        "remote_pr_refused",
+        "remote_check_missing",
+        "remote_check_ambiguous",
+        "remote_merge_mismatch",
+        "remote_check_inconclusive",
+        "deadline_expired",
+        "cancelled",
+        "insufficient_disk"
+      ]
+    },
+    "diagnostic": {
+      "description": "At most 2 KiB of a subprocess diagnostic, with the push URL replaced by `<push-url>`, the mapping path by `<mapping>` and the private repository's path by `<gate-repository>`.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "base_commit": { "$ref": "#/$defs/commit" },
+    "head_commit": { "$ref": "#/$defs/commit" },
+    "tree": {
+      "description": "The candidate tree the kernel built, read back and pushed as the head commit's tree.",
+      "$ref": "#/$defs/commit"
+    },
+    "pull_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "url"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "url": { "$ref": "#/$defs/url" }
+      }
+    },
+    "merge_commit": {
+      "description": "`refs/pull/<n>/merge`, read back: its parents are the base and head commits and its tree is `tree`.",
+      "$ref": "#/$defs/commit"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "attempt", "workflow"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "attempt": {
+          "description": "The run attempt whose jobs were read: the latest one observed.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "workflow": { "$ref": "#/$defs/workflow" }
+      }
+    },
+    "jobs": {
+      "description": "Exactly the required jobs, in declared order.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/job" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "refused" } } },
+      "then": {
+        "required": ["reason"],
+        "properties": {
+          "reason": {
+            "enum": [
+              "remote_skipped_local_failed",
+              "remote_candidate_changes_ci",
+              "remote_tool_unavailable",
+              "remote_ref_invalid",
+              "remote_ref_conflict",
+              "remote_push_refused",
+              "deadline_expired",
+              "cancelled",
+              "insufficient_disk"
+            ]
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["base_commit"] },
+            { "required": ["head_commit"] },
+            { "required": ["tree"] },
+            { "required": ["pull_request"] },
+            { "required": ["merge_commit"] },
+            { "required": ["run"] },
+            { "required": ["jobs"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "published" } } },
+      "then": {
+        "required": ["reason", "base_commit", "head_commit", "tree"],
+        "properties": {
+          "reason": {
+            "enum": [
+              "remote_tool_unavailable",
+              "remote_pr_refused",
+              "remote_check_missing",
+              "remote_check_ambiguous",
+              "remote_merge_mismatch",
+              "deadline_expired",
+              "cancelled"
+            ]
+          }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["merge_commit"] },
+            { "required": ["run"] },
+            { "required": ["jobs"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "observed" } } },
+      "then": {
+        "required": [
+          "base_commit",
+          "head_commit",
+          "tree",
+          "pull_request",
+          "merge_commit",
+          "run",
+          "jobs"
+        ],
+        "properties": { "reason": { "const": "remote_check_inconclusive" } },
+        "not": { "required": ["diagnostic"] }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+    "url": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://[^\\u0000-\\u0020\\u007f]+$"
+    },
+    "workflow": {
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9._-]*\\.ya?ml$"
+    },
+    "name": {
+      "description": "A job or step name: 1 to 128 characters, no control characters.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]{1,128}$"
+    },
+    "conclusion": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "maxLength": 30
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "conclusion", "url"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "name": { "$ref": "#/$defs/name" },
+        "conclusion": { "$ref": "#/$defs/conclusion" },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "completed_at": { "$ref": "#/$defs/timestamp" },
+        "url": { "$ref": "#/$defs/url" },
+        "steps": {
+          "description": "The steps that did not succeed, by name and conclusion. The job's log tail is the check result's `stdout`, never part of this evidence.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "conclusion"],
+            "properties": {
+              "name": { "$ref": "#/$defs/name" },
+              "conclusion": { "$ref": "#/$defs/conclusion" }
+            }
+          }
+        }
+      },
+      "if": { "properties": { "conclusion": { "const": "success" } } },
+      "then": { "not": { "required": ["steps"] } }
+    }
+  }
+}

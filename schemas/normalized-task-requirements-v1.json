@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:normalized-task-requirements:1",
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144,
+      "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f\\u007f]+$"
+    },
+    "specification": {
+      "type": "object",
+      "minProperties": 1
+    }
+  },
+  "required": [
+    "text"
+  ]
+}

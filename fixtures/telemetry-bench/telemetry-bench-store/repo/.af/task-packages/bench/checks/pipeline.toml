@@ -1,0 +1,538 @@
+schema = "af.pipeline/6"
+name = "bench/checks"
+version = "1.0.0"
+max_attempts = 64
+max_parallel = 1
+slots = {}
+coverage = {}
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.outputs.result]
+artifact_type = "af/TaskCheckReceipt@2"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.result.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["review"]
+[accepts.required_facts]
+
+[[nodes]]
+id = "check-00"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "check-01"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "check-00"
+outcome = "passed"
+
+[[nodes]]
+id = "select-01"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "check-00"
+port = "result"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-01"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "check-00"
+port = "result"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "check-00"
+port = "result"
+
+[[nodes]]
+id = "check-02"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-01"
+outcome = "passed"
+
+[[nodes]]
+id = "select-02"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-01"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-02"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-01"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-01"
+port = "output"
+
+[[nodes]]
+id = "check-03"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-02"
+outcome = "passed"
+
+[[nodes]]
+id = "select-03"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-02"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-03"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-02"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-02"
+port = "output"
+
+[[nodes]]
+id = "check-04"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-03"
+outcome = "passed"
+
+[[nodes]]
+id = "select-04"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-03"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-04"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-03"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-03"
+port = "output"
+
+[[nodes]]
+id = "check-05"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-04"
+outcome = "passed"
+
+[[nodes]]
+id = "select-05"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-04"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-05"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-04"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-04"
+port = "output"
+
+[[nodes]]
+id = "check-06"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-05"
+outcome = "passed"
+
+[[nodes]]
+id = "select-06"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-05"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-06"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-05"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-05"
+port = "output"
+
+[[nodes]]
+id = "check-07"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-06"
+outcome = "passed"
+
+[[nodes]]
+id = "select-07"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-06"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-07"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-06"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-06"
+port = "output"
+
+[[nodes]]
+id = "check-08"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-07"
+outcome = "passed"
+
+[[nodes]]
+id = "select-08"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-07"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-08"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-07"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-07"
+port = "output"
+
+[[nodes]]
+id = "check-09"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-08"
+outcome = "passed"
+
+[[nodes]]
+id = "select-09"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-08"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-09"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-08"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-08"
+port = "output"
+
+[[nodes]]
+id = "check-10"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-09"
+outcome = "passed"
+
+[[nodes]]
+id = "select-10"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-09"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-10"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-09"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-09"
+port = "output"
+
+[[nodes]]
+id = "check-11"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-10"
+outcome = "passed"
+
+[[nodes]]
+id = "select-11"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-10"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-11"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-10"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-10"
+port = "output"
+
+[[nodes]]
+id = "check-12"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-11"
+outcome = "passed"
+
+[[nodes]]
+id = "select-12"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-11"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-12"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-11"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-11"
+port = "output"
+
+[[nodes]]
+id = "check-13"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-12"
+outcome = "passed"
+
+[[nodes]]
+id = "select-13"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-12"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-13"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-12"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-12"
+port = "output"
+
+[[nodes]]
+id = "check-14"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-13"
+outcome = "passed"
+
+[[nodes]]
+id = "select-14"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-13"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-14"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-13"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-13"
+port = "output"
+
+[[nodes]]
+id = "check-15"
+[nodes.operator]
+op = "check"
+checks = ["check-00", "check-01", "check-02", "check-03", "check-04", "check-05", "check-06", "check-07", "check-08", "check-09", "check-10", "check-11", "check-12", "check-13", "check-14", "check-15", "check-16", "check-17", "check-18", "check-19", "check-20", "check-21", "check-22", "check-23", "check-24", "check-25", "check-26", "check-27", "check-28", "check-29", "check-30", "check-31"]
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.when]
+node = "select-14"
+outcome = "passed"
+
+[[nodes]]
+id = "select-15"
+[nodes.operator]
+op = "select"
+[nodes.inputs.condition]
+kind = "node"
+node = "select-14"
+port = "output"
+[nodes.inputs.passed]
+kind = "node"
+node = "check-15"
+port = "result"
+[nodes.inputs.failed]
+kind = "node"
+node = "select-14"
+port = "output"
+[nodes.inputs.inconclusive]
+kind = "node"
+node = "select-14"
+port = "output"
+
+
+[outputs.result]
+kind = "node"
+node = "select-15"
+port = "output"

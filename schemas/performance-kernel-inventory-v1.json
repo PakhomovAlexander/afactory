@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-kernel-inventory:1",
+  "title": "af.perf-kernel-inventory/1",
+  "description": "The staged inventory of a guarded kernel experiment's protected harness (ADR-0185): every protected file's path, size and SHA-256 and the digest the literal bootstrap recomputes from them before any candidate import or build, with the objective metric and the pending status of the guarded inner metric.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-kernel-inventory/1"
+    },
+    "harness_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "sha256": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 8192
+    },
+    "objective_metric": {
+      "const": "elapsed_ms"
+    },
+    "inner_metric": {
+      "type": "string",
+      "enum": [
+        "pending"
+      ]
+    },
+    "inner_metric_reason": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "harness_digest",
+    "files",
+    "objective_metric",
+    "inner_metric",
+    "inner_metric_reason"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

@@ -1,0 +1,1572 @@
+{
+ "harness_digest": "sha256:8ed98c02c7457bc66b0bfd8ec6ee44db8da0c5e33240fdebee4a0e5fcc9714c9",
+ "instance": "canonical_validate_small__package_small_envelope",
+ "measure": "perf_canonical_validate_small",
+ "note": "Exact public payloads of crates/af/tests/it/perf_kernel_measure.rs on this source before sealing: a disposable consumer repository, a controlled slowdown, no product speed claim. The root's rerun on the sealed source is authoritative.",
+ "objective": "perf_canonical_validate_small_elapsed",
+ "schema": "af.perf-kernel-receipts/1",
+ "slowdown_ms": 1500,
+ "tasks": [
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:06e94ffa8d0fe31934df576d3934c4a033f7ad9cff40eb93f12e190aad3e1b6e",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 1",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:762966b3cd191c0927ce22f2e0b5d1ddeff1112404ed47b38ed84fac65097e77",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 0,
+         "warm": true
+        },
+        "elapsed_ms": 1545,
+        "exit_code": 1,
+        "metrics": {},
+        "started_unix_ms": 1792548869908,
+        "stderr_id": "sha256:a4d3a891df1367e2f5236f0e60b011768ad0403f5d8fefab41a6604801922df9",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:683995fd40d174fec6f6957af342f777d162e03bbfe1b6e93246b340311343e6",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:683995fd40d174fec6f6957af342f777d162e03bbfe1b6e93246b340311343e6",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:b94260f05e23a6b818693609ce95eb74f97e15ad73e4614bbcb679da1b946fea",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 1",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:762966b3cd191c0927ce22f2e0b5d1ddeff1112404ed47b38ed84fac65097e77",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 1691,
+         "warm": true
+        },
+        "elapsed_ms": 1514,
+        "exit_code": 1,
+        "metrics": {},
+        "started_unix_ms": 1792548875281,
+        "stderr_id": "sha256:5ed8479b91c65c6be2b981d6143383a0c46347ac708809314d595df6b79a1661",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:1bd778eaeb9f68d43fc4849c7a301c54d3a14e47b9c73f94675415e45ecf27b1",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:1bd778eaeb9f68d43fc4849c7a301c54d3a14e47b9c73f94675415e45ecf27b1",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:ea7c9b61d285369db8526c5da23ad090f37b062bce68be1b18e8d2e4e44f9603",
+     "payload": {
+      "baseline_id": "sha256:06e94ffa8d0fe31934df576d3934c4a033f7ad9cff40eb93f12e190aad3e1b6e",
+      "candidate_id": "sha256:b94260f05e23a6b818693609ce95eb74f97e15ad73e4614bbcb679da1b946fea",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:762966b3cd191c0927ce22f2e0b5d1ddeff1112404ed47b38ed84fac65097e77",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:1bd778eaeb9f68d43fc4849c7a301c54d3a14e47b9c73f94675415e45ecf27b1",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "missing-inputs"
+  },
+  {
+   "domain_conclusion": "verified",
+   "execution": "completed",
+   "exit_code": 0,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:a5965f254cc79b563cf32bf6afa9a22c17c7037113dae8b40d554f1a9a9e6b08",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:797e4004767285641bc3ad54b24bec11af0bceadbc2cecbaad44cc6d43c2c777",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 1691,
+         "warm": true
+        },
+        "elapsed_ms": 53122,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1500.541625"
+         }
+        },
+        "started_unix_ms": 1792548879476,
+        "stderr_id": "sha256:a2dea849d0bf1dd7411c769f9e6c15cb50b0172c007ceeccf795300d78986386",
+        "stdout_id": "sha256:aac2e922b5bfb3bc7dee4fa7fa326366eebd5312d77c9b3d5b5bc8b8956dd49f"
+       },
+       {
+        "cache": {
+         "bytes": 469643577,
+         "warm": true
+        },
+        "elapsed_ms": 6509,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.478167"
+         }
+        },
+        "started_unix_ms": 1792548933833,
+        "stderr_id": "sha256:826d5ed903c790f0883c31b823a0b63b62117dd082003e329dd2d44bd75a59da",
+        "stdout_id": "sha256:6eece56307378c90c1e01dcc254d1b1e0b23a7990373f17125d972099ce7e5ce"
+       },
+       {
+        "cache": {
+         "bytes": 469643577,
+         "warm": true
+        },
+        "elapsed_ms": 6503,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1505.007125"
+         }
+        },
+        "started_unix_ms": 1792548941487,
+        "stderr_id": "sha256:c859fa07ddd2d1a995995aa405407b103823e35a43aaaa245f4f943074e74bb7",
+        "stdout_id": "sha256:6127c60e073b8b1b9c9e9fe97b5b0d5737ed15e48fabdaf687a0f3adf792e55b"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "53122",
+        "median": "6509",
+        "min": "6503",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1510.478167",
+        "median": "1505.007125",
+        "min": "1500.541625",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:fefb792bef7876549bd9814a190e3e327ba85bcd8f107570a6bfa402aabf4f59",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:797e4004767285641bc3ad54b24bec11af0bceadbc2cecbaad44cc6d43c2c777",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469643577,
+         "warm": true
+        },
+        "elapsed_ms": 36142,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "0.202583"
+         }
+        },
+        "started_unix_ms": 1792548952503,
+        "stderr_id": "sha256:df56a3280e3903c767f0f5c2e0634065c6ca0606636c85762e6a2819785a1a5d",
+        "stdout_id": "sha256:096a4744c49bad1980af2bfe4ca055af83f78fc095bed295cafdb9ffe82c0371"
+       },
+       {
+        "cache": {
+         "bytes": 469644032,
+         "warm": true
+        },
+        "elapsed_ms": 1978,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "0.175333"
+         }
+        },
+        "started_unix_ms": 1792548989813,
+        "stderr_id": "sha256:373ec60ee9ea97614d1214f4569070078639f00f1b4d51e98e4fa0a7db1eead8",
+        "stdout_id": "sha256:f045bcca0e3058968824deab1eb52e54cc79ebc26cb193b4fa8d89947241b56a"
+       },
+       {
+        "cache": {
+         "bytes": 469644032,
+         "warm": true
+        },
+        "elapsed_ms": 1959,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "0.197667"
+         }
+        },
+        "started_unix_ms": 1792548992886,
+        "stderr_id": "sha256:362c5d103ba5b462aaeef82198141a9a2559c48253b2323472059716f3948a58",
+        "stdout_id": "sha256:1f934ecb6f85b6bee55da6a7106b8813f4f5d269e60ad0f8c1954508e8623e3c"
+       }
+      ],
+      "snapshot_id": "sha256:bcca655922d4e175b451735e0aedf8d00baea4f8e13c5128fe63e342c65cfe63",
+      "summary": {
+       "elapsed_ms": {
+        "max": "36142",
+        "median": "1978",
+        "min": "1959",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "0.202583",
+        "median": "0.197667",
+        "min": "0.175333",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:bcca655922d4e175b451735e0aedf8d00baea4f8e13c5128fe63e342c65cfe63",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:8303b63503b3e31de235f92b1c9dc256d91e7bbc91307512e49b33e63a50fce7",
+     "payload": {
+      "baseline_id": "sha256:a5965f254cc79b563cf32bf6afa9a22c17c7037113dae8b40d554f1a9a9e6b08",
+      "candidate_id": "sha256:fefb792bef7876549bd9814a190e3e327ba85bcd8f107570a6bfa402aabf4f59",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6509",
+        "baseline_n": 3,
+        "candidate_median": "1978",
+        "candidate_n": 3,
+        "conclusion": "improved",
+        "improvement": "4531",
+        "ratio": "197/283",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1505.007125",
+        "baseline_n": 3,
+        "candidate_median": "0.197667",
+        "candidate_n": 3,
+        "conclusion": "improved",
+        "improvement": "1504.809458",
+        "ratio": "1504809458/1505007125",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "passed",
+      "plan_id": "sha256:797e4004767285641bc3ad54b24bec11af0bceadbc2cecbaad44cc6d43c2c777",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:bcca655922d4e175b451735e0aedf8d00baea4f8e13c5128fe63e342c65cfe63",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "improve"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:ddb299345f2ae70b77b2d1562e15419b9e026d8be3d37206831eea9c6257ee44",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:7570ac989fad61aed2727c05604004ee6fe8a2fb007629ce462a12d461db5cb4",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469644032,
+         "warm": true
+        },
+        "elapsed_ms": 42178,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1505.316416"
+         }
+        },
+        "started_unix_ms": 1792548999121,
+        "stderr_id": "sha256:fdb4ad65f98d026c8a7c0685fe86d7934bedbd52c36d3068e069b28e453fe387",
+        "stdout_id": "sha256:d04623511ecb55b9c2651c080d71914d024e5ad3ff8374f3c7cd7dc9410ab266"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6706,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.118708"
+         }
+        },
+        "started_unix_ms": 1792549042485,
+        "stderr_id": "sha256:9b43042430111938f8e237a3848fac58acb2ff1737dbe2ebb8c26e66946d0417",
+        "stdout_id": "sha256:c0ba8c100dc67137856adcd15804c4bb8fd9e06e30fb80d0c04efc5f54c48a65"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6666,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.344375"
+         }
+        },
+        "started_unix_ms": 1792549050312,
+        "stderr_id": "sha256:c524b10af9aa8abb2ce151b8f0ff252b9727bc5c18f52a6b2dbd12990d0a504f",
+        "stdout_id": "sha256:2a0599df42d9c0648d4ab8e2f8d0bb35b49c9bed26f746abd3d71469ae2c94ad"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "42178",
+        "median": "6706",
+        "min": "6666",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1510.344375",
+        "median": "1510.118708",
+        "min": "1505.316416",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:ad046a03056bc018ae3e3c47298e986c6e7944d53889199f6df103849b55aa60",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 2",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:7570ac989fad61aed2727c05604004ee6fe8a2fb007629ce462a12d461db5cb4",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 53,
+        "exit_code": 2,
+        "metrics": {},
+        "started_unix_ms": 1792549062015,
+        "stderr_id": "sha256:743b4cd090551c5e77cf7f940c7d53f3e951eb2ca641a6c5123e4a6cb8fba66a",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:77c1f3106fd6f6bffa14d24913173f4cbf6f4ac8730957682251e255b78068ba",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:77c1f3106fd6f6bffa14d24913173f4cbf6f4ac8730957682251e255b78068ba",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:e56ec1fb4e574692973c6f2d05d702b6732f385e13f11a6e52b89fa4522c74dd",
+     "payload": {
+      "baseline_id": "sha256:ddb299345f2ae70b77b2d1562e15419b9e026d8be3d37206831eea9c6257ee44",
+      "candidate_id": "sha256:ad046a03056bc018ae3e3c47298e986c6e7944d53889199f6df103849b55aa60",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6706",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1510.118708",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:7570ac989fad61aed2727c05604004ee6fe8a2fb007629ce462a12d461db5cb4",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:77c1f3106fd6f6bffa14d24913173f4cbf6f4ac8730957682251e255b78068ba",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "timing-boundary"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:edbbea20651b978744c5d0b5aa6da5035e698dccc468c0ddb009adfdc5596543",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:ae3266ab97ae2b8250959638888bb4e72c41622a7afd3144c1e6277518253057",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6513,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.318875"
+         }
+        },
+        "started_unix_ms": 1792549065273,
+        "stderr_id": "sha256:bf6f41bdd5fa3b2f7d87db21d3be363bdf327d9361ebc9d3fe9213122077acc5",
+        "stdout_id": "sha256:5b7a754a37ceb4e814450ab99814ef59c1cefbca226e485b4a14ab805986ac8e"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6511,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.300625"
+         }
+        },
+        "started_unix_ms": 1792549072963,
+        "stderr_id": "sha256:0d02e8360c6d91f2b21d11493670cfbf250e23a02a46078c478728ed237f7444",
+        "stdout_id": "sha256:ad511d8e75e3dfb9933c6ffda74773b7f3c123bc9f13f67fd32b1d157eb5e5b1"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6482,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.363459"
+         }
+        },
+        "started_unix_ms": 1792549080621,
+        "stderr_id": "sha256:f419fa9cf024518d245e84d20efbb6ff6f77796ad417c2e73a31efdeaa82df0c",
+        "stdout_id": "sha256:a64a52cd59b5e64eaf33789962e1cf06373ae2cdcfea1886bff51ab17ab0eed4"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "6513",
+        "median": "6511",
+        "min": "6482",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1510.363459",
+        "median": "1510.318875",
+        "min": "1510.300625",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:97b73e7cf74af58c7e36fd530c9bee1b50a7040fe783de0adb6b7bfb4fd1b0a4",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 2",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:ae3266ab97ae2b8250959638888bb4e72c41622a7afd3144c1e6277518253057",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 49,
+        "exit_code": 2,
+        "metrics": {},
+        "started_unix_ms": 1792549091786,
+        "stderr_id": "sha256:44bc1f826036a664576225227c1b2bd45b83e356b55c16f96c53c6e61fab3f0f",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:a423c5e5b089b5c50b3948e957368f703b6c3cee92035cc59bd1c6cf0df78c19",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:a423c5e5b089b5c50b3948e957368f703b6c3cee92035cc59bd1c6cf0df78c19",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:d2fc97b410559ac753ce83df40d28a3c705bd72795886f689f2ae6e1e602fe96",
+     "payload": {
+      "baseline_id": "sha256:edbbea20651b978744c5d0b5aa6da5035e698dccc468c0ddb009adfdc5596543",
+      "candidate_id": "sha256:97b73e7cf74af58c7e36fd530c9bee1b50a7040fe783de0adb6b7bfb4fd1b0a4",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6511",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1510.318875",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:ae3266ab97ae2b8250959638888bb4e72c41622a7afd3144c1e6277518253057",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:a423c5e5b089b5c50b3948e957368f703b6c3cee92035cc59bd1c6cf0df78c19",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "golden-fixture"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:c5635bd6e186f8d2cd6c15deb26899dbb366c8c9e4631ec7653825b758f46c25",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:b60d311c34d71b5b17b115fbca82819e7f4ade4da7e0173bdaa2c31094b98641",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6495,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.538584"
+         }
+        },
+        "started_unix_ms": 1792549094996,
+        "stderr_id": "sha256:9573b0c5fdce6eb96764ef586ecf7d372ccf6c04f5ff54a9dce133d2b4f20642",
+        "stdout_id": "sha256:6d050f4a9c32bc040aa61cec585c118e5389c54246058a61a1ff27b231c1e743"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6475,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1506.336916"
+         }
+        },
+        "started_unix_ms": 1792549102599,
+        "stderr_id": "sha256:96023a9ff07900d9add9a3d2d67d6c819e9df2ab9f9cf5eaaf573030e2b29b13",
+        "stdout_id": "sha256:263a0ef2bd348ba263ea081983bf24e03f6c42a8a2c344f7c9d65cb759cb6592"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6495,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1505.788916"
+         }
+        },
+        "started_unix_ms": 1792549110170,
+        "stderr_id": "sha256:9704229885638475138cceeb04366ac4213f2ca40a38c8917443eb0fffbc0de1",
+        "stdout_id": "sha256:b5204dcf44991ce6e5aa0fc0af1de8f574a461083d7701ab1749802171b5e905"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "6495",
+        "median": "6495",
+        "min": "6475",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1510.538584",
+        "median": "1506.336916",
+        "min": "1505.788916",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:31d8ef2bbb6e206322cd75e2f4dbd8210dc13a5df8e2895b0d827e4e5e477fac",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 2",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:b60d311c34d71b5b17b115fbca82819e7f4ade4da7e0173bdaa2c31094b98641",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 50,
+        "exit_code": 2,
+        "metrics": {},
+        "started_unix_ms": 1792549121362,
+        "stderr_id": "sha256:ba745ff380ef9a90fb3f6cba45fd70378008667f0bdc845f57a0fa6fe9c8f230",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:42fe11f807be7ce3e37bd1bcf2cd0e822e58b9a834f00bb94aceec4833d4163c",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:42fe11f807be7ce3e37bd1bcf2cd0e822e58b9a834f00bb94aceec4833d4163c",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:b2fae4e56477c05ff2b8fbb23d49678829d9fb0c9ec9c6b2c97511b83d0d235b",
+     "payload": {
+      "baseline_id": "sha256:c5635bd6e186f8d2cd6c15deb26899dbb366c8c9e4631ec7653825b758f46c25",
+      "candidate_id": "sha256:31d8ef2bbb6e206322cd75e2f4dbd8210dc13a5df8e2895b0d827e4e5e477fac",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6495",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1506.336916",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:b60d311c34d71b5b17b115fbca82819e7f4ade4da7e0173bdaa2c31094b98641",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:42fe11f807be7ce3e37bd1bcf2cd0e822e58b9a834f00bb94aceec4833d4163c",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "build-inputs"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:6bbf288ff09d9cd649b4c78a1f463a9169641a0741e4f51b5349396d2164891d",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:04b88e3989b1b020ca9c8425dd25c11ae14b3122534f7bc821efa4904952a524",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6588,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1508.414583"
+         }
+        },
+        "started_unix_ms": 1792549124632,
+        "stderr_id": "sha256:8cec7c55676339b2d7b407be29b677ad795b71b7b474012e2f5725decd71d0be",
+        "stdout_id": "sha256:b10d82167ec54feec9cd3c8e2e60e996381470bf40baa369837d9cca7de5a582"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6539,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1506.447917"
+         }
+        },
+        "started_unix_ms": 1792549132542,
+        "stderr_id": "sha256:ca33e6e51e401a592cd13df726d10cf03eb756435475f02774c9a6efb131659d",
+        "stdout_id": "sha256:9f1f9149050307873c8c279f1ba03c169ba94c8fc4221efd2c3d3db08ad048df"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6500,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1510.319875"
+         }
+        },
+        "started_unix_ms": 1792549140330,
+        "stderr_id": "sha256:bd959d8f42fe65a0db2aec205d246afcffae997e5ba0d5a2e7590ae6f6d0665f",
+        "stdout_id": "sha256:4137f0f8e93db5ca42535bf705cfa7c3edd0b674c02d761a5506d304c3b1d5ca"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "6588",
+        "median": "6539",
+        "min": "6500",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1510.319875",
+        "median": "1508.414583",
+        "min": "1506.447917",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:4a706844968b5ac02e969e1a1c7b76c0de8e864d282f83f49755b149f46fcc60",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 2",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:04b88e3989b1b020ca9c8425dd25c11ae14b3122534f7bc821efa4904952a524",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 31,
+        "exit_code": 2,
+        "metrics": {},
+        "started_unix_ms": 1792549151617,
+        "stderr_id": "sha256:3ff67f0e3121873e2e3cddbab3fdbc589d7067b9b8e8bc3b1b588916185cf93d",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:97f02be81373ab83cf9aef4843dcdd703edcb493e5c1b3a116762fa44d2f3bb7",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:97f02be81373ab83cf9aef4843dcdd703edcb493e5c1b3a116762fa44d2f3bb7",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:2a7245c923a2efcaa00589d73fc08c25e0f69e70a821f3bdef9e5f5734233d91",
+     "payload": {
+      "baseline_id": "sha256:6bbf288ff09d9cd649b4c78a1f463a9169641a0741e4f51b5349396d2164891d",
+      "candidate_id": "sha256:4a706844968b5ac02e969e1a1c7b76c0de8e864d282f83f49755b149f46fcc60",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6539",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1508.414583",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:04b88e3989b1b020ca9c8425dd25c11ae14b3122534f7bc821efa4904952a524",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:97f02be81373ab83cf9aef4843dcdd703edcb493e5c1b3a116762fa44d2f3bb7",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "symlink-to-file"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:342b466bcaf9aec4c518a35b928bc8fc1ebd9461186932dcfc4f5e5f04a8adae",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "passed",
+      "plan_id": "sha256:7b5b2da46301dfbbd692ca61eed413c32e6e49a71b4fc71be36e75bafc637308",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6498,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1501.955083"
+         }
+        },
+        "started_unix_ms": 1792549154937,
+        "stderr_id": "sha256:d91c6c99a272c8bcc14c13896a71c80c1f1f3bdf58092a8231c042c6df2cd3fa",
+        "stdout_id": "sha256:7b94b60b2311bcfa204400d3c3254aab84614079f407fb3ffc2861faed38f4bc"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6454,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1508.964417"
+         }
+        },
+        "started_unix_ms": 1792549162668,
+        "stderr_id": "sha256:c3af79fa632e8db4228f032ee2a5038344fcc5c9fdce06ac39633df85e472c95",
+        "stdout_id": "sha256:488d1f6284517fa767407bf1b22b6976dbc258841017192e77be0ee5596425b2"
+       },
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6951,
+        "exit_code": 0,
+        "metrics": {
+         "wall_ms": {
+          "unit": "ms",
+          "value": "1506.192792"
+         }
+        },
+        "started_unix_ms": 1792549170457,
+        "stderr_id": "sha256:6915696303739b96e5f43bcfc3b53613e4803c1afc36b0d175f16033b839f532",
+        "stdout_id": "sha256:6bdb197ef35a7d0e466d6aba7f23c1942c2d97557bd8d4fe28c8d86040d2dac7"
+       }
+      ],
+      "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+      "summary": {
+       "elapsed_ms": {
+        "max": "6951",
+        "median": "6498",
+        "min": "6454",
+        "n": 3,
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "max": "1508.964417",
+        "median": "1506.192792",
+        "min": "1501.955083",
+        "n": 3,
+        "unit": "ms"
+       }
+      },
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:90f4a8c2d8d20f3e239934186f4462a1a745253c2f03b68c8cfdea25b54e8eec",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:4518588258b3fdcec407acca6888bcec74ba0a790da5e7ad26f7e42a9c5559ec",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the command exited 2",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:7b5b2da46301dfbbd692ca61eed413c32e6e49a71b4fc71be36e75bafc637308",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 67,
+        "exit_code": 2,
+        "metrics": {},
+        "started_unix_ms": 1792549182254,
+        "stderr_id": "sha256:0948f79680a21e22e689862a82f65a7cb7b87a08257a1e6023d3cccf39355995",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:9a861808edb3435309f8467729a864b0be9c15a0f836748232f0fb52cabf17e5",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:9a861808edb3435309f8467729a864b0be9c15a0f836748232f0fb52cabf17e5",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:3d334b408c7d86b630b3ca9fb2af6909ade1a7eeb1bbb71fcb4f950de424fb51",
+     "payload": {
+      "baseline_id": "sha256:342b466bcaf9aec4c518a35b928bc8fc1ebd9461186932dcfc4f5e5f04a8adae",
+      "candidate_id": "sha256:4518588258b3fdcec407acca6888bcec74ba0a790da5e7ad26f7e42a9c5559ec",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_median": "6498",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_median": "1506.192792",
+        "baseline_n": 3,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:7b5b2da46301dfbbd692ca61eed413c32e6e49a71b4fc71be36e75bafc637308",
+      "policy_id": "sha256:6e46d556e75a40b57731a0c47287f6b2d34d5d886d2a98ee5bacd043a6cc1d2b"
+     },
+     "snapshot_id": "sha256:9a861808edb3435309f8467729a864b0be9c15a0f836748232f0fb52cabf17e5",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "bytecode"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:98a21db47286b5c6de445d0d689d357980eee5776051aab558a0b22db459acb6",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "metric wall_ms reported unit ms, the measure declares count",
+       "reason": "unit_mismatch",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "count"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:3089ccf4b96f63f9a8bb585d9b8bf18e48337911d233d1a6b3f9b1e5a9a95153",
+      "policy_id": "sha256:33857458eb3f4147494290d2e92e6d7ea7dfc81e495f1dbdc7562570f0755bc3",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6912,
+        "exit_code": 0,
+        "metrics": {},
+        "started_unix_ms": 1792549186655,
+        "stderr_id": "sha256:3fe620db237b1fa3380d4b6ed4c3224bee0ca66dc8de86a36e659c3b7e70a1b3",
+        "stdout_id": "sha256:5b7cfdc780e9024c9d178287e9678a06b0211bb95060535cd65e89118229386c"
+       }
+      ],
+      "snapshot_id": "sha256:1558ffe980d4f1c7535e332665747dad94d5d3d5b0feeed5a39140d8b308b54a",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:1558ffe980d4f1c7535e332665747dad94d5d3d5b0feeed5a39140d8b308b54a",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:0f9bc7b98419ed110e78a3c28bf693c5c8806e72f31c1c2254cff20d4ad8011b",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "metric wall_ms reported unit ms, the measure declares count",
+       "reason": "unit_mismatch",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "count"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:3089ccf4b96f63f9a8bb585d9b8bf18e48337911d233d1a6b3f9b1e5a9a95153",
+      "policy_id": "sha256:33857458eb3f4147494290d2e92e6d7ea7dfc81e495f1dbdc7562570f0755bc3",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 7355,
+        "exit_code": 0,
+        "metrics": {},
+        "started_unix_ms": 1792549199444,
+        "stderr_id": "sha256:3838f92bcd2ef510d769eb06cc69a4944244b6904d4777d93419d98f6ecb2c67",
+        "stdout_id": "sha256:b3a159eb037fb7e24dbd94436485cf3e1f8a6ab439287d643b9454ed97d4edc3"
+       }
+      ],
+      "snapshot_id": "sha256:95d0fa2fa8a3c49d155a4c08c6ad4f2970bc9c607c4999570c4753b913d6e7ae",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:95d0fa2fa8a3c49d155a4c08c6ad4f2970bc9c607c4999570c4753b913d6e7ae",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:fd1758878fbac5d29a6c1e12b4aaa2d43da5537940031083d286671ea1bb0a8b",
+     "payload": {
+      "baseline_id": "sha256:98a21db47286b5c6de445d0d689d357980eee5776051aab558a0b22db459acb6",
+      "candidate_id": "sha256:0f9bc7b98419ed110e78a3c28bf693c5c8806e72f31c1c2254cff20d4ad8011b",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "count"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:3089ccf4b96f63f9a8bb585d9b8bf18e48337911d233d1a6b3f9b1e5a9a95153",
+      "policy_id": "sha256:33857458eb3f4147494290d2e92e6d7ea7dfc81e495f1dbdc7562570f0755bc3"
+     },
+     "snapshot_id": "sha256:95d0fa2fa8a3c49d155a4c08c6ad4f2970bc9c607c4999570c4753b913d6e7ae",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "wrong-unit"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:f0134df375ac9156662b5a0c5ed3cc262064073c42a7fa5406b8fd903accb8d2",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the report names {\"wall_ms\"}, the measure declares {\"region_ms\"}",
+       "reason": "malformed_report",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "region_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:32bae323df6ed4913651843573d7e8df56a4d00748aa193f1bd3efa77ce8b118",
+      "policy_id": "sha256:18063501dfe35c0c6a98c707c3e59d81dbf5fd28d6469ecb9f00aa993dffabb9",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6636,
+        "exit_code": 0,
+        "metrics": {},
+        "started_unix_ms": 1792549212054,
+        "stderr_id": "sha256:b57b4ae44b720428bfeef82cd8ea0a5cf318ece5ea61a75d2a3ecf16ee24bd0d",
+        "stdout_id": "sha256:65272506efe8f1472528822bb8f45b35772a23819a671a1fc0229bf9ff96441e"
+       }
+      ],
+      "snapshot_id": "sha256:62ead94ccb01f49b5a7e1b00205058af7829b4f286d7850fa1b0f9010184163f",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:62ead94ccb01f49b5a7e1b00205058af7829b4f286d7850fa1b0f9010184163f",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:11be31a080c24ada763e9dcb9467a744ec98d15558abf20d8cef48366626cc58",
+     "payload": {
+      "command_id": "sha256:1b072dd5fc67ae718223f2369209add1eb4cccc09156ccae8a0d39f36f133728",
+      "failure": {
+       "detail": "the report names {\"wall_ms\"}, the measure declares {\"region_ms\"}",
+       "reason": "malformed_report",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "region_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:32bae323df6ed4913651843573d7e8df56a4d00748aa193f1bd3efa77ce8b118",
+      "policy_id": "sha256:18063501dfe35c0c6a98c707c3e59d81dbf5fd28d6469ecb9f00aa993dffabb9",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 6491,
+        "exit_code": 0,
+        "metrics": {},
+        "started_unix_ms": 1792549223455,
+        "stderr_id": "sha256:e6815b6e4aac10542dcbafb6023acf776d10f932aa94ed7c76e4b93c6a141fa6",
+        "stdout_id": "sha256:338634bf9378325ddc90621313bcd7e738975b42abd0369a74266a62285f9e16"
+       }
+      ],
+      "snapshot_id": "sha256:d7fbc92e971a510f0c24e153491517caaacb6e7e6f67d77555f868d967d09f77",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:d7fbc92e971a510f0c24e153491517caaacb6e7e6f67d77555f868d967d09f77",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:84f54ebd9b01f24d8b32b114add10a8f2afffaebf9cd6e9bd159321f6bade306",
+     "payload": {
+      "baseline_id": "sha256:f0134df375ac9156662b5a0c5ed3cc262064073c42a7fa5406b8fd903accb8d2",
+      "candidate_id": "sha256:11be31a080c24ada763e9dcb9467a744ec98d15558abf20d8cef48366626cc58",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "region_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:32bae323df6ed4913651843573d7e8df56a4d00748aa193f1bd3efa77ce8b118",
+      "policy_id": "sha256:18063501dfe35c0c6a98c707c3e59d81dbf5fd28d6469ecb9f00aa993dffabb9"
+     },
+     "snapshot_id": "sha256:d7fbc92e971a510f0c24e153491517caaacb6e7e6f67d77555f868d967d09f77",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "undeclared-key"
+  },
+  {
+   "domain_conclusion": "incomplete",
+   "execution": "completed",
+   "exit_code": 4,
+   "outputs": {
+    "baseline": {
+     "artifact_id": "sha256:c339366ca0e5dea921aabc72764328b713f12060289d05aab532a615e5206070",
+     "payload": {
+      "command_id": "sha256:e14f11228c627d8b7115ebacf4b216d17eaefc1fba8140e6d427e6cd4d7c4145",
+      "failure": {
+       "detail": "the command exited 1",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:d6beace72d19e06a62cb3cf279ce03cf86147c2aa057f3e4e11a7e3142e08296",
+      "policy_id": "sha256:b9e2e773d91805c5d0a9e97a8ed8772ec0e98a3ace735eda629263890074aaf3",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 1447,
+        "exit_code": 1,
+        "metrics": {},
+        "started_unix_ms": 1792549233418,
+        "stderr_id": "sha256:fab3e382384085142e736b76d059a19aa101768d00541ece85de1a18de625e7e",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:10aa77d991204cd620823f813edbdaaf951efcbc18e59e5a7193dc3dca294f8d",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:10aa77d991204cd620823f813edbdaaf951efcbc18e59e5a7193dc3dca294f8d",
+     "type": "af/Measurement@1"
+    },
+    "candidate": {
+     "artifact_id": "sha256:0937a9be7a46fb873bdad1b0039b308eac83f8672658e96ec5b1caa58e7d474c",
+     "payload": {
+      "command_id": "sha256:e14f11228c627d8b7115ebacf4b216d17eaefc1fba8140e6d427e6cd4d7c4145",
+      "failure": {
+       "detail": "the command exited 1",
+       "reason": "exit",
+       "repetition": 1
+      },
+      "measure": "perf_canonical_validate_small",
+      "metrics": {
+       "wall_ms": "ms"
+      },
+      "outcome": "failed",
+      "plan_id": "sha256:d6beace72d19e06a62cb3cf279ce03cf86147c2aa057f3e4e11a7e3142e08296",
+      "policy_id": "sha256:b9e2e773d91805c5d0a9e97a8ed8772ec0e98a3ace735eda629263890074aaf3",
+      "repetitions": 3,
+      "runs": [
+       {
+        "cache": {
+         "bytes": 469639993,
+         "warm": true
+        },
+        "elapsed_ms": 1510,
+        "exit_code": 1,
+        "metrics": {},
+        "started_unix_ms": 1792549239521,
+        "stderr_id": "sha256:fab3e382384085142e736b76d059a19aa101768d00541ece85de1a18de625e7e",
+        "stdout_id": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+       }
+      ],
+      "snapshot_id": "sha256:f397b8c60a2eb692e14a95a31a261f78b6b506c3b160d66cd142fc03bb4a0048",
+      "summary": {},
+      "toolchain_id": "sha256:e56c668abaf3195984c72befb9f004dd00575a22cfd697a2d0325bce6b8d6d4c",
+      "wall_ms": 1200000,
+      "warm": true
+     },
+     "snapshot_id": "sha256:f397b8c60a2eb692e14a95a31a261f78b6b506c3b160d66cd142fc03bb4a0048",
+     "type": "af/Measurement@1"
+    },
+    "comparison": {
+     "artifact_id": "sha256:59f28ef5c29bbddd57728e6d80f435ac0da723e152c8353b511c7decfc84ab06",
+     "payload": {
+      "baseline_id": "sha256:c339366ca0e5dea921aabc72764328b713f12060289d05aab532a615e5206070",
+      "candidate_id": "sha256:0937a9be7a46fb873bdad1b0039b308eac83f8672658e96ec5b1caa58e7d474c",
+      "direction": "lower",
+      "measure": "perf_canonical_validate_small",
+      "metric": "elapsed_ms",
+      "metrics": {
+       "elapsed_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       },
+       "wall_ms": {
+        "baseline_n": 0,
+        "candidate_n": 0,
+        "conclusion": "inconclusive",
+        "unit": "ms"
+       }
+      },
+      "min_improvement_ratio": "0.1",
+      "min_repetitions": 3,
+      "objective": "perf_canonical_validate_small_elapsed",
+      "outcome": "inconclusive",
+      "plan_id": "sha256:d6beace72d19e06a62cb3cf279ce03cf86147c2aa057f3e4e11a7e3142e08296",
+      "policy_id": "sha256:b9e2e773d91805c5d0a9e97a8ed8772ec0e98a3ace735eda629263890074aaf3"
+     },
+     "snapshot_id": "sha256:f397b8c60a2eb692e14a95a31a261f78b6b506c3b160d66cd142fc03bb4a0048",
+     "type": "af/MeasurementComparison@1"
+    }
+   },
+   "task_id": "refused-case"
+  }
+ ]
+}

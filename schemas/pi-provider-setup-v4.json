@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pi-provider-setup:4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "kind",
+    "backend",
+    "outcome",
+    "detail"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/pi-provider-setup@4"
+    },
+    "id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "minLength": 1,
+      "not": {
+        "enum": [
+          "codex-ambient",
+          "claude-ambient"
+        ]
+      }
+    },
+    "kind": {
+      "const": "pi"
+    },
+    "backend": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?!/)(?!arn:[^:]*:[^:]*:[^:]*:[^:]+(?::|$))(?!.*[.][.])[A-Za-z0-9._/:@+~-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "registered",
+        "already_registered",
+        "registry_conflict",
+        "human_action_required"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "title": "Pi Provider setup @4",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "registered",
+              "already_registered",
+              "registry_conflict"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!/)(?!arn:[^:]*:[^:]*:[^:]*:[^:]+(?::|$))(?!.*[.][.])[A-Za-z0-9._/:@+~-]+$"
+          }
+        }
+      }
+    }
+  ]
+}

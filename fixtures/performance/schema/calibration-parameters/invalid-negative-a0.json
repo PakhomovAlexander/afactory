@@ -1,0 +1,91 @@
+{
+  "schema": "af.perf-calibration-parameters/2",
+  "cohort_id": "synthetic_cohort",
+  "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
+  "a0_member_ids": [
+    "aa_01",
+    "aa_02",
+    "aa_03",
+    "aa_04",
+    "aa_05",
+    "aa_06",
+    "aa_07",
+    "aa_08",
+    "aa_09",
+    "aa_10",
+    "aa_11",
+    "aa_12",
+    "aa_13",
+    "aa_14",
+    "aa_15",
+    "aa_16",
+    "aa_17",
+    "aa_18",
+    "aa_19",
+    "aa_20"
+  ],
+  "preparation_member_ids": [
+    "prep_01",
+    "prep_02"
+  ],
+  "preparation_iterations": 1000000,
+  "groups": [
+    {
+      "instance_id": "synthetic_advisory",
+      "cpu_group": "hosted_x86",
+      "relative": "0.05",
+      "absolute": "1",
+      "a0": "-100",
+      "a0_samples": 240,
+      "a0_unavailable": null,
+      "efficiency": "1/20",
+      "power_target": "1/10",
+      "loop_ns_per_iteration": "50",
+      "loop_samples": 24,
+      "iterations": {
+        "injection_2": 40000,
+        "injection_5": 100000,
+        "injection_10": 200000,
+        "power": 200000
+      }
+    },
+    {
+      "instance_id": "synthetic_fast",
+      "cpu_group": "hosted_x86",
+      "relative": "0.05",
+      "absolute": "1",
+      "a0": "100",
+      "a0_samples": 240,
+      "a0_unavailable": null,
+      "efficiency": "1/20",
+      "power_target": "1/10",
+      "loop_ns_per_iteration": "50",
+      "loop_samples": 24,
+      "iterations": {
+        "injection_2": 40000,
+        "injection_5": 100000,
+        "injection_10": 200000,
+        "power": 200000
+      }
+    },
+    {
+      "instance_id": "synthetic_process__size_1",
+      "cpu_group": "hosted_x86",
+      "relative": "0.05",
+      "absolute": "1",
+      "a0": "100",
+      "a0_samples": 240,
+      "a0_unavailable": null,
+      "efficiency": "1/20",
+      "power_target": "1/10",
+      "loop_ns_per_iteration": "50",
+      "loop_samples": 24,
+      "iterations": {
+        "injection_2": 40000,
+        "injection_5": 100000,
+        "injection_10": 200000,
+        "power": 200000
+      }
+    }
+  ]
+}
