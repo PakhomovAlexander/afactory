@@ -1,5 +1,5 @@
 //! `af task report` (ADR-0142): what recorded Tasks cost and how they ran, as one Markdown block
-//! for a pull request description or one `af/task-report@3` document.
+//! for a pull request description or one `af/task-report@4` document.
 //!
 //! Read-only. It reads what `af task show` and `af task list` read — the Task's projection,
 //! execution records, review rounds, attempt walls and the event times of its log — opens the

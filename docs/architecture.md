@@ -463,7 +463,7 @@ explicit node outputs, exact Worker bindings and captured policy. Compilation em
 `af.compiled-task/6` in `af/CompiledTask@4`. Native Review operations are ordinary primitive
 operators; `review_domain`, `review_integration_checks` and the optional Campaign phase graph
 are refused. The captured engine is `af.task-engine/4`; inspection is
-`af/task-inspection@20`, recorded-plan inspection `af/task-plan-inspection@6`, and Experimental
+`af/task-inspection@21`, recorded-plan inspection `af/task-plan-inspection@7`, and Experimental
 execution plans `af.experiment-execution-plan/3` in `af/ExperimentExecutionPlan@3`.
 These changed closed shapes have current writers, schemas and explicit retired-format refusal.
 Pipeline `/6`, TaskKind `/3` and unchanged referenced subshapes keep their existing identities.
@@ -500,7 +500,7 @@ No Review-specific allowance, scheduler or Campaign-to-Task host remains. Native
 conclusions bind exact cumulative accounting and a checked Task log prefix.
 
 `TaskTransition@6` is the current closed transition family; `af/TaskRunReport@3` reports the
-whole graph and carries no Campaign phase selector. `af/task-event@2` streams those current
+whole graph and carries no Campaign phase selector. `af/task-event@3` streams those current
 records. Canonical Ledger, Report, Finding and `review.kernel/*` identities remain shared.
 Read `af review inspect ID` for per-Attempt details and `af review report ID` for exact native
 Task accounting. Generic storage registration, accounting, retention, leases and removal safety

@@ -879,7 +879,7 @@ pub(crate) fn execute(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
             print(
-                &json!({"schema":"af/task-wake-status@1","driver":"no_service_installed_run_drain_explicitly",
+                &json!({"schema":"af/task-wake-status@2","driver":"no_service_installed_run_drain_explicitly",
                 "observed_unix_ms":now(),"subscriptions":journals,"deliveries":store.wake_deliveries().map_err(err)?,
                 "uncertain_session_fences":store.wake_uncertainty().map_err(err)?}),
             )
@@ -1300,13 +1300,13 @@ mod tests {
             event_id: task.opening_event_id.clone(),
         };
         let packet = WakeEnvelopeV1 {
-            schema: WAKE_ENVELOPE_V1.into(),
+            schema: WAKE_ENVELOPE_V2.into(),
             subscription_id: digest.clone(),
             delivery_id: digest.clone(),
             payload_digest: digest.clone(),
             expires_unix_ms: 1000,
             observation: WakeObservationV1 {
-                schema: WAKE_OBSERVATION_V1.into(),
+                schema: WAKE_OBSERVATION_V2.into(),
                 task: task.clone(),
                 observation_id: digest.clone(),
                 causal: boundary.clone(),

@@ -1985,7 +1985,7 @@ class CliRegistry(TempDir):
             self.assertIn("--json", rows[command]["argv"])
             self.assertNotIn("--campaign", rows[command]["argv"])
             self.assertIn("--repo", rows[command]["argv"])
-        self.assertIn({"kind": "json_equals", "path": "schema", "value": "af/review-ledger@2"},
+        self.assertIn({"kind": "json_equals", "path": "schema", "value": "af/review-ledger@3"},
                       rows["review_ledger"]["rules"])
         self.assertTrue(all(rule["path"].startswith("inspection.") for rule in
                             rows["review_ledger"]["rules"] if "path" in rule and rule["path"] != "schema"))

@@ -152,11 +152,11 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
 /// (`listing`), so that a test that read it for an assertion of its own reads it once.
 fn agreed_state_in(fixture: &Fixture, listing: Option<&str>) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v20.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
-    schemas::valid(&schemas::validator("task-list-v4.json"), &listed);
+    schemas::valid(&schemas::validator("task-list-v5.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);
-    schemas::valid(&schemas::validator("task-report-v3.json"), &reported);
+    schemas::valid(&schemas::validator("task-report-v4.json"), &reported);
     let state = shown["state"].clone();
     let entry = listed["tasks"]
         .as_array()
@@ -265,7 +265,7 @@ fn attention_group(
     listing: Option<&str>,
 ) -> String {
     let attention = fixture.json(&["task", "list", "--attention"]);
-    schemas::valid(&schemas::validator("task-attention-v1.json"), &attention);
+    schemas::valid(&schemas::validator("task-attention-v2.json"), &attention);
     let holding: Vec<&Value> = attention["groups"]
         .as_array()
         .unwrap()
@@ -810,8 +810,8 @@ next: {show_checks}
         )
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
-    schemas::valid(&schemas::validator("task-checks-v3.json"), &document);
-    assert_eq!(document["schema"], "af/task-checks@3");
+    schemas::valid(&schemas::validator("task-checks-v4.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@4");
     let check = &document["receipt"]["checks"][0];
     assert_eq!(
         check["failed_tests"],
@@ -1614,4 +1614,109 @@ fn a_next_line_fits_the_terminal_and_runs_as_printed() {
         Some(format!("next: {next}").as_str()),
         "{piped}"
     );
+}
+
+/// The continuation preserves an already-fixed source. Checks pass, but a native review
+/// must still refuse a Diff against that same Base, without calling it a spent budget.
+#[test]
+fn empty_diff_bind_failure_is_incomplete_execution_with_a_public_kernel_cause() {
+    let fixture = fixture("embedded-review");
+    task_cli::load_safe_walls(&fixture.repo);
+    fixture.write(
+        "pagination.py",
+        "def paginate(items, offset=0, limit=2):\n    return items[offset:offset+limit]\n",
+    );
+    fixture.commit();
+    let file = fixture.task_file("unchanged.json", |ticket| {
+        task_cli::load_safe_limits(&mut ticket["limits"]);
+    });
+    let run = fixture.af(&[
+        "task",
+        "start",
+        "--file",
+        file.to_str().unwrap(),
+        "--execute",
+    ]);
+    assert_eq!(run.status.code(), Some(8), "{}\n{}", out(&run), err(&run));
+    let printed = out(&run);
+    assert!(
+        printed.contains("finished/execution_failed/kernel_execution"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("Cannot review an empty Diff Subject"),
+        "{printed}"
+    );
+    assert!(!printed.contains("exhausted/budget"), "{printed}");
+    let shown = fixture.json(&["task", "show", TASK]);
+    schemas::valid(&schemas::validator("task-inspection-v21.json"), &shown);
+    assert_eq!(shown["state"]["outcome"], "execution_failed");
+    assert_eq!(shown["state"]["cause"], "kernel_execution");
+    let expected = fixture.next("af task show pagination-cli");
+    assert_eq!(shown["state"]["next_action"], expected);
+    let status = fixture.json(&["task", "status", TASK]);
+    assert_eq!(status["state"], shown["state"]);
+    let cas = af_store::Cas::open(fixture.state.join("cas")).unwrap();
+    let store = af_store::EventStore::open(fixture.state.join("events.sqlite")).unwrap();
+    let state = store.task_projection(&cas, TASK).unwrap().unwrap();
+    let execution = state.execution.as_ref().unwrap();
+    assert!(!execution.budget.breached());
+    assert!(state.last_recorded_unix_ms() < state.deadline_unix_ms());
+    assert!(execution.budget.begun_attempts() < u64::from(state.revision.limits.max_attempts));
+    assert!(execution.budget.committed_tokens() < u128::from(state.revision.limits.tokens));
+    let af_contracts::task::TaskPhaseV1::Finished { result_id } = &state.phase else {
+        panic!("{state:?}")
+    };
+    let result: af_contracts::task::TaskResultV1 =
+        serde_json::from_value(cas.get_artifact(result_id).unwrap().payload).unwrap();
+    assert_eq!(
+        result.execution,
+        af_contracts::task::TaskExecutionV1::Incomplete
+    );
+    assert_eq!(
+        result.acceptance,
+        af_contracts::task::TaskAcceptanceV1::Inconclusive
+    );
+    let report =
+        af_store::store::task::read_task_run_report(&cas, state.run_reports.last().unwrap())
+            .unwrap();
+    use af_contracts::task::run_report::{TaskFailureClassV1, TaskNodeOutcomeV1};
+    assert!(
+        report
+            .nodes
+            .iter()
+            .any(|n| n.node.ends_with(".review.nodes.bind")
+                && matches!(
+                    n.outcome,
+                    TaskNodeOutcomeV1::Failed {
+                        class: TaskFailureClassV1::Execution,
+                        ..
+                    }
+                ))
+    );
+    assert_eq!(shown["gate"]["status"], "passed");
+    assert!(
+        report
+            .nodes
+            .iter()
+            .any(|n| n.node.ends_with(".review.nodes.check")
+                && matches!(n.outcome, TaskNodeOutcomeV1::Completed { .. }))
+    );
+    // A finished failed Task replays its same result and exit code, never resumes or re-plans
+    // implicitly. The printed next command is read-only diagnosis against the same Store.
+    let again = fixture.af(&["task", "run", TASK, "--json"]);
+    assert_eq!(
+        again.status.code(),
+        Some(8),
+        "{}\n{}",
+        out(&again),
+        err(&again)
+    );
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["state"], shown["state"]);
+    assert!(fixture.af(&["task", "show", TASK]).status.success());
+    let (label, next, group) = agreed_state(&fixture);
+    assert_eq!(label, "finished/execution_failed/kernel_execution");
+    assert_eq!(next.as_deref(), Some(expected.as_str()));
+    assert_eq!(group, "stopped");
 }

@@ -56,7 +56,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("result-document", 1),
     schema!("result-snapshot", 1),
     schema!("review-decision-context", 1),
-    schema!("review-ledger", 2),
+    schema!("review-ledger", 3),
     schema!("scenario-adapter-request", 4),
     schema!("scenario-adapter-response", 1),
     schema!("scenario-bundle", 6),
@@ -78,21 +78,21 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("scenario-task-template", 2),
     schema!("scenario-template-pin", 2),
     schema!("scenario", 6),
-    schema!("task-attention", 1),
-    schema!("task-cancelled", 2),
-    schema!("task-checks", 3),
-    schema!("task-collected-inspection", 3),
-    schema!("task-detached", 3),
+    schema!("task-attention", 2),
+    schema!("task-cancelled", 3),
+    schema!("task-checks", 4),
+    schema!("task-collected-inspection", 4),
+    schema!("task-detached", 4),
     schema!("task-diff", 1),
-    schema!("task-event", 2),
-    schema!("task-findings", 2),
-    schema!("task-inspection", 20),
-    schema!("task-list-entry", 4),
-    schema!("task-list", 4),
+    schema!("task-event", 3),
+    schema!("task-findings", 3),
+    schema!("task-inspection", 21),
+    schema!("task-list-entry", 5),
+    schema!("task-list", 5),
     schema!("task-materialized", 1),
-    schema!("task-report", 3),
+    schema!("task-report", 4),
     schema!("task-selection", 3),
-    schema!("task-status", 2),
+    schema!("task-status", 3),
 ];
 
 /// `af schema show [ID]`: the schema `id` names, byte for byte, or without an id every id with
@@ -240,14 +240,14 @@ mod tests {
     fn an_unshipped_id_names_the_versions_that_are_shipped() {
         assert_eq!(
             refusal("af/task-status@1"),
-            "this af ships no schema af/task-status@1, only af/task-status@2; run af schema \
-             show af/task-status@2"
+            "this af ships no schema af/task-status@1, only af/task-status@3; run af schema \
+             show af/task-status@3"
         );
         assert_eq!(
-            refusal("task-status-v2.json"),
-            "this af ships no schema task-status-v2.json; `af schema show` lists the ids it ships"
+            refusal("task-status-v3.json"),
+            "this af ships no schema task-status-v3.json; `af schema show` lists the ids it ships"
         );
-        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@20"));
+        assert!(refusal("af/task-inspection@18").contains("only af/task-inspection@21"));
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
         assert!(listing.starts_with("af/ant-inspection@3  "), "{listing}");

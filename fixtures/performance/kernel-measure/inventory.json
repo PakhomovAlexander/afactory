@@ -182,7 +182,7 @@
   },
   {
    "path": "fixtures/performance/cli.toml",
-   "sha256": "sha256:085bcb50e79faabd11acb40fefcd195e9bd861a8a49c6646bdd08d0bf03e4e0c",
+   "sha256": "sha256:506c315a225a512aa2fd30bd98c73bb5390d559b34410843eeca651cd902c150",
    "size": 52961
   },
   {
@@ -3907,7 +3907,7 @@
   },
   {
    "path": "scripts/performance/tests/test_runner.py",
-   "sha256": "sha256:aa8d429c3e9e333bb7299d3749bfde657f7fb7cf0dcff0ce6b4baa87ef93db7e",
+   "sha256": "sha256:9bc3de49b1df7feaad496c3c13778139b25a5aea0a804cc8233d54f12b1c4214",
    "size": 155061
   },
   {
@@ -3937,7 +3937,7 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_bench_contracts.py",
-   "sha256": "sha256:92f9b8ee35d2bd976089b93a7c8377c8078e85bfc3067a1a1e7e131980ebf3c1",
+   "sha256": "sha256:db35e49bee1dbf30b3a5ce08a833110204342cc8bd4e0ec61a7c64d60fedac59",
    "size": 38671
   },
   {
@@ -4046,7 +4046,7 @@
    "size": 6781
   }
  ],
- "harness_digest": "sha256:fe248a7c6aa0ce44be54abf93a9a07e3508a6be474c3a6d94f44415daa626f9e",
+ "harness_digest": "sha256:0b2cee3dc54970297faf7350e76498fc0c0c3ac23ce822557d00284c78fe34a8",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
