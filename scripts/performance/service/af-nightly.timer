@@ -1,0 +1,3 @@
+[Unit]
+Description=Retired nightly chain; use the native nightly-release Ant
+RefuseManualStart=yes

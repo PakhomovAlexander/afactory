@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-owner:2",
+  "title": "af.perf-telemetry-owner/2",
+  "description": "Trusted bounded cleanup authority, outside candidate mounts; pending launches and filesystem work must be settled before scratch removal.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-owner/2"
+    },
+    "owner_uid": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "control": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 18446744073709551615
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "lock": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 18446744073709551615
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "image": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "mount": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "image_identity": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 18446744073709551615
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "image_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 68719476736
+    },
+    "mount_identity": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 18446744073709551615
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "active",
+        "stopped",
+        "uncertain",
+        "removed"
+      ]
+    },
+    "container": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 98,
+          "pattern": "^af-perf-telemetry-[a-z0-9_-]{1,80}$"
+        }
+      ]
+    },
+    "launches": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "filesystem_pending": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "owner_uid",
+    "control",
+    "lock",
+    "image",
+    "mount",
+    "image_identity",
+    "image_bytes",
+    "mount_identity",
+    "phase",
+    "container",
+    "launches",
+    "filesystem_pending"
+  ]
+}

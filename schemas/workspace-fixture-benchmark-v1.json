@@ -1,0 +1,261 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "suite",
+    "pairs",
+    "platform",
+    "interpreter",
+    "sources",
+    "runs",
+    "valid",
+    "errors",
+    "comparison"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/workspace-fixture-benchmark@1"
+    },
+    "suite": {
+      "const": "scripts/test-scenario-git-workspace.py"
+    },
+    "pairs": {
+      "type": "integer",
+      "minimum": 3
+    },
+    "platform": {
+      "type": "string"
+    },
+    "interpreter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base",
+        "head"
+      ],
+      "properties": {
+        "base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commit",
+            "git_tree",
+            "export_sha256",
+            "suite_sha256"
+          ],
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "git_tree": {
+              "type": "string"
+            },
+            "export_sha256": {
+              "type": "string"
+            },
+            "suite_sha256": {
+              "type": "string"
+            }
+          }
+        },
+        "head": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "commit",
+            "git_tree",
+            "export_sha256",
+            "suite_sha256"
+          ],
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "git_tree": {
+              "type": "string"
+            },
+            "export_sha256": {
+              "type": "string"
+            },
+            "suite_sha256": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pair",
+          "side",
+          "wall_seconds",
+          "exit_code",
+          "timed_out",
+          "counts",
+          "log",
+          "receipt"
+        ],
+        "properties": {
+          "pair": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "side": {
+            "enum": [
+              "base",
+              "head"
+            ]
+          },
+          "wall_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema",
+                  "expected",
+                  "tests",
+                  "successful",
+                  "failures",
+                  "errors",
+                  "skipped",
+                  "expected_failures",
+                  "unexpected_successes"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "af/workspace-fixture-suite@1"
+                  },
+                  "expected": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "tests": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "successful": {
+                    "type": "boolean"
+                  },
+                  "failures": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "errors": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "skipped": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "expected_failures": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "unexpected_successes": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "log": {
+            "type": "string"
+          },
+          "receipt": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "comparison": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_median_seconds",
+            "head_median_seconds",
+            "head_minus_base_seconds",
+            "head_minus_base_percent",
+            "paired_head_minus_base_median_seconds"
+          ],
+          "properties": {
+            "base_median_seconds": {
+              "type": "number"
+            },
+            "head_median_seconds": {
+              "type": "number"
+            },
+            "head_minus_base_seconds": {
+              "type": "number"
+            },
+            "head_minus_base_percent": {
+              "type": "number"
+            },
+            "paired_head_minus_base_median_seconds": {
+              "type": "number"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:workspace-fixture-benchmark:1"
+}

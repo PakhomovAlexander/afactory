@@ -1,0 +1,18 @@
+{
+  "file": {
+    "type": "text",
+    "value": "candidate-note"
+  },
+  "content": {
+    "type": "text",
+    "value": "A bounded owned artifact"
+  },
+  "subject": {
+    "type": "text",
+    "value": "issue-1"
+  },
+  "revision": {
+    "type": "text",
+    "value": "head-1"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "af.structured-contract/2",
+  "require_container": false,
+  "inputs": {
+    "note": {
+      "artifact_type": "custom/Note@1",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      }
+    }
+  },
+  "outputs": {
+    "capitalized": {
+      "artifact_type": "custom/Capitalized@1",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_artifact_ids",
+          "text"
+        ],
+        "properties": {
+          "source_artifact_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      }
+    }
+  }
+}

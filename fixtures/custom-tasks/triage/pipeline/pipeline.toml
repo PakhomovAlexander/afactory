@@ -1,0 +1,91 @@
+schema = "af.pipeline/6"
+name = "custom/triage-pipeline"
+version = "1.0.1"
+max_attempts = 8
+max_parallel = 1
+[accepts]
+kinds = ["triage"]
+required_facts = {}
+[slots.triage]
+worker = "custom/triage-worker"
+role = "triage"
+input_type = "custom/StructuredInput@1"
+output_type = "custom/IssueTriage@2"
+min_attempts = 1
+max_attempts = 2
+allow_local_replacement = false
+independent_from = []
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.issue]
+artifact_type = "custom/Issue@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.issue.affinity]
+kind = "unbound"
+
+[contract.outputs.triage]
+artifact_type = "custom/IssueTriage@2"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.triage.affinity]
+kind = "unbound"
+
+[contract.outputs.validation]
+artifact_type = "af/StructuredValidation@1"
+cardinality = "one"
+optional = false
+covers = ["structured"]
+[contract.outputs.validation.affinity]
+kind = "unbound"
+
+[[nodes]]
+id = "work"
+[nodes.operator]
+op = "worker"
+slot = "triage"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.issue]
+kind = "input"
+port = "issue"
+
+[[nodes]]
+id = "accept"
+[nodes.operator]
+op = "structured_accept"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.issue]
+kind = "input"
+port = "issue"
+[nodes.inputs.result_triage]
+kind = "node"
+node = "work"
+port = "triage"
+
+[outputs.triage]
+kind = "node"
+node = "accept"
+port = "triage"
+
+[outputs.validation]
+kind = "node"
+node = "accept"
+port = "validation"
+
+[coverage.structured]
+kind = "node"
+node = "accept"
+port = "validation"

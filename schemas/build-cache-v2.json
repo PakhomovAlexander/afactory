@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:build-cache:2",
+  "title": "BuildCache@2 payload",
+  "description": "Bounded immutable candidate-built output. Gate caches retain trusted-local, same-Round handoff only. Worker caches carry same-Task/slot provenance and compatibility; they never become Gate evidence or approved dependency sources.",
+  "x-semantic-constraints": [
+    "entries is at least 1 and at most limits.max_entries",
+    "bytes is at most limits.max_bytes",
+    "the manifest names no symlink and every path satisfies the closed layout under limits"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "trust",
+    "gate_node",
+    "head_snapshot_id",
+    "manifest_id",
+    "content_digest",
+    "entries",
+    "bytes",
+    "limits"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "cargo_target",
+        "worker"
+      ]
+    },
+    "trust": {
+      "description": "The one trust a Build Cache can carry. It is stated in the payload so no reader mistakes the artifact for an administrator-approved Cache Snapshot.",
+      "const": "candidate_built"
+    },
+    "gate_node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gate_attempt_id": {
+      "description": "The common Task Attempt the Gate ran under, when the Task runtime executed it.",
+      "$ref": "#/$defs/id"
+    },
+    "head_snapshot_id": {
+      "description": "The Gate head or Worker input Snapshot. For admitted exact-source Worker outputs, the enclosing artifact subject_snapshot_id separately binds the authoritative output source used by exact-source compatibility.",
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "content_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "entries": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500000
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8589934592
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "slot",
+        "name",
+        "role",
+        "compatibility_id",
+        "input_tree_digest",
+        "output_tree_digest"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "slot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "role": {
+          "enum": [
+            "build",
+            "continuation"
+          ]
+        },
+        "compatibility_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "input_tree_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "output_tree_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "limits": {
+      "description": "The limits the capture applied: bytes, traversed filesystem entries (directories included), directory depth and portable path length.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_bytes",
+        "max_entries",
+        "max_depth",
+        "max_path_bytes"
+      ],
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500000
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_path_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "worker"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "worker",
+          "gate_attempt_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "worker"
+          ]
+        }
+      }
+    }
+  ]
+}
