@@ -1,0 +1,8 @@
+version = 1
+
+[project]
+name = "telemetry-bench-store"
+min_af = "0.6"
+
+[defaults]
+pipeline = "review"

@@ -1,0 +1,74 @@
+[package]
+name = "af"
+description = "The af command: Afactory's CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "af"
+path = "src/main.rs"
+
+[dependencies]
+fs2 = "0.4.3"
+review-config = { path = "../review-config" }
+review-attempt = { path = "../review-attempt" }
+review-core = { path = "../review-core" }
+review-graph = { path = "../review-graph" }
+review-pipeline = { path = "../review-pipeline" }
+review-process = { path = "../review-process" }
+review-runner = { path = "../review-runner" }
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
+review-source-git = { path = "../review-source-git" }
+review-source-task = { path = "../review-source-task" }
+review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
+review-sandbox = { path = "../review-sandbox" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).
+rustix = { version = "1.1.4", features = ["fs", "termios"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+semver = "1.0.27"
+sha2 = "0.11.0"
+shell-words = "1.1.1"
+tempfile = "3.27.0"
+toml = "1.1.6"
+clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"] }
+clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
+clap_mangen = "0.3.3"
+toml_edit = "0.25"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+minisign-verify = "0.3.0"
+# `resource` and `process`: a login disables core dumps and, on Linux, becomes non-dumpable.
+nix = { version = "0.31.3", default-features = false, features = ["fs", "process", "resource", "signal", "user"] }
+# The Claude limit probe runs the CLI on a pseudo-terminal. Tests use it too: provider setup
+# refuses to start an official CLI login unless it owns an interactive terminal, so covering the
+# terminal path needs a real one, not a flag that would weaken the check.
+portable-pty = { version = "0.9.0", default-features = false }
+# Login challenge material and the code a private host returns are zeroed when dropped.
+zeroize = { version = "1.9.0", features = ["serde"] }
+
+[features]
+# Phase spans of `af` itself for the performance laboratory's diagnostic builds (ADR-0174); off
+# by default and in every shipped binary.
+perf-trace = ["review-core/perf-trace", "review-store/perf-trace", "review-pipeline/perf-trace"]
+# The diagnostic recipes name one feature list for `af` and the probe alike; `af` has no region.
+perf-control = ["review-pipeline/perf-control"]
+# The calibration loop inside the `af` process of slowdown trials only (ADR-0181); off in every
+# shipped binary, which refuses the loop's control.
+perf-calibration = ["review-core/perf-calibration", "review-pipeline/perf-calibration"]
+
+[dev-dependencies]
+jsonschema = { version = "0.58.4", default-features = false }
+# A real CommonMark and GFM parser: the human report export is judged by what it renders.
+comrak = { version = "0.55.0", default-features = false }
+# Signs test releases the way the release job signs real ones, so signature verification is
+# exercised end to end without a key on disk.
+minisign = "0.10.0"
+
+[lints]
+workspace = true

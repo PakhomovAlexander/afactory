@@ -1,0 +1,37 @@
+version = 1
+
+[project]
+name = "afactory"
+min_af = "0.2"
+
+[defaults]
+pipeline = "p1-review"
+
+[task.defaults]
+# The common reviewed implementation path accepts implement Tasks. Other kinds choose their
+# own Pipeline; an explicitly selected specialist Pipeline still takes precedence.
+pipeline = "kernel/implementation-reviewed"
+fallback = "refuse"
+
+[task.defaults.limits]
+# Token and Attempt bounds follow docs/tasks.md and the Pipeline's 16-Attempt cap.
+# Its declared mandatory Attempts and verifier reserve require more wall time than the
+# introductory example: the compiler needs at least 25250000 ms including Provider admission;
+# eight hours leaves room for the compiled work and confirmation.
+tokens = 6000000
+max_attempts = 16
+wall_ms = 28800000
+
+[task.defaults.limits.verification]
+tokens = 2000000
+attempts = 8
+# The checked reviewers, evaluator and repository Gate need more than the old example's
+# hour-long reserve. Four hours protects their declared upper bounds.
+wall_ms = 14400000
+
+# Design notes are reviewed by the one-reviewer design-review pipeline; every other change
+# takes the default. An explicit `--pipeline` must still name a declared pipeline.
+[[routes]]
+name = "design"
+paths = ["docs/**"]
+pipeline = "design-review"
