@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-sources:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.optimization-sources/1"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "max_sessions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 200
+    },
+    "max_raw_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 268435456,
+      "default": 268435456
+    },
+    "max_record_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "default": 1048576
+    },
+    "max_normalized_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16777216,
+      "default": 16777216
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "adapter",
+          "path",
+          "source_id",
+          "execution_id"
+        ],
+        "properties": {
+          "adapter": {
+            "enum": [
+              "af",
+              "codex",
+              "claude",
+              "external"
+            ],
+            "description": "af, codex and claude select allowlisted native records; external selects the normalized import/fixture contract"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "execution_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attest_project": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit project association for legacy AF receipts; exact declared execution identity is still required."
+          },
+          "project_root": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      }
+    }
+  }
+}
