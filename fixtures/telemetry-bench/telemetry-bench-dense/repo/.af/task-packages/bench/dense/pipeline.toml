@@ -1,0 +1,174 @@
+schema = "af.pipeline/1"
+name = "bench/dense"
+version = "1.0.0"
+max_attempts = 2
+max_parallel = 1
+
+[contract.inputs.history]
+artifact_type = "af/ReviewHistory@1"
+cardinality = "one"
+optional = false
+root_default = "empty_review_history"
+covers = []
+
+[contract.inputs.history.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.outputs.history]
+artifact_type = "af/ReviewHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.history.affinity]
+kind = "unbound"
+
+[contract.outputs.review]
+artifact_type = "af/TaskReviewRound@1"
+cardinality = "one"
+optional = false
+covers = ["reviewed"]
+
+[contract.outputs.review.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["review"]
+
+[accepts.required_facts]
+
+[slots.stream]
+worker = "bench/stream"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[[nodes]]
+id = "bind"
+
+[nodes.operator]
+op = "review_bind"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "check"
+
+[nodes.operator]
+op = "check"
+checks = ["syntax"]
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "stream"
+
+[nodes.operator]
+op = "verify"
+slot = "stream"
+
+[nodes.inputs.assignment]
+kind = "node"
+node = "bind"
+port = "stream"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.when]
+node = "check"
+outcome = "passed"
+
+[[nodes]]
+id = "reduce"
+
+[nodes.operator]
+op = "review_reduce"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.stream]
+kind = "node"
+node = "stream"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[outputs.history]
+kind = "node"
+node = "reduce"
+port = "history"
+
+[outputs.review]
+kind = "node"
+node = "reduce"
+port = "result"
+
+[coverage.reviewed]
+kind = "node"
+node = "reduce"
+port = "result"

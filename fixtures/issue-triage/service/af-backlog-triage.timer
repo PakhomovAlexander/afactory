@@ -1,0 +1,10 @@
+[Unit]
+Description=AF issue triage every 30 minutes on claw-3 (staged, dry-run first week)
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00 UTC
+Persistent=true
+Unit=af-backlog-triage.service
+
+[Install]
+WantedBy=timers.target

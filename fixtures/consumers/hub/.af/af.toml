@@ -1,0 +1,8 @@
+version = 1
+
+[project]
+name = "hub"
+min_af = "0.9"
+
+[defaults]
+pipeline = "review"

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:doctor:3",
+  "title": "af/doctor@3",
+  "description": "`af doctor --json` (ADR-0210): one token-free health check of this machine and, when it runs in a git repository, that repository. Each check is `ok`, `warn` or `fail`. A check that is not `ok` carries its `fix`, the one command a shell runs as given (several joined by `&&`), never prose, and a `hint` with what the command cannot say: a placeholder's choices (`SHELL`, `DIR`), a step to take first, what the command does. A problem no single command fixes, or one whose command a file that does not load would stop, has a null `fix`, and its `hint` says what to do. Version 1, whose `fix` mixed commands and prose and which had no `hint`, is neither printed nor read. Checks appear in this order, `project` only inside a repository: `harness`, `sandbox`, `network` (diagnostic environment markers only), `binary` (the running af, its install receipt and how it was verified, the default link), `path` (the default link's directory on PATH, and whether `af` on PATH is that link), `shell` (completions and man pages for $SHELL), `update` (the cached release check, a newer release, the policy, the release source's anonymous reachability), `tools` (git >= 2.30, curl, minisign, gh when curl is missing, and what the repository's Gate runs), `providers` (the registry, each registered Provider's login from the token-free status probe, logins found but not registered), `storage` (what af keeps against `[storage] max_bytes`, free disk against `min_free_bytes`, abandoned install stagings), `project` (`.af/` validating, the lock's af pin, each Gate command, a Provider for every model Worker kind). `exit_code` is 1 when any check failed and 0 otherwise, the command's own exit code. The command never calls a model, logs in, installs or writes a file. Version 3 adds harness, sandbox, and network diagnostic checks before binary (ADR-0249); versions 1 and 2 are neither printed nor read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "token_free",
+    "exit_code",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/doctor@3"
+    },
+    "token_free": {
+      "const": true
+    },
+    "exit_code": {
+      "enum": [
+        0,
+        1
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 11,
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "detail",
+        "fix",
+        "hint"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "harness",
+            "sandbox",
+            "network",
+            "binary",
+            "path",
+            "shell",
+            "update",
+            "tools",
+            "providers",
+            "storage",
+            "project"
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "warn",
+            "fail"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fix": {
+          "description": "The one command that fixes what the check found, exactly as a shell runs it: an `af` command, an install command or the PATH line for the shell `$SHELL` names (`export PATH='DIR':\"$PATH\"` for bash, zsh and sh, `fish_add_path 'DIR'`, `set paths = ['DIR' $@paths]` for elvish, `$env:PATH = 'DIR' + [IO.Path]::PathSeparator + $env:PATH` for pwsh, the directory quoted as a literal), several joined by `&&`, an upper-case placeholder (`SHELL`, `DIR`) named in `hint`. It is offered only when running it can clear the check: null when the check is `ok`, on a problem no single command fixes, and when a file the command reads does not load (the error the check reported would stop it); `hint` then says what to do, naming the file and the parse error's line.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "hint": {
+          "description": "What the fix cannot say: a placeholder's choices, a step to take first, what the command does, or, without a fix, what to do; null when the check is `ok`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "if": {
+        "properties": {
+          "status": {
+            "const": "ok"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fix": {
+            "type": "null"
+          },
+          "hint": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "anyOf": [
+          {
+            "properties": {
+              "fix": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "properties": {
+              "fix": {
+                "type": "null"
+              },
+              "hint": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."bench/alpha"]
+version = "1.0.0"
+digest = "sha256:e398bd93b02e1fe638ecd34544335dcfd8b48a96f48e2215e6965fd25ecbeaef"
+path = ".af/task-packages/bench/alpha"
+
+[packages."bench/beta"]
+version = "1.0.0"
+digest = "sha256:c16b46119f1687a5234b3d6d5e391d8c3b6ff22c4608b938b71661e8e2edeb87"
+path = ".af/task-packages/bench/beta"
+
+[packages."bench/gamma"]
+version = "1.0.0"
+digest = "sha256:e0f2000270b10e6d467269f10fb5a94c01bd5020775ff7a6a660b33e761fa8e9"
+path = ".af/task-packages/bench/gamma"
+
+[packages."bench/delta"]
+version = "1.0.0"
+digest = "sha256:7909885c942a3b26a6a6bd61d0275a7dd3f6eab140100c1ccc96e64d0c18a8d4"
+path = ".af/task-packages/bench/delta"
+
+[packages."bench/concurrent"]
+version = "1.0.0"
+digest = "sha256:15b2ccff3d067f7dec9c89a2c5028c248fe6810df8b0ee65023729f68f03f2a4"
+path = ".af/task-packages/bench/concurrent"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+alpha = "required"
+beta = "required"
+gamma = "required"
+delta = "required"

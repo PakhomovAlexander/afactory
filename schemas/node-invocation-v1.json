@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:node-invocation:1",
+  "title": "NodeInvocation@1 payload",
+  "description": "The complete typed input-port selection fixed before a node is dispatched.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node", "inputs"],
+  "properties": {
+    "node": { "type": "string", "minLength": 1 },
+    "inputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/port_artifacts" }
+    }
+  },
+  "$defs": {
+    "port_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "type",
+        "cardinality",
+        "optional",
+        "snapshot_affinity",
+        "artifact_ids"
+      ],
+      "properties": {
+        "port": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.]*/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$"
+        },
+        "cardinality": { "enum": ["one", "many"] },
+        "optional": { "type": "boolean" },
+        "snapshot_affinity": { "enum": ["same_subject", "unbound", "any"] },
+        "artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "subject_snapshot_id": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "cardinality": { "const": "one" } },
+            "required": ["cardinality"]
+          },
+          "then": {
+            "properties": { "artifact_ids": { "maxItems": 1 } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "optional": { "const": false } },
+            "required": ["optional"]
+          },
+          "then": {
+            "properties": { "artifact_ids": { "minItems": 1 } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "snapshot_affinity": { "const": "same_subject" } },
+            "required": ["snapshot_affinity"]
+          },
+          "then": { "required": ["subject_snapshot_id"] }
+        }
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

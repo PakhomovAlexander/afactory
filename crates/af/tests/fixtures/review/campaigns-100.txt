@@ -1,0 +1,8 @@
+CAMPAIGN              ROUND  STATE   VERDICT                    TOKENS  WALL        UPDATED
+a-label-longer-than~  2.3    closed  incomplete (2 missing~    1234567  3 min 05 s  10-23 06:12Z
+fresh                 -      new     -                               -  -           10-23 06:13Z
+pr-42                 1      closed  fail (not_converged)        42345  4.2 s       10-23 06:14Z
+Details: af review report --campaign NAME; af review ledger --campaign NAME
+Problems: 2
+  broken: events.sqlite is not a real regular file beneath the Campaign state directory
+  1 Store written by another release: af 99.1.0 (1); run it with AF_VERSION=99.1.0 af review campaigns

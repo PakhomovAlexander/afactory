@@ -1,0 +1,5 @@
+schema = "af.task-kind/1"
+name = "perf/verification-kind"
+version = "1.0.0"
+kind = "verification"
+profile = "implementation"

@@ -1,0 +1,21 @@
+schema = "af.shared-task-catalog/1"
+
+[packages."kernel/experiment"]
+digest = "sha256:d05dd7821d03ed94337f153042189802d46a025e008673e6bced30b985dd27b4"
+path = "fixtures/kernel-experiment/task-packages/kernel/experiment"
+version = "1.0.0"
+
+[packages."kernel/experiment-evaluator"]
+digest = "sha256:84c6cfb422e87f25fb7d4a8e554c458c2d477af404d27e961fb704c64d0839fa"
+path = "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator"
+version = "1.0.1"
+
+[packages."kernel/experiment-trial"]
+digest = "sha256:d4f1327cc6690e661fbfd4a0146b295e199dd7dda876e21cc49d648e5e073195"
+path = "fixtures/kernel-experiment/task-packages/kernel/experiment-trial"
+version = "1.0.0"
+
+[packages."kernel/implementer"]
+digest = "sha256:325df992bec17f691a52e80f758ff1879285613fac077b9006435b7401ba7648"
+path = ".af/task-packages/kernel/implementer"
+version = "1.8.3"

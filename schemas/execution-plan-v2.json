@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:execution-plan:2",
+  "title": "execution-plan@2",
+  "$ref": "urn:af:schema:task-contracts:3#/$defs/executionPlan"
+}

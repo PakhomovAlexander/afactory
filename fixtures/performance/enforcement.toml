@@ -1,0 +1,3 @@
+# Switch only in a reviewed activation change after the retained cohort passes readiness.
+schema = "af.perf-enforcement/1"
+mode = "advisory"

@@ -1,0 +1,305 @@
+{
+  "schema": "af.perf-builds/6",
+  "run_id": "schema_fixture_run",
+  "plan_digest": "sha256:3acc9f4b48cf0410ba69e2f5274a8722eb342be9baaeb1a30f14820757c15dbf",
+  "recipe_id": "linux_gnu_native_release",
+  "recipe_digest": "sha256:3e225a805f4b7c574a15349f6dc36c3187c66feee33a3fa2033f26fa23094eda",
+  "provenance": "synthetic",
+  "isolation": {
+    "kind": "host_process",
+    "environment": "allowlist",
+    "credential_free_git": true,
+    "cargo_offline": true,
+    "image": null,
+    "compile_network": "host",
+    "dependency_fetch": "host_network",
+    "filesystem": "trusted_host",
+    "detail": "synthetic schema fixture; nothing was built"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+    "cargo": "cargo 1.88.0 (873a06493 2025-05-10)",
+    "host": "x86_64-unknown-linux-gnu"
+  },
+  "linker": {
+    "kind": "system_cc",
+    "identity": "cc (synthetic) 0.0",
+    "unavailable": null
+  },
+  "sides": {
+    "baseline": {
+      "source_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+      "status": "succeeded",
+      "worktree": "base",
+      "shared_with": null,
+      "adapter_outcomes": [
+        {
+          "adapter_id": "synthetic_adapter",
+          "priority": 1,
+          "outcome": "compiled",
+          "equivalence_group": "synthetic_group",
+          "step": {
+            "status": "succeeded",
+            "argv": [
+              "synthetic-probe"
+            ],
+            "environment": {
+              "CARGO_NET_OFFLINE": "true",
+              "HOME": "{run}/home"
+            },
+            "deadline_seconds": 1200,
+            "elapsed_ms": 0,
+            "exit_code": 0,
+            "log": {
+              "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0,
+              "truncated_bytes": 0
+            }
+          }
+        }
+      ],
+      "chosen_adapter": "synthetic_adapter",
+      "equivalence_group": "synthetic_group",
+      "probe_coverage": "available",
+      "coverage_reason": null,
+      "overlay": {
+        "adapter_id": "synthetic_adapter",
+        "digest": "sha256:b4b33d2441645d4dd0a0694b5989a0a14a5cc22fe9865e6b7b7eae966e0de36c",
+        "files": [
+          {
+            "path": "crates/synthetic/examples/probe.rs",
+            "sha256": "sha256:1a02d46e433667c94ac7e9ff129d797480d6dd6547632e449df60a13d7cb420f"
+          }
+        ]
+      },
+      "binaries": {
+        "af": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+        "probe": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8"
+      },
+      "artifacts": {
+        "af": {
+          "path": "artifacts/baseline/af",
+          "sha256": "sha256:c950ba9dd9b0f5196b989d2155dc996a94c07957e1575db5cdcce30f646f51bc",
+          "size": 1
+        },
+        "probe": {
+          "path": "artifacts/baseline/perf-probe",
+          "sha256": "sha256:3f0fa57b3b621c5fc19259c2267474d08a45a3b9ad9a7092e87fcd2094e381b8",
+          "size": 1
+        }
+      },
+      "embedded_commit": {
+        "expected": "996c656ae4f1",
+        "verified": true,
+        "method": "binary_bytes"
+      },
+      "source_unchanged": true,
+      "cargo_lock_sha256": "sha256:e2e3a0586b4ad91901c0eef840018fab24429421df8e98ef32f27839014da010",
+      "settings": {
+        "os": "linux",
+        "target": "x86_64-unknown-linux-gnu",
+        "toolchain": "1.88.0",
+        "profile": "release",
+        "builder": "cargo",
+        "cargo_zigbuild": null,
+        "zig": null,
+        "linker": "system_cc",
+        "features": [],
+        "rustflags": [],
+        "instrumented": false,
+        "debug_symbols": false,
+        "frame_pointers": false,
+        "container_image": null
+      },
+      "argv": [
+        "synthetic-build"
+      ],
+      "environment": {},
+      "product": {
+        "status": "succeeded",
+        "argv": [
+          "synthetic-build"
+        ],
+        "environment": {
+          "CARGO_NET_OFFLINE": "true",
+          "HOME": "{run}/home"
+        },
+        "deadline_seconds": 1200,
+        "elapsed_ms": 0,
+        "exit_code": 0,
+        "log": {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "truncated_bytes": 0
+        }
+      },
+      "log": {
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0,
+        "truncated_bytes": 0
+      }
+    },
+    "candidate": {
+      "source_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+      "status": "succeeded",
+      "worktree": "head",
+      "shared_with": null,
+      "adapter_outcomes": [
+        {
+          "adapter_id": "synthetic_adapter",
+          "priority": 1,
+          "outcome": "compiled",
+          "equivalence_group": "synthetic_group",
+          "step": {
+            "status": "succeeded",
+            "argv": [
+              "synthetic-probe"
+            ],
+            "environment": {
+              "CARGO_NET_OFFLINE": "true",
+              "HOME": "{run}/home"
+            },
+            "deadline_seconds": 1200,
+            "elapsed_ms": 0,
+            "exit_code": 0,
+            "log": {
+              "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0,
+              "truncated_bytes": 0
+            }
+          }
+        }
+      ],
+      "chosen_adapter": "synthetic_adapter",
+      "equivalence_group": "synthetic_group",
+      "probe_coverage": "available",
+      "coverage_reason": null,
+      "overlay": {
+        "adapter_id": "synthetic_adapter",
+        "digest": "sha256:b4b33d2441645d4dd0a0694b5989a0a14a5cc22fe9865e6b7b7eae966e0de36c",
+        "files": [
+          {
+            "path": "crates/synthetic/examples/probe.rs",
+            "sha256": "sha256:1a02d46e433667c94ac7e9ff129d797480d6dd6547632e449df60a13d7cb420f"
+          }
+        ]
+      },
+      "binaries": {
+        "af": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+        "probe": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022"
+      },
+      "artifacts": {
+        "af": {
+          "path": "artifacts/candidate/af",
+          "sha256": "sha256:09c177a95f451f09505d4ced1d2dd692d688863b3e50f4355c1ecaa93c89617f",
+          "size": 1
+        },
+        "probe": {
+          "path": "artifacts/candidate/perf-probe",
+          "sha256": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022",
+          "size": 1
+        }
+      },
+      "embedded_commit": {
+        "expected": "ee1d102f56c8",
+        "verified": true,
+        "method": "binary_bytes"
+      },
+      "source_unchanged": true,
+      "cargo_lock_sha256": "sha256:08b9847d7f376c1e446047263a872d7fa7b91588ff2489080ae24e191862e2b0",
+      "settings": {
+        "os": "linux",
+        "target": "x86_64-unknown-linux-gnu",
+        "toolchain": "1.88.0",
+        "profile": "release",
+        "builder": "cargo",
+        "cargo_zigbuild": null,
+        "zig": null,
+        "linker": "system_cc",
+        "features": [],
+        "rustflags": [],
+        "instrumented": false,
+        "debug_symbols": false,
+        "frame_pointers": false,
+        "container_image": null
+      },
+      "argv": [
+        "synthetic-build"
+      ],
+      "environment": {},
+      "product": {
+        "status": "succeeded",
+        "argv": [
+          "synthetic-build"
+        ],
+        "environment": {
+          "CARGO_NET_OFFLINE": "true",
+          "HOME": "{run}/home"
+        },
+        "deadline_seconds": 1200,
+        "elapsed_ms": 0,
+        "exit_code": 0,
+        "log": {
+          "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "truncated_bytes": 0
+        }
+      },
+      "log": {
+        "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0,
+        "truncated_bytes": 0
+      }
+    }
+  },
+  "adapter_binding": {
+    "baseline": "synthetic_adapter",
+    "candidate": "synthetic_adapter",
+    "baseline_group": "synthetic_group",
+    "candidate_group": "synthetic_group",
+    "equivalent": true
+  },
+  "artifacts": {
+    "manifest_sha256": "sha256:05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f",
+    "bytes": 3,
+    "limit_bytes": 1073741824
+  },
+  "budgets": {
+    "worktree_limit_bytes": 42949672960,
+    "worktree_peak_bytes": 0,
+    "build_log_limit_bytes": 4194304
+  },
+  "cleanup": {
+    "status": "removed",
+    "detail": "synthetic schema fixture"
+  },
+  "execution": {
+    "run": {
+      "started_unix_ms": 1759999940000,
+      "deadline_unix_ms": 1760003540000,
+      "total_minutes": 60
+    },
+    "caller_deadline_unix_ms": null,
+    "deadline_unix_ms": 1760003540000,
+    "ended_unix_ms": 1760000540000
+  },
+  "build_cache": {
+    "treatment": "cold",
+    "scope": "run_worktree_targets",
+    "identity": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "priming": null,
+    "observed": [
+      {
+        "worktree": "authority",
+        "state": "empty",
+        "compiled_bytes": 0
+      },
+      {
+        "worktree": "base",
+        "state": "empty",
+        "compiled_bytes": 0
+      }
+    ],
+    "measured_started_unix_ms": 1759999940000
+  }
+}

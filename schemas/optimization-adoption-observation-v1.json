@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:optimization-adoption-observation:1","type":"object","additionalProperties":false,
+  "required":["schema","adoption_receipt_id","commit_snapshot_id","commit_tree_id","equivalence","observed_unix_ms","workload_id","model_id","engine_id","environment_id","causal_claim"],
+  "properties":{"schema":{"const":"af.optimization-adoption-observation/1"},"adoption_receipt_id":{"$ref":"#/$defs/id"},"commit_snapshot_id":{"$ref":"#/$defs/id"},"commit_tree_id":{"$ref":"#/$defs/id"},"equivalence":{"enum":["equivalent","edited"]},"observed_unix_ms":{"$ref":"#/$defs/u64"},"workload_id":{"$ref":"#/$defs/id"},"model_id":{"$ref":"#/$defs/id"},"engine_id":{"$ref":"#/$defs/id"},"environment_id":{"$ref":"#/$defs/id"},"causal_claim":{"const":false}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"u64":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"}}
+}

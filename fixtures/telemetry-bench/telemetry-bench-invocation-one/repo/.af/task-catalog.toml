@@ -1,0 +1,29 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."bench/stream"]
+version = "1.0.0"
+digest = "sha256:a5e0b9ff5e38578f12f31ad0fdf1420a2aea202b973caf80575eccf68f3a2d76"
+path = ".af/task-packages/bench/stream"
+
+[packages."bench/invocation"]
+version = "1.0.0"
+digest = "sha256:fa17cbc33ccfe3a1ae7e9e4752365ee0c804df09608a60ee6765275363aa98f6"
+path = ".af/task-packages/bench/invocation"
+
+[providers]
+"bench/stream" = "claude-bench"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+stream = "required"

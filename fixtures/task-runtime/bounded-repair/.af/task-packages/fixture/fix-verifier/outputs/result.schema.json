@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "continuation_id",
+    "subject_id",
+    "claims"
+  ],
+  "properties": {
+    "continuation_id": {
+      "type": "string"
+    },
+    "subject_id": {
+      "type": "string"
+    },
+    "claims": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_view_id",
+          "attestation_id",
+          "outcome",
+          "reason"
+        ],
+        "properties": {
+          "expected_view_id": {
+            "type": "string"
+          },
+          "attestation_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "positive",
+              "negative",
+              "inconclusive"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

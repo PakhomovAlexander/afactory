@@ -1,0 +1,50 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."bench/alpha"]
+version = "1.0.0"
+digest = "sha256:713990521128510f9ee726079e977ebf8193106e603b6db534aeceba0e18cb1d"
+path = ".af/task-packages/bench/alpha"
+
+[packages."bench/beta"]
+version = "1.0.0"
+digest = "sha256:86e1d35a4c8495df32fb78c18f10f17665a67943d78ce5c9bb4cf825ceacf7f5"
+path = ".af/task-packages/bench/beta"
+
+[packages."bench/gamma"]
+version = "1.0.0"
+digest = "sha256:b903031497aa84aaf3cb84751be6356b41fdaffc6f02330cbe3fd15516378ba5"
+path = ".af/task-packages/bench/gamma"
+
+[packages."bench/delta"]
+version = "1.0.0"
+digest = "sha256:5fc6f053339f434b1b3a1d098b43bca9d2c7269f4efce88877354359b58971ab"
+path = ".af/task-packages/bench/delta"
+
+[packages."bench/invocation"]
+version = "1.0.0"
+digest = "sha256:ab687e0f91b9e38489a64f74e5edc6fb12ca9654f3ced4fddb599f2c6c7d2403"
+path = ".af/task-packages/bench/invocation"
+
+[providers]
+"bench/alpha" = "claude-bench"
+"bench/beta" = "claude-bench"
+"bench/gamma" = "claude-bench"
+"bench/delta" = "claude-bench"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+alpha = "required"
+beta = "required"
+gamma = "required"
+delta = "required"

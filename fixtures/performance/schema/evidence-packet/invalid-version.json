@@ -1,0 +1,13 @@
+{
+  "schema": "refused-old-format/0",
+  "cutoff_unix_ms": 1,
+  "created_unix_ms": 1,
+  "max_age_ms": 86400000,
+  "compatibility": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "max_items": 32,
+  "max_bytes": 32768,
+  "index_digest": "sha256:3d61b90cb27aac2778cd840205f19930a235674c9e1f5221be9aa39349ffdbf6",
+  "items": [],
+  "omissions": [],
+  "telemetry_is_diagnostic": true
+}

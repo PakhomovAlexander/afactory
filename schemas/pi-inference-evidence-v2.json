@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pi-inference-evidence:2",
+  "title": "Pi inference evidence @2",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af/pi-inference-evidence@2"
+    },
+    "backend": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!/)(?!arn:[^:]*:[^:]*:[^:]*:[^:]+(?::|$))(?!.*[.][.])[A-Za-z0-9._/:@+~-]+$"
+    },
+    "remaining_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "adapter_policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "provenance": {
+      "const": "native-per-inference-cumulative;aggregate-af-charge"
+    },
+    "inferences": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "inference",
+          "complete",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "reasoning",
+          "observations"
+        ],
+        "properties": {
+          "inference": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 256
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "input": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "output": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cache_read": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cache_write": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "reasoning": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "observations": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128
+          }
+        }
+      }
+    },
+    "started_inferences": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256
+    },
+    "completed_inferences": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 256
+    },
+    "tool_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "ls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "find": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "grep": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "write": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "edit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "settled": {
+      "type": "boolean"
+    },
+    "successful": {
+      "type": "boolean"
+    },
+    "aggregate": {
+      "$ref": "urn:af:schema:task-usage-observation:1"
+    },
+    "request_nonce": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "backend",
+    "remaining_tokens",
+    "adapter_policy_id",
+    "provenance",
+    "inferences",
+    "started_inferences",
+    "completed_inferences",
+    "tool_counts",
+    "settled",
+    "successful",
+    "aggregate",
+    "request_nonce"
+  ]
+}

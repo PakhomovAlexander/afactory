@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-supervisor-request:4",
+  "title": "af.perf-supervisor-request/4",
+  "description": "The perf-supervisor's closed request: exact argv, environment, cwd, stdin, deadline, output caps and containment of one sample; canonical JSON of at most 64 KiB (ADR-0166).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-supervisor-request/4"
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "environment": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[A-Z_][A-Z0-9_]{0,63}$": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "stdin": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120000
+    },
+    "stdout_cap_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "log_cap_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "cleanup_grace_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30000
+    },
+    "containment": {
+      "type": "string",
+      "enum": [
+        "process_group",
+        "pid_namespace"
+      ]
+    },
+    "scratch": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^/."
+        }
+      ]
+    },
+    "setup": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "minItems": 1,
+              "maxItems": 64
+            },
+            "environment": {
+              "type": "object",
+              "minProperties": 0,
+              "maxProperties": 64,
+              "patternProperties": {
+                "^[A-Z_][A-Z0-9_]{0,63}$": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "additionalProperties": false
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 120000
+            }
+          },
+          "required": [
+            "argv",
+            "environment",
+            "cwd",
+            "timeout_ms"
+          ]
+        }
+      ]
+    },
+    "stdout_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "minItems": 0,
+      "maxItems": 8
+    },
+    "stdout_json": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 520,
+            "pattern": "^(?:[a-z0-9_]{1,64}|\\*)(?:\\.(?:[a-z0-9_]{1,64}|\\*)){0,7}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "integer",
+              "string"
+            ]
+          },
+          "equals": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 0,
+            "maxItems": 4
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "equals"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 8
+    }
+  },
+  "required": [
+    "schema",
+    "argv",
+    "environment",
+    "cwd",
+    "stdin",
+    "timeout_ms",
+    "stdout_cap_bytes",
+    "log_cap_bytes",
+    "cleanup_grace_ms",
+    "containment",
+    "scratch",
+    "setup",
+    "stdout_patterns",
+    "stdout_json"
+  ]
+}

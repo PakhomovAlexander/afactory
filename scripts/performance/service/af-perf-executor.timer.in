@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll reviewed main for one AF performance experiment (%i)
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+Persistent=true
+Unit=af-perf-executor@%i.service
+
+[Install]
+WantedBy=timers.target

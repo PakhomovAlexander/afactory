@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-host-observer:1",
+  "title": "af.perf-host-observer/1",
+  "description": "Independent performance executor: host-observer (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-host-observer/1"
+    },
+    "observer": {
+      "const": "host_perf"
+    },
+    "perf_sha256": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/digest"
+        }
+      ]
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "region": {
+      "type": "string",
+      "enum": [
+        "whole_command",
+        "acknowledged_region"
+      ]
+    },
+    "target": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483648
+            },
+            "start_ticks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775808
+            },
+            "uid": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967296
+            },
+            "cmdline_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "container_id": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              ]
+            },
+            "init_pid": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483648
+                }
+              ]
+            }
+          },
+          "required": [
+            "pid",
+            "start_ticks",
+            "uid",
+            "cmdline_sha256",
+            "container_id",
+            "init_pid"
+          ]
+        }
+      ]
+    },
+    "attached_before_release": {
+      "type": "boolean"
+    },
+    "attach_ms": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        }
+      ]
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": -255,
+          "maximum": 255
+        }
+      ]
+    },
+    "stopped_confirmed": {
+      "type": "boolean"
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "observer",
+    "perf_sha256",
+    "event",
+    "region",
+    "target",
+    "attached_before_release",
+    "attach_ms",
+    "exit_code",
+    "stopped_confirmed",
+    "detail"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:campaign-opened:1",
+  "title": "CampaignOpened@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["campaign_manifest_id", "authority_snapshot_id"],
+  "properties": {
+    "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+    "authority_snapshot_id": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

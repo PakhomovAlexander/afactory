@@ -1,0 +1,21 @@
+schema = "af.shared-task-catalog/1"
+
+[packages."backlog/triage"]
+digest = "sha256:94a2f61753351b021749bc11282dfcfcce0c60bf2be77b6dd06ad9df81a44ebf"
+path = "fixtures/issue-triage/task-packages/backlog/triage"
+version = "1.0.0"
+
+[packages."backlog/triage-author"]
+digest = "sha256:0be9262b5180c97630dfbead3494081b7ee41252f02737c8079acb2faca22f3b"
+path = "fixtures/issue-triage/task-packages/backlog/triage-author"
+version = "1.0.2"
+
+[packages."backlog/triage-kind"]
+digest = "sha256:1321c04198a9a30c54207aac2ae494aaffc803388ede24663eeedaa1f10e03d0"
+path = "fixtures/issue-triage/task-packages/backlog/triage-kind"
+version = "1.0.0"
+
+[packages."backlog/triage-verifier"]
+digest = "sha256:c040156a030229389a5396c9ec8f955e91095359f539eb885fa8193b274af391"
+path = "fixtures/issue-triage/task-packages/backlog/triage-verifier"
+version = "1.0.2"

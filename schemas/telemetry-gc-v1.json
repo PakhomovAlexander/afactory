@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-gc:1",
+  "title": "af/telemetry-gc@1",
+  "description": "`af telemetry gc --json` (design §6, §10; ADR-0144, ADR-0153): what the Storage Budget's sweep would evict from the telemetry kind, or with `--apply` evicted. `entries` are the telemetry entries exactly as `af storage --json` lists the kind `telemetry` before this command. Telemetry is evicted least recently used first (corrupt segments first among equals) while af is over `[storage] max_bytes` (`storage_max_bytes`) or telemetry over `[telemetry] max_bytes` (`max_bytes`), by age past `[storage] keep_days` too (rule `collection`), never an entry in use or used within the last hour; nothing of another kind is touched. Applied, every directory's temporary files and unreferenced blobs older than an hour and its index's free pages are reclaimed (`reclaimed`, the allocated bytes of the files removed), and registered directories that no longer exist are dropped. An applied eviction checks each entry again before it unlinks any of its files — the telemetry directory, and every file of the entry, its `.refs` manifest included, still the regular file with the device and inode inventoried and not modified within the last hour, no writer holding its lock, no use within the last hour (a sealed segment's last use is its seal time) — and an entry any file of which changed is listed in `changed` and left in place whole. `stop` says whether telemetry and af fit afterwards.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "applied",
+    "max_bytes",
+    "storage_max_bytes",
+    "total_before",
+    "total_after",
+    "storage_total_before",
+    "storage_total_after",
+    "stop",
+    "entries",
+    "removals",
+    "reclaimed",
+    "registry_dropped",
+    "changed",
+    "notes",
+    "failures",
+    "problems"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-gc@1"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "max_bytes": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "storage_max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_before": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_after": {
+      "$ref": "#/$defs/bytes"
+    },
+    "storage_total_before": {
+      "$ref": "#/$defs/bytes"
+    },
+    "storage_total_after": {
+      "$ref": "#/$defs/bytes"
+    },
+    "stop": {
+      "enum": [
+        "fits",
+        "nothing_evictable"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "last_use_unix_ms"
+        ],
+        "properties": {
+          "kind": {
+            "const": "telemetry"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "last_use_unix_ms": {
+            "$ref": "#/$defs/bytes"
+          },
+          "in_use": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "directory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "enum": [
+              "live",
+              "unsealed",
+              "sealed",
+              "corrupt",
+              "unreadable",
+              "shared",
+              "overlapping"
+            ]
+          }
+        }
+      }
+    },
+    "removals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "rule"
+        ],
+        "properties": {
+          "kind": {
+            "const": "telemetry"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "rule": {
+            "enum": [
+              "collection",
+              "budget"
+            ]
+          }
+        }
+      }
+    },
+    "reclaimed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "directory",
+          "temporary_bytes",
+          "blob_bytes",
+          "index_bytes",
+          "index"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "temporary_bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "blob_bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "index_bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "index": {
+            "enum": [
+              "vacuumed",
+              "deleted",
+              "deferred",
+              "kept",
+              "absent"
+            ]
+          }
+        }
+      }
+    },
+    "registry_dropped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "directory",
+          "segment_id",
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "directory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "optional_time": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "telemetry"
+      ]
+    }
+  }
+}

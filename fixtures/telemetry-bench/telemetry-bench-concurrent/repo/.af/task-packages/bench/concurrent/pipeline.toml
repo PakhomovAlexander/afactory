@@ -1,0 +1,333 @@
+schema = "af.pipeline/1"
+name = "bench/concurrent"
+version = "1.0.0"
+max_attempts = 8
+max_parallel = 4
+
+[contract.inputs.history]
+artifact_type = "af/ReviewHistory@1"
+cardinality = "one"
+optional = false
+root_default = "empty_review_history"
+covers = []
+
+[contract.inputs.history.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.outputs.history]
+artifact_type = "af/ReviewHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.history.affinity]
+kind = "unbound"
+
+[contract.outputs.review]
+artifact_type = "af/TaskReviewRound@1"
+cardinality = "one"
+optional = false
+covers = ["reviewed"]
+
+[contract.outputs.review.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["review"]
+
+[accepts.required_facts]
+
+[slots.alpha]
+worker = "bench/alpha"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[slots.beta]
+worker = "bench/beta"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[slots.gamma]
+worker = "bench/gamma"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[slots.delta]
+worker = "bench/delta"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+
+[[nodes]]
+id = "bind"
+
+[nodes.operator]
+op = "review_bind"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "check"
+
+[nodes.operator]
+op = "check"
+checks = ["syntax"]
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "alpha"
+
+[nodes.operator]
+op = "verify"
+slot = "alpha"
+
+[nodes.inputs.assignment]
+kind = "node"
+node = "bind"
+port = "alpha"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.when]
+node = "check"
+outcome = "passed"
+
+[[nodes]]
+id = "beta"
+
+[nodes.operator]
+op = "verify"
+slot = "beta"
+
+[nodes.inputs.assignment]
+kind = "node"
+node = "bind"
+port = "beta"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.when]
+node = "check"
+outcome = "passed"
+
+[[nodes]]
+id = "gamma"
+
+[nodes.operator]
+op = "verify"
+slot = "gamma"
+
+[nodes.inputs.assignment]
+kind = "node"
+node = "bind"
+port = "gamma"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.when]
+node = "check"
+outcome = "passed"
+
+[[nodes]]
+id = "delta"
+
+[nodes.operator]
+op = "verify"
+slot = "delta"
+
+[nodes.inputs.assignment]
+kind = "node"
+node = "bind"
+port = "delta"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.when]
+node = "check"
+outcome = "passed"
+
+[[nodes]]
+id = "reduce"
+
+[nodes.operator]
+op = "review_reduce"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "check"
+port = "result"
+
+[nodes.inputs.alpha]
+kind = "node"
+node = "alpha"
+port = "result"
+
+[nodes.inputs.beta]
+kind = "node"
+node = "beta"
+port = "result"
+
+[nodes.inputs.gamma]
+kind = "node"
+node = "gamma"
+port = "result"
+
+[nodes.inputs.delta]
+kind = "node"
+node = "delta"
+port = "result"
+
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.subject]
+kind = "node"
+node = "bind"
+port = "subject"
+
+[outputs.history]
+kind = "node"
+node = "reduce"
+port = "history"
+
+[outputs.review]
+kind = "node"
+node = "reduce"
+port = "result"
+
+[coverage.reviewed]
+kind = "node"
+node = "reduce"
+port = "result"

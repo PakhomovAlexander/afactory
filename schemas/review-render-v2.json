@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-render-view:2",
+  "title": "af/review-render@2 first-Attempt Worker input",
+  "description": "What `af review render --node NODE --json` prints, token-free: the exact bytes one Worker would receive on a first Attempt, their transport and context manifest, the Provider-native reply schema a model Worker's dispatch passes beside them (ADR-0246), and the Campaign-bound inputs a real Attempt also receives.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "token_free",
+    "node",
+    "runner",
+    "transport",
+    "bytes",
+    "estimated_tokens",
+    "manifest",
+    "reply_schema",
+    "not_rendered",
+    "input_is_utf8",
+    "input",
+    "external_effects"
+  ],
+  "properties": {
+    "schema": { "const": "af/review-render@2" },
+    "token_free": { "const": true },
+    "node": { "type": "string", "minLength": 1 },
+    "runner": { "type": "string" },
+    "package": {
+      "description": "The digest-pinned package of a model Worker; absent for a command Worker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "digest"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "digest": { "type": "string" }
+      }
+    },
+    "transport": { "enum": ["prompt", "json"] },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "estimated_tokens": { "type": "integer", "minimum": 0 },
+    "cap_tokens": {
+      "description": "The Attempt cap this Worker's dispatch reserves; absent when uncapped.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "fits": {
+      "description": "Whether the input leaves room in that cap for any output; absent when uncapped.",
+      "type": "boolean"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "rendered_bytes", "estimated_tokens"],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "required_by", "rendered_bytes", "estimated_tokens"],
+            "properties": {
+              "name": { "type": "string" },
+              "required_by": { "type": "string" },
+              "artifact_id": { "type": "string" },
+              "artifact_type": { "type": "string" },
+              "rendered_bytes": { "type": "integer", "minimum": 0 },
+              "estimated_tokens": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "rendered_bytes": { "type": "integer", "minimum": 0 },
+        "estimated_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "reply_schema": {
+      "description": "The Provider-native schema a model reviewer's dispatch passes: inline after `--json-schema` for Claude Code, as the file after `--output-schema` for Codex. `null` for a command Worker, whose stdout the kernel alone parses.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["option", "schema"],
+          "properties": {
+            "option": { "enum": ["--json-schema", "--output-schema"] },
+            "schema": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "not_rendered": { "type": "array", "items": { "type": "string" } },
+    "input_is_utf8": { "type": "boolean" },
+    "input": { "type": "string" },
+    "external_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["campaign_state", "gates", "provider_admission", "worker_dispatch", "token_spend"],
+      "properties": {
+        "campaign_state": { "const": false },
+        "gates": { "const": false },
+        "provider_admission": { "const": false },
+        "worker_dispatch": { "const": false },
+        "token_spend": { "const": false }
+      }
+    }
+  }
+}
