@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-integration-phase:1",
+  "title": "TaskReviewIntegrationPhase@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "task_revision_id",
+    "plan_id",
+    "round_id",
+    "closing_report_event_id",
+    "selection"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "task_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "round_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "closing_report_event_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]{26}$"
+    },
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "empty"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "conflict"
+          ],
+          "properties": {
+            "kind": {
+              "const": "conflict"
+            },
+            "conflict": {
+              "$ref": "urn:review-kernel:schema:run-event:1#/$defs/integration_conflict"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "integration_plan_id",
+            "derived_snapshot_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "prepared"
+            },
+            "integration_plan_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "derived_snapshot_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

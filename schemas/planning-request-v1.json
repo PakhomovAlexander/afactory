@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:planning-request:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task",
+    "operators",
+    "workers",
+    "pipelines",
+    "bounds"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.planning-request/1"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "goal",
+        "inputs",
+        "required_outputs",
+        "acceptance",
+        "allowed_effects",
+        "limits",
+        "strategy",
+        "facts"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "goal": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+        },
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactInput"
+          }
+        },
+        "required_outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/requiredOutput"
+          }
+        },
+        "acceptance": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/obligation"
+          }
+        },
+        "allowed_effects": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "uniqueItems": true
+        },
+        "limits": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
+        },
+        "strategy": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "facts": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/fact"
+          }
+        }
+      }
+    },
+    "operators": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-operator-signature:1"
+      },
+      "maxProperties": 128
+    },
+    "workers": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "digest",
+          "signature"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "digest": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "signature": {
+            "$ref": "urn:af:schema:task-operator-signature:1"
+          }
+        }
+      },
+      "maxProperties": 128
+    },
+    "pipelines": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "digest",
+          "contract",
+          "accepts",
+          "slots",
+          "max_attempts",
+          "max_parallel"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "digest": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "contract": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/contract"
+          },
+          "accepts": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/applicability"
+          },
+          "slots": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "additionalProperties": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/slot"
+            }
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          },
+          "max_parallel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          }
+        }
+      },
+      "maxProperties": 128
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_definitions",
+        "max_definition_bytes",
+        "max_total_bytes",
+        "max_expanded_nodes",
+        "max_depth"
+      ],
+      "properties": {
+        "max_definitions": {
+          "const": 16
+        },
+        "max_definition_bytes": {
+          "const": 262144
+        },
+        "max_total_bytes": {
+          "const": 1048576
+        },
+        "max_expanded_nodes": {
+          "const": 64
+        },
+        "max_depth": {
+          "const": 4
+        }
+      }
+    }
+  }
+}

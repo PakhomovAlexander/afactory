@@ -1,0 +1,719 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-cli:5",
+  "title": "af.perf-cli/5",
+  "description": "fixtures/performance/cli.toml as parsed TOML (ADR-0168, ADR-0169): per CLI adapter and process case instance, the actual AF binary's argv, its untimed fixture setup (a private copy of a side-written seed included) and the independent oracle rules its output must satisfy, or why it is pending; and each seed's writer.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-cli/5"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "setup_script": {
+      "$ref": "#/$defs/relative_path"
+    },
+    "task_fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "task_id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "directory",
+        "task_id",
+        "description"
+      ]
+    },
+    "seeds": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "writer": {
+              "type": "string",
+              "enum": [
+                "seed_task_state",
+                "seed_campaign_state"
+              ]
+            },
+            "case_id": {
+              "$ref": "#/$defs/id"
+            },
+            "contract_id": {
+              "$ref": "#/$defs/id"
+            },
+            "parameters": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 4,
+              "patternProperties": {
+                "^[a-z][a-z0-9_]{0,63}$": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/id"
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000000000
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "probe_scratch": {
+              "$ref": "#/$defs/relative_path"
+            },
+            "events": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "writer",
+            "case_id",
+            "contract_id",
+            "parameters",
+            "probe_scratch",
+            "events",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "adapters": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "priority": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            "min_version": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+            },
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "case_id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "parameters": {
+                    "type": "object",
+                    "minProperties": 0,
+                    "maxProperties": 4,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/id"
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000000
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "setup": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "task_repository",
+                      "task_started",
+                      "seed_copy"
+                    ]
+                  },
+                  "seed": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "argv": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "minItems": 1,
+                    "maxItems": 32
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "rules": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "exit_code"
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": -1,
+                              "maximum": 255
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_any"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "where": {
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 8,
+                              "patternProperties": {
+                                "^[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*$": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 256
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "where"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_contiguous"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "start": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000000
+                            },
+                            "count": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 10000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "start",
+                            "count"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_count"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_enumerates"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "first": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            "last": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            "where": {
+                              "type": "object",
+                              "minProperties": 1,
+                              "maxProperties": 8,
+                              "patternProperties": {
+                                "^[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*$": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 256
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "numbered": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 128,
+                                "pattern": "^[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*$"
+                              },
+                              "minItems": 0,
+                              "maxItems": 4,
+                              "uniqueItems": true
+                            },
+                            "distinct": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 128,
+                                "pattern": "^[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*$"
+                              },
+                              "minItems": 0,
+                              "maxItems": 4,
+                              "uniqueItems": true
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "first",
+                            "last",
+                            "where",
+                            "numbered",
+                            "distinct"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_equals"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "value": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740992,
+                                  "maximum": 9007199254740992
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_matches"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "pattern": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "pattern"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_stream_count"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 520,
+                              "pattern": "^(?:[a-z0-9_]{1,64}|\\*)(?:\\.(?:[a-z0-9_]{1,64}|\\*)){0,7}$"
+                            },
+                            "value": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "value",
+                            "count"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_stream_equals"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 520,
+                              "pattern": "^(?:[a-z0-9_]{1,64}|\\*)(?:\\.(?:[a-z0-9_]{1,64}|\\*)){0,7}$"
+                            },
+                            "value": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_stream_sequence"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 520,
+                              "pattern": "^(?:[a-z0-9_]{1,64}|\\*)(?:\\.(?:[a-z0-9_]{1,64}|\\*)){0,7}$"
+                            },
+                            "first": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000000
+                            },
+                            "last": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 10000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "first",
+                            "last"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "json_tally"
+                            },
+                            "path": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            },
+                            "field": {
+                              "type": "string",
+                              "maxLength": 128,
+                              "pattern": "^[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)*$"
+                            },
+                            "counts": {
+                              "type": "string",
+                              "maxLength": 256,
+                              "pattern": "^(?:[a-z0-9_]+|\\*)(?:\\.(?:[a-z0-9_]+|\\*))*$"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "path",
+                            "field",
+                            "counts"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "stdout_contains"
+                            },
+                            "value": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "stdout_count"
+                            },
+                            "pattern": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "pattern",
+                            "value"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "stdout_enumerates"
+                            },
+                            "pattern": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "first": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            "last": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1000000
+                            },
+                            "distinct": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/$defs/id"
+                              },
+                              "minItems": 0,
+                              "maxItems": 4,
+                              "uniqueItems": true
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "pattern",
+                            "first",
+                            "last",
+                            "distinct"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "stdout_line"
+                            },
+                            "index": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 1024
+                            },
+                            "equals": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "index",
+                            "equals"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "stdout_lines"
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 1000000
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "value"
+                          ]
+                        }
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 32
+                  },
+                  "pending": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "case_id",
+                  "parameters",
+                  "setup",
+                  "description"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 64
+            }
+          },
+          "required": [
+            "description",
+            "priority",
+            "min_version",
+            "commands"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "description",
+    "setup_script",
+    "task_fixture",
+    "seeds",
+    "adapters"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

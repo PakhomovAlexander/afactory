@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:optimization-harness:1","type":"object","additionalProperties":false,
+  "required":["schema","oracle_id","checks","transitive_dependencies","candidate_writable_paths","cache_read_scopes","cache_write_scopes"],
+  "properties":{"schema":{"const":"af.optimization-harness/1"},"oracle_id":{"$ref":"#/$defs/id"},"checks":{"$ref":"#/$defs/names"},"transitive_dependencies":{"$ref":"#/$defs/paths"},"candidate_writable_paths":{"$ref":"#/$defs/paths"},"cache_read_scopes":{"$ref":"#/$defs/paths"},"cache_write_scopes":{"$ref":"#/$defs/paths"}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"names":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}},"paths":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":1024,"pattern":"^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)[^\\u0000-\\u001f]+$"}}}
+}

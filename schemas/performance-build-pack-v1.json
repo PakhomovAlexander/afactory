@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-build-pack:1",
+  "title": "af.perf-build-pack/1",
+  "description": "One run's build, packed once by its credential-free build job for its shards (ADR-0177): the archive's identity and every member's path, size, hash and whether it is executable, restored only after its bytes are verified.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-build-pack/1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "builds_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "build.tar"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "name",
+        "size",
+        "sha256"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "executable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "executable"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "plan_digest",
+    "builds_sha256",
+    "archive",
+    "entries",
+    "bytes"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

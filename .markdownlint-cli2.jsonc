@@ -1,0 +1,23 @@
+{
+  // Keep correctness rules enabled while excluding formatting-only noise from
+  // hand-written design records and wide contract tables.
+  "config": {
+    "default": true,
+    "MD004": false,
+    "MD013": false,
+    "MD018": false,
+    "MD022": false,
+    "MD024": false,
+    "MD031": false,
+    "MD032": false,
+    "MD033": false,
+    "MD034": false,
+    "MD040": false,
+    "MD041": false,
+    "MD049": false,
+    "MD050": false,
+    "MD058": false,
+    "MD060": false
+  },
+  "ignores": ["node_modules", "**/node_modules", ".git"]
+}

@@ -1,0 +1,55 @@
+{
+  "schema": "af.perf-sample/2",
+  "run_id": "schema_fixture_run",
+  "plan_digest": "sha256:3542f16125e66911f995901014e703d7fa29c2755002802db32d6c4c8504c24d",
+  "shard": 0,
+  "sequence": 14,
+  "phase": "measured",
+  "instance_id": "synthetic_advisory",
+  "pair": 1,
+  "position": 1,
+  "side": "candidate",
+  "source_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+  "binary_sha256": "sha256:e64348e53326c97b621c52a2b5d7bf556c5be0d0e031e0fea20c9000128fd022",
+  "host_id": "sha256:e7878e16df75e273507503f7f2ee1563df435bfc4eb410b16e5c800dfc111c1a",
+  "started_unix_ms": 1760000000014,
+  "status": "failed",
+  "identity": {
+    "case_id": "synthetic_advisory",
+    "contract_id": null,
+    "adapter": null,
+    "parameters": {},
+    "fixture_digest": null
+  },
+  "metrics": {},
+  "metric_scopes": {},
+  "unavailable_metrics": {},
+  "oracle": {
+    "status": "passed",
+    "kind": "golden_canonical_digest",
+    "observed_digest": null,
+    "detail": "schema fixture"
+  },
+  "failure": {
+    "kind": "oracle_mismatch",
+    "detail": "synthetic"
+  },
+  "logs": {
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "stdout_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "truncated_bytes": 0,
+    "retained": null
+  },
+  "execution": {
+    "containment": "pid_namespace",
+    "termination": "exited",
+    "exit_code": 1,
+    "signal": null,
+    "exit_observation": "unreaped",
+    "lifecycle": "clean",
+    "host_wall_ns": "41000000",
+    "fixture_setup_ns": null
+  }
+}
