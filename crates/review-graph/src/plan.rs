@@ -1,0 +1,483 @@
+//! Building and validating a pipeline before anything runs.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+pub use review_core::{PortCardinality, SnapshotAffinity, is_artifact_type};
+
+/// A named typed port. Edges connect an upstream node's output port to a downstream input port,
+/// so what a node receives is a property of the pipeline definition rather than of whatever was
+/// lying around when it ran.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Port {
+    pub node: String,
+    pub name: String,
+}
+
+impl Port {
+    pub fn new(node: impl Into<String>, name: impl Into<String>) -> Port {
+        Port {
+            node: node.into(),
+            name: name.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    pub from: Port,
+    pub to: Port,
+}
+
+/// The contract of one named input or output port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortContract {
+    pub name: String,
+    pub artifact_type: String,
+    pub cardinality: PortCardinality,
+    pub optional: bool,
+    pub snapshot_affinity: SnapshotAffinity,
+}
+
+impl PortContract {
+    pub fn new(name: impl Into<String>, artifact_type: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            artifact_type: artifact_type.into(),
+            cardinality: PortCardinality::One,
+            optional: false,
+            snapshot_affinity: SnapshotAffinity::SameSubject,
+        }
+    }
+
+    pub fn with_cardinality(mut self, cardinality: PortCardinality) -> Self {
+        self.cardinality = cardinality;
+        self
+    }
+
+    pub fn optional(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+
+    pub fn with_snapshot_affinity(mut self, affinity: SnapshotAffinity) -> Self {
+        self.snapshot_affinity = affinity;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// An operator from a compiled Task plan, dispatched through the common Task runtime.
+    Task,
+    /// Emits the run's generation state — the campaign's prior findings — as an artifact, so
+    /// reviewers receive it through a wired input port rather than from ambient kernel state.
+    Generation,
+    /// Runs project checks and emits a gate decision.
+    Gate,
+    /// A model-backed or command-backed reviewer.
+    Reviewer,
+    /// Deterministically publishes the complete bounded Slice Set for one Subject.
+    Slicer,
+    /// Owns dynamic reviewer sub-invocations while the outer graph stays static.
+    Scatter,
+    /// Collects several upstream outputs at a barrier.
+    Gather,
+    /// Reduces reports into the ledger projection.
+    Ledger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    pub id: String,
+    pub kind: NodeKind,
+    /// Ports this node will accept input on. An edge to any other name is a planning error —
+    /// a typo in a pipeline must not silently mean "this node gets nothing".
+    pub inputs: Vec<PortContract>,
+    pub outputs: Vec<PortContract>,
+    /// The gate whose pass is a precondition for dispatching this node. Transitive: a node
+    /// downstream of a gated node is gated too. The Review compiler enforces it as a Task
+    /// condition. The scheduler does not gate on it; it only refuses an owned child that
+    /// carries one.
+    pub gated_by: Option<String>,
+}
+
+impl Node {
+    pub fn new(id: impl Into<String>, kind: NodeKind) -> Node {
+        Node {
+            id: id.into(),
+            kind,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            gated_by: None,
+        }
+    }
+
+    pub fn accepting_contracts(mut self, ports: Vec<PortContract>) -> Node {
+        self.inputs = ports;
+        self
+    }
+
+    pub fn emitting_contracts(mut self, ports: Vec<PortContract>) -> Node {
+        self.outputs = ports;
+        self
+    }
+
+    pub fn gated_by(mut self, gate: impl Into<String>) -> Node {
+        self.gated_by = Some(gate.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Pipeline {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanError {
+    DuplicateNode(String),
+    UnknownNode {
+        edge: String,
+        node: String,
+    },
+    /// An edge naming a port the node does not declare.
+    UnknownPort {
+        edge: String,
+        port: Port,
+    },
+    DuplicatePort {
+        node: String,
+        port: String,
+    },
+    InvalidArtifactType {
+        port: Port,
+        artifact_type: String,
+    },
+    TypeMismatch {
+        edge: String,
+        produced: String,
+        accepted: String,
+    },
+    CardinalityMismatch {
+        edge: String,
+        produced: PortCardinality,
+        accepted: PortCardinality,
+    },
+    SnapshotAffinityMismatch {
+        edge: String,
+        produced: SnapshotAffinity,
+        accepted: SnapshotAffinity,
+    },
+    OptionalityMismatch {
+        edge: String,
+    },
+    MultipleWriters(Port),
+    /// A node's declared input port with nothing wired to it. Not a warning: a reviewer running
+    /// without the prior findings it expects produces a confident, wrong review.
+    UnwiredInput(Port),
+    Cycle(Vec<String>),
+    UnknownGate {
+        node: String,
+        gate: String,
+    },
+}
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanError::DuplicateNode(id) => write!(f, "duplicate node id: {id}"),
+            PlanError::UnknownNode { edge, node } => {
+                write!(f, "edge {edge} names an unknown node: {node}")
+            }
+            PlanError::UnknownPort { edge, port } => write!(
+                f,
+                "edge {edge} names port {}.{} which that node does not declare",
+                port.node, port.name
+            ),
+            PlanError::DuplicatePort { node, port } => {
+                write!(f, "node {node} declares port {port} more than once")
+            }
+            PlanError::InvalidArtifactType {
+                port,
+                artifact_type,
+            } => write!(
+                f,
+                "port {}.{} has invalid versioned artifact type {artifact_type}",
+                port.node, port.name
+            ),
+            PlanError::TypeMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} carries {produced}, but its input accepts {accepted}"
+            ),
+            PlanError::CardinalityMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} has incompatible cardinality {produced:?} -> {accepted:?}"
+            ),
+            PlanError::SnapshotAffinityMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} has incompatible snapshot affinity {produced:?} -> {accepted:?}"
+            ),
+            PlanError::OptionalityMismatch { edge } => write!(
+                f,
+                "edge {edge} feeds a required input from an optional output"
+            ),
+            PlanError::MultipleWriters(port) => write!(
+                f,
+                "single-valued input {}.{} has more than one writer",
+                port.node, port.name
+            ),
+            PlanError::UnwiredInput(port) => write!(
+                f,
+                "input {}.{} has nothing wired to it; a node that silently receives nothing \
+                 produces a confident review of an empty input",
+                port.node, port.name
+            ),
+            PlanError::Cycle(nodes) => write!(f, "cycle: {}", nodes.join(" -> ")),
+            PlanError::UnknownGate { node, gate } => {
+                write!(f, "node {node} is gated by unknown gate {gate}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlanError {}
+
+/// A validated pipeline with a deterministic execution order.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub nodes: BTreeMap<String, Node>,
+    pub edges: Vec<Edge>,
+    /// Nodes in dependency order. Ties broken by node ID, so the plan is a function of the
+    /// pipeline alone — two planners on two machines produce the same order.
+    pub order: Vec<String>,
+}
+
+impl Planned {
+    pub fn dependencies_of(&self, node: &str) -> Vec<&Edge> {
+        self.edges.iter().filter(|e| e.to.node == node).collect()
+    }
+
+    /// Every gate this node depends on, directly or through an ancestor.
+    pub fn gates_for(&self, node: &str) -> BTreeSet<String> {
+        let mut gates = BTreeSet::new();
+        let mut stack = vec![node.to_string()];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            if let Some(spec) = self.nodes.get(&current)
+                && let Some(gate) = &spec.gated_by
+            {
+                gates.insert(gate.clone());
+            }
+            for edge in self.dependencies_of(&current) {
+                stack.push(edge.from.node.clone());
+            }
+        }
+        gates
+    }
+}
+
+impl Pipeline {
+    pub fn node(mut self, node: Node) -> Pipeline {
+        self.nodes.push(node);
+        self
+    }
+
+    pub fn edge(mut self, from: Port, to: Port) -> Pipeline {
+        self.edges.push(Edge { from, to });
+        self
+    }
+
+    /// Validate everything that can be known without running, and fix the execution order.
+    pub fn plan(self) -> Result<Planned, PlanError> {
+        let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
+        for node in self.nodes {
+            if nodes.contains_key(&node.id) {
+                return Err(PlanError::DuplicateNode(node.id));
+            }
+            nodes.insert(node.id.clone(), node);
+        }
+
+        for node in nodes.values() {
+            for contracts in [&node.inputs, &node.outputs] {
+                let mut names = BTreeSet::new();
+                for contract in contracts {
+                    if !names.insert(contract.name.as_str()) {
+                        return Err(PlanError::DuplicatePort {
+                            node: node.id.clone(),
+                            port: contract.name.clone(),
+                        });
+                    }
+                    if !is_artifact_type(&contract.artifact_type) {
+                        return Err(PlanError::InvalidArtifactType {
+                            port: Port::new(&node.id, &contract.name),
+                            artifact_type: contract.artifact_type.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        for edge in &self.edges {
+            let label = format!(
+                "{}.{} -> {}.{}",
+                edge.from.node, edge.from.name, edge.to.node, edge.to.name
+            );
+            for port in [&edge.from, &edge.to] {
+                let Some(spec) = nodes.get(&port.node) else {
+                    return Err(PlanError::UnknownNode {
+                        edge: label.clone(),
+                        node: port.node.clone(),
+                    });
+                };
+                let declared = if std::ptr::eq(port, &edge.from) {
+                    &spec.outputs
+                } else {
+                    &spec.inputs
+                };
+                if !declared.iter().any(|contract| contract.name == port.name) {
+                    return Err(PlanError::UnknownPort {
+                        edge: label.clone(),
+                        port: port.clone(),
+                    });
+                }
+            }
+            let produced = nodes[&edge.from.node]
+                .outputs
+                .iter()
+                .find(|port| port.name == edge.from.name)
+                .expect("ports validated");
+            let accepted = nodes[&edge.to.node]
+                .inputs
+                .iter()
+                .find(|port| port.name == edge.to.name)
+                .expect("ports validated");
+            if produced.artifact_type != accepted.artifact_type {
+                return Err(PlanError::TypeMismatch {
+                    edge: label,
+                    produced: produced.artifact_type.clone(),
+                    accepted: accepted.artifact_type.clone(),
+                });
+            }
+            if produced.cardinality == PortCardinality::Many
+                && accepted.cardinality == PortCardinality::One
+            {
+                return Err(PlanError::CardinalityMismatch {
+                    edge: label,
+                    produced: produced.cardinality,
+                    accepted: accepted.cardinality,
+                });
+            }
+            if accepted.snapshot_affinity != SnapshotAffinity::Any
+                && produced.snapshot_affinity != accepted.snapshot_affinity
+            {
+                return Err(PlanError::SnapshotAffinityMismatch {
+                    edge: label,
+                    produced: produced.snapshot_affinity,
+                    accepted: accepted.snapshot_affinity,
+                });
+            }
+            if produced.optional && !accepted.optional {
+                return Err(PlanError::OptionalityMismatch { edge: label });
+            }
+        }
+
+        // Every declared input must be fed. A node whose input silently defaults to nothing is
+        // the failure mode this typing exists to remove.
+        for node in nodes.values() {
+            for input in &node.inputs {
+                let writers = self
+                    .edges
+                    .iter()
+                    .filter(|e| e.to.node == node.id && e.to.name == input.name)
+                    .count();
+                if writers == 0 && !input.optional {
+                    return Err(PlanError::UnwiredInput(Port::new(&node.id, &input.name)));
+                }
+                if writers > 1 && input.cardinality == PortCardinality::One {
+                    return Err(PlanError::MultipleWriters(Port::new(&node.id, &input.name)));
+                }
+            }
+            if let Some(gate) = &node.gated_by
+                && !nodes.contains_key(gate)
+            {
+                return Err(PlanError::UnknownGate {
+                    node: node.id.clone(),
+                    gate: gate.clone(),
+                });
+            }
+        }
+
+        let order = topological_order(&nodes, &self.edges)?;
+        Ok(Planned {
+            nodes,
+            edges: self.edges,
+            order,
+        })
+    }
+}
+
+/// Kahn's algorithm with a deterministic tie-break: among ready nodes, the lowest ID first.
+///
+/// `gated_by` counts as an ordering dependency alongside the edges: a gate precedes every node
+/// it gates, whether or not an edge also connects them — and a gate that depends on its own
+/// gated node is a cycle, caught here before anything runs.
+fn topological_order(
+    nodes: &BTreeMap<String, Node>,
+    edges: &[Edge],
+) -> Result<Vec<String>, PlanError> {
+    let mut incoming: BTreeMap<&str, BTreeSet<&str>> = nodes
+        .keys()
+        .map(|id| (id.as_str(), BTreeSet::new()))
+        .collect();
+    for edge in edges {
+        incoming
+            .entry(edge.to.node.as_str())
+            .or_default()
+            .insert(edge.from.node.as_str());
+    }
+    for node in nodes.values() {
+        if let Some(gate) = &node.gated_by {
+            incoming
+                .entry(node.id.as_str())
+                .or_default()
+                .insert(gate.as_str());
+        }
+    }
+
+    let mut order = Vec::with_capacity(nodes.len());
+    let mut remaining = incoming.clone();
+    while !remaining.is_empty() {
+        let ready: Vec<&str> = remaining
+            .iter()
+            .filter(|(_, deps)| deps.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        let Some(next) = ready.first().copied() else {
+            let mut cycle: Vec<String> = remaining.keys().map(|id| (*id).to_string()).collect();
+            cycle.sort();
+            return Err(PlanError::Cycle(cycle));
+        };
+        order.push(next.to_string());
+        remaining.remove(next);
+        for deps in remaining.values_mut() {
+            deps.remove(next);
+        }
+    }
+    Ok(order)
+}

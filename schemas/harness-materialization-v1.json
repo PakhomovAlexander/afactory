@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:harness-materialization:1","type":"object","additionalProperties":false,
+  "required":["schema","fixture_constructor_id","product_source_snapshot_id","requirements_id","protected_oracle_id","baseline_harness_id","candidate_harness_id","baseline_derived_snapshot_id","candidate_derived_snapshot_id","environment_id"],
+  "properties":{"schema":{"const":"af.harness-materialization/1"},"fixture_constructor_id":{"$ref":"#/$defs/id"},"product_source_snapshot_id":{"$ref":"#/$defs/id"},"requirements_id":{"$ref":"#/$defs/id"},"protected_oracle_id":{"$ref":"#/$defs/id"},"baseline_harness_id":{"$ref":"#/$defs/id"},"candidate_harness_id":{"$ref":"#/$defs/id"},"baseline_derived_snapshot_id":{"$ref":"#/$defs/id"},"candidate_derived_snapshot_id":{"$ref":"#/$defs/id"},"environment_id":{"$ref":"#/$defs/id"}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-fix-verification:1",
+  "title": "task-fix-verification@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "continuation_id",
+    "subject_id",
+    "claims"
+  ],
+  "properties": {
+    "continuation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "subject_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "claims": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_view_id",
+          "attestation_id",
+          "outcome",
+          "reason"
+        ],
+        "properties": {
+          "expected_view_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "attestation_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "outcome": {
+            "enum": [
+              "positive",
+              "negative",
+              "inconclusive"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          }
+        }
+      }
+    }
+  }
+}

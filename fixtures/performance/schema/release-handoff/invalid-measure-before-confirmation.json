@@ -1,0 +1,81 @@
+{
+  "schema": "af.perf-release-handoff/1",
+  "stage": "handoff",
+  "mode": "release",
+  "actions": {
+    "repository": "owner/af",
+    "run_id": 9200,
+    "run_attempt": 1,
+    "event": "workflow_run",
+    "sha": "dddddddddddddddddddddddddddddddddddddddd"
+  },
+  "upstream": {
+    "run_id": 7001,
+    "run_attempt": 2,
+    "latest_attempt": 2,
+    "workflow_id": 61,
+    "workflow_path": ".github/workflows/release.yml",
+    "event": "push",
+    "head_branch": "main",
+    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "conclusion": "failure",
+    "created_unix_ms": 1792486800000
+  },
+  "publication": {
+    "attempts": [
+      {
+        "attempt": 1,
+        "jobs": 12,
+        "publish": "success",
+        "pin": "failure"
+      },
+      {
+        "attempt": 2,
+        "jobs": 1,
+        "publish": null,
+        "pin": "failure"
+      }
+    ],
+    "published_in_attempt": 1
+  },
+  "release": {
+    "tag": "v0.13.0",
+    "sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "id": 501,
+    "prerelease": false,
+    "published_at": "2026-10-20T10:00:00Z"
+  },
+  "identity": {
+    "repository": "owner/af",
+    "upstream_run_id": 7001,
+    "tag": "v0.13.0",
+    "sha": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  "key": "sha256:bf4c993289c47a43882feba58eb997cab661d4cc125e1dadff4f687ec47747c4",
+  "history": {
+    "state": "complete",
+    "detail": "1 of 1 claims named af-release-claim-bf4c993289c47a43882feba58eb997cab661d4cc125e1dadff4f687ec47747c4 are valid",
+    "claims": [
+      {
+        "artifact_id": 8800,
+        "actions_run_id": 9100,
+        "created_unix_ms": 1792490400000,
+        "expired": false,
+        "valid": true,
+        "reason": null
+      }
+    ]
+  },
+  "status": "measure",
+  "reason": null,
+  "detail": "this release was already claimed; it links run bundle af-perf-gh9100_a1_control_bootstrap-run of Actions run 9100",
+  "claim_artifact": "af-release-claim-bf4c993289c47a43882feba58eb997cab661d4cc125e1dadff4f687ec47747c4",
+  "first_claim": {
+    "artifact_id": 8800,
+    "actions_run_id": 9100,
+    "actions_run_attempt": 1,
+    "lab_run_prefix": "gh9100_a1_"
+  },
+  "results": [],
+  "enforcement": "advisory"
+}
