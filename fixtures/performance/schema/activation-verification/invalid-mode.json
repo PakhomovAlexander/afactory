@@ -1,0 +1,43 @@
+{
+  "schema": "af.perf-activation-verification/3",
+  "mode": "trusted",
+  "revision": "cccccccccccccccccccccccccccccccccccccccc",
+  "activation_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "admission": "calibrated",
+  "authority_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+  "policy_digest": "sha256:34722c0056f2b7da418ac6cfc7ded11bf957d835bcbf2ce7d2d0072fbb3d80a8",
+  "cohort_id": "synthetic_cohort",
+  "cohort_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "calibration_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "readiness_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "members": 62,
+  "original_runs": [
+    7001,
+    7002,
+    7003
+  ],
+  "tallies": {
+    "aa_within_tolerance": 20,
+    "aa_members": 20,
+    "power_qualifying": 10,
+    "power_members": 10
+  },
+  "environment_id": "linux_x86_64_gnu_hosted",
+  "recipe_id": "linux_gnu_native_release",
+  "calibrated_groups": [
+    "hosted_x86"
+  ],
+  "uncalibrated_groups": {
+    "hosted_arm": [
+      "synthetic_fast"
+    ]
+  },
+  "recomputed": {
+    "history_latest_run_number": 103,
+    "refused_evidence": 0
+  },
+  "equivalence": null,
+  "pending": [
+    "owner_review_at_exact_head"
+  ]
+}

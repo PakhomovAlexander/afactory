@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pi-validation-claim:1",
+  "title": "Pi validation historical claim@1",
+  "description": "One historical source-content projection and actual successful manual measurement, retained in the excluded Pi validation record. Not a kernel Snapshot identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_sha256",
+    "entries",
+    "files",
+    "command",
+    "filter",
+    "exit_code",
+    "summary",
+    "log_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "af/pi-validation-claim@1"
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "entries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "command": {
+      "type": "string",
+      "const": "make perf-kernel-measure"
+    },
+    "filter": {
+      "type": "string",
+      "const": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)"
+    },
+    "exit_code": {
+      "type": "integer",
+      "const": 0
+    },
+    "summary": {
+      "type": "string",
+      "pattern": "^Summary \\[ *[0-9]+\\.[0-9]+s\\] 1 test run: 1 passed \\(1 slow\\), [0-9]+ skipped$"
+    },
+    "log_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

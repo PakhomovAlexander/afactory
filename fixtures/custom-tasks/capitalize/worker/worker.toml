@@ -1,0 +1,42 @@
+schema = "af.worker/1"
+name = "custom/capitalize-worker"
+version = "1.0.1"
+[signature]
+effects = []
+roles = ["capitalize"]
+evidence = {}
+retains = { capitalized = ["note", "requirements"] }
+worker_input_type = "custom/StructuredInput@1"
+worker_output_type = "custom/Capitalized@1"
+[signature.attempt]
+tokens = 40000
+wall_ms = 500000
+[runner]
+kind = "model"
+provider_kind = "codex"
+model = "gpt-6.1-sol"
+effort = "medium"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.note]
+artifact_type = "custom/Note@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.note.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.capitalized]
+artifact_type = "custom/Capitalized@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.capitalized.affinity]
+kind = "unbound"

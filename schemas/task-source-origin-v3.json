@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-source-origin:3",
+  "title": "task-source-origin@3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository_id",
+    "content_digest",
+    "kind"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-source-origin/3"
+    },
+    "repository_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "content_digest": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+    },
+    "bound_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "snapshot_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "task": {
+          "$ref": "urn:af:schema:task-input-bindings:1#/$defs/referencedTask"
+        }
+      }
+    },
+    "kind": {
+      "enum": [
+        "captured",
+        "bound"
+      ]
+    },
+    "source_revision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[0-9A-Fa-f]+$"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "captured"
+        }
+      },
+      "not": {
+        "required": [
+          "bound_from"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "bound"
+        }
+      },
+      "required": [
+        "bound_from"
+      ],
+      "not": {
+        "required": [
+          "source_revision"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "schema": "af/telemetry-turns@1",
+  "directory": "<root>",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "run_id": "task:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "trace_id": "<trace>",
+    "kind": "task",
+    "history": "prefix:1",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–1"
+  },
+  "turns": [
+    {
+      "harness": {
+        "span_id": "009c22caf55d944d",
+        "segment_id": "1700000300000-4245-1a2b3c4d",
+        "attempt_id": "golden-attempt-1",
+        "node_id": "root.nodes.review",
+        "provider": "anthropic",
+        "analysis": "complete",
+        "dropped_chunks": 0,
+        "gaps": 0,
+        "withheld": false
+      },
+      "span_id": "5101a4df77820418",
+      "ordinal": 1,
+      "start_unix_ns": "1700000300010000000",
+      "start_offset_us": 0,
+      "duration_us": 5000,
+      "status": "ok",
+      "outcome": "succeeded",
+      "corr": "bca55a6f25593822",
+      "model": "claude-fixture-1",
+      "finish_reasons": [
+        "tool_use"
+      ],
+      "usage": {
+        "input_tokens": "12",
+        "output_tokens": "34",
+        "cache_read_tokens": "5600",
+        "cache_write_tokens": "78",
+        "observation": "complete"
+      },
+      "text_blocks": 0,
+      "text_bytes": 0,
+      "thinking_blocks": 1,
+      "thinking_bytes": 25,
+      "tool_calls": 2
+    },
+    {
+      "harness": {
+        "span_id": "009c22caf55d944d",
+        "segment_id": "1700000300000-4245-1a2b3c4d",
+        "attempt_id": "golden-attempt-1",
+        "node_id": "root.nodes.review",
+        "provider": "anthropic",
+        "analysis": "complete",
+        "dropped_chunks": 0,
+        "gaps": 0,
+        "withheld": false
+      },
+      "span_id": "6057edbef2ab7bb9",
+      "ordinal": 2,
+      "start_unix_ns": "1700000300020000000",
+      "start_offset_us": 10000,
+      "duration_us": 10000,
+      "status": "ok",
+      "outcome": "succeeded",
+      "corr": "03a2b4b8e18f4530",
+      "model": "claude-fixture-1",
+      "finish_reasons": [
+        "end_turn"
+      ],
+      "usage": {
+        "input_tokens": "9",
+        "output_tokens": "21",
+        "cache_read_tokens": "5700",
+        "cache_write_tokens": "0",
+        "observation": "complete"
+      },
+      "text_blocks": 1,
+      "text_bytes": 25,
+      "thinking_blocks": 0,
+      "thinking_bytes": 0,
+      "tool_calls": 0
+    }
+  ],
+  "unreadable": []
+}

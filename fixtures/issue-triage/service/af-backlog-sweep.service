@@ -1,0 +1,25 @@
+# Staged only. This service never calls a model and defaults to dry-run too.
+[Unit]
+ConditionHost=claw-3
+Description=AF weekly token-free issue fix sweep
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=af-perf-exec
+Group=af-perf-readers
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/af-triage/runner.env
+LoadCredential=triage-github:/etc/af-triage/github-token
+LoadCredential=triage-telegram:/etc/af-nightly/telegram-token
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/backlog-triage.py --sweep --repo /opt/af-triage/repo --state-root /var/lib/af-triage --principal ${AF_TRIAGE_PRINCIPAL} --timezone ${AF_TRIAGE_TIMEZONE} --github-token-file ${CREDENTIALS_DIRECTORY}/triage-github --telegram-token-file ${CREDENTIALS_DIRECTORY}/triage-telegram --telegram-chat-id ${AF_TRIAGE_CHAT_ID}
+TimeoutStartSec=95min
+TimeoutStopSec=120
+KillMode=control-group
+OOMPolicy=stop
+PrivateTmp=no
+PrivateMounts=no
+ProtectSystem=no
+ProtectHome=no

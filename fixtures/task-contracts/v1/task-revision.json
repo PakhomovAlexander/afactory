@@ -1,0 +1,61 @@
+{
+  "task_id": "jira-AF-42",
+  "revision": 1,
+  "kind": "document",
+  "goal": "Implement this Jira ticket: write a checked migration guide.",
+  "inputs": {
+    "requirements": {
+      "artifact_ids": [
+        "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+      ],
+      "artifact_type": "af/Requirements@1",
+      "cardinality": "one"
+    }
+  },
+  "required_outputs": {
+    "document": {
+      "artifact_type": "af/CheckedDocument@1",
+      "cardinality": "one"
+    }
+  },
+  "acceptance": {
+    "checked": {
+      "evidence_type": "af/CheckedDocument@1",
+      "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+    }
+  },
+  "provenance": {
+    "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+    "input_artifact_ids": [
+      "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    ]
+  },
+  "authority": {
+    "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+    "allowed_effects": [
+      "read-source"
+    ],
+    "data_destinations": [
+      "personal"
+    ]
+  },
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 4,
+    "deadline_unix_ms": 1800000000000,
+    "verification": {
+      "tokens": 200,
+      "attempts": 1,
+      "wall_ms": 1000
+    }
+  },
+  "strategy": "conservative",
+  "pipeline": {
+    "name": "builtin/document",
+    "fallback": "generate"
+  },
+  "facts": {
+    "small": true,
+    "estimated_files": 1
+  }
+}

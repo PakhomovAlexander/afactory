@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="6" failures="1" errors="0" uuid="00000000-0000-4000-8000-000000000000" timestamp="2026-10-07T10:00:00.000+00:00" time="7.000">
+    <testsuite name="demo::it" tests="4" disabled="0" errors="0" failures="1">
+        <testcase name="slow::alone_with_a_budget" classname="demo::it" timestamp="2026-10-07T10:00:00.001+00:00" time="4.000">
+        </testcase>
+        <testcase name="fast::one" classname="demo::it" timestamp="2026-10-07T10:00:00.002+00:00" time="0.050">
+        </testcase>
+        <testcase name="mid::two" classname="demo::it" timestamp="2026-10-07T10:00:00.003+00:00" time="1.500">
+            <failure message="thread &apos;mid::two&apos; panicked at tests/it/mid.rs:2:5" type="test failure with exit code 101">thread &apos;mid::two&apos; panicked at tests/it/mid.rs:2:5:
+assertion failed</failure>
+        </testcase>
+        <testcase name="other::measured_elapsed" classname="demo::it" timestamp="2026-10-07T10:00:00.004+00:00" time="2.250">
+        </testcase>
+    </testsuite>
+    <testsuite name="demo" tests="2" disabled="0" errors="0" failures="0">
+        <testcase name="unit::a" classname="demo" timestamp="2026-10-07T10:00:00.005+00:00" time="0.100">
+        </testcase>
+        <testcase name="unit::alone_with_a_budget_twice" classname="demo" timestamp="2026-10-07T10:00:00.006+00:00" time="0.700">
+        </testcase>
+    </testsuite>
+</testsuites>

@@ -1,0 +1,8 @@
+reasoning of Attempt golden-content-attempt-1  task run task:sha256:9898989898989898989898989898989898989898989898989898989898989898  history prefix:1 — retained executions 1–1
+  captured
+  harness 315110a4b7933623  level content — captured
+2 thoughts
+#1 thinking  turn 1  1700000400000-4246-2b3c4d5e:23  sha256:32d64e047d7f51687cee7449f2c03743e1f17a2e0729807b6b28bf829bf4e8eb  32 B (original 32 B)
+    The keeper logs the lamp hourly.
+#2 thinking  turn 2  1700000400000-4246-2b3c4d5e:32  sha256:f46c20b3554c1a4a46ead3ae85819f43fef891942870075180ec1d2fd76b4b90  35 B (original 35 B)
+    The lamp is lit; nothing to report.

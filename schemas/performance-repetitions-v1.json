@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-repetitions:1",
+  "title": "af.perf-repetitions/1",
+  "description": "The repetition index of one capture of fresh processes, repetitions.json: every repetition once and in order with its raw recording, its host observer record and the region time it contributed, and the boundary that time was measured at (the gated command's exec to its exit decoded from the trusted host recording, the supervised child's wall, or samply's driver wall). Every listed file is bound by its size and SHA256.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-repetitions/1"
+    },
+    "instance_id": {
+      "$ref": "#/$defs/id"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "tool": {
+      "type": "string",
+      "enum": [
+        "perf",
+        "samply"
+      ]
+    },
+    "binary_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "boundary": {
+      "type": "string",
+      "enum": [
+        "perf_exec_to_exit",
+        "supervised_child_wall",
+        "driver_wall"
+      ]
+    },
+    "repetitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "recording": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  }
+                },
+                "required": [
+                  "path",
+                  "bytes",
+                  "sha256"
+                ]
+              }
+            ]
+          },
+          "observer": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  }
+                },
+                "required": [
+                  "path",
+                  "bytes",
+                  "sha256"
+                ]
+              }
+            ]
+          },
+          "region_ns": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "completed",
+          "recording",
+          "observer",
+          "region_ns"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 10000
+    }
+  },
+  "required": [
+    "schema",
+    "instance_id",
+    "side",
+    "attempt",
+    "tool",
+    "binary_sha256",
+    "boundary",
+    "repetitions"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+Claude Code v2.1.241
+
+Status   Config   Usage   Stats
+
+Current session
+███████████▌                                       23% used
+Resets 11:30am (UTC)
+
+Current week (all models)
+█████████████████████████████████████████████      90% used
+Resets Aug 24, 4pm (UTC)
+
+Current week (Fable)
+████████████████████████████████████████████████   96% used
+Resets Aug 24, 4pm (UTC)
+
+Usage credits
+Usage credits are off · /usage-credits to turn them on
+
+Esc to cancel

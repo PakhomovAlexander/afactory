@@ -1,0 +1,120 @@
+{
+  "$id": "urn:af:schema:test-class-catalog:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "always_on_scripts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "binaries": {
+      "additionalProperties": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "type": "object"
+    },
+    "exact": {
+      "additionalProperties": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "type": "object"
+    },
+    "hosted_checks": {
+      "additionalProperties": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "type": "object"
+    },
+    "ignored": {
+      "additionalProperties": {
+        "enum": [
+          "live-container",
+          "namespace-child",
+          "manual-measurement",
+          "subprocess-helper"
+        ]
+      },
+      "type": "object"
+    },
+    "modules": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "enum": [
+            "functional",
+            "e2e",
+            "uix",
+            "perf"
+          ]
+        },
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "overrides": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "enum": [
+            "functional",
+            "e2e",
+            "uix",
+            "perf"
+          ]
+        },
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": "af.test-catalog/1"
+    },
+    "scripts": {
+      "additionalProperties": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "type": "object"
+    },
+    "utilities": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "binaries",
+    "modules",
+    "overrides",
+    "scripts",
+    "utilities",
+    "always_on_scripts",
+    "exact",
+    "hosted_checks",
+    "ignored"
+  ],
+  "type": "object"
+}

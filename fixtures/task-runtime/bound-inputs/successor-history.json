@@ -1,0 +1,28 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "chain-history",
+  "kind": "implement",
+  "goal": "Carry the reviewed ledger forward without exporting it to a file",
+  "inputs": {
+    "history": {
+      "task": "chain-base",
+      "port": "history"
+    }
+  },
+  "pipeline": {
+    "name": "fixture/plain",
+    "fallback": "refuse"
+  },
+  "strategy": "small",
+  "facts": {},
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 3,
+    "wall_ms": 60000,
+    "verification": {
+      "tokens": 200,
+      "attempts": 2,
+      "wall_ms": 10000
+    }
+  }
+}
