@@ -349,9 +349,20 @@ pub(crate) fn refresh(repo: &Path) -> Result<(), String> {
             .get(path)
             .ok_or("No native Task catalog; retired Campaign locks cannot be refreshed")?,
     )?;
+    let mut changed = false;
     for (name, pin) in &mut catalog.packages {
-        pin.digest = af_pipeline_config::lock::package_digest(name, &repo.join(&pin.path))
+        let digest = af_pipeline_config::lock::package_digest(name, &repo.join(&pin.path))
             .map_err(|e| e.to_string())?;
+        if pin.digest != digest {
+            pin.digest = digest;
+            changed = true;
+        }
+    }
+    if !changed {
+        // A release-pin refresh also comes here. Keep project comments and formatting
+        // byte-for-byte when package pins are current, but still validate all authority.
+        inspect_files(&files)?;
+        return Ok(());
     }
     let text = toml::to_string_pretty(&catalog).map_err(|e| e.to_string())?;
     files.insert(path.into(), text.as_bytes().to_vec());
