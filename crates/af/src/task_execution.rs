@@ -1673,6 +1673,8 @@ fn start_captured(
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
+        // The sweep that ends this run records what it removed on this Task (ADR-0144).
+        crate::storage::note_task_run(&state, lease.task_id());
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
@@ -2207,6 +2209,8 @@ pub(super) fn run(
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
+        // The sweep that ends this run records what it removed on this Task (ADR-0144).
+        crate::storage::note_task_run(&state, lease.task_id());
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
@@ -2552,6 +2556,9 @@ fn present_with_format(
         for line in remote_check_lines(&value) {
             println!("{line}");
         }
+        if let Some(line) = storage_sweep_line(&value) {
+            println!("{line}");
+        }
         for line in measurement_lines(cas, &state)? {
             println!("{line}");
         }
@@ -2891,6 +2898,43 @@ fn evidence_seconds(text: &str) -> Option<i64> {
 /// request, the run and its attempt, each required job with its conclusion and duration, the
 /// unsuccessful steps, the kept log excerpt and the refusal reason; then the latest gate cleanup
 /// (ADR-0144), and the two commands that clean up after the gate whenever af has not.
+/// One line for the latest Storage Budget sweep recorded on the Task (ADR-0144): what the sweep
+/// that ended a run of it removed, how much, what failed, and the totals against the budget.
+fn storage_sweep_line(inspection: &serde_json::Value) -> Option<String> {
+    let sweep = inspection["storage_sweeps"].as_array()?.last()?;
+    let count = |field: &str| sweep[field].as_array().map_or(0, Vec::len) as u64;
+    let removed = count("removals") + sweep["omitted_removals"].as_u64().unwrap_or(0);
+    let failed = count("failures") + sweep["omitted_failures"].as_u64().unwrap_or(0);
+    let bytes = sweep["removals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|removal| removal["bytes"].as_u64())
+        .fold(0_u64, u64::saturating_add);
+    let total = |field: &str| crate::storage::human_bytes(sweep[field].as_u64().unwrap_or(0));
+    Some(format!(
+        "storage sweep: removed {removed} entr{} ({}){}; {} → {} of a {} budget{}",
+        if removed == 1 { "y" } else { "ies" },
+        crate::storage::human_bytes(bytes),
+        if failed > 0 {
+            format!(
+                ", {failed} removal{} failed",
+                if failed == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        },
+        total("total_before"),
+        total("total_after"),
+        total("max_bytes"),
+        if sweep["stop"] == "nothing_evictable" {
+            ", still over: the rest is in use or was used within the hour"
+        } else {
+            ""
+        }
+    ))
+}
+
 fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cleanups = BTreeSet::new();
@@ -3294,6 +3338,9 @@ fn inspection(
     }
     if !state.gate_cleanups.is_empty() {
         value["gate_cleanups"] = json!(state.gate_cleanups);
+    }
+    if !state.storage_sweeps.is_empty() {
+        value["storage_sweeps"] = json!(state.storage_sweeps);
     }
     if !owned_child_sets.is_empty() {
         value["owned_child_sets"] = json!(owned_child_sets);
@@ -3721,6 +3768,28 @@ mod remote_check_line_tests {
         );
         assert_eq!(lines.len(), 3);
         assert!(remote_check_lines(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_latest_storage_sweep_is_one_line() {
+        assert_eq!(storage_sweep_line(&serde_json::json!({})), None);
+        let inspection = serde_json::json!({"storage_sweeps": [
+            {"schema": "af/TaskStorageSweep@1", "removals": [], "omitted_removals": 0,
+             "failures": ["removing /x: it changed"], "omitted_failures": 0, "stop": "fits",
+             "max_bytes": 1024, "total_before": 0, "total_after": 0},
+            {"schema": "af/TaskStorageSweep@1", "removals": [
+                {"kind": "task", "path": "/s", "task_id": "gc-older", "bytes": 2048,
+                 "rule": "collection"}],
+             "omitted_removals": 0, "failures": [], "omitted_failures": 0,
+             "stop": "nothing_evictable", "max_bytes": 1024, "total_before": 4096,
+             "total_after": 2048}]});
+        assert_eq!(
+            storage_sweep_line(&inspection).as_deref(),
+            Some(
+                "storage sweep: removed 1 entry (2.0 KiB); 4.0 KiB → 2.0 KiB of a 1.0 KiB \
+                 budget, still over: the rest is in use or was used within the hour"
+            )
+        );
     }
 
     #[test]

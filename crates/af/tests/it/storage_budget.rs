@@ -485,19 +485,22 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 }
 
 /// A fake `claude` that records history the way the CLI does — one JSONL file below
-/// `$CLAUDE_CONFIG_DIR/projects/<slug of its working directory>` — and answers the admission
-/// probe and the two reviewers of the `review` fixture.
+/// `$CLAUDE_CONFIG_DIR/projects/<slug of its working directory>`, for the account probe
+/// (`auth status`) as for every Attempt — and answers the admission probe and the two reviewers
+/// of the `review` fixture. Every slug it wrote is listed in `slugs`, the probe's in
+/// `probe-slugs`.
 const FAKE_CLAUDE: &str = r#"#!/usr/bin/python3
 import os,json,sys,re
 home=os.environ['CLAUDE_CONFIG_DIR']
-if sys.argv[1:3]==['auth','status']:
- print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':'developer@example.test'}))
- sys.exit(0)
-request=sys.stdin.read()
 slug=re.sub('[^A-Za-z0-9]','-',os.getcwd())
 os.makedirs(os.path.join(home,'projects',slug),exist_ok=True)
 open(os.path.join(home,'projects',slug,'session.jsonl'),'w').write('{}\n')
 with open(os.path.join(home,'slugs'),'a') as f: f.write(slug+'\n')
+if sys.argv[1:3]==['auth','status']:
+ with open(os.path.join(home,'probe-slugs'),'a') as f: f.write(slug+'\n')
+ print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':'developer@example.test'}))
+ sys.exit(0)
+request=sys.stdin.read()
 if request=='Reply with exactly: OK\n':
  result='OK'
 else:
@@ -521,6 +524,9 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
         b"{\"keep\":true}\n",
     )
     .unwrap();
+    // What a session run from `/` keeps: never af's to remove.
+    std::fs::create_dir_all(config.join("projects/-")).unwrap();
+    std::fs::write(config.join("projects/-/root.jsonl"), b"{\"keep\":true}\n").unwrap();
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("claude"), FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -643,15 +649,22 @@ fn the_claude_history_of_every_attempt_and_probe_is_removed_and_nothing_else() {
     let (repo, state, config) = claude_review(&machine);
     run_claude_review(&machine, &repo, &state, &[]);
     let slugs = std::fs::read_to_string(config.join("slugs")).unwrap();
-    // The admission probe and both reviewers wrote history, each in its own af-made directory.
-    assert!(slugs.lines().count() >= 3, "{slugs}");
+    // The account probe, the admission probe and both reviewers wrote history, each in its own
+    // af-made directory, never from `/`.
+    assert!(slugs.lines().count() >= 4, "{slugs}");
     assert!(
         slugs.lines().all(|slug| slug.contains("-af-sandbox-")),
         "{slugs}"
     );
-    assert_eq!(projects(&config), ["-Users-me-project"]);
+    let probes = std::fs::read_to_string(config.join("probe-slugs")).unwrap();
+    assert!(!probes.is_empty(), "the account probe ran");
+    assert_eq!(projects(&config), ["-", "-Users-me-project"]);
     assert_eq!(
         std::fs::read(config.join("projects/-Users-me-project/mine.jsonl")).unwrap(),
+        b"{\"keep\":true}\n"
+    );
+    assert_eq!(
+        std::fs::read(config.join("projects/-/root.jsonl")).unwrap(),
         b"{\"keep\":true}\n"
     );
 
@@ -669,4 +682,63 @@ fn the_claude_history_of_every_attempt_and_probe_is_removed_and_nothing_else() {
     for slug in slugs.lines() {
         assert!(left.iter().any(|name| name == slug), "{slug}: {left:?}");
     }
+}
+
+/// ADR-0144: the sweep that ends `af task run` records what it removed on the Task the run
+/// executed, as one `storage_sweep` observation that `af task show` prints and its JSON
+/// carries; a sweep that removed nothing records nothing.
+#[test]
+fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    assert!(
+        start(&machine, &repo, &state, "gc-older.json", &[])
+            .status
+            .success()
+    );
+    let show = |task: &str, json_output: bool| {
+        let mut args = vec!["task", "show", task, "--state", state.to_str().unwrap()];
+        if json_output {
+            args.push("--json");
+        }
+        machine.af(&repo, &[], &args)
+    };
+    // Nothing was removed after the first run: nothing is recorded.
+    let first = json(&show("gc-older", true));
+    assert!(first.get("storage_sweeps").is_none(), "{first}");
+    let eager = [
+        ("AF_STORAGE__KEEP_DAYS", "0"),
+        ("AF_STORAGE__KEEP_TASKS", "1"),
+    ];
+    let newer = start(&machine, &repo, &state, "gc-newer.json", &eager);
+    let (stdout, stderr) = text(&newer);
+    assert!(newer.status.success(), "{stdout}\n{stderr}");
+    let shown = json(&show("gc-newer", true));
+    schemas::valid(&schemas::validator("task-inspection-v11.json"), &shown);
+    let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
+        panic!("one storage sweep: {shown}");
+    };
+    schemas::valid(&schemas::validator("task-storage-sweep-v1.json"), sweep);
+    assert_eq!(sweep["schema"], "af/TaskStorageSweep@1");
+    let removal = sweep["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|removal| removal["task_id"] == "gc-older")
+        .unwrap_or_else(|| panic!("gc-older collected: {sweep}"));
+    assert_eq!(removal["kind"], "task");
+    assert_eq!(removal["rule"], "collection");
+    assert_eq!(removal["path"], state.display().to_string());
+    assert!(sweep["total_before"].as_u64().unwrap() >= sweep["total_after"].as_u64().unwrap());
+    assert_eq!(shown["result"], json(&show("gc-newer", true))["result"]);
+    let (stdout, stderr) = text(&show("gc-newer", false));
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("storage sweep: "))
+        .unwrap_or_else(|| panic!("no storage sweep line:\n{stdout}\n{stderr}"));
+    assert!(
+        line.starts_with("storage sweep: removed 1 entry ("),
+        "{line}"
+    );
+    assert!(line.contains(" budget"), "{line}");
 }

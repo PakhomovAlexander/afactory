@@ -26,7 +26,8 @@ fn configure_private_login_environment(
     spec: &ProviderSpec,
     path: &std::ffi::OsStr,
 ) {
-    configure_probe_environment(command, spec, path);
+    // An interactive login is no probe: it keeps running from `/`, as it always has.
+    configure_probe_environment(command, spec, path, Path::new("/"));
     for name in [
         "HTTP_PROXY",
         "HTTPS_PROXY",

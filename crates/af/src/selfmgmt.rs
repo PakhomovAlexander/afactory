@@ -209,15 +209,7 @@ pub(crate) fn installed_for_storage(paths: &Paths) -> Result<Vec<InstalledVersio
                 .ok()
                 .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
-            let protected = if default.as_deref() == Some(version.as_str()) {
-                Some("the default version")
-            } else if pinned.contains(&version) {
-                Some("pinned by a project")
-            } else if running_binary_is(&version_binary(paths, &version)) {
-                Some("the running binary")
-            } else {
-                None
-            };
+            let protected = protection(paths, default.as_deref(), &pinned, &version);
             InstalledVersion {
                 directory,
                 installed_unix_ms,
@@ -225,6 +217,53 @@ pub(crate) fn installed_for_storage(paths: &Paths) -> Result<Vec<InstalledVersio
             }
         })
         .collect())
+}
+
+/// Why `version` may never be evicted: the default, a pin some project on this machine still
+/// holds, or the running binary.
+fn protection(
+    paths: &Paths,
+    default: Option<&str>,
+    pinned: &BTreeSet<String>,
+    version: &str,
+) -> Option<&'static str> {
+    if default == Some(version) {
+        Some("the default version")
+    } else if pinned.contains(version) {
+        Some("pinned by a project")
+    } else if running_binary_is(&version_binary(paths, version)) {
+        Some("the running binary")
+    } else {
+        None
+    }
+}
+
+/// Why `version` may not be removed now, read afresh: for the Storage Budget immediately before
+/// it removes an installed version, under [`try_lock_versions`].
+pub(crate) fn protected_now(paths: &Paths, version: &str) -> Option<&'static str> {
+    protection(
+        paths,
+        default_version(paths).as_deref(),
+        &pinned_everywhere(paths),
+        version,
+    )
+}
+
+/// The versions lock without waiting, for the Storage Budget: an `af self` that holds it now
+/// is changing the versions, the default or a pin, so nothing is evicted under it.
+pub(crate) fn try_lock_versions(paths: &Paths) -> Result<std::fs::File, String> {
+    let path = paths.versions.join(".lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(
+        |_| "`af self` holds the versions lock now; the next sweep tries again".to_string(),
+    )?;
+    Ok(file)
 }
 
 fn default_status(paths: &Paths, version: Option<&str>) -> &'static str {
@@ -263,8 +302,10 @@ fn require_receipt(paths: &Paths) -> Result<Receipt, String> {
     })
 }
 
-/// One installer at a time per layout: two dispatches racing to install the same pin would
-/// otherwise replace a directory the other is about to exec.
+/// One writer of the installed versions, the default and the pins at a time: two dispatches
+/// racing to install the same pin would otherwise replace a directory the other is about to
+/// exec, and the Storage Budget re-reads the default and the pins under it before it removes a
+/// version (ADR-0144).
 fn install_lock(paths: &Paths) -> Result<std::fs::File, String> {
     std::fs::create_dir_all(&paths.versions)
         .map_err(|error| format!("creating {}: {error}", paths.versions.display()))?;
@@ -805,6 +846,8 @@ fn install(
 /// Retarget the default symlink atomically and record the activation.
 fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
     require_self_managed(version)?;
+    // No sweep removes a version while it becomes the default.
+    let _versions = install_lock(paths)?;
     let binary = version_binary(paths, version);
     if !binary.is_file() {
         return Err(format!(
@@ -962,6 +1005,8 @@ struct Request {
 
 /// Remember that a lock pinned a version on this machine, so `remove` and `prune` keep it.
 fn record_seen_pin(paths: &Paths, lock: &Path, version: &str) {
+    // No sweep removes a version while a pin of it is recorded; recording stays best effort.
+    let _versions = install_lock(paths).ok();
     let mut state = read_state(paths);
     let lock = std::fs::canonicalize(lock).unwrap_or_else(|_| lock.to_path_buf());
     if state
@@ -1602,7 +1647,7 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
         println!("removed {}", paths.bin.display());
     }
     if paths.versions.is_dir() {
-        std::fs::remove_dir_all(&paths.versions).map_err(|error| error.to_string())?;
+        remove_below_parent(&paths.versions)?;
         println!("removed {}", paths.versions.display());
     }
     if purge {
@@ -1618,8 +1663,7 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
             config::data_home()?.join("af"),
         ] {
             if dir.exists() {
-                std::fs::remove_dir_all(&dir)
-                    .map_err(|error| format!("removing {}: {error}", dir.display()))?;
+                remove_below_parent(&dir)?;
                 println!("removed {}", dir.display());
             }
         }
@@ -1627,6 +1671,16 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
         println!("kept config, state, and cache (add --purge to remove them)");
     }
     Ok(())
+}
+
+/// Remove `dir` and everything below it through descriptors opened from its parent as given,
+/// never following a link below it (ADR-0144).
+fn remove_below_parent(dir: &Path) -> Result<(), String> {
+    let parent = dir
+        .parent()
+        .ok_or_else(|| format!("removing {}: it has no parent", dir.display()))?;
+    review_sandbox::remove_beneath(parent, dir, None)
+        .map_err(|error| format!("removing {}: {error}", dir.display()))
 }
 
 // ------------------------------------------------------------------------------------------

@@ -5,9 +5,9 @@
 //! The executor never force-pushes, writes no ref outside this Task's two branches, and never
 //! merges, marks ready or comments on anything. For a required job that did not succeed it keeps
 //! a bounded tail of the job's log, so a remote failure can be debugged where a local one is.
-//! When the Task finishes, and when collection takes it, [`cleanup`] closes the draft gate pull
-//! requests its evidence recorded and deletes exactly its two branches (ADR-0144); nothing else
-//! is ever closed or deleted.
+//! When the Task finishes, and before collection takes it, [`cleanup`] closes the draft gate pull
+//! requests its evidence recorded and deletes exactly its two branches (ADR-0144), each only
+//! while it still equals the recorded evidence; nothing else is ever closed or deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -86,24 +86,49 @@ pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
 /// The log excerpt kept for one check, across its unsuccessful jobs.
 pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
 
-/// Remove what one Task's remote checks left on GitHub (ADR-0144): close each draft gate pull
-/// request in `pull_requests` whose head and base are still this Task's two `af-gate/` branches,
-/// then delete whichever of those two branches the push target still has. Nothing else is ever
-/// closed, deleted or written. The record says what happened; a failure keeps its redacted
-/// reason and never changes the Task's result, and the caller records it either way.
+/// What a finished Task's evidence recorded of its gate (ADR-0144): the repository, the base
+/// and head commits its remote phases pushed (the latest observed), and the draft gate pull
+/// requests they opened. A cleanup touches only what still equals this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateEvidence {
+    /// The `owner/name` every recorded remote check named.
+    pub github: String,
+    /// The commit `af-gate/<task-id>/base` was pushed with.
+    pub base_commit: Option<String>,
+    /// The commit `af-gate/<task-id>/head` was last pushed with.
+    pub head_commit: Option<String>,
+    /// The draft gate pull requests the evidence recorded.
+    pub pull_requests: Vec<u64>,
+}
+
+/// Remove what one Task's remote checks left on GitHub (ADR-0144), proving ownership first. A
+/// recorded pull request is closed only when it is open, its base repository is the recorded
+/// repository, its head and base are exactly this Task's two `af-gate/` branches and its head
+/// commit is the recorded head commit. A branch is deleted only when the push target shows
+/// exactly the recorded commit for it, in one atomic push of the matching deletions. Anything
+/// that differs is left in place and named in the failed record's reason; nothing else is ever
+/// closed, deleted or written. The caller records the result either way, and it never changes
+/// the Task's result.
 pub fn cleanup(
     task_id: &str,
     target: &GithubPrTarget,
-    pull_requests: &[u64],
+    evidence: &GateEvidence,
     mapping: Option<&Path>,
     settings: &GithubPrSettings,
     deadline: Instant,
 ) -> TaskGateCleanupV1 {
-    let mut numbers: Vec<u64> = pull_requests.iter().copied().filter(|n| *n > 0).collect();
+    let mut numbers: Vec<u64> = evidence
+        .pull_requests
+        .iter()
+        .copied()
+        .filter(|n| *n > 0)
+        .collect();
     numbers.sort_unstable();
     numbers.dedup();
     let redactor = Redactor::new(&target.push_url, mapping);
-    let failures = cleanup_failures(task_id, target, &numbers, &redactor, settings, deadline);
+    let failures = cleanup_failures(
+        task_id, target, evidence, &numbers, &redactor, settings, deadline,
+    );
     let reason = (!failures.is_empty()).then(|| {
         let joined = redactor.apply(&failures.join("; "));
         let mut end = joined.len().min(MAX_REMOTE_DIAGNOSTIC_BYTES);
@@ -114,7 +139,7 @@ pub fn cleanup(
     });
     TaskGateCleanupV1 {
         schema: TASK_GATE_CLEANUP_V1.into(),
-        github: target.github.clone(),
+        github: evidence.github.clone(),
         pull_requests: numbers,
         branches: TaskGateCleanupV1::branches_of(task_id),
         outcome: if reason.is_some() {
@@ -126,9 +151,44 @@ pub fn cleanup(
     }
 }
 
+/// Why one recorded pull request is not this Task's to close, when it is not: every
+/// difference from the record, or nothing.
+fn foreign_pull(pull: &Pull, evidence: &GateEvidence, head: &str, base: &str) -> Vec<String> {
+    let mut differs = Vec::new();
+    if !pull.base_repo.eq_ignore_ascii_case(&evidence.github) {
+        differs.push(format!("its base repository is {:?}", pull.base_repo));
+    }
+    if !pull.head_repo.eq_ignore_ascii_case(&evidence.github) {
+        differs.push(format!("its head repository is {:?}", pull.head_repo));
+    }
+    if pull.head_ref != head {
+        differs.push(format!(
+            "its head branch is {:?}, not {head}",
+            pull.head_ref
+        ));
+    }
+    if pull.base_ref != base {
+        differs.push(format!(
+            "its base branch is {:?}, not {base}",
+            pull.base_ref
+        ));
+    }
+    match &evidence.head_commit {
+        Some(recorded) if pull.head_sha == *recorded => {}
+        Some(recorded) => differs.push(format!(
+            "its head commit {} is not the recorded {recorded}",
+            pull.head_sha
+        )),
+        None => differs.push("no head commit was recorded for this Task".into()),
+    }
+    differs
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cleanup_failures(
     task_id: &str,
     target: &GithubPrTarget,
+    evidence: &GateEvidence,
     numbers: &[u64],
     redactor: &Redactor,
     settings: &GithubPrSettings,
@@ -137,6 +197,13 @@ fn cleanup_failures(
     if !is_ref_component(task_id) {
         return vec![format!(
             "Task ID {task_id:?} cannot name af-gate branches, so none was pushed for it"
+        )];
+    }
+    if !target.github.eq_ignore_ascii_case(&evidence.github) {
+        return vec![format!(
+            "the mapping's target names github:{}, not the recorded github:{}; nothing was \
+             closed or deleted",
+            target.github, evidence.github
         )];
     }
     let tools = Tools {
@@ -158,18 +225,21 @@ fn cleanup_failures(
     let base = format!("af-gate/{task_id}/base");
     let api = Api {
         tools: &tools,
-        github: &target.github,
+        github: &evidence.github,
         cwd: repository.root(),
     };
     for number in numbers {
-        // Only a pull request that is still this Task's gate pull request is closed.
         match api.pull(*number) {
-            Ok(pull) if pull.head_ref != head || pull.base_ref != base => failures.push(format!(
-                "pull request #{number} is not between this Task's af-gate branches; left open"
-            )),
+            // A closed pull request has nothing left to close.
             Ok(pull) if !pull.open => {}
-            Ok(_) => {
-                if let Err(error) = api.close_pull(*number) {
+            Ok(pull) => {
+                let differs = foreign_pull(&pull, evidence, &head, &base);
+                if !differs.is_empty() {
+                    failures.push(format!(
+                        "pull request #{number} was left open: {}",
+                        differs.join(", ")
+                    ));
+                } else if let Err(error) = api.close_pull(*number) {
                     failures.push(error.describe(&format!("closing pull request #{number}")));
                 }
             }
@@ -178,23 +248,44 @@ fn cleanup_failures(
             }
         }
     }
-    let references = [format!("refs/heads/{base}"), format!("refs/heads/{head}")];
+    let branches = [
+        (
+            base.as_str(),
+            format!("refs/heads/{base}"),
+            &evidence.base_commit,
+        ),
+        (
+            head.as_str(),
+            format!("refs/heads/{head}"),
+            &evidence.head_commit,
+        ),
+    ];
     let url = target.push_url.as_str();
-    match repository.ls_remote(&tools, url, &[&references[0], &references[1]]) {
+    match repository.ls_remote(&tools, url, &[&branches[0].1, &branches[1].1]) {
         Ok(found) => {
-            let refspecs: Result<Vec<String>, String> = references
-                .iter()
-                .filter(|reference| found.contains_key(reference.as_str()))
-                .map(|reference| delete_refspec(reference, task_id))
-                .collect();
-            match refspecs {
-                Ok(refspecs) if refspecs.is_empty() => {}
-                Ok(refspecs) => {
-                    if let Err(error) = repository.push(&tools, url, &refspecs) {
-                        failures.push(error.describe("deleting the af-gate branches"));
+            let mut refspecs = Vec::new();
+            for (branch, reference, recorded) in &branches {
+                match (found.get(reference.as_str()), recorded) {
+                    (None, _) => {}
+                    (Some(now), Some(recorded)) if now == recorded => {
+                        match delete_refspec(reference, task_id) {
+                            Ok(refspec) => refspecs.push(refspec),
+                            Err(error) => failures.push(error),
+                        }
                     }
+                    (Some(now), Some(recorded)) => failures.push(format!(
+                        "branch {branch} was left: it holds {now}, not the recorded {recorded}"
+                    )),
+                    (Some(now), None) => failures.push(format!(
+                        "branch {branch} was left: it holds {now}, and no commit was recorded \
+                         for it"
+                    )),
                 }
-                Err(error) => failures.push(error),
+            }
+            if !refspecs.is_empty()
+                && let Err(error) = repository.push(&tools, url, &refspecs)
+            {
+                failures.push(error.describe("deleting the af-gate branches"));
             }
         }
         Err(error) => failures.push(error.describe("reading the af-gate branches")),

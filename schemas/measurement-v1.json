@@ -169,7 +169,8 @@
             "deadline",
             "malformed_report",
             "unit_mismatch",
-            "source_mutated"
+            "source_mutated",
+            "insufficient_disk"
           ]
         },
         "detail": {

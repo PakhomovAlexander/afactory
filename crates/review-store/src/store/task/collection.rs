@@ -464,15 +464,19 @@ impl EventStore {
         older_than_ms: u64,
         keep: usize,
     ) -> Result<CollectionPlan, StoreError> {
-        self.plan_at(cas, older_than_ms, keep, now()?)
+        self.plan_at(cas, older_than_ms, keep, now()?, None)
     }
 
+    /// The plan, with collected bytes counted for the collecting Tasks only: with `only`, the
+    /// Tasks the rules would collect that it names, so an object shared with a Task that stays
+    /// is never counted as freed.
     fn plan_at(
         &self,
         cas: &Cas,
         older_than_ms: u64,
         keep: usize,
         now_unix_ms: u64,
+        only: Option<&BTreeSet<String>>,
     ) -> Result<CollectionPlan, StoreError> {
         struct Seen {
             task: TaskProjection,
@@ -581,13 +585,16 @@ impl EventStore {
                 collected_bytes: 0,
             });
         }
+        let collects = |task: &CollectionCandidate| {
+            task.disposition.collects() && only.is_none_or(|only| only.contains(&task.task_id))
+        };
         let collecting: BTreeSet<String> = tasks
             .iter()
-            .filter(|task| task.disposition.collects())
+            .filter(|task| collects(task))
             .map(|task| task_run_id(&task.task_id))
             .collect::<Result<_, _>>()?;
         let retained = reach.retained(&collecting);
-        for task in tasks.iter_mut().filter(|task| task.disposition.collects()) {
+        for task in tasks.iter_mut().filter(|task| collects(task)) {
             let run = task_run_id(&task.task_id)?;
             task.collected_bytes = reach
                 .runs
@@ -646,6 +653,26 @@ impl EventStore {
         self.apply_collection(cas, 0, 0, Some(task_ids), false)
     }
 
+    /// [`Self::apply_task_collection`] restricted to the named Tasks: `af task gc --apply`
+    /// collects, under its age and newest-N bounds, only the Tasks whose gate leftovers are gone
+    /// (ADR-0144). The plan counts collected bytes for the Tasks it collects only.
+    pub fn apply_task_collection_among(
+        &mut self,
+        cas: &Cas,
+        older_than_ms: u64,
+        keep: usize,
+        task_ids: &BTreeSet<String>,
+        stop_after_tombstones: bool,
+    ) -> Result<CollectionOutcome, StoreError> {
+        self.apply_collection(
+            cas,
+            older_than_ms,
+            keep,
+            Some(task_ids),
+            stop_after_tombstones,
+        )
+    }
+
     fn apply_collection(
         &mut self,
         cas: &Cas,
@@ -657,7 +684,7 @@ impl EventStore {
         let leased = std::time::SystemTime::now();
         let lock = self.store_lease()?;
         let now_unix_ms = now()?;
-        let plan = self.plan_at(cas, older_than_ms, keep, now_unix_ms)?;
+        let plan = self.plan_at(cas, older_than_ms, keep, now_unix_ms, only)?;
         refuse_live_writers(&plan.live_writers)?;
         let mut tombstoned = Vec::new();
         for task in plan.tasks.iter().filter(|task| {

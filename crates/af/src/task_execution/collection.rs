@@ -36,9 +36,35 @@ pub(crate) fn gc(
         .ok_or("--older-than is too large")?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let (plan, outcome) = if apply {
+        // The gate leftovers of every Task this plan collects go first, and a Task whose cleanup
+        // does not end done stays for a later `af task gc --apply` or sweep (ADR-0144); the
+        // rest is collected under the Store's lock with this command's bounds, as before.
+        let planned = EventStore::open_read_only(state.join("events.sqlite"))
+            .and_then(|store| store.plan_task_collection(&cas, older_than_ms, keep))
+            .map_err(|e| e.to_string())?;
+        let keep_gate = crate::storage::gate::keep_gate_pull_requests();
+        let mut cleared = std::collections::BTreeSet::new();
+        for task in planned
+            .tasks
+            .iter()
+            .filter(|task| task.disposition.collects())
+        {
+            match crate::storage::gate::before_collection(&state, &task.task_id, keep_gate) {
+                Ok(()) => {
+                    cleared.insert(task.task_id.clone());
+                }
+                Err(why) => eprintln!("af task gc: {why}"),
+            }
+        }
         let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
         let outcome = store
-            .apply_task_collection(&cas, older_than_ms, keep, stop_after_tombstones())
+            .apply_task_collection_among(
+                &cas,
+                older_than_ms,
+                keep,
+                &cleared,
+                stop_after_tombstones(),
+            )
             .map_err(|e| e.to_string())?;
         (outcome.plan.clone(), Some(outcome))
     } else {

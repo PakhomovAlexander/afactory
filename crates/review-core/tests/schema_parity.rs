@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 169] = [
+const SCHEMAS: [&str; 170] = [
     "task-report-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -146,6 +146,7 @@ const SCHEMAS: [&str; 169] = [
     "task-transition-v5.json",
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
+    "task-storage-sweep-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -2529,6 +2530,106 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
         },
     ] {
         assert!(forged.validate().is_err());
+    }
+}
+
+/// ADR-0144: a `storage_sweep` transition carries `af/TaskStorageSweep@1` inline, references no
+/// artifact, names a Task for a task removal and only for one, lists at most 256 removals and 64
+/// bounded failures, and is never empty; the schema and the typed contract refuse the same
+/// shapes.
+#[test]
+fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    use review_core::task::storage_sweep::{
+        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
+        TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+    };
+    let sweep = TaskStorageSweepV1 {
+        schema: TASK_STORAGE_SWEEP_V1.into(),
+        removals: vec![
+            StorageSweepRemovalV1 {
+                kind: StorageSweepKindV1::Task,
+                path: "/home/me/.local/state/af/task/local/0123456789abcdef".into(),
+                task_id: Some("gc-older".into()),
+                bytes: 4096,
+                rule: StorageSweepRuleV1::Collection,
+            },
+            StorageSweepRemovalV1 {
+                kind: StorageSweepKindV1::WarmKey,
+                path: "/home/me/.cache/af/task-build-cache/a/b".into(),
+                task_id: None,
+                bytes: 1 << 20,
+                rule: StorageSweepRuleV1::Budget,
+            },
+        ],
+        omitted_removals: 0,
+        failures: vec!["removing /x: it changed since it was measured".into()],
+        omitted_failures: 0,
+        stop: StorageSweepStopV1::NothingEvictable,
+        max_bytes: 1 << 30,
+        total_before: 2 << 30,
+        total_after: (2 << 30) - (1 << 20) - 4096,
+    };
+    sweep.validate().unwrap();
+    let transition = TaskTransitionV1 {
+        writer: "af-storage-sweep-1".into(),
+        epoch: 3,
+        now_unix_ms: 100,
+        change: TaskChangeV1::StorageSweep {
+            sweep: sweep.clone(),
+        },
+    };
+    transition.validate().unwrap();
+    assert!(transition.artifact_refs().is_empty(), "references nothing");
+    let value = serde_json::to_value(&transition).unwrap();
+    assert_eq!(value["change"]["kind"], "storage_sweep");
+    assert_valid("task-transition-v5.json", &value);
+    assert_valid("task-storage-sweep-v1.json", &value["change"]["sweep"]);
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    let removal = |field: &str, bad: Value| {
+        let mut forged = value.clone();
+        forged["change"]["sweep"]["removals"][0][field] = bad;
+        forged
+    };
+    let mut unnamed = value.clone();
+    unnamed["change"]["sweep"]["removals"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("task_id");
+    let mut empty = value.clone();
+    empty["change"]["sweep"]["removals"] = json!([]);
+    empty["change"]["sweep"]["failures"] = json!([]);
+    let mut too_many = value.clone();
+    too_many["change"]["sweep"]["failures"] = json!(vec!["x"; 65]);
+    for (why, forged) in [
+        ("schema", {
+            let mut forged = value.clone();
+            forged["change"]["sweep"]["schema"] = json!("af/TaskStorageSweep@2");
+            forged
+        }),
+        ("kind", removal("kind", json!("task_store"))),
+        ("relative path", removal("path", json!("relative/store"))),
+        ("rule", removal("rule", json!("whim"))),
+        ("task on a version", {
+            let mut forged = removal("kind", json!("version"));
+            forged["change"]["sweep"]["removals"][0]["task_id"] = json!("gc-older");
+            forged
+        }),
+        ("task removal without its Task", unnamed),
+        ("nothing removed or failed", empty),
+        ("failures past the bound", too_many),
+        ("unknown field", {
+            let mut forged = value.clone();
+            forged["change"]["sweep"]["push_url"] = json!("https://example.invalid/x.git");
+            forged
+        }),
+    ] {
+        assert_invalid("task-transition-v5.json", &forged, why);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &forged)
+                .is_err(),
+            "{why}"
+        );
     }
 }
 

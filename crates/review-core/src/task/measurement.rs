@@ -629,6 +629,9 @@ pub enum MeasurementFailureReasonV1 {
     UnitMismatch,
     /// The command changed or added an entry of its read-only source.
     SourceMutated,
+    /// The machine was below its free-disk floor (ADR-0144): the repetition never materialized
+    /// its sandbox and its command never started.
+    InsufficientDisk,
 }
 
 impl MeasurementFailureReasonV1 {
@@ -640,6 +643,7 @@ impl MeasurementFailureReasonV1 {
             Self::MalformedReport => "malformed_report",
             Self::UnitMismatch => "unit_mismatch",
             Self::SourceMutated => "source_mutated",
+            Self::InsufficientDisk => "insufficient_disk",
         }
     }
 }

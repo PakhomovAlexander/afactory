@@ -198,6 +198,14 @@ impl Fixture {
     }
 
     fn af(&self, state: &Path, args: &[&str]) -> (i32, String, String) {
+        let mut args = args.to_vec();
+        let state = state.to_str().unwrap();
+        args.extend(["--state", state]);
+        self.machine(&args)
+    }
+
+    /// `af` with this machine's settings and exactly `args`: a command that takes no `--state`.
+    fn machine(&self, args: &[&str]) -> (i32, String, String) {
         let home = self.root.join("home");
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let path = std::env::join_paths(
@@ -224,8 +232,6 @@ impl Fixture {
             .env_remove("CARGO_TARGET_DIR")
             .envs(self.settings.borrow().iter().cloned())
             .args(args)
-            .arg("--state")
-            .arg(state)
             .output()
             .unwrap();
         (
@@ -1016,4 +1022,233 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
             "{pipeline}"
         );
     }
+}
+
+impl Fixture {
+    /// `af storage prune --apply --json` with this machine's settings and `extra` ones.
+    fn prune(&self, extra: &[(&str, &str)]) -> Value {
+        let saved = self.settings.borrow().clone();
+        self.settings.borrow_mut().extend(
+            extra
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        );
+        let (code, stdout, stderr) = self.machine(&["storage", "prune", "--apply", "--json"]);
+        *self.settings.borrow_mut() = saved;
+        assert_eq!(code, 0, "{stderr}\n{stdout}");
+        serde_json::from_str(stdout.trim()).unwrap()
+    }
+
+    fn shown(&self, task_id: &str) -> Value {
+        let (code, stdout, stderr) = self.af(&self.state, &["task", "show", task_id, "--json"]);
+        assert_eq!(code, 0, "{stderr}");
+        serde_json::from_str(stdout.trim()).unwrap()
+    }
+
+    /// The remote twin run to a satisfied result with its gate kept, so a test can change what
+    /// the remote holds before the cleanup runs.
+    fn run_keeping_the_gate(&self, task_id: &str) -> Value {
+        self.settings
+            .borrow_mut()
+            .push(("AF_STORAGE__KEEP_GATE_PULL_REQUESTS".into(), "true".into()));
+        let done = run_remote_task(self, task_id);
+        self.settings.borrow_mut().clear();
+        assert!(done.get("gate_cleanups").is_none(), "{done}");
+        done
+    }
+
+    fn bare_ref(&self, branch: &str) -> String {
+        git(
+            &self.bare,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                &format!("refs/heads/af-gate/{TASK}/{branch}"),
+            ],
+        )
+    }
+}
+
+/// ADR-0144: the cleanup proves ownership before it closes or deletes. A head branch another
+/// pusher replaced stays, with the pull request whose head moved with it, and the cleanup is
+/// recorded failed naming them; a pull request whose head commit changed stays open the same
+/// way while the two branches that still hold the recorded commits go.
+#[test]
+fn a_replaced_gate_branch_or_a_moved_pull_request_is_left_and_the_cleanup_recorded_failed() {
+    let fixture = fixture();
+    fixture.map("");
+    fixture.run_keeping_the_gate(TASK);
+    let base = fixture.bare_ref("base");
+    git(
+        &fixture.bare,
+        &[
+            "update-ref",
+            &format!("refs/heads/af-gate/{TASK}/head"),
+            &base,
+        ],
+    );
+    let pruned = fixture.prune(&[]);
+    assert_eq!(pruned["gate_cleanups"][0]["task_id"], TASK, "{pruned}");
+    assert_eq!(pruned["gate_cleanups"][0]["outcome"], "failed", "{pruned}");
+    let shown = fixture.shown(TASK);
+    let [cleanup] = shown["gate_cleanups"].as_array().unwrap().as_slice() else {
+        panic!("one gate cleanup: {shown}");
+    };
+    assert_eq!(cleanup["outcome"], "failed");
+    let reason = cleanup["reason"].as_str().unwrap();
+    assert!(
+        reason.contains(&format!(
+            "branch af-gate/{TASK}/head was left: it holds {base}"
+        )),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("pull request #12 was left open"),
+        "{reason}"
+    );
+    assert!(!reason.contains(fixture.bare.to_str().unwrap()), "{reason}");
+    assert_eq!(fixture.bare_ref("head"), base, "the replaced head stays");
+    assert_eq!(fixture.bare_ref("base"), "", "the recorded base goes");
+    let calls = std::fs::read_to_string(fixture.gh_state.join("calls.log")).unwrap();
+    assert!(!calls.contains("PATCH"), "{calls}");
+    assert_eq!(shown["result"]["acceptance"], "satisfied");
+
+    let moved = self::fixture();
+    moved.map("");
+    moved.run_keeping_the_gate(TASK);
+    std::fs::write(moved.gh_state.join("pull-head-sha"), "e".repeat(40)).unwrap();
+    let pruned = moved.prune(&[]);
+    assert_eq!(pruned["gate_cleanups"][0]["outcome"], "failed", "{pruned}");
+    let shown = moved.shown(TASK);
+    let reason = shown["gate_cleanups"][0]["reason"].as_str().unwrap();
+    assert!(
+        reason.contains(&format!(
+            "pull request #12 was left open: its head commit {} is not the recorded",
+            "e".repeat(40)
+        )),
+        "{reason}"
+    );
+    let calls = std::fs::read_to_string(moved.gh_state.join("calls.log")).unwrap();
+    assert!(!calls.contains("PATCH"), "{calls}");
+    assert!(
+        !calls.contains("--force") && !calls.contains(" +"),
+        "{calls}"
+    );
+    assert_eq!(
+        git(
+            &moved.bare,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+        ),
+        "",
+        "both branches still held the recorded commits"
+    );
+}
+
+fn tombstoned(fixture: &Fixture, task_id: &str) -> bool {
+    let (code, stdout, stderr) = fixture.af(&fixture.state, &["task", "list", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let list: Value = serde_json::from_str(stdout.trim()).unwrap();
+    list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["task_id"] == task_id)
+        .unwrap_or_else(|| panic!("{task_id} in {list}"))
+        .get("collected")
+        .is_some()
+}
+
+/// ADR-0144: collection never discards a pending gate cleanup. An old finished remote-check Task
+/// whose cleanup `gh` keeps refusing stays through `af storage prune --apply` and through
+/// `af task gc --apply`; once `gh` answers, a later sweep cleans it up and then collects it.
+#[test]
+fn a_task_with_gate_leftovers_is_collected_only_after_its_cleanup_is_done() {
+    let fixture = fixture();
+    fixture.map("");
+    std::fs::write(fixture.gh_state.join("refuse-close"), b"").unwrap();
+    let done = run_remote_task(&fixture, TASK);
+    assert_eq!(done["gate_cleanups"][0]["outcome"], "failed", "{done}");
+    let eager = [
+        ("AF_STORAGE__KEEP_DAYS", "0"),
+        ("AF_STORAGE__KEEP_TASKS", "0"),
+    ];
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let pruned = fixture.prune(&eager);
+    assert!(
+        pruned["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|removal| removal["task_id"] != TASK),
+        "{pruned}"
+    );
+    assert!(
+        pruned["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| failure.as_str().unwrap().contains(&format!(
+                "Task `{TASK}` is not collected before its gate cleanup is done"
+            ))),
+        "{pruned}"
+    );
+    assert!(!tombstoned(&fixture, TASK));
+
+    // `af task gc --apply` keeps it the same way.
+    let (code, stdout, stderr) = fixture.af(
+        &fixture.state,
+        &[
+            "task",
+            "gc",
+            "--older-than",
+            "0",
+            "--keep",
+            "0",
+            "--apply",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let collected: Value = serde_json::from_str(stdout.trim()).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("task-gc-v1.json"), &collected);
+    assert_eq!(collected["applied"]["tombstoned"], json!([]), "{collected}");
+    assert!(
+        stderr.contains("is not collected before its gate cleanup is done"),
+        "{stderr}"
+    );
+    assert!(!tombstoned(&fixture, TASK));
+    let shown = fixture.shown(TASK);
+    assert!(
+        shown["gate_cleanups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|cleanup| cleanup["outcome"] == "failed"),
+        "{shown}"
+    );
+
+    // Once `gh` answers, the next sweep cleans up first and then collects.
+    std::fs::remove_file(fixture.gh_state.join("refuse-close")).unwrap();
+    let pruned = fixture.prune(&eager);
+    assert_eq!(pruned["gate_cleanups"][0]["outcome"], "done", "{pruned}");
+    assert!(
+        pruned["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|removal| removal["task_id"] == TASK && removal["rule"] == "collection"),
+        "{pruned}"
+    );
+    assert!(tombstoned(&fixture, TASK));
+    assert_eq!(
+        std::fs::read_to_string(fixture.gh_state.join("pull-state")).unwrap(),
+        "closed\n"
+    );
+    assert_eq!(
+        git(
+            &fixture.bare,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+        ),
+        ""
+    );
 }
