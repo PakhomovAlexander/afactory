@@ -1,9 +1,9 @@
-# ADR-0196: Disable Providers until a machine-local expiry
+# ADR-0199: Disable Providers until a machine-local expiry
 
 **Status:** proposed (2026-10-23). Extends
 [ADR-0146](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md) with the v3
 status document; its capability checks remain binding. Amended by
-[ADR-0197](0197-preserve-provider-id-domain-and-clear-orphaned-disables.md) for long IDs,
+[ADR-0200](0200-preserve-provider-id-domain-and-clear-orphaned-disables.md) for long IDs,
 orphan cleanup and human-readable UTC deadlines.
 
 ## Context

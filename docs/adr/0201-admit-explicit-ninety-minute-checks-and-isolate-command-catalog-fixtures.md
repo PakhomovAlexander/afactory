@@ -1,4 +1,4 @@
-# ADR-0198: Admit explicit ninety-minute checks and isolate Command catalog fixtures
+# ADR-0201: Admit explicit ninety-minute checks and isolate Command catalog fixtures
 
 **Status:** proposed (2026-10-23).
 

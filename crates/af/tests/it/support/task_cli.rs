@@ -34,6 +34,38 @@ pub fn command_fixture_independence(repo: &Path) {
     assert_eq!(std::fs::read(production_path).unwrap(), production);
 }
 
+#[test]
+fn command_fixture_policy_is_scoped_to_a_disposable_catalog() {
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("command-fixture");
+    copy_tree(&workspace.join(".af"), &repo.join(".af"));
+    crate::planning_models::assert_repository_policy(&repo);
+    let path = repo.join(".af/task-catalog.toml");
+    let mut expected: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+    command_fixture_independence(&repo);
+
+    let actual: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        actual["independence"]["command_workers_by_package"].as_bool(),
+        Some(true)
+    );
+    for field in [
+        "distinct_principals",
+        "distinct_providers",
+        "distinct_models",
+    ] {
+        assert_eq!(actual["independence"][field].as_bool(), Some(false));
+    }
+    expected["independence"] = actual["independence"].clone();
+    assert_eq!(actual, expected, "all other catalog authority is preserved");
+    crate::planning_models::assert_repository_policy(&workspace);
+}
+
 pub fn copy_tree(source: &Path, destination: &Path) {
     std::fs::create_dir_all(destination).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {

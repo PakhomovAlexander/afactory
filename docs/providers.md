@@ -106,7 +106,7 @@ Review and model preflights, Task admission and every captured or resumed Task p
 recheck suspension before account/model probes. A refusal names the expiry and enable command.
 Calls admitted before a concurrent disable may finish; this command does not kill them or revoke
 bytes already sent. The control is per registered ID; another separately registered Provider has
-its own availability. See [ADR-0196](adr/0196-disable-providers-until-a-machine-local-expiry.md).
+its own availability. See [ADR-0199](adr/0199-disable-providers-until-a-machine-local-expiry.md).
 
 ## Tuning Worker independence
 

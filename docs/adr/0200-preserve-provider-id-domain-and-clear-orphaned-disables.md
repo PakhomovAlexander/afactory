@@ -1,7 +1,7 @@
-# ADR-0197: Preserve the Provider ID domain and clear orphaned disables
+# ADR-0200: Preserve the Provider ID domain and clear orphaned disables
 
 **Status:** proposed (2026-10-23). Amends
-[ADR-0196](0196-disable-providers-until-a-machine-local-expiry.md).
+[ADR-0199](0199-disable-providers-until-a-machine-local-expiry.md).
 
 ## Context
 
