@@ -163,10 +163,13 @@ def check_anchored(pattern):
 def check_toml_subset():
     real_text = (ROOT / '.config/nextest.toml').read_text(encoding='utf-8')
     real = MODULE.parse_toml(real_text, 'real')
+    default = real['profile']['default']
     ci = real['profile']['ci']
     assert (ci['retries'], ci['fail-fast'], ci['junit']) == (0, False, {'path': 'junit.xml'}), ci
-    assert ci['slow-timeout'] == {'period': '120s'}, ci
-    [override] = ci['overrides']
+    assert (default['test-threads'], ci['test-threads']) == (4, 4), real
+    assert default['slow-timeout'] == {'period': '120s'}, default
+    assert 'overrides' not in ci, ci
+    [override] = default['overrides']
     assert (override['threads-required'], override['priority']) == ('num-test-threads', 100)
     # The multi-line literal filter keeps its text byte for byte, without the leading newline,
     # and every `test(/.../)` clause of it becomes one pattern, in order.
