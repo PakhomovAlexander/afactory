@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-config:2",
+  "title": "af/TelemetryConfig@2",
+  "description": "`af telemetry config RUN --json` (telemetry design §7.4, §10; ADR-0153): the configuration record of one run in one execution, assembled from the `config` parts (`af/TelemetryConfig@2` records) that name that run — its run id and its `af.run` span (`run_span_id`) — never another run's of the same execution (a measurement run inside a Task Attempt has its own). The record has three sections in a fixed order, each written as as many parts as the 16 KiB record bound needs: `configuration` (`af --version --json`, layer `version`; the effective configuration, one row per key with the configuration layer it came from and its file, home-relative, and line as `origin` — a value whose origin is the environment layer is `<env>` and its origin the variable's name; the digests of `.af/af.toml` and `.af/af.lock`, layer `policy`) and `machine` (the Provider registry entries with grant paths as placeholders, layer `provider`; the harness versions the preflight probed and the Claude Code managed-settings digests, layer `harness`; the host, layer `host`; the names, never the values, of the `AF_*` and `OTEL_*` variables present, layer `variable`), both written when the run's `af.run` opens; and `plan` (the policy revision, the pipeline's name, digest and nodes, the Task's id, kind and pipeline, layer `policy`; the execution bindings, layer `binding`; a measurement's own identity, layer `measurement`), written when the plan resolves. A section is `complete` when every part from 1 to `parts` is retained and the last is marked complete, `incomplete` when one is missing (`missing_parts`), `unknown` when no part of it is retained (a run refused before its plan resolved has no plan section). `state` is `complete` when every section is, `incomplete` otherwise, `absent` when the run recorded no part in the execution (a level below `spans`). The rows keep the sections' order. Every value passed the credential rules; a secret-named key withholds its value. `texts` lists the texts the record names (`af.config.text`: the pipeline, the Task file, `.af/af.toml`) by digest and size, at every level that records the configuration. Nothing here is evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "store_id",
+    "run_id",
+    "execution_id",
+    "run_span_id",
+    "state",
+    "sections",
+    "rows",
+    "texts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TelemetryConfig@2"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "store_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "run_span_id": {
+      "type": "string"
+    },
+    "ordinal": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "state": {
+      "enum": [
+        "complete",
+        "incomplete",
+        "absent"
+      ]
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "state",
+          "missing_parts"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "configuration",
+              "plan",
+              "machine"
+            ]
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "incomplete",
+              "unknown"
+            ]
+          },
+          "parts": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "missing_parts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "value",
+          "layer",
+          "origin"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "layer": {
+            "type": "string"
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "texts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "digest",
+          "bytes"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+# INERT example. Manual complete-loop proof precedes separate Ant enablement.
+[Unit]
+Description=Drive already authorized AF Ant occurrences
+
+[Service]
+Type=oneshot
+User=@OWNER@
+UMask=0077
+ExecStart=/opt/af-perf/bin/af ant tick --json
+# A tick can own a native Task, but returns promptly at an observable Wait.
+TimeoutStartSec=8d
+TimeoutStopSec=120
+KillMode=control-group
+PrivateTmp=no
+PrivateMounts=no

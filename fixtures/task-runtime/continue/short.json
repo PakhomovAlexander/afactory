@@ -1,0 +1,9 @@
+{
+  "task_id": "short",
+  "kind": "implement",
+  "goal": "Document paginate; the design says how.",
+  "context": [
+    "docs/design.md#paginate",
+    "pagination.py"
+  ]
+}

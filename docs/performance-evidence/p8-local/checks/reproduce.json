@@ -1,0 +1,18 @@
+{
+  "original_run_id": "p8_local_aa",
+  "report_documents_identical_apart_from_linked_diagnostics": true,
+  "rerun_parent_run_id": "p8_local_aa",
+  "rerun_plan_differs_only_in_identity": true,
+  "rerun_plan_fields_differing": [
+    "parent_run_id",
+    "plan_digest",
+    "run_id"
+  ],
+  "summary_identical_before_its_diagnostics_section": true,
+  "verdict_sha256": {
+    "aggregate": "sha256:ec1787ecceac6219de9e91e45fa326dd32ad506a23accc1dd32c838e653ade40",
+    "report": "sha256:ec1787ecceac6219de9e91e45fa326dd32ad506a23accc1dd32c838e653ade40",
+    "reproduced_report": "sha256:ec1787ecceac6219de9e91e45fa326dd32ad506a23accc1dd32c838e653ade40"
+  },
+  "verdicts_identical": true
+}

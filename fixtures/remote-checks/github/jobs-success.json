@@ -1,0 +1,55 @@
+{
+  "total_count": 2,
+  "jobs": [
+    {
+      "id": 1001,
+      "run_id": 77,
+      "run_attempt": 1,
+      "name": "validation / lint",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-04T10:00:00Z",
+      "completed_at": "2026-10-04T10:12:30Z",
+      "html_url": "https://github.com/octo/gate/actions/runs/77/job/1001",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run make check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        }
+      ]
+    },
+    {
+      "id": 1002,
+      "run_id": 77,
+      "run_attempt": 1,
+      "name": "validation / check (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-04T10:00:00Z",
+      "completed_at": "2026-10-04T10:12:30Z",
+      "html_url": "https://github.com/octo/gate/actions/runs/77/job/1002",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run make check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        }
+      ]
+    }
+  ]
+}

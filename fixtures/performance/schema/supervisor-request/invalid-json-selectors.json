@@ -1,0 +1,66 @@
+{
+  "schema": "af.perf-supervisor-request/4",
+  "argv": [
+    "/Users/lab/target/performance/run/build/artifacts/baseline/perf-probe"
+  ],
+  "environment": {
+    "PATH": "/usr/bin:/bin"
+  },
+  "cwd": "/private/scratch/perf-probe-0",
+  "stdin": "{\"schema\":\"af.perf-probe-request/2\"}",
+  "timeout_ms": 30000,
+  "stdout_cap_bytes": 65536,
+  "log_cap_bytes": 262144,
+  "cleanup_grace_ms": 5000,
+  "containment": "process_group",
+  "scratch": null,
+  "setup": null,
+  "stdout_patterns": [],
+  "stdout_json": [
+    {
+      "path": "items.*.n0",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n1",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n2",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n3",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n4",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n5",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n6",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n7",
+      "kind": "integer",
+      "equals": []
+    },
+    {
+      "path": "items.*.n8",
+      "kind": "integer",
+      "equals": []
+    }
+  ]
+}

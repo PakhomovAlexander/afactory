@@ -1,0 +1,7 @@
+{
+  "fixture": "telemetry-bench-store",
+  "harness": {
+    "mode": "findings",
+    "findings_per_reviewer": 25
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:check-fingerprint:1",
+  "title": "af/check-fingerprint@1",
+  "description": "The document whose canonical JSON the check fingerprint `af.check.fingerprint` hashes (telemetry design §9; ADR-0153): `sha256:` and the 64 hex digits of SHA-256 over its canonical JSON. It holds the declared check (program, resolved arguments, timeout, working-directory policy), the executor identity (platform triple, the digest of the resolved program's bytes, the toolchain snapshot id when one is declared, else null), the digest of the effective environment the check ran with — every name and value after the runtime paths the runner introduced (the sandbox root, `CARGO_HOME`, `RUSTUP_HOME`, `CARGO_TARGET_DIR`, the warm cache directories, the temporary directory) became placeholders, hashed and never retained — and the Snapshot digest. When a part is unavailable, or the caller did not name the runtime paths it introduced, there is no document and the fingerprint is `unknown`. Telemetry only: no kernel decision reads it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "check",
+    "executor",
+    "environment_digest",
+    "snapshot_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/check-fingerprint@1"
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program",
+        "args",
+        "timeout_ms",
+        "working_directory"
+      ],
+      "properties": {
+        "program": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "working_directory": {
+          "const": "sandbox_root"
+        }
+      }
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "program_digest",
+        "toolchain"
+      ],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "program_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "toolchain": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

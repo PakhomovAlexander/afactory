@@ -1,0 +1,91 @@
+schema = "af.pipeline/6"
+name = "custom/capitalize-pipeline"
+version = "1.0.1"
+max_attempts = 8
+max_parallel = 1
+[accepts]
+kinds = ["capitalize"]
+required_facts = {}
+[slots.capitalize]
+worker = "custom/capitalize-worker"
+role = "capitalize"
+input_type = "custom/StructuredInput@1"
+output_type = "custom/Capitalized@1"
+min_attempts = 1
+max_attempts = 2
+allow_local_replacement = false
+independent_from = []
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.note]
+artifact_type = "custom/Note@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.note.affinity]
+kind = "unbound"
+
+[contract.outputs.capitalized]
+artifact_type = "custom/Capitalized@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.capitalized.affinity]
+kind = "unbound"
+
+[contract.outputs.validation]
+artifact_type = "af/StructuredValidation@1"
+cardinality = "one"
+optional = false
+covers = ["structured"]
+[contract.outputs.validation.affinity]
+kind = "unbound"
+
+[[nodes]]
+id = "work"
+[nodes.operator]
+op = "worker"
+slot = "capitalize"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.note]
+kind = "input"
+port = "note"
+
+[[nodes]]
+id = "accept"
+[nodes.operator]
+op = "structured_accept"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.note]
+kind = "input"
+port = "note"
+[nodes.inputs.result_capitalized]
+kind = "node"
+node = "work"
+port = "capitalized"
+
+[outputs.capitalized]
+kind = "node"
+node = "accept"
+port = "capitalized"
+
+[outputs.validation]
+kind = "node"
+node = "accept"
+port = "validation"
+
+[coverage.structured]
+kind = "node"
+node = "accept"
+port = "validation"

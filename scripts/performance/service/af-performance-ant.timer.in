@@ -1,0 +1,8 @@
+# INERT example; schedule authority remains the pinned Ant definition in the Scenario Store.
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+Unit=af-performance-ant.service
+
+[Install]
+WantedBy=timers.target

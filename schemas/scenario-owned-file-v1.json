@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-owned-file:1",
+  "title": "scenario-owned-file v1",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "owner",
+    "content"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-owned-file@1"
+    },
+    "owner": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "content": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/text"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# One bounded telemetry collection cycle (ADR-0215, docs/performance-telemetry.md). An example
+# for a future always-on Linux collection host: nothing installs or enables it. The collector
+# runs from a trusted checkout the operator pins (here /opt/af-perf-telemetry/control), never
+# from a measured candidate, as its own unprivileged user, with the read token only in its
+# environment file.
+[Unit]
+Description=AF performance telemetry collection (one bounded cycle)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=af-perf
+Group=af-perf
+EnvironmentFile=/etc/af-perf-telemetry/token.env
+ExecStartPre=/usr/bin/git -C /var/lib/af-perf-telemetry/afactory.git fetch --prune --quiet origin
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf-telemetry/control/scripts/performance/cli.py telemetry-collect --config /etc/af-perf-telemetry/collector.toml
+TimeoutStartSec=40min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/af-perf-telemetry

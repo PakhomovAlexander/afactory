@@ -1,0 +1,10 @@
+[Unit]
+Description=AF weekly token-free fix sweep and needs-info reminders on claw-3
+
+[Timer]
+OnCalendar=Sun *-*-* 12:15:00 UTC
+Persistent=true
+Unit=af-backlog-sweep.service
+
+[Install]
+WantedBy=timers.target
