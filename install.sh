@@ -53,7 +53,7 @@ case "$(uname -s):$(uname -m)" in
   *) echo "af: unsupported platform $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/af-install.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 # How releases are reached: anonymously over HTTPS with curl, or through an authenticated
@@ -251,7 +251,7 @@ AF_SELF_OFFLINE=1 "$DATA/$version/af" self update --version "$version" >/dev/nul
 # At most six lines end the install: the version and path above, the next steps of a first run,
 # and the PATH line for this shell when the bin directory is not on PATH yet.
 echo "next:"
-echo "  af provider detect   find and connect your claude/codex logins"
+echo "  af provider detect   preview claude/codex logins; --apply registers them"
 echo "  af onboard            in a repository: preview .af/ (token-free)"
 echo "  af self setup-shell --write   completions + man pages"
 case ":$PATH:" in

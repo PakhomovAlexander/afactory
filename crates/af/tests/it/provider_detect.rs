@@ -266,6 +266,24 @@ fn detect_with_nothing_found_prints_the_install_guidance() {
     assert!(machine.registry().is_empty());
 }
 
+#[test]
+fn detect_with_a_cli_but_no_login_does_not_claim_any_login_registered() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    let output = machine.af(&["provider", "detect"]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let stdout = out(&output);
+    assert!(stdout.contains("No auth directory was found."), "{stdout}");
+    assert!(
+        stdout.contains("No login was found to register."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("every authenticated login found here is registered"),
+        "{stdout}"
+    );
+}
+
 /// Item 7: `af provider status` with no CLI and no registry entry prints the same guidance, and
 /// with directories present but unregistered names them, unprobed.
 #[test]

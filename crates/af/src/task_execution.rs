@@ -2433,6 +2433,14 @@ fn start_captured(
             revision.task_id
         );
     }
+    if options.plan_only
+        && !options.json
+        && let Some(seconds) = options.timeout_secs
+    {
+        println!(
+            "timeout --timeout-secs {seconds}: whole Task cap (also bounded by Task file limits.wall_ms)"
+        );
+    }
     let presented = present_with_advisory(
         &cas,
         &store,

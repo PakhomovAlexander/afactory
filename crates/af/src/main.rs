@@ -32,6 +32,7 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Ve
 use sha2::{Digest, Sha256};
 
 mod af_paths;
+mod agent_setup;
 mod authority;
 mod caches;
 mod cli;
@@ -1132,8 +1133,15 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     }
 }
 
-fn help_command(words: &[String]) -> Result<i32, String> {
+fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
     use clap::CommandFactory as _;
+    if snippet {
+        if words == ["agents"] {
+            print!("{}", topics::agent_snippet());
+            return Ok(0);
+        }
+        return Err("--snippet belongs to `af help agents`; run af help agents --snippet".into());
+    }
     let mut root = cli::Af::command();
     if words.is_empty() {
         root.print_long_help().map_err(|error| error.to_string())?;
@@ -1615,7 +1623,12 @@ fn main() {
             }),
         ),
         cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
-        cli::Command::Help { words } => ("af help", help_command(&words)),
+        cli::Command::Help { words, snippet } => ("af help", help_command(&words, snippet)),
+        cli::Command::Setup { command } => match command {
+            cli::SetupCommand::Agents { repo, write } => {
+                ("af setup agents", agent_setup::run(&repo, write))
+            }
+        },
     };
     if let Some(signal) = interrupt::received() {
         task_execution::print_last_lines();
@@ -2361,6 +2374,12 @@ fn print_plan(options: &Options) -> Result<(), String> {
     let selectors = &plan["selectors"];
     let resolved = &plan["resolved"];
     plan_line!("review plan (token-free; no Campaign state)");
+    if let Some(timeout) = options.timeout {
+        plan_line!(
+            "timeout  --timeout-secs {}: per reviewer Attempt",
+            timeout.as_secs()
+        );
+    }
     plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),

@@ -133,6 +133,19 @@ fn register(repo: &Path, id: &str, kind: &str) {
     assert!(added.status.success(), "{}", err(&added));
 }
 
+#[test]
+fn review_plan_names_timeout_scope_beside_value() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = onboarded(temp.path());
+    let output = plan(&repo, &["--timeout-secs", "37"], false);
+    assert!(output.status.success(), "{}", err(&output));
+    assert!(
+        out(&output).contains("timeout  --timeout-secs 37: per reviewer Attempt"),
+        "{}",
+        out(&output)
+    );
+}
+
 const PLAN: [&str; 8] = [
     "review",
     "plan",
