@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-selection:3",
+  "title": "Refused Task selection af/task-selection@3",
+  "$comment": "What `af task plan --json` and `af task start --json` print when no Pipeline is selected, exiting 1: the persisted selection and request revision, zero Attempts, the refusal's one-sentence `error` (the line stderr opens the refusal with), the process's `exit_code`, and `next_action`, the one af command to run next with the selectors and capture flags the command was given (`af task plan --file FILE --fit` for an infeasible plan; null when no command fixes the refusal). For an infeasible plan it also carries the planner's `planning_diagnostic` with the smallest limits that fit (`required_limits`), what the Task file supplied, every limit raised, the reserve each verification slot protects, the mandatory work beside it and any refusal no Task limit fixes. Computed from declared allowances, token-free. No Task is opened for a refusal. `af task plan --fit` plans with `required_limits`. Version 2, without `error`, `exit_code` and `next_action`, is refused.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "selection_id",
+    "request_revision_id",
+    "attempts",
+    "chargeable_tokens",
+    "selection",
+    "error",
+    "exit_code",
+    "next_action"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-selection@3"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "selection_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "request_revision_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "attempts": {
+      "const": 0
+    },
+    "chargeable_tokens": {
+      "const": 0
+    },
+    "selection": {
+      "$ref": "urn:af:schema:pipeline-selection:1"
+    },
+    "error": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit_code": {
+      "const": 1
+    },
+    "next_action": {
+      "description": "One exact af command, or null for none.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^af [^\\u0000-\\u001f\\u007f]{1,4093}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "planning_diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "pipeline",
+        "reason",
+        "supplied_limits",
+        "required_limits",
+        "raised",
+        "reserves",
+        "mandatory",
+        "unfixable"
+      ],
+      "properties": {
+        "kind": {
+          "const": "infeasible"
+        },
+        "pipeline": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supplied_limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "required_limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "raised": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "limit",
+              "supplied",
+              "required"
+            ],
+            "properties": {
+              "limit": {
+                "enum": [
+                  "tokens",
+                  "max_attempts",
+                  "wall_ms",
+                  "verification.tokens",
+                  "verification.attempts",
+                  "verification.wall_ms"
+                ]
+              },
+              "supplied": {
+                "$ref": "#/$defs/count"
+              },
+              "required": {
+                "$ref": "#/$defs/count"
+              }
+            }
+          }
+        },
+        "reserves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "attempts",
+              "tokens_per_attempt",
+              "wall_ms_per_attempt"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295
+              },
+              "tokens_per_attempt": {
+                "$ref": "#/$defs/count"
+              },
+              "wall_ms_per_attempt": {
+                "$ref": "#/$defs/count"
+              }
+            }
+          }
+        },
+        "mandatory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens",
+            "attempts",
+            "wall_ms"
+          ],
+          "properties": {
+            "tokens": {
+              "$ref": "#/$defs/count"
+            },
+            "attempts": {
+              "$ref": "#/$defs/count"
+            },
+            "wall_ms": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "unfixable": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "selection": {
+            "properties": {
+              "decision": {
+                "properties": {
+                  "kind": {
+                    "const": "infeasible"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_action": {
+            "type": "string",
+            "pattern": "^af task plan .* --fit$"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "max_attempts",
+        "wall_ms",
+        "verification"
+      ],
+      "properties": {
+        "tokens": {
+          "$ref": "#/$defs/count"
+        },
+        "max_attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "wall_ms": {
+          "$ref": "#/$defs/count"
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens",
+            "attempts",
+            "wall_ms"
+          ],
+          "properties": {
+            "tokens": {
+              "$ref": "#/$defs/count"
+            },
+            "attempts": {
+              "$ref": "#/$defs/count"
+            },
+            "wall_ms": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

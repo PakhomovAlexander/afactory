@@ -1,0 +1,161 @@
+# The candidate half of fixture/experiment: measure the sealed source, compare it with the
+# baseline under the declared objective, and evaluate it only when the comparison passed.
+schema = "af.pipeline/1"
+name = "fixture/experiment-trial"
+version = "1.0.0"
+max_attempts = 3
+max_parallel = 1
+
+[contract.inputs.baseline]
+artifact_type = "af/Measurement@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.baseline.affinity]
+kind = "unbound"
+
+[contract.inputs.checks]
+artifact_type = "af/TaskCheckReceipt@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.checks.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.outputs.candidate]
+artifact_type = "af/Measurement@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.candidate.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.outputs.comparison]
+artifact_type = "af/MeasurementComparison@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.comparison.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.outputs.evaluation]
+artifact_type = "af/TaskEvaluation@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.outputs.evaluation.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["implement"]
+
+[accepts.required_facts]
+
+[slots.evaluator]
+worker = "fixture/experiment-evaluator"
+role = "evaluate"
+input_type = "af/EvaluationInput@1"
+output_type = "af/TaskEvaluation@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = []
+
+[[nodes]]
+id = "measure"
+
+[nodes.operator]
+op = "measure"
+measures = ["write"]
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "compare"
+
+[nodes.operator]
+op = "compare"
+objective = "smaller"
+
+[nodes.inputs.baseline]
+kind = "input"
+port = "baseline"
+
+[nodes.inputs.candidate]
+kind = "node"
+node = "measure"
+port = "write"
+
+[[nodes]]
+id = "evaluate"
+
+[nodes.operator]
+op = "verify"
+slot = "evaluator"
+
+[nodes.inputs.checks]
+kind = "input"
+port = "checks"
+
+[nodes.inputs.comparison]
+kind = "node"
+node = "compare"
+port = "result"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.when]
+node = "compare"
+outcome = "passed"
+
+[outputs.candidate]
+kind = "node"
+node = "measure"
+port = "write"
+
+[outputs.comparison]
+kind = "node"
+node = "compare"
+port = "result"
+
+[outputs.evaluation]
+kind = "node"
+node = "evaluate"
+port = "result"
+
+[coverage]

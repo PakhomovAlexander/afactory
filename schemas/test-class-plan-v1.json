@@ -1,0 +1,177 @@
+{
+  "$id": "urn:af:schema:test-class-plan:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "classes": {
+      "additionalProperties": false,
+      "properties": {
+        "e2e": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "SELECTED",
+                "NOT RUN"
+              ]
+            }
+          },
+          "required": [
+            "selected",
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        },
+        "functional": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "SELECTED",
+                "NOT RUN"
+              ]
+            }
+          },
+          "required": [
+            "selected",
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        },
+        "perf": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "SELECTED",
+                "NOT RUN"
+              ]
+            }
+          },
+          "required": [
+            "selected",
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        },
+        "uix": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "SELECTED",
+                "NOT RUN"
+              ]
+            }
+          },
+          "required": [
+            "selected",
+            "reason",
+            "state"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "functional",
+        "e2e",
+        "uix",
+        "perf"
+      ],
+      "type": "object"
+    },
+    "context": {
+      "enum": [
+        "pr",
+        "gate",
+        "local",
+        "release"
+      ]
+    },
+    "labels": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "profile": {
+      "enum": [
+        "full",
+        "fast",
+        "custom"
+      ]
+    },
+    "schema": {
+      "const": "af.test-plan/1"
+    },
+    "selected": {
+      "items": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "profile",
+    "context",
+    "sha",
+    "version",
+    "labels",
+    "selected",
+    "catalog_sha256",
+    "classes"
+  ],
+  "type": "object"
+}

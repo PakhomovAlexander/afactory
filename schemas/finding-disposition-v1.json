@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:finding-disposition:1",
+  "title": "FindingDisposition@1 payload",
+  "description": "One immutable reviewer position on one assigned prior Finding. Attempt provenance lives in the enclosing ArtifactEnvelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "source", "position", "reason", "round", "subject_id"],
+  "properties": {
+    "finding_id": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "source": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "position": { "enum": ["corroborate", "not_reproduced", "dispute"] },
+    "reason": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "subject_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
