@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-collected-inspection:1",
+  "title": "af/task-collected-inspection@1",
+  "description": "What `af task show --json` prints for a Task `af task gc --apply` collected (ADR-0135), in place of the artifact-backed `af/task-inspection@11`: the Task's ID, the finished phase its log recorded, and its retained tombstone. No artifact is read to produce it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "phase",
+    "collected"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-collected-inspection@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "result_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "finished"
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    "collected": {
+      "$ref": "urn:af:schema:task-collected:1"
+    }
+  }
+}

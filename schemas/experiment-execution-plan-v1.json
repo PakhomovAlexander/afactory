@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:experiment-execution-plan:1",
+  "title": "ExperimentExecutionPlan@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "parent_node", "children"],
+  "properties": {
+    "schema": {"const": "af.experiment-execution-plan/1"},
+    "parent_node": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"},
+    "children": {
+      "type": "object", "minProperties": 1,
+      "propertyNames": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["definition", "invocation", "allowance"],
+        "properties": {
+          "definition": {"$ref": "urn:af:schema:compiled-task:1#/$defs/node"},
+          "invocation": {"$ref": "urn:af:schema:task-invocation:1"},
+          "allowance": {"$ref": "urn:af:schema:compiled-task:1#/$defs/allowance"}
+        }
+      }
+    }
+  }
+}

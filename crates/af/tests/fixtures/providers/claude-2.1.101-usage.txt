@@ -1,0 +1,14 @@
+Claude Code v2.1.101
+
+Status   Config   Usage   Stats
+
+Current session
+██████▌                                            13% used
+Resets 11:29am (UTC)
+
+Current week (all models)
+████████████████████████████████████████████       88%used
+Resets 3:59pm (UTC)
+
+Extra usage
+Extra usage not enabled · /extra-usage to enable

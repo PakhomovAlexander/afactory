@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-worker-request:1",
+  "title": "task-worker-request@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "instructions",
+    "inputs",
+    "feedback",
+    "output_schemas",
+    "reply_format"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-request/1"
+    },
+    "instructions": {
+      "type": "string",
+      "maxLength": 262144
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_id",
+            "artifact_type",
+            "payload"
+          ],
+          "properties": {
+            "artifact_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "artifact_type": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "payload": {}
+          }
+        }
+      }
+    },
+    "feedback": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "payload"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+          },
+          "snapshot_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "payload": {}
+        }
+      }
+    },
+    "output_schemas": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "object"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      }
+    },
+    "reply_format": {
+      "type": "string",
+      "maxLength": 1024
+    }
+  }
+}

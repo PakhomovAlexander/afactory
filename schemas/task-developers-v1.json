@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-developers:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "keys"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-developers/1"
+    },
+    "keys": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    }
+  }
+}
