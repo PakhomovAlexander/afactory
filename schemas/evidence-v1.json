@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:evidence:1",
+  "title": "Evidence@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["demand_id", "subject_id", "content_artifact_id", "actor"],
+  "properties": {
+    "demand_id": { "$ref": "#/$defs/digest" },
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "content_artifact_id": { "$ref": "#/$defs/digest" },
+    "actor": { "type": "string", "minLength": 1 }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

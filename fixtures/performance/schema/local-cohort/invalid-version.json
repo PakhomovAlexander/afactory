@@ -1,0 +1,571 @@
+{
+  "schema": "af.perf-local-cohort/999",
+  "cohort_id": "synthetic_local",
+  "authority_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+  "policy_digest": "sha256:66475da1c130d1125d4f8b44360d95c39b4eb3e4cde47aa04dcc61615fa390dc",
+  "tier": "quick",
+  "environment_id": "linux_x86_64_gnu_hosted",
+  "recipe_id": "linux_gnu_native_release",
+  "cases": [
+    {
+      "instance_id": "synthetic_advisory",
+      "criticality": "advisory",
+      "pairs": 12
+    },
+    {
+      "instance_id": "synthetic_fast",
+      "criticality": "critical",
+      "pairs": 12
+    },
+    {
+      "instance_id": "synthetic_process__size_1",
+      "criticality": "critical",
+      "pairs": 12
+    }
+  ],
+  "family_size": 2,
+  "health": {
+    "rule": "sentinel_start_end_v1",
+    "workload": "sentinel_canonical",
+    "metric": "wall_ms",
+    "batch_repetitions": 64,
+    "start_pairs": 5,
+    "end_pairs": 5,
+    "max_median_shift": "0.2",
+    "max_mad_ratio": "0.2",
+    "denominator_floor": "1",
+    "state": "provisional",
+    "oracle": {
+      "kind": "golden_canonical_digest",
+      "state": "pending_native_oracle",
+      "description": "The golden digest checks every repetition of the sentinel batch."
+    },
+    "unit": "ms"
+  },
+  "allowed_cpu_groups": [
+    {
+      "group_id": "local_cpu",
+      "cpu_model": "Synthetic CPU",
+      "image": "registry.invalid/sample@sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de"
+    }
+  ],
+  "schedule": {
+    "start_date": "2026-10-27",
+    "minimum_days": 7,
+    "runners": "persistent_vm",
+    "order": "aa, then preparation, then slowdown trials; the calibration parameters are sealed before the first trial"
+  },
+  "preparation": {
+    "iterations": 1000000
+  },
+  "dispatch": {
+    "journal_id": "claw_originals_1",
+    "machine_id": "claw_vm_1",
+    "environment_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+    "producer_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de"
+  },
+  "target_formulas": {
+    "efficiency": "e = max(r, a/A0)",
+    "power": "p = max(1/10, 2*e)",
+    "valid_injection": "3/4 * p*A0 <= median measured injected time <= 5/4 * p*A0",
+    "readiness": "all 20 A/A within tolerance in every critical case, and at least 9 of the 10 power trials each a valid regression in every critical case"
+  },
+  "members": [
+    {
+      "member_id": "aa_01",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 168767073609850433,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_02",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 113412692759295238,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_03",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 158816601647181489,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_04",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 387061022228003198,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_05",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 579596099337443355,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_06",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 490875835740299876,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_07",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 41862385480781405,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_08",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 310255698132191175,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_09",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 944334430569559213,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_10",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 475296426598391678,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_11",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 353236732699400514,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_12",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 255029765502850384,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_13",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 477392692259971334,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_14",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 344841539550678370,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_15",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 227685050654576652,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_16",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 130287263143959159,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_17",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 82587190752945359,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_18",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1074370557137191594,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "aa_19",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1108501922858835557,
+      "injection_percent": null,
+      "day": 0
+    },
+    {
+      "member_id": "aa_20",
+      "kind": "aa",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 250173110646682904,
+      "injection_percent": null,
+      "day": 1
+    },
+    {
+      "member_id": "prep_01",
+      "kind": "preparation",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 652610866687381395,
+      "injection_percent": null,
+      "day": 2
+    },
+    {
+      "member_id": "prep_02",
+      "kind": "preparation",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 467783146826382548,
+      "injection_percent": null,
+      "day": 2
+    },
+    {
+      "member_id": "inj2_01",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 885779827277531499,
+      "injection_percent": 2,
+      "day": 3
+    },
+    {
+      "member_id": "inj2_02",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 216573817565037094,
+      "injection_percent": 2,
+      "day": 4
+    },
+    {
+      "member_id": "inj2_03",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1064795279156564475,
+      "injection_percent": 2,
+      "day": 5
+    },
+    {
+      "member_id": "inj2_04",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 803471324650161279,
+      "injection_percent": 2,
+      "day": 6
+    },
+    {
+      "member_id": "inj2_05",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 159260563051741441,
+      "injection_percent": 2,
+      "day": 3
+    },
+    {
+      "member_id": "inj2_06",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1022919006182547098,
+      "injection_percent": 2,
+      "day": 4
+    },
+    {
+      "member_id": "inj2_07",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 143932808368176768,
+      "injection_percent": 2,
+      "day": 5
+    },
+    {
+      "member_id": "inj2_08",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 667929879069434223,
+      "injection_percent": 2,
+      "day": 6
+    },
+    {
+      "member_id": "inj2_09",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 826455158563015290,
+      "injection_percent": 2,
+      "day": 3
+    },
+    {
+      "member_id": "inj2_10",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 981945839479044805,
+      "injection_percent": 2,
+      "day": 4
+    },
+    {
+      "member_id": "inj5_01",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 551265523224213735,
+      "injection_percent": 5,
+      "day": 3
+    },
+    {
+      "member_id": "inj5_02",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 918863654169669036,
+      "injection_percent": 5,
+      "day": 4
+    },
+    {
+      "member_id": "inj5_03",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 361635445911214206,
+      "injection_percent": 5,
+      "day": 5
+    },
+    {
+      "member_id": "inj5_04",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 989389183448024972,
+      "injection_percent": 5,
+      "day": 6
+    },
+    {
+      "member_id": "inj5_05",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 596590397693870645,
+      "injection_percent": 5,
+      "day": 3
+    },
+    {
+      "member_id": "inj5_06",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 659508553704535304,
+      "injection_percent": 5,
+      "day": 4
+    },
+    {
+      "member_id": "inj5_07",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 611676951298511462,
+      "injection_percent": 5,
+      "day": 5
+    },
+    {
+      "member_id": "inj5_08",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 446090712600325504,
+      "injection_percent": 5,
+      "day": 6
+    },
+    {
+      "member_id": "inj5_09",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 346567224485847095,
+      "injection_percent": 5,
+      "day": 3
+    },
+    {
+      "member_id": "inj5_10",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 904668166464035567,
+      "injection_percent": 5,
+      "day": 4
+    },
+    {
+      "member_id": "inj10_01",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 447769703182433685,
+      "injection_percent": 10,
+      "day": 3
+    },
+    {
+      "member_id": "inj10_02",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1129857962836696580,
+      "injection_percent": 10,
+      "day": 4
+    },
+    {
+      "member_id": "inj10_03",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 686321406291419548,
+      "injection_percent": 10,
+      "day": 5
+    },
+    {
+      "member_id": "inj10_04",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 165694641566750185,
+      "injection_percent": 10,
+      "day": 6
+    },
+    {
+      "member_id": "inj10_05",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 821440068660279902,
+      "injection_percent": 10,
+      "day": 3
+    },
+    {
+      "member_id": "inj10_06",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1050533082130472277,
+      "injection_percent": 10,
+      "day": 4
+    },
+    {
+      "member_id": "inj10_07",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 580971125266629322,
+      "injection_percent": 10,
+      "day": 5
+    },
+    {
+      "member_id": "inj10_08",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 996638686645382345,
+      "injection_percent": 10,
+      "day": 6
+    },
+    {
+      "member_id": "inj10_09",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 490530766412610937,
+      "injection_percent": 10,
+      "day": 3
+    },
+    {
+      "member_id": "inj10_10",
+      "kind": "injection",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 957995535113939348,
+      "injection_percent": 10,
+      "day": 4
+    },
+    {
+      "member_id": "power_01",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 899695495382666974,
+      "injection_percent": null,
+      "day": 3
+    },
+    {
+      "member_id": "power_02",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 856434866986975424,
+      "injection_percent": null,
+      "day": 4
+    },
+    {
+      "member_id": "power_03",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 313593084299742077,
+      "injection_percent": null,
+      "day": 5
+    },
+    {
+      "member_id": "power_04",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 695242505289913662,
+      "injection_percent": null,
+      "day": 6
+    },
+    {
+      "member_id": "power_05",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 1090911649613800046,
+      "injection_percent": null,
+      "day": 3
+    },
+    {
+      "member_id": "power_06",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 471438608524063144,
+      "injection_percent": null,
+      "day": 4
+    },
+    {
+      "member_id": "power_07",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 649369439925693498,
+      "injection_percent": null,
+      "day": 5
+    },
+    {
+      "member_id": "power_08",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 338889005712976710,
+      "injection_percent": null,
+      "day": 6
+    },
+    {
+      "member_id": "power_09",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 659034351396021480,
+      "injection_percent": null,
+      "day": 3
+    },
+    {
+      "member_id": "power_10",
+      "kind": "power",
+      "source_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+      "seed": 733234839002130862,
+      "injection_percent": null,
+      "day": 4
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "expected",
+    "tests",
+    "successful",
+    "failures",
+    "errors",
+    "skipped",
+    "expected_failures",
+    "unexpected_successes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/workspace-fixture-suite@1"
+    },
+    "expected": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tests": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "successful": {
+      "type": "boolean"
+    },
+    "failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "errors": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expected_failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unexpected_successes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:workspace-fixture-suite:1"
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:change-attestation:1",
+  "title": "ChangeAttestation@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "expected_finding_view_id", "subject_id", "changed_regions", "actor", "reason", "evidence_ids"],
+  "properties": {
+    "finding_id": {"type": "string", "minLength": 1},
+    "expected_finding_view_id": {"$ref": "#/$defs/id"},
+    "subject_id": {"$ref": "#/$defs/id"},
+    "change_set_id": {"$ref": "#/$defs/id"},
+    "changed_regions": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["path"], "properties": {"path": {"type": "string", "minLength": 1}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}}}},
+    "actor": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

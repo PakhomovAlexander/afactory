@@ -1,0 +1,11 @@
+# INERT example. Does not enable an Ant or install the independent executor.
+[Unit]
+Description=Reconcile AF native lab submissions and reports without model sessions
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+Unit=af-perf-scenario.service
+
+[Install]
+WantedBy=timers.target

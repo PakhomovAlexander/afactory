@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-scenario-intent:1",
+  "title": "af.perf-scenario-intent/1",
+  "description": "Native Scenario lab integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-scenario-intent/1"
+    },
+    "intent_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "destination": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "subject": {
+      "$ref": "#/$defs/digest"
+    },
+    "revision": {
+      "$ref": "#/$defs/digest"
+    },
+    "source_request_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "created_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "af.perf-scenario-experiment/1"
+        },
+        "work": {
+          "type": "string",
+          "enum": [
+            "core",
+            "telemetry"
+          ]
+        },
+        "configuration_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "producer_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "required": [
+        "schema",
+        "work",
+        "configuration_digest",
+        "producer_digest"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "intent_id",
+    "input_digest",
+    "destination",
+    "subject",
+    "revision",
+    "source_request_digest",
+    "created_unix_ms",
+    "experiment"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

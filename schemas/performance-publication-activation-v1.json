@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-publication-activation:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "adapter",
+    "scope",
+    "title"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/performance-publication-activation@1"
+    },
+    "adapter": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/Adapter"
+    },
+    "scope": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/PerformancePublicationScope"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  },
+  "title": "performance-publication-activation v1"
+}

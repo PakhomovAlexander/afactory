@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-evaluation:1",
+  "title": "task-evaluation@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome",
+    "reason"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S"
+    }
+  }
+}
