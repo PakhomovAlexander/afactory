@@ -205,6 +205,16 @@ pub struct EventStore {
     commit_observer: Option<Arc<dyn observer::CommitObserver>>,
 }
 
+/// A bounded, process-local observation of this connection's database. This is only an
+/// invalidation token: event decoding, projection validation and exact CAS checks still own
+/// the evidence. Tokens cannot be compared across connections or retained across reopening.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DatabaseObservation {
+    store: usize,
+    data_version: u64,
+    total_changes: u64,
+}
+
 /// Wall-clock and exact cumulative usage for one Task Attempt.
 ///
 /// This is a **sidecar**, not an event: Review replay, the Finding Ledger and convergence
@@ -348,6 +358,38 @@ fn immutable_uri(path: &Path) -> String {
 }
 
 impl EventStore {
+    /// Capture before an indexed discovery read, then compare after every dependent read and
+    /// byte check has finished. `data_version` detects other connections' commits, including
+    /// newly qualifying streams, updates, deletions and collection; `total_changes` also
+    /// detects this connection's writes. Unrelated writes conservatively invalidate the read.
+    /// Neither operation scans event history or relies on filesystem metadata.
+    ///
+    /// A live cursor or explicit transaction could pin an old SQLite snapshot and conceal a
+    /// concurrent commit. Both capture and comparison therefore require an idle connection;
+    /// the caller must drop discovery cursors before checking the completed observation.
+    pub fn database_observation(&self) -> Result<DatabaseObservation, StoreError> {
+        if !self.conn.is_autocommit() || self.conn.is_busy() {
+            return Err(StoreError::Conflict(
+                "Database observation requires no active transaction or cursor".into(),
+            ));
+        }
+        let data_version = self
+            .conn
+            .query_row("PRAGMA main.data_version", [], |row| u64_column(row, 0))?;
+        Ok(DatabaseObservation {
+            store: self as *const Self as usize,
+            data_version,
+            total_changes: self.conn.total_changes(),
+        })
+    }
+
+    pub fn database_observation_unchanged(
+        &self,
+        observed: &DatabaseObservation,
+    ) -> Result<bool, StoreError> {
+        Ok(self.database_observation()? == *observed)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         // Created private before SQLite sees it: SQLite creates a missing database 0644 under
         // the umask, and gives its `-wal` and `-shm` files the database's own mode. A failure
@@ -1150,6 +1192,60 @@ mod tests {
         assert_eq!(files(&directory), before);
         assert!(EventStore::open_unchanged(directory.join("absent.sqlite")).is_err());
         assert_eq!(files(&directory), before);
+    }
+
+    #[test]
+    fn database_observation_detects_both_connections_and_rejects_pinned_snapshots() {
+        let (dir, mut writer, cas) = fixture();
+        let reader = EventStore::open_read_only(dir.path().join("events.sqlite")).unwrap();
+        let observed = reader.database_observation().unwrap();
+        assert!(reader.database_observation_unchanged(&observed).unwrap());
+        assert!(!writer.database_observation_unchanged(&observed).unwrap());
+        let own = writer.database_observation().unwrap();
+        writer
+            .append(
+                "new-stream",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({"i": 1})),
+            )
+            .unwrap();
+        assert!(!writer.database_observation_unchanged(&own).unwrap());
+        assert!(!reader.database_observation_unchanged(&observed).unwrap());
+
+        let observed = reader.database_observation().unwrap();
+        let mut statement = reader.conn.prepare("SELECT * FROM events").unwrap();
+        let mut rows = statement.query([]).unwrap();
+        assert!(rows.next().unwrap().is_some());
+        assert!(reader.database_observation().is_err());
+        assert!(reader.database_observation_unchanged(&observed).is_err());
+        writer
+            .append(
+                "new-stream",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({"i": 2})),
+            )
+            .unwrap();
+        drop(rows);
+        drop(statement);
+        assert!(!reader.database_observation_unchanged(&observed).unwrap());
+        reader.conn.execute_batch("BEGIN").unwrap();
+        assert!(reader.database_observation().is_err());
+        reader.conn.execute_batch("ROLLBACK").unwrap();
+
+        // Corruption/repair of an indexed row must invalidate too, even without an append.
+        for sql in [
+            "UPDATE events SET occurred_at='changed' WHERE run_id='new-stream'",
+            "DELETE FROM events WHERE run_id='new-stream'",
+        ] {
+            let observed = reader.database_observation().unwrap();
+            let own = writer.database_observation().unwrap();
+            writer.conn.execute(sql, []).unwrap();
+            assert!(!reader.database_observation_unchanged(&observed).unwrap());
+            assert!(!writer.database_observation_unchanged(&own).unwrap());
+        }
+        let observed = reader.database_observation().unwrap();
+        reader.replay("absent").unwrap();
+        assert!(reader.database_observation_unchanged(&observed).unwrap());
     }
 
     #[test]

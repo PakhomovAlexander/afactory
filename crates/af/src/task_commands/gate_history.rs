@@ -515,6 +515,72 @@ mod tests {
     }
 
     #[test]
+    fn history_observation_checks_after_display_bytes_without_global_poll_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let path = root.path().join("events.sqlite");
+        let mut writer = EventStore::open(&path).unwrap();
+        let task = task_with_identity(&cas, &mut writer, "observed", "repo", "policy").0;
+        let prefix = task.next_sequence;
+        let display = cas.put(b"history display bytes").unwrap();
+        let mut opened = OpenedTask {
+            state: root.path().to_owned(),
+            store: EventStore::open_read_only(&path).unwrap(),
+            task,
+            cas,
+            view_artifacts: Default::default(),
+            view_runs: Default::default(),
+        };
+        let append = |writer: &mut EventStore| {
+            let count = writer.len("unreplayed-history").unwrap();
+            writer
+                .append(
+                    "unreplayed-history",
+                    &opened.cas,
+                    af_store::NewEvent::new(
+                        af_contracts::EventType::SourceCapturedV1,
+                        json!({"history": count}),
+                    ),
+                )
+                .unwrap();
+        };
+        append(&mut writer);
+        assert!(
+            !opened.refresh_if_changed().unwrap(),
+            "unrelated writes must not globally refresh unchanged running polls"
+        );
+        let discovery = opened.store.database_observation().unwrap();
+        opened.track_display(|| opened.cas.get(&display).unwrap());
+        let mut committed = false;
+        assert!(
+            opened
+                .refresh_status_if_changed_with(&discovery, |cas, id| {
+                    cas.verify(id).map_err(|e| e.to_string())?;
+                    // After the initial discovery check and the real display-byte read,
+                    // commit without touching the waited Task or any replayed prefix.
+                    writer
+                        .append(
+                            "unreplayed-history",
+                            cas,
+                            af_store::NewEvent::new(
+                                af_contracts::EventType::SourceCapturedV1,
+                                json!({"history": 1}),
+                            ),
+                        )
+                        .unwrap();
+                    committed = true;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(committed);
+        assert_eq!(opened.task.next_sequence, prefix);
+        assert!(opened.view_artifacts.borrow().is_empty());
+        assert!(opened.view_runs.borrow().is_empty());
+        assert!(!opened.refresh_if_changed().unwrap());
+    }
+
+    #[test]
     fn completion_during_display_verification_refreshes_instead_of_reusing_running_status() {
         let root = tempfile::tempdir().unwrap();
         let cas = Cas::open(root.path().join("cas")).unwrap();

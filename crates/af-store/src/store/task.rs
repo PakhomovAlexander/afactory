@@ -1461,6 +1461,9 @@ impl EventStore {
     /// Visit only recorded execution transitions, through SQLite's partial event index.
     /// This is a discovery path, not a projection or admission: consumers must validate the
     /// selected Task before using a record. Lease-only history is never replayed here.
+    /// A checked display must capture `database_observation` before calling this method and
+    /// compare after all dependent reads: returned rows alone cannot fence new matching rows.
+    /// The statement and its read snapshot are dropped before this method returns.
     pub fn visit_task_execution_history(
         &self,
         cas: &Cas,
