@@ -1845,7 +1845,7 @@ def plan_minutes():
 class CliRegistry(TempDir):
     def test_waiter_measures_the_real_cli_and_requires_a_running_timeout(self):
         doc = cli_cases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
-        entry = next(e for e in doc["adapters"]["af_cli_v3"]["commands"]
+        entry = next(e for e in doc["adapters"]["af_cli_v4"]["commands"]
                      if e["case_id"] == "cli_task_wait")
         self.assertEqual(entry["setup"], "waiter_state")
         self.assertEqual(entry["cwd"], "{scratch}/repo")
@@ -1858,7 +1858,9 @@ class CliRegistry(TempDir):
         self.assertEqual(case["primary_metric"], "total_cpu_ms")
         self.assertTrue({"wall_ms", "user_cpu_ms", "system_cpu_ms", "wait4_maxrss_bytes"}
                         <= set(case["optional_metrics"]))
-        for entry in (e for e in doc["adapters"]["af_cli_v3"]["commands"]
+        self.assertEqual(len([e for e in doc["adapters"]["af_cli_v4"]["commands"]
+                              if e["case_id"] == "cli_task_wait"]), 6)
+        for entry in (e for e in doc["adapters"]["af_cli_v4"]["commands"]
                       if e["case_id"] == "cli_task_wait"):
             self.assertIn({"kind": "exit_code", "value": 124}, entry["rules"])
             self.assertIn({"kind": "json_equals", "path": "state.phase", "value": "running"},
@@ -1974,6 +1976,10 @@ class CliRegistry(TempDir):
             self.assertIn("--json", rows[command]["argv"])
             self.assertNotIn("--campaign", rows[command]["argv"])
             self.assertIn("--repo", rows[command]["argv"])
+        self.assertIn({"kind": "json_equals", "path": "schema", "value": "af/review-ledger@2"},
+                      rows["review_ledger"]["rules"])
+        self.assertTrue(all(rule["path"].startswith("inspection.") for rule in
+                            rows["review_ledger"]["rules"] if "path" in rule and rule["path"] != "schema"))
         enumeration = [rule for rule in rows["review_ledger"]["rules"]
                        if rule["kind"] == "json_enumerates"]
         self.assertEqual(len(enumeration), 1)

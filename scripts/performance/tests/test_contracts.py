@@ -173,20 +173,11 @@ class Parity(unittest.TestCase):
 
     def test_committed_schemas_are_generated_from_the_readers_definitions(self):
         generated = contracts.schema_documents()
-<<<<<<< HEAD
-        committed = contracts.lab_schema_names(SCHEMAS)
-        self.assertEqual(committed, sorted(generated))
-        self.assertEqual(contracts.RUST_OWNED_SCHEMAS, PUBLICATION_SCHEMAS)
-        self.assertEqual(sorted(name for name in os.listdir(SCHEMAS)
-                                if name.startswith("performance-")),
-                         sorted(set(generated) | PUBLICATION_SCHEMAS))
-=======
         self.assertEqual(contracts.RUST_OWNED_SCHEMAS, PUBLICATION_SCHEMAS)
         self.assertEqual(contracts.lab_schema_names(SCHEMAS), sorted(generated))
         committed = {name for name in os.listdir(SCHEMAS) if name.startswith("performance-")}
         self.assertFalse(set(generated) & PUBLICATION_SCHEMAS, "schema owners must be disjoint")
         self.assertEqual(committed, set(generated) | PUBLICATION_SCHEMAS)
->>>>>>> origin/main
         for name, doc in generated.items():
             on_disk = json.loads(read(os.path.join(SCHEMAS, name)))
             self.assertEqual(on_disk, doc, "%s is stale: run python3 scripts/performance/"

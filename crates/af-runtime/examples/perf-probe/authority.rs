@@ -159,7 +159,7 @@ fn waiter_check_signature() -> af_graph::task::OperatorSignature {
 fn waiter_pipeline() -> Result<BTreeMap<String, Vec<u8>>, String> {
     use af_contracts::task::pipeline::*;
     let mut files = fixtures::pipeline_files();
-    let mut pipeline: PipelineDefinitionV1 =
+    let mut pipeline: PipelineDefinition =
         toml::from_str(std::str::from_utf8(&files["pipeline.toml"]).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     pipeline
@@ -416,11 +416,16 @@ fn build_configured<T>(
             .put_json(&json!({"code_policy_id": fixtures::POLICY_ID, "fixture": "cli-waiter"}))
             .map_err(|e| fixture(e.to_string()))?;
         let manifest = af_source_git::Manifest::new(vec![]).map_err(|e| fixture(e.to_string()))?;
-        let origin = cas
-            .put_json(&json!({"schema": "af.task-source-origin/1",
-            "repository_id": af_store::canonical::blob_content_id(b"cli-waiter-repository"),
-            "content_digest": manifest.content_digest()}))
-            .map_err(|e| fixture(e.to_string()))?;
+        let origin = af_source_git::task::write_origin(
+            &cas,
+            &af_source_git::task::TaskSourceOrigin::Captured {
+                schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+                repository_id: af_store::canonical::blob_content_id(b"cli-waiter-repository"),
+                content_digest: manifest.content_digest(),
+                source_revision: None,
+            },
+        )
+        .map_err(fixture)?;
         let snapshot = af_source_git::task::capture_snapshot(&cas, &manifest, &origin, None)
             .map_err(fixture)?;
         task.inputs.insert(

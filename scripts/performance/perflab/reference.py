@@ -648,15 +648,9 @@ def golden_document(doc):
                                     "trees": trees}
         elif fixture["kind"] == "event_log":
             fixtures[fixture_id] = {
-<<<<<<< HEAD
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 1,
-                "relevant_events": "TaskTransition@5 opened, clock-independent pauses/resumes, "
+                "relevant_events": "TaskTransition@6 opened, clock-independent pauses/resumes, "
                                    "plan proposed, plan admitted, normal 60000 ms lease handoff"}
-=======
-                "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
-                "relevant_events": "TaskTransition@6 opened, plan proposed, plan admitted, then "
-                                   "production 60000 ms lease renewals"}
->>>>>>> origin/main
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"
                                 % (fixture_id, fixture["kind"]))

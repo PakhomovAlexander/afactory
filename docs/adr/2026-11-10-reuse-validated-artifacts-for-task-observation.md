@@ -41,10 +41,12 @@ installed musl observations are diagnostic evidence, not a calibrated comparison
 4. A projection retains the union of its exact event-reference closure and successful CAS reads
    reached through validation. Nested reads contribute to their parent's closure; other threads
    and other CAS instances do not. An unchanged observation checks its Task watermark, re-verifies
-   the entire closure, then checks the watermark again. Review handoffs and Integration also
-   retain every replayed stream's prefix and check those watermarks before and after verification.
+   the entire closure, then checks the watermark again. Native Review and Integration use the
+   common Task stream and immutable canonical Review receipts, without Campaign replay or handoff
+   DTOs. Nested Store replays retain their exact prefixes for the same before/after check.
    A changed prefix takes ordinary full validation. Observations grant no execution capability.
-   The waiter also retains and verifies artifacts its display read. It reconstructs the view on
+   The waiter also retains and verifies artifacts its display read within that same bracket,
+   including the final watermark checks after all display reads. It reconstructs the view on
    changes or lease expiry and continues observing startup run files. Cancellation, timeout,
    completion notification and exit-code rules stay unchanged. The 250 ms poll interval stays.
 5. The last Gate hint discovers execution records through a SQLite partial index over existing

@@ -146,12 +146,17 @@ fn a_clean_host_with_codex_available_names_codex_setup_and_writes_nothing() {
 fn clean_host(codex_available: bool) {
     let machine = Machine::new();
     let work = machine.path("work");
-<<<<<<< HEAD
     // Only fixture programs are discoverable: the developer's Provider CLIs and package
     // managers must not choose this test's hint or probe a real authentication context.
     let bin = machine.path("tools-path");
     std::fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
+    for tool in ["curl", "minisign"] {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let kind = if codex_available {
         use std::os::unix::fs::PermissionsExt as _;
         let codex = bin.join("codex");
@@ -181,22 +186,6 @@ exit 64
     let before = machine.snapshot();
 
     let text = machine.doctor(&work, &[], Some(bin.as_os_str()));
-=======
-    // The clean machine has required tools and no Provider CLI, independently of the
-    // driving harness or the developer's PATH.
-    let tools = machine.path("clean-tools");
-    std::fs::create_dir_all(&tools).unwrap();
-    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
-    for tool in ["curl", "minisign"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = tools.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let before = machine.snapshot();
-
-    let text = machine.doctor(&work, &[], Some(tools.as_os_str()));
->>>>>>> origin/main
     assert_eq!(
         text.status.code(),
         Some(0),
@@ -226,11 +215,7 @@ exit 64
         "{shown}"
     );
 
-<<<<<<< HEAD
     let json = machine.doctor(&work, &["--json"], Some(bin.as_os_str()));
-=======
-    let json = machine.doctor(&work, &["--json"], Some(tools.as_os_str()));
->>>>>>> origin/main
     assert_eq!(json.status.code(), Some(0), "{}", err(&json));
     let document = document(&json);
     let ids: Vec<&str> = document["checks"]

@@ -3854,6 +3854,7 @@ pub(super) struct OpenedTask {
     pub(super) store: EventStore,
     pub(super) task: TaskProjection,
     view_artifacts: std::cell::RefCell<BTreeSet<String>>,
+    view_runs: std::cell::RefCell<BTreeMap<String, u64>>,
 }
 
 pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
@@ -3889,6 +3890,7 @@ pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<O
         store,
         task,
         view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
     })
 }
 
@@ -3902,29 +3904,49 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let (view, reads) = self.cas.track_reads(|| {
-            selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)
+        let ((view, runs), reads) = self.cas.track_reads(|| {
+            self.store.track_replays(|| {
+                selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)
+            })
         });
         let view = view?;
         self.view_artifacts.borrow_mut().extend(reads);
+        self.view_runs.borrow_mut().extend(runs);
         Ok((result, view))
     }
 
     /// Reuse this projection only after exact byte checks of its full read closure. The
     /// caller still observes run/cancel files and lease deadlines independently of the log.
     pub(super) fn refresh_if_changed(&mut self) -> Result<bool, String> {
+        self.refresh_if_changed_with(|cas, id| {
+            cas.verify(id).map(|_| ()).map_err(|e| e.to_string())
+        })
+    }
+
+    fn refresh_if_changed_with(
+        &mut self,
+        mut verify_display: impl FnMut(&Cas, &str) -> Result<(), String>,
+    ) -> Result<bool, String> {
         if self
             .store
-            .task_observation_unchanged(&self.cas, &self.task)
+            .task_observation_unchanged_with(
+                &self.cas,
+                &self.task,
+                &self.view_runs.borrow(),
+                || {
+                    for id in self.view_artifacts.borrow().iter() {
+                        verify_display(&self.cas, id).map_err(af_store::StoreError::Artifact)?;
+                    }
+                    Ok(())
+                },
+            )
             .map_err(|e| e.to_string())?
         {
-            for id in self.view_artifacts.borrow().iter() {
-                self.cas.verify(id).map_err(|e| e.to_string())?;
-            }
             return Ok(false);
         }
         self.refresh()?;
         self.view_artifacts.borrow_mut().clear();
+        self.view_runs.borrow_mut().clear();
         Ok(true)
     }
 
@@ -6235,6 +6257,8 @@ pub(crate) fn recorded_findings_lines(state: &Path, id: &str) -> Result<Vec<Stri
         cas,
         store,
         task,
+        view_artifacts: std::cell::RefCell::new(BTreeSet::new()),
+        view_runs: std::cell::RefCell::new(BTreeMap::new()),
     };
     let document = findings::ledger_document(&opened, None)?;
     Ok(if document.rounds == 0 {

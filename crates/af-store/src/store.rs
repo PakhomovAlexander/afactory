@@ -18,6 +18,22 @@ use serde_json::Value;
 
 use crate::cas::{Cas, CasError};
 
+thread_local! {
+    static REPLAY_READS: std::cell::RefCell<Vec<ReplayReads>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+struct ReplayReads {
+    store: usize,
+    prefixes: std::collections::BTreeMap<String, u64>,
+}
+
+struct ReplayReadsGuard;
+impl Drop for ReplayReadsGuard {
+    fn drop(&mut self) {
+        REPLAY_READS.with(|reads| reads.borrow_mut().pop());
+    }
+}
+
 mod attempt_wall;
 pub mod observer;
 pub mod task;
@@ -459,7 +475,7 @@ impl EventStore {
                  ON events (run_id, causation_id, type, sequence);
              CREATE INDEX IF NOT EXISTS task_execution_history
                  ON events (run_id, sequence)
-                 WHERE type = 'TaskTransition@5'
+                 WHERE type = 'TaskTransition@6'
                    AND json_extract(payload, '$.change.kind') = 'execution_recorded';
              CREATE TABLE IF NOT EXISTS attempt_wall (
                  run_id             TEXT    NOT NULL,
@@ -694,6 +710,34 @@ impl EventStore {
         self.replay_from(run_id, 0)
     }
 
+    /// Record the exact prefixes replayed by this operation, including nested projections.
+    /// These watermarks grant no authority; byte verification and a final watermark check
+    /// are required before an observation can be reused.
+    pub fn track_replays<T>(
+        &self,
+        read: impl FnOnce() -> T,
+    ) -> (T, std::collections::BTreeMap<String, u64>) {
+        REPLAY_READS.with(|reads| {
+            reads.borrow_mut().push(ReplayReads {
+                store: self as *const Self as usize,
+                prefixes: Default::default(),
+            })
+        });
+        let guard = ReplayReadsGuard;
+        let result = read();
+        let prefixes = REPLAY_READS.with(|reads| {
+            std::mem::take(
+                &mut reads
+                    .borrow_mut()
+                    .last_mut()
+                    .expect("replay trace")
+                    .prefixes,
+            )
+        });
+        drop(guard);
+        (result, prefixes)
+    }
+
     /// The ordered events of `run_id` read through one cursor under `budget`, shared by every
     /// run one projection reads from the same Store: each row is charged before it is decoded,
     /// and the first row past a ceiling stops the read with that ceiling, nothing of the run
@@ -815,6 +859,23 @@ impl EventStore {
             )?;
             out.push(event);
         }
+        REPLAY_READS.with(|reads| {
+            for read in reads
+                .borrow_mut()
+                .iter_mut()
+                .filter(|read| read.store == self as *const Self as usize)
+            {
+                let prefix = out
+                    .last()
+                    .map_or(first_sequence, |event| event.sequence + 1);
+                // A writer advancing between two reads invalidates reuse: retain the older
+                // prefix so the final comparison cannot bless a mixed observation.
+                read.prefixes
+                    .entry(run_id.to_owned())
+                    .and_modify(|old| *old = (*old).min(prefix))
+                    .or_insert(prefix);
+            }
+        });
         Ok(out)
     }
 
@@ -1089,6 +1150,52 @@ mod tests {
         assert_eq!(files(&directory), before);
         assert!(EventStore::open_unchanged(directory.join("absent.sqlite")).is_err());
         assert_eq!(files(&directory), before);
+    }
+
+    #[test]
+    fn replay_traces_include_nested_prefixes_but_not_another_connection_and_unwind_cleanly() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.sqlite");
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let mut writer = EventStore::open(&path).unwrap();
+        writer
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({"i": 1})),
+            )
+            .unwrap();
+        let reader = EventStore::open_read_only(&path).unwrap();
+        let ((_, nested), outer) = reader.track_replays(|| {
+            writer.replay("run").unwrap();
+            reader.track_replays(|| reader.replay("run").unwrap())
+        });
+        assert_eq!(
+            nested,
+            std::collections::BTreeMap::from([("run".into(), 1)])
+        );
+        assert_eq!(outer, nested);
+        let (_, only_other) = reader.track_replays(|| writer.replay("run").unwrap());
+        assert!(only_other.is_empty());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reader.track_replays(|| panic!("unwind the trace"));
+        }));
+        assert!(REPLAY_READS.with(|reads| reads.borrow().is_empty()));
+        let (_, changed) = reader.track_replays(|| {
+            reader.replay("run").unwrap();
+            writer
+                .append(
+                    "run",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"i": 2})),
+                )
+                .unwrap();
+            reader.replay("run").unwrap();
+        });
+        assert_eq!(
+            changed["run"], 1,
+            "a mixed read cannot bless the newer prefix"
+        );
     }
 
     /// While a writer's log still holds frames the reader reads them, events the database file

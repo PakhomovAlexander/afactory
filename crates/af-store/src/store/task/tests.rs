@@ -1705,7 +1705,7 @@ fn execution_history_index_omits_lease_only_tasks_and_checks_selected_rows() {
         .store
         .conn
         .query_row(
-            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@5'
+            "EXPLAIN QUERY PLAN SELECT run_id,sequence FROM events WHERE type='TaskTransition@6'
          AND json_extract(payload,'$.change.kind')='execution_recorded' ORDER BY run_id,sequence",
             [],
             |row| row.get(3),
@@ -1736,6 +1736,51 @@ fn execution_history_index_omits_lease_only_tasks_and_checks_selected_rows() {
         f.store
             .visit_task_execution_history(&f.cas, |_, _| {})
             .is_err()
+    );
+}
+
+#[test]
+fn display_stream_changes_are_checked_after_the_complete_display_read_closure() {
+    let mut f = Fixture::new(false);
+    f.open();
+    let mut writer = EventStore::open(&f.path).unwrap();
+    writer
+        .append(
+            "display-source",
+            &f.cas,
+            NewEvent::new(EventType::SourceCapturedV1, json!({"fixture": 1})),
+        )
+        .unwrap();
+    let task = f.state();
+    let (_, display_runs) = f
+        .store
+        .track_replays(|| f.store.replay("display-source").unwrap());
+    let display = f.cas.put(b"display bytes").unwrap();
+    assert!(
+        f.store
+            .task_observation_unchanged_with(&f.cas, &task, &display_runs, || {
+                f.cas.verify(&display).unwrap();
+                Ok(())
+            })
+            .unwrap()
+    );
+    assert!(
+        !f.store
+            .task_observation_unchanged_with(&f.cas, &task, &display_runs, || {
+                f.cas.verify(&display).unwrap();
+                writer.append(
+                    "display-source",
+                    &f.cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({"fixture": 2})),
+                )?;
+                Ok(())
+            })
+            .unwrap()
+    );
+    assert_eq!(
+        f.state().next_sequence,
+        task.next_sequence,
+        "only the display stream changed"
     );
 }
 

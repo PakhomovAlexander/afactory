@@ -998,6 +998,9 @@ pub(super) fn assert_native(
     directory: &std::path::Path,
     lease: &af_store::store::task::TaskLease,
 ) {
+    if case == "native_integration" || case == "native_accounting" {
+        assert_native_observation_integrity(cas, state, directory);
+    }
     let execution = state.execution.as_ref().unwrap();
     assert!(execution.graph.nodes.values().all(|node| {
         !["review_domain", "review_integration_checks"].contains(
@@ -1463,6 +1466,105 @@ pub(super) fn assert_native(
         );
     }
     assert_replay_and_finish(cas, domain, runtime, state, result, report, directory);
+}
+
+/// Native replacement for the retired handoff module's read-closure regressions.
+/// Integration/continuation receipts and accounting now share the one Task stream.
+fn assert_native_observation_integrity(
+    cas: &Cas,
+    expected: &TaskProjection,
+    directory: &std::path::Path,
+) {
+    let path = directory.join("events.sqlite");
+    let reader = EventStore::open_read_only(&path).unwrap();
+    let (state, reads) = cas.track_reads(|| reader.task_projection(cas, &expected.task_id));
+    let state = state.unwrap().unwrap();
+    assert_eq!(state.next_sequence, expected.next_sequence);
+    let accounting = state.execution.as_ref().unwrap().attempt_accounting();
+    let account = |attempt: &af_store::store::task::execution::TaskAttemptAccounting| {
+        (
+            attempt.attempt_id.clone(),
+            attempt.reservation.clone(),
+            attempt.charged_tokens,
+            attempt.result.clone(),
+            attempt.raw_artifact_ids.clone(),
+            attempt.usage_id.clone(),
+        )
+    };
+    let original: Vec<_> = accounting.iter().map(account).collect();
+    for _ in 0..4 {
+        assert!(reader.task_observation_unchanged(cas, &state).unwrap());
+    }
+    let targets: Vec<_> = reads
+        .into_iter()
+        .filter(|id| {
+            cas.get_optional_artifact_shared(id)
+                .unwrap()
+                .is_some_and(|a| {
+                    matches!(
+                        a.artifact_type.as_str(),
+                        "af/ReviewHistory@1"
+                            | "af/TaskReviewRound@1"
+                            | "af/TaskReviewCommit@1"
+                            | "af/TaskInvocation@1"
+                            | "af/TaskTokenUsage@3"
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        !targets.is_empty(),
+        "native evidence must be in the observed closure"
+    );
+    for id in targets {
+        let file = directory.join("cas/objects").join(&id[7..9]).join(&id[9..]);
+        let bytes = std::fs::read(&file).unwrap();
+        for missing in [false, true] {
+            if missing {
+                std::fs::remove_file(&file).unwrap();
+            } else {
+                // A same-size mutation must fail even if a prior read warmed the parse memo.
+                let mut changed = bytes.clone();
+                changed[0] ^= 1;
+                std::fs::write(&file, changed).unwrap();
+            }
+            assert!(
+                reader.task_observation_unchanged(cas, &state).is_err(),
+                "{id}"
+            );
+            assert!(
+                reader.task_projection(cas, &state.task_id).is_err(),
+                "warm: {id}"
+            );
+            let fresh = EventStore::open_read_only(&path).unwrap();
+            assert!(
+                fresh.task_projection(cas, &state.task_id).is_err(),
+                "cold: {id}"
+            );
+            std::fs::write(&file, &bytes).unwrap();
+            let restored = reader
+                .task_projection(cas, &state.task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.next_sequence, state.next_sequence);
+            assert_eq!(restored.phase, state.phase);
+            assert_eq!(
+                restored
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .attempt_accounting()
+                    .iter()
+                    .map(account)
+                    .collect::<Vec<_>>(),
+                original
+            );
+            assert_eq!(
+                restored.execution.as_ref().unwrap().outputs,
+                state.execution.as_ref().unwrap().outputs
+            );
+        }
+    }
 }
 
 fn assert_replay_and_finish(

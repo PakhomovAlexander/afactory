@@ -174,8 +174,10 @@ pub(super) fn last(cas: &Cas, store: &EventStore, task: &TaskProjection) -> Opti
         };
         for attempt in execution.attempt_accounting() {
             for raw_id in &attempt.raw_artifact_ids {
-                let Ok(raw) = cas.get_artifact_shared(raw_id) else {
-                    continue;
+                let raw = match cas.get_optional_artifact_shared(raw_id) {
+                    Ok(Some(raw)) => raw,
+                    Ok(None) => continue,
+                    Err(_) => return None,
                 };
                 if raw.artifact_type != TASK_RUNTIME_EVIDENCE_V1 {
                     continue;
@@ -336,7 +338,7 @@ mod tests {
         label: &str,
         repository: &str,
         policy_label: &str,
-    ) -> TaskProjection {
+    ) -> (TaskProjection, af_store::store::task::TaskLease) {
         let producer = Producer::KernelOperation {
             run_id: "history".into(),
             node_id: None,
@@ -357,12 +359,16 @@ mod tests {
             .unwrap()
             .0;
         let manifest = af_source_git::Manifest::new(vec![]).unwrap();
-        let origin = cas
-            .put_json(
-                &json!({"schema": "af.task-source-origin/1", "repository_id": repository,
-            "content_digest": manifest.content_digest()}),
-            )
-            .unwrap();
+        let origin = af_source_git::task::write_origin(
+            cas,
+            &af_source_git::task::TaskSourceOrigin::Captured {
+                schema: af_source_git::task::TASK_SOURCE_ORIGIN_SCHEMA.into(),
+                repository_id: repository.into(),
+                content_digest: manifest.content_digest(),
+                source_revision: None,
+            },
+        )
+        .unwrap();
         let snapshot =
             af_source_git::task::capture_snapshot(cas, &manifest, &origin, None).unwrap();
         let source =
@@ -391,8 +397,8 @@ mod tests {
             )
             .unwrap()
             .0;
-        store.open_task(cas, &id, "fixture", 60_000).unwrap();
-        store.task_projection(cas, label).unwrap().unwrap()
+        let lease = store.open_task(cas, &id, "fixture", 60_000).unwrap();
+        (store.task_projection(cas, label).unwrap().unwrap(), lease)
     }
 
     #[test]
@@ -400,11 +406,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cas = Cas::open(root.path().join("cas")).unwrap();
         let mut store = EventStore::open(root.path().join("events.sqlite")).unwrap();
-        let a = task_with_identity(&cas, &mut store, "a", "repository-a", "policy-a");
-        let same = task_with_identity(&cas, &mut store, "same", "repository-a", "policy-a");
-        let other_repo = task_with_identity(&cas, &mut store, "repo", "repository-b", "policy-a");
+        let a = task_with_identity(&cas, &mut store, "a", "repository-a", "policy-a").0;
+        let same = task_with_identity(&cas, &mut store, "same", "repository-a", "policy-a").0;
+        let other_repo = task_with_identity(&cas, &mut store, "repo", "repository-b", "policy-a").0;
         let other_policy =
-            task_with_identity(&cas, &mut store, "policy", "repository-a", "policy-b");
+            task_with_identity(&cas, &mut store, "policy", "repository-a", "policy-b").0;
         assert_eq!(identity(&cas, &a), identity(&cas, &same));
         assert_ne!(identity(&cas, &a), identity(&cas, &other_repo));
         assert_ne!(identity(&cas, &a), identity(&cas, &other_policy));
@@ -418,5 +424,126 @@ mod tests {
             .join(&id[9..]);
         std::fs::remove_file(path).unwrap();
         assert!(identity(&cas, &a).is_none());
+    }
+
+    struct FailedResultAuthority;
+    impl af_store::store::task::TaskAuthority for FailedResultAuthority {
+        fn validate_plan(
+            &self,
+            _: &Cas,
+            _: &TaskRevisionV1,
+            _: &ExecutionPlan,
+        ) -> Result<Vec<af_contracts::task::plan::GeneratedOriginV1>, String> {
+            Err("no execution in this observation fixture".into())
+        }
+        fn authorize_decision(
+            &self,
+            _: &TaskRevisionV1,
+            _: &str,
+            _: af_contracts::task::plan::PlanDecisionKindV1,
+        ) -> Result<af_store::store::task::DeveloperGrant, String> {
+            Err("no plan decision in this observation fixture".into())
+        }
+        fn authorization_current(
+            &self,
+            _: &af_contracts::task::plan::PlanDecisionV1,
+        ) -> Result<(), String> {
+            Err("no plan decision in this observation fixture".into())
+        }
+        fn validate_result(
+            &self,
+            _: &Cas,
+            task: &TaskRevisionV1,
+            result: &TaskResultV1,
+        ) -> Result<(), String> {
+            assert_eq!(
+                result.execution,
+                af_contracts::task::TaskExecutionV1::Incomplete
+            );
+            assert_eq!(
+                result.acceptance,
+                af_contracts::task::TaskAcceptanceV1::Unsatisfied
+            );
+            assert!(result.outputs.is_empty());
+            assert_eq!(result.missing_obligations.len(), task.acceptance.len());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn completion_during_display_verification_refreshes_instead_of_reusing_running_status() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let path = root.path().join("events.sqlite");
+        let mut writer = EventStore::open(&path).unwrap();
+        let (task, initial_lease) =
+            task_with_identity(&cas, &mut writer, "race", "repository", "policy");
+        writer.release_task_lease(&cas, &initial_lease).unwrap();
+        let lease = writer
+            .take_task_lease(&cas, "race", "finisher", 60_000)
+            .unwrap();
+        let task = writer
+            .task_projection(&cas, &task.task_id)
+            .unwrap()
+            .unwrap();
+        let display = cas
+            .put(b"display-only artifact outside projection closure")
+            .unwrap();
+        let result = TaskResultV1 {
+            task_revision_id: task.revision_id.clone(),
+            execution: af_contracts::task::TaskExecutionV1::Incomplete,
+            acceptance: af_contracts::task::TaskAcceptanceV1::Unsatisfied,
+            domain_conclusion: "fixture failure".into(),
+            outputs: BTreeMap::new(),
+            evidence: BTreeSet::new(),
+            missing_obligations: task.revision.acceptance.keys().cloned().collect(),
+        };
+        let result_id = cas
+            .put_artifact(
+                TASK_RESULT_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(result).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let mut opened = OpenedTask {
+            state: root.path().to_owned(),
+            store: EventStore::open_read_only(&path).unwrap(),
+            task,
+            cas,
+            view_artifacts: std::cell::RefCell::new(BTreeSet::from([display])),
+            view_runs: std::cell::RefCell::new(BTreeMap::new()),
+        };
+        assert_eq!(
+            opened.view().unwrap().1.state.phase,
+            af_contracts::task::state::TaskStatePhaseV1::Running
+        );
+        let mut committed = false;
+        assert!(
+            opened
+                .refresh_if_changed_with(|cas, id| {
+                    cas.verify(id).map_err(|e| e.to_string())?;
+                    // Commit from a second connection after the first real display byte check,
+                    // before display verification returns. No sleeps or scheduler race needed.
+                    if !committed {
+                        writer
+                            .finish_task(cas, &lease, &result_id, &FailedResultAuthority)
+                            .unwrap();
+                        committed = true;
+                    }
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(committed);
+        assert!(matches!(opened.task.phase, TaskPhaseV1::Finished { .. }));
+        let view = opened.view().unwrap().1;
+        assert_eq!(
+            view.state.phase,
+            af_contracts::task::state::TaskStatePhaseV1::Finished
+        );
+        assert_eq!(runs::settled_code(&view.state), 3);
     }
 }

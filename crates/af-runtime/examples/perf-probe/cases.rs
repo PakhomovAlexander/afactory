@@ -123,16 +123,10 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
             SetupHooks::default(),
             true,
         ),
-<<<<<<< HEAD
         "persistence_fs_v2" => persistence(request, work, started),
         "cli_state_fixture_v2" => cli_state_fixture(work, started),
         "cli_wait_fixture_v1" => cli_wait_fixture(request, work, started),
-        "cli_campaign_fixture_v1" => cli_campaign_fixture(request, started),
-=======
-        "persistence_fs_v1" => persistence(request, work, started),
-        "cli_state_fixture_v1" => cli_state_fixture(work, started),
         "cli_native_review_fixture_v1" => cli_native_review_fixture(request, started),
->>>>>>> origin/main
         "sentinel_canonical_v1" => sentinel(request, started),
         other => before_region(
             started,
@@ -793,7 +787,6 @@ fn cli_state_fixture(work: &Path, started: Instant) -> Outcome {
     state_projection_sample(work, fixtures::CLI_STATE_EVENTS, false, started, |_| Ok(()))
 }
 
-<<<<<<< HEAD
 fn cli_wait_fixture(request: &Request, work: &Path, started: Instant) -> Outcome {
     let (events, heavy, history) =
         fixtures::wait_state(request.text("state")).expect("admitted wait fixture");
@@ -860,26 +853,9 @@ fn cli_wait_fixture(request: &Request, work: &Path, started: Instant) -> Outcome
     )
 }
 
-/// The CLI Campaign fixture (ADR-0169). The side's own `af review run` wrote the Campaign
-/// [`fixtures::CLI_CAMPAIGN`] with exactly [`fixtures::CLI_CAMPAIGN_FINDINGS`] Findings into the
-/// state directory [`fixtures::CLI_CAMPAIGN_STATE`] beside this request's scratch. Its setup
-/// tops that Campaign's log up to exactly [`fixtures::CLI_CAMPAIGN_EVENTS`] events through the
-/// side's public Findings Ledger writer ([`Ingest`]), the one `af review group` and `af review
-/// ungroup` use: the second Finding is grouped under the first and released again, pair after
-/// pair, so the Ledger ends exactly as the review left it. An odd remainder first advances the
-/// policy clock once, through the writer `af review policy-time advance` uses. Every event is
-/// one the Ledger projection folds. Its region rebuilds that projection through a fresh Store,
-/// so the message's count is what was recorded, never what was intended.
-///
-/// [`Ingest`]: af_store::Ingest
-fn cli_campaign_fixture(request: &Request, started: Instant) -> Outcome {
-    let run = format!("campaign-{}", fixtures::CLI_CAMPAIGN);
-    let events = fixtures::CLI_CAMPAIGN_EVENTS;
-=======
 /// Current native Review seed. Public lease transitions extend the same Task log without
 /// changing its selected Round, Findings, conclusion, charges or candidate.
 fn cli_native_review_fixture(request: &Request, started: Instant) -> Outcome {
->>>>>>> origin/main
     sample(
         started,
         || {

@@ -1,6 +1,6 @@
 # ADR-0168: Run frozen shards with whole-CLI oracles and only a per-sample scratch
 
-**Status:** accepted (2026-10-19); decisions 5, 6, 7 and 10 amended by
+**Status:** accepted (2026-10-19); benchmark event mix partially superseded by [Task observation](2026-11-10-reuse-validated-artifacts-for-task-observation.md); decisions 5, 6, 7 and 10 amended by
 [ADR-0169](0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md)
 (one machine lock, side-written seeds, the Campaign fixture and executable states). Package p3b of the
 [continuous performance laboratory](../design/continuous-performance.md), with the closeout of
@@ -12,9 +12,6 @@ writable scratch bind) and decision 3 (adapter overlays), and makes the supervis
 `af.perf-supervisor-request/2`, its result `af.perf-supervisor-result/3`, the sample
 `af.perf-sample/2` and the shard record `af.perf-shard/2`. Reports, archive, profiles and CI stay
 later packages.
-Benchmark event-mix requirements are superseded by the
-[Task observation decision](2026-11-10-reuse-validated-artifacts-for-task-observation.md);
-ordered-history and complete-output oracle requirements remain.
 
 ## Context
 

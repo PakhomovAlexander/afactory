@@ -386,6 +386,6 @@ pub fn wait_state(id: &str) -> Option<(u64, bool, usize)> {
     })
 }
 
-/// Exactly this many valid relevant events in the CLI Campaign fixture's Campaign log
-/// (`fixtures/performance/cli.toml`, seed `campaign_state`).
+/// Exactly this many current Task events in the native Review seed
+/// (`fixtures/performance/cli.toml`, seed `native_review_state`).
 pub const CLI_NATIVE_REVIEW_EVENTS: u64 = 10_000;

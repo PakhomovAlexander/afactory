@@ -163,12 +163,8 @@ cannot be silently omitted or downgraded when a run fails.
 | State library | Cold application projection and prewarmed projection of exactly 10,000 valid relevant events | Quick, nightly |
 | Authority library | Current-plan check and first `TaskRuntime::new`; two-node graphs at both large package sizes, fresh valid leases | Quick, nightly |
 | CLI Task | Start without execution; separately run RootInputs plus check(`true`), with the check proved executed | Quick, nightly, release |
-<<<<<<< HEAD
-| CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event Task/Campaign fixtures | Quick, nightly, release |
-| CLI wait | Real two-second timeout over small and artifact-heavy Tasks, 100/10,000 events and zero/100 historical Tasks; total CPU, wall and RSS | Nightly |
-=======
 | CLI state | `task show`, `review ledger`, `review report` against matching 10,000-event native Task fixtures | Quick, nightly, release |
->>>>>>> origin/main
+| CLI wait | Real two-second timeout over small and artifact-heavy Tasks, 100/10,000 events and zero/100 historical Tasks; total CPU, wall and RSS | Nightly |
 | Persistence diagnostic | Real filesystem CAS write/read and state append/read, with declared flush semantics and logical bytes | Advisory nightly/manual |
 
 Issue #255's reported 11.044 CPU seconds is historical motivation, not a current

@@ -284,7 +284,7 @@ fn waiter_fixture_uses_public_writes_exact_event_history_counts_and_a_fresh_norm
                 .task_observation_unchanged(&fixture.cas, &state)
                 .unwrap()
         );
-        let plan: af_contracts::task::plan::ExecutionPlanV3 = serde_json::from_value(
+        let plan: af_contracts::task::plan::ExecutionPlan = serde_json::from_value(
             fixture
                 .cas
                 .get_artifact(state.plan_id.as_deref().unwrap())
@@ -436,11 +436,7 @@ fn the_declared_contracts_are_the_registry_cases() {
     assert_eq!(
         declared + 7,
         protocol::CONTRACTS.len(),
-<<<<<<< HEAD
         "plus the sentinel, three CLI fixture writers and three native seed writers"
-=======
-        "plus the sentinel, the two current CLI seed writers and the three native seed writers"
->>>>>>> origin/main
     );
     // A seeded case's probe reads exactly the seed the registry declares, which its writer
     // contract writes over exactly the declared parameters (ADR-0170).
@@ -2125,11 +2121,12 @@ from perflab import suite as suite_module
 supervisor, af, scratch = sys.argv[2:5]
 root = os.path.join(sys.argv[1], "..", "..")
 doc = cli_cases.load(os.path.join(root, "fixtures/performance/cli.toml"))
-entry = [command for command in doc["adapters"]["af_cli_v1"]["commands"]
+entry = [command for command in doc["adapters"]["af_cli_v4"]["commands"]
          if command["parameters"].get("command") == "task_show"][0]
 case = suite_module.load(os.path.join(root, "fixtures/performance/suite.toml")).doc["cases"][
     entry["case_id"]]
-values = {"af": af, "probe": "", "scratch": scratch, "package_version": ""}
+values = {"af": af, "probe": "", "scratch": scratch, "package_version": "",
+          "fixtures": os.path.join(root, "fixtures/performance/cli")}
 environment = dict(runner.CLI_ENVIRONMENT)
 environment.update(supervise.scratch_environment(scratch))
 environment.update(case.get("af_environment", {}))
