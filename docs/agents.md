@@ -12,6 +12,15 @@ Attempt. A Snapshot is an exact tree of files the Task recorded: its source, and
 its implementer produced. The Store is the directory that keeps all of it (`--state`, or a
 default per checkout). `af help task-states` lists every state a Task can be in.
 
+## Running af from inside an agent
+
+An agent's host sandbox may deny a CLI probe, such as `codex app-server` before it answers
+`initialize`. `af provider status --json` and `af provider detect --json` then report
+`probe_denied` and exit 8: compatibility and login remain unknown. Tell the user to run af outside
+that sandbox or approve the needed host permission, then retry the command. Reinstalling the CLI
+does not grant a sandbox permission. `af doctor` shows the detected harness, sandbox and network
+context; these markers explain the environment but never prove that a Provider CLI is compatible.
+
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the

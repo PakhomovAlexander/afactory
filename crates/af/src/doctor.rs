@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::selfmgmt;
 
 /// The `--json` document's kind.
-pub(crate) const SCHEMA: &str = "af/doctor@2";
+pub(crate) const SCHEMA: &str = "af/doctor@3";
 /// The text output's first line.
 pub(crate) const FIRST_LINE: &str =
     "token-free; the charged end-to-end Provider check is af provider doctor";
@@ -392,6 +392,9 @@ fn checks(repo: &Path) -> Vec<Check> {
         .filter(|toplevel| toplevel.join(".af").exists())
         .map(crate::onboard::authority_facts);
     let mut checks = vec![
+        agent_harness(),
+        agent_sandbox(),
+        agent_network(),
         binary(&installation),
         path(&installation),
         shell(),
@@ -435,6 +438,41 @@ fn checks(repo: &Path) -> Vec<Check> {
     .collect();
     withhold(&mut checks, &blockers);
     checks
+}
+
+fn agent_harness() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "harness",
+        format!(
+            "driving agent harness: {}",
+            context.harness.unwrap_or("none detected")
+        ),
+    )
+}
+
+fn agent_sandbox() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "sandbox",
+        if context.sandboxed {
+            "agent sandbox: detected"
+        } else {
+            "agent sandbox: not detected"
+        },
+    )
+}
+
+fn agent_network() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "network",
+        match context.network_allowed {
+            Some(true) => "agent sandbox network: allowed",
+            Some(false) => "agent sandbox network: blocked",
+            None => "agent sandbox network: unknown",
+        },
+    )
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1297,6 +1335,22 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
     } else {
         format!("; found but not registered: {}", found.join(", "))
     };
+    let statuses = crate::providers::probed_statuses();
+    if let Some(denied) = statuses
+        .iter()
+        .find(|status| status.status == "probe denied")
+    {
+        return Check::advise(
+            Status::Warn,
+            "providers",
+            format!(
+                "provider {}: host denied a capability probe; compatibility and login could not be established",
+                denied.id
+            ),
+            "retry outside the sandbox or with host-approved permissions; then run af doctor"
+                .into(),
+        );
+    }
     if registry.registered.is_empty() {
         let kind = registry
             .candidates
@@ -1317,7 +1371,6 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
              {kind}-main --kind {kind} --login"
         ));
     }
-    let statuses = crate::providers::probed_statuses();
     let mut good = Vec::new();
     let mut bad = Vec::new();
     for entry in &registry.registered {

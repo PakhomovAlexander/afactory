@@ -421,3 +421,5 @@ future readers need.
   links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
 - [0225 — Declare the replacement hosted cohort from the accepted
   producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0240 — Distinguish host-denied Provider probes from incompatible
+  CLIs](0240-distinguish-host-denied-provider-probes.md)

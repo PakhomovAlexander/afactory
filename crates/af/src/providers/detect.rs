@@ -148,6 +148,7 @@ enum Auth {
     Unavailable,
     InstallationFailed,
     Incompatible,
+    ProbeDenied,
     NotProbed,
 }
 
@@ -160,6 +161,7 @@ impl Auth {
             Self::Unavailable => "unavailable",
             Self::InstallationFailed => "installation_failed",
             Self::Incompatible => "incompatible",
+            Self::ProbeDenied => "probe_denied",
             Self::NotProbed => "not_probed",
         }
     }
@@ -171,6 +173,7 @@ impl Auth {
             "unavailable" => Self::Unavailable,
             INSTALLATION_FAILED => Self::InstallationFailed,
             INCOMPATIBLE => Self::Incompatible,
+            PROBE_DENIED => Self::ProbeDenied,
             UNMARKED => Self::NotProbed,
             _ => Self::Unknown,
         }
@@ -520,10 +523,18 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
     }
     notes.push(ALIAS_NOTE.to_string());
 
+    let denied = binaries.iter().any(|binary| {
+        binary
+            .refusal
+            .as_ref()
+            .is_some_and(|(status, _)| status == PROBE_DENIED)
+    });
     let incompatible = binaries
         .iter()
         .any(|binary| binary.compatible == Some(false));
-    let mut code = if incompatible {
+    let mut code = if denied {
+        EXIT_PROBE_DENIED
+    } else if incompatible {
         EXIT_PROVIDER_CLI_MISSING
     } else {
         EXIT_OK
@@ -1199,6 +1210,7 @@ fn probe_cause(auth: Auth, detail: &str) -> (Option<&'static str>, Option<String
         // The CLI's own error line goes to stderr and the table, never into the document.
         Auth::InstallationFailed => (Some("unstartable"), None),
         Auth::Incompatible => (Some("incompatible"), None),
+        Auth::ProbeDenied => (Some("probe_denied"), None),
         Auth::Unavailable if detail.contains("timed out after") => (Some("timeout"), own()),
         Auth::Unavailable if detail.starts_with("cannot start provider status probe") => {
             (Some("unstartable"), own())
@@ -1219,6 +1231,7 @@ fn unprobed_cause(
 ) -> (Option<&'static str>, Option<String>) {
     match auth {
         Auth::Incompatible => (Some("incompatible"), None),
+        Auth::ProbeDenied => (Some("probe_denied"), None),
         Auth::InstallationFailed => (Some("unstartable"), None),
         Auth::Unavailable => (
             Some("unchecked"),
@@ -1268,6 +1281,10 @@ fn check_binary(
         Err(CliRefusal::Incompatible(incompatibility)) => {
             binary.compatible = Some(false);
             binary.refusal = Some((INCOMPATIBLE.to_string(), incompatibility.message()));
+        }
+        Err(CliRefusal::Denied(denied)) => {
+            binary.compatible = None;
+            binary.refusal = Some((PROBE_DENIED.to_string(), denied.message()));
         }
         Err(CliRefusal::Unchecked(reason)) => {
             binary.compatible = None;
@@ -1319,10 +1336,11 @@ fn unprobed_row(
         return Some((Auth::NotProbed, format!("no {kind} CLI (not probed)"), None));
     };
     match &binary.refusal {
-        Some((status, _)) if binary.compatible == Some(false) => {
+        Some((status, _)) if binary.compatible == Some(false) || status == PROBE_DENIED => {
             let auth = Auth::of(status);
             let login = match auth {
                 Auth::Incompatible => "CLI incompatible",
+                Auth::ProbeDenied => "probe denied",
                 _ => "CLI cannot start",
             };
             Some((
@@ -1352,6 +1370,7 @@ fn login_label(kind: ProviderKind, auth: Auth, status: &ProviderStatus) -> Strin
         Auth::Unavailable => return "unavailable".to_string(),
         Auth::InstallationFailed => return "CLI cannot start".to_string(),
         Auth::Incompatible => return "CLI incompatible".to_string(),
+        Auth::ProbeDenied => return "probe denied".to_string(),
         Auth::NotProbed => return "not probed".to_string(),
     }
     let method = status
@@ -1703,6 +1722,7 @@ fn suggest(
                 command: Some(upgrade_command(kind).to_string()),
                 display: Some(upgrade_command(kind).to_string()),
             },
+            (Auth::ProbeDenied, _, _) => Suggested::none(),
             (Auth::Unavailable | Auth::Unknown, _, _) => Suggested {
                 action: "retry",
                 id: None,
@@ -1986,7 +2006,7 @@ fn conflicted(
     eprintln!("af provider detect: {message}");
 }
 
-/// What a whole `af/provider-detect@3` document says beside its rows.
+/// What a whole `af/provider-detect@4` document says beside its rows.
 struct Shape {
     code: i32,
     /// Whether `--apply` was given, whatever it found to do.
@@ -2026,7 +2046,7 @@ fn install_docs(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// One `af/provider-detect@3` document: closed states, af's own labels and paths, never an
+/// One `af/provider-detect@4` document: closed states, af's own labels and paths, never an
 /// email, an organization, a credential or the CLI's words. Next actions are typed fields
 /// (`install`, `next_action`, each row's `suggested`); `notes` repeat them for a person.
 fn document(
@@ -2045,6 +2065,12 @@ fn document(
                 "version": binary.version,
                 "on_path": binary.on_path,
                 "compatible": binary.compatible,
+                "probe": binary.refusal.as_ref().map_or("compatible", |(status, _)| match status.as_str() {
+                    PROBE_DENIED => "denied",
+                    INCOMPATIBLE => "incompatible",
+                    INSTALLATION_FAILED => "installation_failed",
+                    _ => "unchecked",
+                }),
             })
         })
         .collect();
@@ -2105,7 +2131,7 @@ fn document(
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-detect@3",
+        "schema": "af/provider-detect@4",
         "exit_code": shape.code,
         "applied": shape.applied,
         "binaries": binaries,
@@ -2346,6 +2372,8 @@ fn print_closing(rows: &[Row], applied: bool, code: i32, binaries: &[Binary], ho
         && let Some(fix) = cli_fix
     {
         println!("next: {fix}");
+    } else if code == EXIT_PROBE_DENIED {
+        println!("next: retry outside the sandbox or with host-approved permissions");
     } else if applied {
         println!("next: af provider status");
     } else {

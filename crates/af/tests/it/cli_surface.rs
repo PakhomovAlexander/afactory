@@ -515,11 +515,11 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
             "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
             "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
             "*-ambient is never generated",
-            "af/provider-detect@3",
+            "af/provider-detect@4",
             "its `install` names the install command and documentation of each kind whose CLI was not found",
             "`next_action` the scan to run again once one is installed",
             "the default ~/.claude may instead have a ~/.claude.json file beside it",
-            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply.",
+            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply, 8 the host denied a capability probe before compatibility or login could be established.",
             "never registers a login whose CLI is off PATH",
             "the row suggests the retry with a free ID",
             "A registry that cannot be read refuses --apply (exit 1)",
@@ -562,7 +562,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
     }
-    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@3"));
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@4"));
     assert!(out(&af(&["help"])).contains("providers"));
 
     let add = out(&af(&["provider", "add", "--help"]))
@@ -1260,7 +1260,7 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     // GA second fix item 4: a fix is a command, what it cannot say is its hint.
     assert!(
         machine.contains(
-            "--json prints one `af/doctor@2` document, each check with its `fix` and `hint`."
+            "--json prints one `af/doctor@3` document, each check with its `fix` and `hint`."
         ),
         "{machine}"
     );
@@ -1576,6 +1576,8 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"task"), None) => continue,
             (Some(&"task"), Some(verb)) if verb.ends_with(':') => continue,
             (Some(&"task"), Some(verb)) => af(&["task", verb, "--help"]),
+            (Some(&"provider"), Some(verb)) => af(&["provider", verb, "--help"]),
+            (Some(&"doctor"), None) => af(&["doctor", "--help"]),
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
         };

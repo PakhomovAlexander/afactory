@@ -451,6 +451,9 @@ command fixes, or whose command a file that does not load would stop (an `.af/` 
 config.toml, the Provider registry), has only a hint, naming the file and the parse error's line. \
 The PATH fix is the line for the shell $SHELL names, the directory quoted so nothing in it is \
 expanded.\n\n\
+  harness    the driving agent harness, if detected from environment markers\n\
+  sandbox    whether agent sandbox markers are present\n\
+  network    whether the agent sandbox reports network access; unknown without a marker\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -468,7 +471,7 @@ or path continues on indented lines and is never cut short, and a fix command st
 its line or is broken between its arguments with ` \\`.\n\n\
 It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
 the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
-(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@2` \
+(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@3` \
 document, each check with its `fix` and `hint`.",
         after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
     )]
@@ -495,7 +498,7 @@ pub(crate) struct MachineDoctorArgs {
     /// The repository whose `.af/`, pin and Gates to check [default: .]
     #[arg(long, value_name = "DIR", default_value = ".")]
     pub(crate) repo: PathBuf,
-    /// One `af/doctor@2` document on stdout instead of text
+    /// One `af/doctor@3` document on stdout instead of text
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -1193,12 +1196,13 @@ the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is code
 the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
 codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@3 document; its `install` names the install command and \
+--json prints one af/provider-detect@4 document; its `install` names the install command and \
 documentation of each kind whose CLI was not found, and `next_action` the scan to run again once \
 one is installed (null when a CLI was found). Exit codes: 0 the scan completed, 1 \
 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
 was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry \
-conflict stopped --apply.",
+conflict stopped --apply, 8 the host denied a capability probe before compatibility or login \
+could be established.",
         after_long_help = "Examples:\n  af provider detect\n  af provider detect --apply\n  af provider detect --json\n  af provider detect --dir /secure/claude-team --kind claude --apply\n  af provider detect --all"
     )]
     Detect {
@@ -1217,7 +1221,7 @@ conflict stopped --apply.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@3` document instead of the table
+        /// Emit the versioned `af/provider-detect@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -1254,18 +1258,20 @@ authenticated Provider — it exits 7 and says so. End-to-end usability stays wi
 A Provider whose official CLI is missing, not executable, or exits non-zero on its own version \
 check is reported as an installation failure, with the CLI's own first error line and the fix \
 it suggests on stderr. One whose help page does not declare every option af passes is reported \
-as incompatible, with its version, the missing options and the upgrade command on stderr.\n\n\
+as incompatible, with its version, the missing options and the upgrade command on stderr. A \
+host permission denial is `probe_denied`, exit 8: retry outside the sandbox or with \
+host-approved permissions.\n\n\
 A context that does not exist or holds no login marker is not probed: its CLI would create \
 files there. Each row that needs a login names one fix, `af provider setup ID --kind KIND \
 --auth-dir DIR --login`; --verbose adds the CLI's own login command. With no registry entry, \
 directories `af provider detect` would list are named on one line, unprobed; with no CLI at \
 all, the install commands are printed.\n\n\
 Exit codes: 0 fine, 4 a Provider CLI cannot start or is incompatible, 7 optional usage \
-unavailable.",
+unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@3` document instead of the table
+        /// Emit the versioned `af/provider-status@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -1328,7 +1334,8 @@ credentials in transit and must never reach a pipe, chat, an agent transcript, o
 needs a home.\n\n\
 Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
 incompatible, 5 \
-registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
+registry conflict, 6 authentication failed, 8 host-denied capability probe. Re-running setup \
+for the same binding is safe.",
         after_long_help = "Examples:\n  \
 af provider setup codex-main --kind codex   # needs: the codex CLI, logged in\n  \
 # needs: the codex CLI, logged in\n  af provider setup codex-main --kind codex --json\n  \
@@ -1347,7 +1354,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit the versioned non-interactive `af/provider-setup@1` document
+        /// Emit the versioned non-interactive `af/provider-setup@2` document
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },

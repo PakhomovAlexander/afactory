@@ -108,7 +108,7 @@ Every reading command takes `--json` for one versioned document, and exit codes 
 (`af help json`, `af help exit-codes`). A Provider login is a human's: `af provider setup --login`
 runs only at an interactive terminal, because the OAuth URL and code it prints are credentials in
 transit ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)); without one, setup
-exits 3 with the command for a human to run. `af doctor --json` (`af/doctor@2`) tells an agent
+exits 3 with the command for a human to run. `af doctor --json` (`af/doctor@3`) tells an agent
 what is missing. `CI` turns the background update check off.
 
 ### Updating and removing
