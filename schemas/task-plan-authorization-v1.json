@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-plan-authorization:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_revision_id",
+    "plan_id",
+    "policy_id",
+    "developer",
+    "decision",
+    "reason",
+    "valid_until_unix_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-plan-authorization/1"
+    },
+    "task_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "developer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "decision": {
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "valid_until_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

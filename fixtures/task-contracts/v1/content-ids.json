@@ -1,0 +1,11 @@
+{
+  "task-revision.json": "sha256:5b9eea0ef7ee7458df94d5d92991d676eacb858ff16d34f41df866f270176881",
+  "pipeline-definition.json": "sha256:77cfa356ceab2d572629a1855c28ab0de106807fcc6257cc93e46c9e52f8994d",
+  "execution-plan.json": "sha256:6b5d07ab3486876483efa9887fe10b91fde0a85ed337b7fa125195f8a71878c3",
+  "plan-decision.json": "sha256:99c2512f46170d5fdd276d2a8e21739a4a97e2ca3a8a5656b37bd5a16cd7e1a8",
+  "task-result.json": "sha256:6eedbc5487e848e03f9d31b8bffd41410e0e841172ea90ce62eb473f7690e1b2",
+  "task-phase.json": "sha256:79b76c95a6c8241bc8e6a29059e308d15cc81e761839706712de830c71f9f269",
+  "review-history.json": "sha256:dc8c728ebd03f8cda6c5cb4f285f233fbfec2ee10286dc6660a85227559fab58",
+  "verification-continuation.json": "sha256:1a39e7a4b1788ed99e5384b0176558d7c7a2e80d2a70899c9e4642ffa63fb76b",
+  "repair-assessment.json": "sha256:2b6f1cf5fac7f6d84cca8e5066c665a1a70c91f202906724c15ffa4c7c7f8c72"
+}

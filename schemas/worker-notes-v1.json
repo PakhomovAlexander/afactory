@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:worker-notes:1",
+  "title": "WorkerNotes@1 payload",
+  "description": "One admitted Attempt's bounded inspection map for the next Attempt of the SAME node: paths inspected, a model of the change, open questions and per-path hints. Data, never a verdict or a disposition: every prior Finding still needs its explicit Report, Dispute or Drop. Carried as review.kernel/WorkerNotes@1 inside a Campaign and as af/WorkerNotes@1 on Task Worker ports; both spell this payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node", "attempt_id", "head_snapshot_id", "model_of_change"],
+  "properties": {
+    "node": { "type": "string", "minLength": 1 },
+    "attempt_id": { "$ref": "#/$defs/id" },
+    "head_snapshot_id": { "$ref": "#/$defs/digest" },
+    "inspected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "tree_entry_digest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "model_of_change": { "type": "string" },
+    "open_questions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "hints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "note"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "note": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[0-9a-z]{26}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1 }
+  }
+}

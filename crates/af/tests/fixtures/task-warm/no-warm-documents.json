@@ -1,0 +1,1113 @@
+{
+  "check_receipt": {
+    "checks": {
+      "pagination": "sha256:bc1e99a30ac78b8198ba4b7c2814529b1020268f0f88665c018b440cb83d4395"
+    },
+    "outcome": "passed",
+    "plan_id": "<run:0>",
+    "policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318",
+    "snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3"
+  },
+  "check_result": {
+    "args": [
+      {
+        "provenance": "literal",
+        "value": "-B"
+      },
+      {
+        "provenance": "literal",
+        "value": "-c"
+      },
+      {
+        "provenance": "literal",
+        "value": "import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]"
+      }
+    ],
+    "exit_code": 0,
+    "name": "pagination",
+    "program": "/usr/bin/python3",
+    "required": true,
+    "status": "passed",
+    "stderr": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d",
+    "stdout": "sha256:a5695a887b79f8cb7d6dcc7d882b1e55e88e870e69497ea9cf333d60484ed21d"
+  },
+  "authority": {
+    "catalog_id": "sha256:351352837cbbaea9dcf5512a58c9ec259af4c672bb03070a49d9500f9a63eca2",
+    "code_policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318",
+    "engine_id": "<engine>",
+    "independence": {
+      "command_workers_by_package": true,
+      "distinct_models": false,
+      "distinct_principals": true,
+      "distinct_providers": false
+    },
+    "no_match": "refuse",
+    "packages": {
+      "fixture/evaluator": {
+        "artifact_id": "sha256:c046d6f5051a2cba47af00ffae5934c2fa0afc92d3ab9862c7819c057a490b19",
+        "digest": "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
+      },
+      "fixture/implementation": {
+        "artifact_id": "sha256:2e3ee87541da6d6b4d02aa730c24f2d16599b917a133f771885ac29f786fa581",
+        "digest": "sha256:2ddcb84fd841fbd84cf35d6e298cbac1ede9cedd577391861ddb3b8bf50d7038"
+      },
+      "fixture/implementer": {
+        "artifact_id": "sha256:8bab100239ab4f5c73cab936a30aaae8023b1436a00e97ce15c1e45f62ed483c",
+        "digest": "sha256:2cb281039434ea0273af7390db032a2a823ece9acfad4243b6095d8f0c2f2fb1"
+      }
+    },
+    "provider_admission": {
+      "tokens": 4096,
+      "wall_ms": 45000
+    },
+    "providers": {},
+    "schema": "af.task-run-authority/2"
+  },
+  "revision": {
+    "artifact_id": "<run:1>",
+    "content_id": "<run:2>",
+    "input_artifacts": [],
+    "payload": {
+      "acceptance": {
+        "verified": {
+          "evidence_type": "af/VerificationResult@1",
+          "verifier_policy": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318"
+        }
+      },
+      "authority": {
+        "allowed_effects": [
+          "execute-checks",
+          "read-source",
+          "write-source"
+        ],
+        "data_destinations": [],
+        "policy_id": "<authority of the engine>"
+      },
+      "facts": {},
+      "goal": "Implement this Jira ticket: offset/limit pagination",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:1c42ba4c94f786e582877c91bd61f764a3ca92e8b2c8e745270aec6eb1986b54"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        },
+        "source": {
+          "artifact_ids": [
+            "sha256:0c5b6349153be65457f62557f6e404404f554a059c3072a417ea06382eb7ff6a"
+          ],
+          "artifact_type": "af/SourceTree@1",
+          "cardinality": "one",
+          "snapshot_id": "sha256:12d88076fdfa220a5ad645afbccf32414153aeede7d31df69280dd963bdc361d"
+        }
+      },
+      "kind": "implement",
+      "limits": {
+        "deadline_unix_ms": "<ms>",
+        "max_attempts": 3,
+        "tokens": 1000,
+        "verification": {
+          "attempts": 2,
+          "tokens": 200,
+          "wall_ms": 300000
+        }
+      },
+      "pipeline": {
+        "fallback": "refuse",
+        "name": "fixture/implementation"
+      },
+      "provenance": {
+        "adapter_id": "<run:3>",
+        "input_artifact_ids": [
+          "sha256:1c42ba4c94f786e582877c91bd61f764a3ca92e8b2c8e745270aec6eb1986b54",
+          "sha256:0c5b6349153be65457f62557f6e404404f554a059c3072a417ea06382eb7ff6a"
+        ]
+      },
+      "required_outputs": {
+        "snapshot": {
+          "artifact_type": "af/SourceTree@1",
+          "cardinality": "one"
+        },
+        "verification": {
+          "artifact_type": "af/VerificationResult@1",
+          "cardinality": "one"
+        }
+      },
+      "revision": 1,
+      "strategy": "small",
+      "task_id": "cold-only"
+    },
+    "producer": {
+      "kind": "kernel_operation",
+      "operation_id": "capture@1",
+      "run_id": "task-file-adapter-v1"
+    },
+    "type": "af/TaskRevision@1"
+  },
+  "plan": {
+    "artifact_id": "<run:0>",
+    "content_id": "<run:4>",
+    "input_artifacts": [
+      "<run:1>"
+    ],
+    "payload": {
+      "acceptance": {
+        "verified": [
+          "root.nodes.accept.result"
+        ]
+      },
+      "authority": {
+        "allowed_effects": [
+          "execute-checks",
+          "read-source",
+          "write-source"
+        ],
+        "data_destinations": [],
+        "policy_id": "<authority of the engine>"
+      },
+      "bindings": {
+        "root.slots.evaluator": {
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318",
+          "package_artifact_id": "sha256:c046d6f5051a2cba47af00ffae5934c2fa0afc92d3ab9862c7819c057a490b19",
+          "package_digest": "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
+        },
+        "root.slots.implementer": {
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318",
+          "package_artifact_id": "sha256:8bab100239ab4f5c73cab936a30aaae8023b1436a00e97ce15c1e45f62ed483c",
+          "package_digest": "sha256:2cb281039434ea0273af7390db032a2a823ece9acfad4243b6095d8f0c2f2fb1"
+        }
+      },
+      "compiled_graph_id": "<run:5>",
+      "dependencies": {
+        "fixture/evaluator": {
+          "artifact_id": "sha256:c046d6f5051a2cba47af00ffae5934c2fa0afc92d3ab9862c7819c057a490b19",
+          "content_digest": "sha256:2bac704767e75767701db60054e5e1a093dd7bc2215f403b6b3761c8e6dcd9e0",
+          "name": "fixture/evaluator"
+        },
+        "fixture/implementation": {
+          "artifact_id": "sha256:2e3ee87541da6d6b4d02aa730c24f2d16599b917a133f771885ac29f786fa581",
+          "content_digest": "sha256:9eefeda961a0fc6f3ec2e852471d8a543e126c06106aaeb3af63952644ccc034",
+          "name": "fixture/implementation"
+        },
+        "fixture/implementer": {
+          "artifact_id": "sha256:8bab100239ab4f5c73cab936a30aaae8023b1436a00e97ce15c1e45f62ed483c",
+          "content_digest": "sha256:b28ff2c20bbfac8427e1c0cda6f3fbaf84270f3bd44d49a7d28372da751abe99",
+          "name": "fixture/implementer"
+        }
+      },
+      "engine_id": "<engine>",
+      "generated_origins": [],
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:1c42ba4c94f786e582877c91bd61f764a3ca92e8b2c8e745270aec6eb1986b54"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        },
+        "source": {
+          "artifact_ids": [
+            "sha256:0c5b6349153be65457f62557f6e404404f554a059c3072a417ea06382eb7ff6a"
+          ],
+          "artifact_type": "af/SourceTree@1",
+          "cardinality": "one",
+          "snapshot_id": "sha256:12d88076fdfa220a5ad645afbccf32414153aeede7d31df69280dd963bdc361d"
+        }
+      },
+      "limits": {
+        "deadline_unix_ms": "<ms>",
+        "max_attempts": 3,
+        "tokens": 1000,
+        "verification": {
+          "attempts": 2,
+          "tokens": 200,
+          "wall_ms": 300000
+        }
+      },
+      "pipeline_id": "sha256:2e3ee87541da6d6b4d02aa730c24f2d16599b917a133f771885ac29f786fa581",
+      "task_revision_id": "<run:1>"
+    },
+    "producer": {
+      "kind": "kernel_operation",
+      "operation_id": "capture@1",
+      "run_id": "task-file-adapter-v1"
+    },
+    "type": "af/ExecutionPlan@1"
+  },
+  "inspection": {
+    "schema": "af/task-inspection@11",
+    "task_id": "cold-only",
+    "revision_id": "<run:1>",
+    "phase": {
+      "kind": "finished",
+      "result_id": "<run:6>"
+    },
+    "plan_id": "<run:0>",
+    "chargeable_tokens": "0",
+    "attempts": 3,
+    "selection": {
+      "artifact_id": "<run:7>",
+      "request_revision_id": "<run:8>",
+      "assessment": {
+        "schema": "af.pipeline-selection/1",
+        "requested": {
+          "name": "fixture/implementation",
+          "fallback": "refuse"
+        },
+        "no_match": "refuse",
+        "candidates": [
+          {
+            "pipeline": "fixture/implementation",
+            "preferred": true,
+            "priority": 4294967295,
+            "state": {
+              "kind": "fit"
+            }
+          }
+        ],
+        "decision": {
+          "kind": "selected",
+          "pipeline": "fixture/implementation"
+        }
+      }
+    },
+    "history": [
+      {
+        "sequence": 0,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "opened",
+            "revision_id": "<run:1>",
+            "lease_until_unix_ms": "<ms>"
+          }
+        }
+      },
+      {
+        "sequence": 1,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "plan_proposed",
+            "plan_id": "<run:0>"
+          }
+        }
+      },
+      {
+        "sequence": 2,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "plan_admitted",
+            "plan_id": "<run:0>"
+          }
+        }
+      },
+      {
+        "sequence": 3,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:10>"
+          }
+        }
+      },
+      {
+        "sequence": 4,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:11>"
+          }
+        }
+      },
+      {
+        "sequence": 5,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:12>"
+          }
+        }
+      },
+      {
+        "sequence": 6,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:13>"
+          }
+        }
+      },
+      {
+        "sequence": 7,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:14>"
+          }
+        }
+      },
+      {
+        "sequence": 8,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407"
+          }
+        }
+      },
+      {
+        "sequence": 9,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:15>"
+          }
+        }
+      },
+      {
+        "sequence": 10,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:16>"
+          }
+        }
+      },
+      {
+        "sequence": 11,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:17>"
+          }
+        }
+      },
+      {
+        "sequence": 12,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:18>"
+          }
+        }
+      },
+      {
+        "sequence": 13,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:19>"
+          }
+        }
+      },
+      {
+        "sequence": 14,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:20>"
+          }
+        }
+      },
+      {
+        "sequence": 15,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:21>"
+          }
+        }
+      },
+      {
+        "sequence": 16,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:22>"
+          }
+        }
+      },
+      {
+        "sequence": 17,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0"
+          }
+        }
+      },
+      {
+        "sequence": 18,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:23>"
+          }
+        }
+      },
+      {
+        "sequence": 19,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:24>"
+          }
+        }
+      },
+      {
+        "sequence": 20,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:25>"
+          }
+        }
+      },
+      {
+        "sequence": 21,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:26>"
+          }
+        }
+      },
+      {
+        "sequence": 22,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:27>"
+          }
+        }
+      },
+      {
+        "sequence": 23,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:28>"
+          }
+        }
+      },
+      {
+        "sequence": 24,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa"
+          }
+        }
+      },
+      {
+        "sequence": 25,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:29>"
+          }
+        }
+      },
+      {
+        "sequence": 26,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:30>"
+          }
+        }
+      },
+      {
+        "sequence": 27,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:31>"
+          }
+        }
+      },
+      {
+        "sequence": 28,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:32>"
+          }
+        }
+      },
+      {
+        "sequence": 29,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:33>"
+          }
+        }
+      },
+      {
+        "sequence": 30,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "run_reported",
+            "report_id": "<run:34>"
+          }
+        }
+      },
+      {
+        "sequence": 31,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "finished",
+            "result_id": "<run:6>"
+          }
+        }
+      },
+      {
+        "sequence": 32,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "lease_released"
+          }
+        }
+      }
+    ],
+    "execution_records": [
+      {
+        "artifact_id": "<run:10>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:35>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:11>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "kind": "published",
+          "output_id": "<run:36>"
+        }
+      },
+      {
+        "artifact_id": "<run:12>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:37>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:13>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:37>",
+          "kind": "reserved",
+          "reservation_id": "reservation:1",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:14>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "context_id": "<run:38>",
+          "kind": "context_bound"
+        }
+      },
+      {
+        "artifact_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "kind": "started"
+        }
+      },
+      {
+        "artifact_id": "<run:15>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "charged_tokens": "0",
+          "kind": "usage_observed",
+          "raw_artifact_ids": [
+            "sha256:bc3bbff97478a1bd072ec23d20df5913daa87b2e24e4fbb93d996cf7fe5fc97b"
+          ],
+          "usage_id": "<run:39>"
+        }
+      },
+      {
+        "artifact_id": "<run:16>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "charged_tokens": "0",
+          "kind": "settled",
+          "raw_artifact_ids": [
+            "sha256:bc3bbff97478a1bd072ec23d20df5913daa87b2e24e4fbb93d996cf7fe5fc97b"
+          ],
+          "result": {
+            "kind": "succeeded",
+            "output_id": "<run:40>"
+          },
+          "usage_id": "<run:39>"
+        }
+      },
+      {
+        "artifact_id": "<run:17>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "kind": "published",
+          "output_id": "<run:40>"
+        }
+      },
+      {
+        "artifact_id": "<run:18>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:41>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:19>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "kind": "published",
+          "output_id": "<run:42>"
+        }
+      },
+      {
+        "artifact_id": "<run:20>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:43>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:21>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:43>",
+          "kind": "reserved",
+          "reservation_id": "reservation:2",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:22>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "context_id": "<run:44>",
+          "kind": "context_bound"
+        }
+      },
+      {
+        "artifact_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "kind": "started"
+        }
+      },
+      {
+        "artifact_id": "<run:23>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "charged_tokens": "0",
+          "kind": "usage_observed",
+          "raw_artifact_ids": [
+            "<run:45>"
+          ],
+          "usage_id": "<run:46>"
+        }
+      },
+      {
+        "artifact_id": "<run:24>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "charged_tokens": "0",
+          "kind": "settled",
+          "raw_artifact_ids": [
+            "<run:45>"
+          ],
+          "result": {
+            "kind": "succeeded",
+            "output_id": "<run:47>"
+          },
+          "usage_id": "<run:46>"
+        }
+      },
+      {
+        "artifact_id": "<run:25>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "kind": "published",
+          "output_id": "<run:47>"
+        }
+      },
+      {
+        "artifact_id": "<run:26>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:48>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:27>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:48>",
+          "kind": "reserved",
+          "reservation_id": "reservation:3",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:28>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "context_id": "<run:49>",
+          "kind": "context_bound"
+        }
+      },
+      {
+        "artifact_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "kind": "started"
+        }
+      },
+      {
+        "artifact_id": "<run:29>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "charged_tokens": "0",
+          "kind": "usage_observed",
+          "raw_artifact_ids": [
+            "sha256:f23927897af4d475223fe9a8631bfc26c6552028eae36e32c4e6e54c8367730a"
+          ],
+          "usage_id": "<run:50>"
+        }
+      },
+      {
+        "artifact_id": "<run:30>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "charged_tokens": "0",
+          "kind": "settled",
+          "raw_artifact_ids": [
+            "sha256:f23927897af4d475223fe9a8631bfc26c6552028eae36e32c4e6e54c8367730a"
+          ],
+          "result": {
+            "kind": "succeeded",
+            "output_id": "<run:51>"
+          },
+          "usage_id": "<run:50>"
+        }
+      },
+      {
+        "artifact_id": "<run:31>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "kind": "published",
+          "output_id": "<run:51>"
+        }
+      },
+      {
+        "artifact_id": "<run:32>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:52>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:33>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "kind": "published",
+          "output_id": "<run:53>"
+        }
+      }
+    ],
+    "attempt_walls": [
+      {
+        "run_id": "task:sha256:184820898c9af29b6eebffda91b8f6ee051047229c3643d484d919fa57db4003",
+        "attempt_id": "4e27a434f2f8f3d579808052b1",
+        "node_id": "root.nodes.check",
+        "round": 0,
+        "epoch": 1,
+        "started_unix_ms": "<ms>",
+        "elapsed_ms": "<ms>",
+        "usage": {
+          "chargeable_tokens": "0"
+        }
+      }
+    ],
+    "runtime_observations": [
+      {
+        "artifact_id": "<run:45>",
+        "artifact_type": "af/TaskRuntimeEvidence@1",
+        "record": {
+          "task_id": "cold-only",
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "node": "root.nodes.check",
+          "context_id": "<run:44>",
+          "spans": [
+            {
+              "span_id": "<run:54>",
+              "kind": "check",
+              "label": "pagination",
+              "started_unix_ms": "<ms>",
+              "elapsed_ms": "<ms>"
+            }
+          ]
+        }
+      }
+    ],
+    "run_reports": [
+      {
+        "artifact_id": "<run:34>",
+        "report": {
+          "task_revision_id": "<run:1>",
+          "plan_id": "<run:0>",
+          "through_sequence": 30,
+          "nodes": [
+            {
+              "node": "root.inputs",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:36>"
+              }
+            },
+            {
+              "node": "root.nodes.implement",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:40>"
+              }
+            },
+            {
+              "node": "root.nodes.seal",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:42>"
+              }
+            },
+            {
+              "node": "root.nodes.check",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:47>"
+              }
+            },
+            {
+              "node": "root.nodes.evaluate",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:51>"
+              }
+            },
+            {
+              "node": "root.nodes.accept",
+              "outcome": {
+                "kind": "completed",
+                "output_id": "<run:53>"
+              }
+            }
+          ]
+        },
+        "diagnostics": {}
+      }
+    ],
+    "result": {
+      "task_revision_id": "<run:1>",
+      "execution": "completed",
+      "acceptance": "satisfied",
+      "domain_conclusion": "verified",
+      "outputs": {
+        "snapshot": {
+          "artifact_ids": [
+            "<run:55>"
+          ],
+          "artifact_type": "af/SourceTree@1",
+          "cardinality": "one",
+          "snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3"
+        },
+        "verification": {
+          "artifact_ids": [
+            "<run:56>"
+          ],
+          "artifact_type": "af/VerificationResult@1",
+          "cardinality": "one",
+          "snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3"
+        }
+      },
+      "evidence": [
+        "<run:56>"
+      ],
+      "missing_obligations": []
+    }
+  },
+  "delivery": {
+    "schema": "af/task-delivery@1",
+    "delivery_id": "<run:57>",
+    "task_id": "cold-only",
+    "result_id": "<run:6>",
+    "source_snapshot_id": "sha256:12d88076fdfa220a5ad645afbccf32414153aeede7d31df69280dd963bdc361d",
+    "derived_snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3",
+    "target": {
+      "repository": "<run:58>",
+      "repository_id": "b85758986f7c6ec49167d1a4a90134639eb78cae",
+      "branch": "af/cold-only",
+      "worktree": "<run:59>"
+    },
+    "outcome": {
+      "kind": "delivered"
+    },
+    "ignored_paths": [],
+    "remote_actions": []
+  },
+  "delivered_tree": {
+    ".af/code-policy.toml": "sha256:157732f5bf4d82069c7258b677367499a677d8f3d69bfef2a8ea963ab7a2493a",
+    ".af/task-catalog.toml": "sha256:351352837cbbaea9dcf5512a58c9ec259af4c672bb03070a49d9500f9a63eca2",
+    ".af/task-packages/fixture/evaluator/input.schema.json": "sha256:c76bc0abbf7457c15c286ce26fe8bcca095325dc829dd708b27d0d55863ccb72",
+    ".af/task-packages/fixture/evaluator/outputs/result.schema.json": "sha256:f543ccc950709102ff4ae8bde8b96e248caeaa1dd6ff58243e0f748fd05d250a",
+    ".af/task-packages/fixture/evaluator/worker.py": "sha256:bd24974040205746eef9ac587b6149f19a582089cc7095616ce85e6927ba9398",
+    ".af/task-packages/fixture/evaluator/worker.toml": "sha256:c4c099fe2975196676a802294ca9ea7f7f5c8f26b5c56bb840832de2ffc80695",
+    ".af/task-packages/fixture/implementation/pipeline.toml": "sha256:29d31acf9e537b17d446b1d393ebbf2cde5e6ac8dec37067972cf3164c516660",
+    ".af/task-packages/fixture/implementer/input.schema.json": "sha256:141cc6861a92ec14fe1a0bed24475d1156495f89a54836b9d77d61fc5f1f7a90",
+    ".af/task-packages/fixture/implementer/outputs/report.schema.json": "sha256:9c0fc7f79470df4b59f4f1dd29f0586b0327fd428f267d8cf5d1f3d5d29850d8",
+    ".af/task-packages/fixture/implementer/worker.py": "sha256:ac08fa252bdddea5266e5d5209074b9b61e8d7bc64112510d157e12fc34f0157",
+    ".af/task-packages/fixture/implementer/worker.toml": "sha256:7626f8ac181ae4df6b977846cf80f9adc171d63a131e186951c7626c339a5d55",
+    "pagination.py": "sha256:ddf3b7c7560cf9642318541a7e78dcd7679a11a666d7233e57fd0bed90c31173",
+    "ticket.json": "sha256:1c76a0de0ae3edc5d69c332b643ef908950c1cac841ec62c67a51a0f80a43045"
+  }
+}
