@@ -23,7 +23,9 @@ required = true
 
 [checks.kernel.command]
 program = "bash"
-args = [{ value = "scripts/verify.sh", provenance = "literal" }]
+args = [{ value = "scripts/verify.sh", provenance = "literal" },
+        { value = "--profile", provenance = "literal" },
+        { value = "fast", provenance = "literal" }]
 
 [checks.kernel.remote]
 executor = "github-pr"
@@ -38,7 +40,9 @@ required = ["validation / lint", "validation / check (ubuntu-latest)"]
   that run. A job of a called workflow reads `caller / job`, as in `validation / lint`. Read the
   names from a real pull-request run: `gh run view <run-id> --json jobs --jq '.jobs[].name'`.
 
-Declaring both forms is the project's statement that they verify the same thing. A policy
+For this repository, the local Task command selects functional, e2e and uix; its remote
+gate pull request runs the full CI selection. The remote result supplies full validation
+for that Snapshot. Declaring both forms records these distinct scopes in one check policy. A policy
 without the table is captured byte for byte as before.
 
 ## 2. Choose it in a pipeline

@@ -63,7 +63,8 @@ it includes no machine-local source path and is diagnostic evidence, not a new a
 
 ## Captured project request
 
-Afactory requests this for its native kernel check:
+Afactory requests this for its native kernel check. The local Task gate runs
+`scripts/verify.sh --profile fast`; CI gate pull requests and releases run full:
 
     [rust_toolchain]
     version = "1.88.0"

@@ -1,6 +1,7 @@
 # Report Tasks
 
-A report Task produces a Document about one exact source Snapshot. An author reads that
+A report Task produces a Document about one exact source Snapshot. This repository's
+local Task gate runs the fast validation profile; CI gate pull requests and releases run full. An author reads that
 Snapshot and may run commands in a clone of it; the kernel renders the draft and resolves every
 repository citation against the Snapshot's Manifest; an independent verifier reads the same
 Snapshot and judges the report against the Task's requirements. A report is never delivered:

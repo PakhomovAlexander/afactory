@@ -4,7 +4,8 @@ A Task check is a command from the project's committed code policy that af runs 
 read-only Snapshot (the frozen source tree a Task works on); its results form the gate a Task
 must pass. A code policy's `[warm]` table lets those checks reuse build directories that live on
 this machine between runs, so a check does not compile the whole workspace every time. This page
-is the operator's view of that warm layer; the decisions are
+is the operator's view of that warm layer. This repository's local Task gate runs the
+fast validation profile; CI gate pull requests and releases run the full check. The decisions are
 [ADR-0131](../adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md) and
 [ADR-0207](../adr/0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md).
 
@@ -64,7 +65,7 @@ it was free builds cold and says `busy`.
 
 With `build_wall_ms` declared, a check has two phases. The build phase runs from its start until
 it reports a `build` step through `$AF_CHECK_REPORT` (`scripts/ci-step.py --stage build` does; in
-this repository that is `make check`'s `test-build`), and `build_wall_ms` bounds it. The tests
+this repository that is the `test-build` step shared by fast and full checks), and `build_wall_ms` bounds it. The tests
 run from there, and `check_wall_ms` bounds them, so a cold build never eats the tests' time. A
 check that has reported steps but no build step when its build deadline passes is ended there; one
 that reports no step at all gets both deadlines as one. The check Attempt's wall is

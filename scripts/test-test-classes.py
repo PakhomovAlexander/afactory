@@ -229,6 +229,22 @@ class SealedEvidence(unittest.TestCase):
             scripts.mkdir()
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            shutil.copy2(ROOT / 'scripts/test-classes.py', scripts / 'test-classes.py')
+            for source in (ROOT / 'scripts').glob('test-*.py'):
+                if source.name != 'test-classes.py':
+                    shutil.copy2(source, scripts / source.name)
+            (root / '.config').mkdir()
+            shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            (root / 'schemas').mkdir()
+            for name in tc.schema_documents():
+                shutil.copy2(ROOT / 'schemas' / name, root / 'schemas' / name)
+            for source in (ROOT / 'crates').glob('*/tests/it/main.rs'):
+                destination = root / source.relative_to(ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+            workflow = root / '.github/workflows/validate.yml'
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / '.github/workflows/validate.yml', workflow)
             tools = root / 'bin'
             tools.mkdir()
             make = tools / 'make'
@@ -248,6 +264,7 @@ class SealedEvidence(unittest.TestCase):
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
                        AF_GATE_TARGET_DIR=str(target), CALLS=str(calls), STATUS='0')
             for args, expected in [([], ['check']),
+                                   (['--profile', 'full'], ['check']),
                                    (['--test-plan', str(plan)], ['check-classes', f'TEST_PLAN={plan}'])]:
                 for status in (0, 23):
                     env['STATUS'] = str(status)
@@ -259,11 +276,25 @@ class SealedEvidence(unittest.TestCase):
                     self.assertEqual(observed['target'], str(target))
                     self.assertEqual(Path(observed['run']).parent, target / 'nextest-reports')
                     self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            env['STATUS'] = '0'
+            result = subprocess.run(['bash', str(scripts / 'verify.sh'), '--profile', 'fast'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = tc.read(calls)
+            fast_plan = Path(observed['run']) / 'test-plan.json'
+            self.assertEqual(observed['args'], ['check-classes', f'TEST_PLAN={fast_plan}'])
+            self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            self.assertEqual({key: tc.read(fast_plan)[key]
+                              for key in ('profile', 'context', 'selected')},
+                             {'profile': 'fast', 'context': 'gate',
+                              'selected': ['functional', 'e2e', 'uix']})
             calls.unlink()
-            for args in (['--unknown'], ['--test-plan'], ['--test-plan', str(root / 'absent')]):
+            for args in (['--unknown'], ['--profile'], ['--profile', 'perf'],
+                         ['--test-plan'], ['--test-plan', str(root / 'absent')]):
                 result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
                                         env=env, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 2)
+                self.assertIn(b'usage: scripts/verify.sh', result.stderr)
                 self.assertFalse(calls.exists())
             self.assertFalse((root / 'target').exists())
 
