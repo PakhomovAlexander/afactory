@@ -401,6 +401,13 @@ pub fn semantic_state(
             );
             let cause = if result.acceptance == TaskAcceptanceV1::Satisfied && !concluded {
                 None
+            } else if result.execution == TaskExecutionV1::Exhausted
+                && state
+                    .execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.budget.breached())
+            {
+                Some(TaskCauseV1::Budget)
             } else if let Some(cause) = last_gate_cause(cas, state)? {
                 Some(cause)
             } else if cancelled == Some(state.lease_epoch())

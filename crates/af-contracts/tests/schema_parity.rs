@@ -2212,6 +2212,8 @@ mod task_contracts;
 mod task_reports;
 #[path = "schema_parity/task_review_findings.rs"]
 mod task_review_findings;
+#[path = "schema_parity/task_state.rs"]
+mod task_state;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {
