@@ -270,6 +270,18 @@ pub(super) fn push_refspec(commit: &str, reference: &str, task_id: &str) -> Resu
     Ok(format!("{commit}:{reference}"))
 }
 
+/// The only refspec a gate cleanup may carry: the deletion of one of this Task's two branches
+/// (ADR-0144). Anything else is a kernel error, so no other ref can ever be deleted.
+pub(super) fn delete_refspec(reference: &str, task_id: &str) -> Result<String, String> {
+    let prefix = format!("refs/heads/af-gate/{task_id}/");
+    if !is_ref_component(task_id)
+        || !matches!(reference.strip_prefix(&prefix), Some("base" | "head"))
+    {
+        return Err("a gate cleanup may delete only this Task's af-gate branches".into());
+    }
+    Ok(format!(":{reference}"))
+}
+
 fn is_hex_object(value: &str) -> bool {
     (value.len() == 40 || value.len() == 64)
         && value
@@ -810,6 +822,32 @@ mod tests {
         assert_eq!(
             args[..5],
             ["push", "--atomic", "--porcelain", "--no-verify", "--"]
+        );
+    }
+
+    #[test]
+    fn a_gate_cleanup_deletes_only_this_tasks_branches() {
+        assert_eq!(
+            delete_refspec("refs/heads/af-gate/t/base", "t").unwrap(),
+            ":refs/heads/af-gate/t/base"
+        );
+        assert_eq!(
+            delete_refspec("refs/heads/af-gate/t/head", "t").unwrap(),
+            ":refs/heads/af-gate/t/head"
+        );
+        for (reference, task) in [
+            ("refs/heads/af-gate/u/base", "t"),
+            ("refs/heads/main", "t"),
+            ("refs/heads/af-gate/t/other", "t"),
+            ("refs/heads/af-gate/t/base", "t/x"),
+            ("refs/tags/af-gate/t/base", "t"),
+        ] {
+            assert!(delete_refspec(reference, task).is_err(), "{reference}");
+        }
+        let args = push_arguments("/srv/gate.git", &[":refs/heads/af-gate/t/head".into()]);
+        assert!(
+            args.iter()
+                .all(|arg| !arg.starts_with('+') && !arg.starts_with("--force"))
         );
     }
 

@@ -187,6 +187,46 @@ fn running_binary_is(path: &Path) -> bool {
     running.dev() == candidate.dev() && running.ino() == candidate.ino()
 }
 
+/// One installed version as the Storage Budget sees it (ADR-0144): its directory, when it was
+/// installed (its receipt's modification time), and why it may never be evicted — the
+/// default, a pin some project on this machine still holds, or the running binary.
+pub(crate) struct InstalledVersion {
+    pub(crate) directory: PathBuf,
+    pub(crate) installed_unix_ms: u64,
+    pub(crate) protected: Option<&'static str>,
+}
+
+pub(crate) fn installed_for_storage(paths: &Paths) -> Result<Vec<InstalledVersion>, String> {
+    let default = default_version(paths);
+    let pinned = pinned_everywhere(paths);
+    Ok(installed_versions(paths)
+        .into_iter()
+        .map(|version| {
+            let version = version.to_string();
+            let directory = version_dir(paths, &version);
+            let installed_unix_ms = std::fs::metadata(directory.join("receipt.toml"))
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
+            let protected = if default.as_deref() == Some(version.as_str()) {
+                Some("the default version")
+            } else if pinned.contains(&version) {
+                Some("pinned by a project")
+            } else if running_binary_is(&version_binary(paths, &version)) {
+                Some("the running binary")
+            } else {
+                None
+            };
+            InstalledVersion {
+                directory,
+                installed_unix_ms,
+                protected,
+            }
+        })
+        .collect())
+}
+
 fn default_status(paths: &Paths, version: Option<&str>) -> &'static str {
     if version.is_some() {
         return "managed";
@@ -1566,6 +1606,11 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
         println!("removed {}", paths.versions.display());
     }
     if purge {
+        // What af left outside its own directories goes first, while the Provider and Store
+        // registries it reads are still there (ADR-0144).
+        for line in crate::storage::purge_outside_roots() {
+            println!("{line}");
+        }
         for dir in [
             config::config_home()?.join("af"),
             config::state_home()?.join("af"),

@@ -181,6 +181,9 @@ pub struct TaskRuntime<'store, 'host> {
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
     publication_failures: Mutex<BTreeSet<String>>,
+    /// Set when the free-disk floor refused a Worker Attempt (ADR-0144): the run stops like an
+    /// interrupted one, nothing is assembled or finished, and the Task stays resumable.
+    disk_refusal: Mutex<Option<String>>,
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -286,7 +289,14 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
             publication_failures: Mutex::new(BTreeSet::new()),
+            disk_refusal: Mutex::new(None),
         })
+    }
+
+    /// The free-disk refusal that stopped this run, if one did. The caller then finishes
+    /// nothing: the Task stays resumable once space is freed (ADR-0144).
+    pub fn disk_refusal(&self) -> Option<String> {
+        self.disk_refusal.lock().expect("Task disk refusal").clone()
     }
 
     pub fn with_cancellation(mut self, cancellation: &'host AtomicBool) -> Self {
@@ -544,6 +554,28 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 }
 
+/// Whether an Attempt of `operator` starts a model Worker or a Provider probe: the Attempts the
+/// free-disk floor refuses before they start. Checks meet the floor inside their own operator,
+/// where a refusal is the check's result.
+fn starts_a_worker(operator: &CompiledOperator) -> bool {
+    use review_core::task::pipeline::TaskOperatorV1;
+    use review_graph::task::ReviewOperation;
+    match operator {
+        CompiledOperator::ProviderAdmission { .. } => true,
+        CompiledOperator::ReviewDomain { operation, .. } => matches!(
+            operation,
+            ReviewOperation::Generation
+                | ReviewOperation::Reviewer { .. }
+                | ReviewOperation::Scatter { .. }
+        ),
+        CompiledOperator::Primitive { operator, .. } => matches!(
+            operator,
+            TaskOperatorV1::Worker { .. } | TaskOperatorV1::OptimizationExperiment { .. }
+        ),
+        _ => false,
+    }
+}
+
 impl TaskRuntime<'_, '_> {
     fn capture_invocation(&self, input: &TaskInvocationV1) -> Result<String, String> {
         input.validate()?;
@@ -654,6 +686,25 @@ impl TaskRuntime<'_, '_> {
                 None
             };
             if let Some(attempt) = &attempt {
+                // Below the machine's free-disk floor a Worker Attempt never starts: it is
+                // released before any Provider is contacted, charged nothing, and the Task stays
+                // resumable once space is freed (ADR-0144).
+                if starts_a_worker(&compiled.operator)
+                    && let Err(refusal) = crate::storage::ensure_free_disk()
+                {
+                    let _ = self.store.lock().expect("Task Store").release_task_attempt(
+                        self.cas,
+                        &self.lease,
+                        attempt,
+                        &refusal,
+                    );
+                    // Every other node stops as on an interrupt; the caller sees why.
+                    *self.disk_refusal.lock().expect("Task disk refusal") = Some(refusal.clone());
+                    if let Some(flag) = self.cancellation {
+                        flag.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                    return Err(refusal);
+                }
                 let start = self.store.lock().expect("Task Store").start_task_attempt(
                     self.cas,
                     &self.lease,

@@ -104,6 +104,42 @@ const OLD_TREE: &str = "tree.old";
 const MANIFEST: &str = "manifest.json";
 const HEAD: &str = "head.json";
 const HEAD_SCHEMA: &str = "af.warm-workspace/1";
+/// The lock file a preparation holds shared for as long as its template may be cloned; the
+/// Storage Budget's sweep never evicts a workspace whose lock it cannot take exclusively.
+pub const WORKSPACE_LOCK: &str = "workspace.lock";
+
+/// A shared hold on one workspace root: it is in use while this value lives.
+#[derive(Debug)]
+pub struct WorkspaceInUse {
+    _lock: nix::fcntl::Flock<std::fs::File>,
+}
+
+impl WorkspaceInUse {
+    /// Take the shared lock of the workspace at `root`, creating the lock file when absent.
+    fn take(root: &Path) -> Result<Self, WorkspaceError> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join(WORKSPACE_LOCK))?;
+        let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockShared)
+            .map_err(|(_, errno)| WorkspaceError::new(WorkspaceErrorKind::Io, errno.to_string()))?;
+        Ok(Self { _lock: lock })
+    }
+}
+
+/// Whether some process holds the workspace at `root` (its lock cannot be taken exclusively
+/// now). A root without a lock file is not in use.
+pub fn workspace_in_use(root: &Path) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .open(root.join(WORKSPACE_LOCK))
+    else {
+        return false;
+    };
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock).is_err()
+}
 
 /// The machine-local root every Warm Workspace lives under: `$XDG_CACHE_HOME/af/workspaces`,
 /// or `~/.cache/af/workspaces` when the variable is unset. A relative value is refused.
@@ -207,6 +243,8 @@ pub struct WorkspacePreparation {
     pub entries_touched: u64,
     /// Host-observed time the preparation took.
     pub preparation_ms: u64,
+    /// Held for as long as the template may be cloned, so the workspace counts as in use.
+    pub in_use: WorkspaceInUse,
 }
 
 /// The previous verified state of a root, read from its marker and manifest. The marker's
@@ -259,6 +297,7 @@ pub fn prepare_workspace(
             format!("warm workspace root {} is a symlink", root.path().display()),
         ));
     }
+    let in_use = WorkspaceInUse::take(root.path())?;
     // Leftovers of a preparation that ended between its steps carry no marker and no trust.
     remove_tree(&root.path().join(NEXT_TREE));
     remove_tree(&root.path().join(OLD_TREE));
@@ -318,6 +357,7 @@ pub fn prepare_workspace(
         verified_digest: head_digest,
         entries_touched: outcome.entries_touched,
         preparation_ms: clock.elapsed().as_millis() as u64,
+        in_use,
     })
 }
 

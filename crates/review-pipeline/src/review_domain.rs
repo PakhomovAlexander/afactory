@@ -598,9 +598,7 @@ impl<'a> ReviewDomainState<'a> {
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
-        let mut runner = CheckRunner::new(self.cas, sandbox.root())
-            .with_timeout(self.check_timeout)
-            .with_cancellation(cancellation);
+        let mut cache_variables = Vec::new();
         for environment in cache_environments {
             for ((local_key, local_value), (container_key, container_value)) in
                 environment.local.into_iter().zip(environment.container)
@@ -608,35 +606,74 @@ impl<'a> ReviewDomainState<'a> {
                 if local_key != container_key {
                     return Err("cache environment keys disagree across providers".into());
                 }
-                runner = runner.with_split_env(local_key, local_value, container_value);
+                cache_variables.push((local_key, local_value, container_value));
             }
         }
+        // The same environment contract as a Task code check (ADR-0144): a private HOME, TMPDIR,
+        // AF_CHECK_SCRATCH and XDG_CACHE_HOME per check, and the kernel's rustup home with
+        // automatic installation off, so a private HOME never downloads a toolchain.
+        let rustup = crate::task::warm_check::RustupHome::of_kernel();
+        let container = container.map(ContainerProvider::with_check_runtime);
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
             crate::task::control::check(cancellation)?;
-            runner = runner.with_timeout(gate_remaining(self.check_timeout, deadline)?);
+            let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
+            let mut runner = CheckRunner::new(self.cas, sandbox.root())
+                .with_timeout(gate_remaining(self.check_timeout, deadline)?)
+                .with_cancellation(cancellation);
+            for ((key, local), (_, portable)) in runtime
+                .environment()
+                .into_iter()
+                .zip(review_sandbox::CheckRuntime::container_environment())
+            {
+                runner = runner.with_split_env(key, local, portable);
+            }
+            for (key, value) in rustup.environment() {
+                runner = if key == "RUSTUP_HOME" {
+                    runner.with_local_env(key, value)
+                } else {
+                    runner.with_env(key, value)
+                };
+            }
+            for (key, local, portable) in &cache_variables {
+                runner = runner.with_split_env(key.clone(), local.clone(), portable.clone());
+            }
             let mut cleanup_failure = None;
-            let execution = match container.as_ref() {
-                Some(provider) => runner.run_with_observed(check, |program, args, env, timeout| {
-                    match provider.exec_evidenced_controlled(
-                        sandbox.root(),
-                        program,
-                        args,
-                        env,
-                        timeout,
-                        cancellation,
-                    ) {
-                        Ok(execution) => Ok((execution.output, execution.stderr_held)),
-                        Err(error) => {
-                            if !error.cleanup_confirmed() {
-                                cleanup_failure = Some(error.to_string());
+            let floor = crate::storage::ensure_free_disk().err();
+            let execution = match (floor, container.as_ref()) {
+                // Below the machine's free-disk floor the check does not start.
+                (Some(refusal), _) => review_check::CheckExecution {
+                    result: review_check::CheckResult::not_run(check, refusal),
+                    started_unix_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_millis() as u64),
+                    elapsed_ms: 0,
+                    ending: review_check::CheckEnding::NotStarted,
+                },
+                (None, container) => match container {
+                    Some(provider) => runner.run_with_observed(
+                        check,
+                        |program, args, env, timeout| match provider.exec_evidenced_controlled(
+                            sandbox.root(),
+                            program,
+                            args,
+                            env,
+                            timeout,
+                            cancellation,
+                        ) {
+                            Ok(execution) => Ok((execution.output, execution.stderr_held)),
+                            Err(error) => {
+                                if !error.cleanup_confirmed() {
+                                    cleanup_failure = Some(error.to_string());
+                                }
+                                Err(error.to_string())
                             }
-                            Err(error.to_string())
-                        }
-                    }
-                }),
-                None => runner.run_observed(check),
+                        },
+                    ),
+                    None => runner.run_observed(check),
+                },
             };
+            drop(runtime);
             let result = execution.result;
             let span_id = self
                 .cas

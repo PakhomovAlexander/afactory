@@ -581,6 +581,17 @@ impl EventStore {
         )
     }
 
+    /// Record one gate cleanup of a finished Task (ADR-0144), inline: it references no
+    /// artifact and changes nothing the Task concluded.
+    pub fn record_task_gate_cleanup(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        cleanup: review_core::task::remote_check::TaskGateCleanupV1,
+    ) -> Result<RunEvent, StoreError> {
+        self.task_change(cas, lease, TaskChangeV1::GateCleanup { cleanup }, now()?)
+    }
+
     pub fn record_task_adoption_observation(
         &mut self,
         cas: &Cas,

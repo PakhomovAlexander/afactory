@@ -41,10 +41,14 @@ review corpora belong in consuming repositories, not here.
 - One worktree per task, removed with its `target/` when the task's PR merges (the hub's
   `make worktree-rm` or `make worktree-sweep`). A built worktree is 5-50 GB; `make target-sweep`
   in the hub prunes stale artifacts from the ones that stay.
-- `af` removes the sandbox directories (`$TMPDIR/af-sandbox-<pid>-…`) that a killed or aborted
-  process left behind the next time it runs review or Task work; a directory marked `preserved`
-  (a container's cleanup was not confirmed) is left for the operator. Do not clear `$TMPDIR` by
-  hand while a review or Task runs: a live sandbox is a directory nobody else may touch.
+- `af` removes the sandbox and check runtime directories (`$TMPDIR/af-sandbox-<pid>-…`,
+  `$TMPDIR/af-check-<pid>-…`) that a killed or aborted process left behind the next time it runs
+  review or Task work; a directory marked `preserved` (a container's cleanup was not confirmed)
+  is left for the operator. Do not clear `$TMPDIR` by hand while a review or Task runs: a live
+  sandbox is a directory nobody else may touch.
+- Everything else `af` keeps between runs is held to one machine budget, `[storage] max_bytes`;
+  `af storage` shows it and `af storage prune --apply` reclaims it
+  ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
 
 ## Invariants
 
@@ -98,7 +102,9 @@ review corpora belong in consuming repositories, not here.
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one
   draft gate pull request between them. It never force-pushes, writes another ref, merges, marks
-  ready, closes, comments or deletes, and never sends a candidate that changes `.github/`. The
+  ready or comments, and never sends a candidate that changes `.github/`; when the Task finishes
+  it closes that pull request and deletes exactly those two branches, and nothing else
+  ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The
   pipeline chooses where a check runs; the operator's machine-local mapping supplies only the
   push target, and with it the authorization. A pipeline with remote checks cannot be planned on
   a machine without a target, and its plan carries `publish-gate` and the `github:` destination,

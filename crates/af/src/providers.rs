@@ -360,6 +360,17 @@ pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
     format!("set up {kind}: af provider setup {id} --kind {kind} --login")
 }
 
+/// The config directories of every Claude Provider the registry declares: where af's Claude
+/// Workers wrote their history (ADR-0144).
+pub(crate) fn registered_claude_config_dirs() -> Vec<PathBuf> {
+    load_specs()
+        .0
+        .into_iter()
+        .filter(|spec| spec.registry_declared && spec.kind == ProviderKind::Claude)
+        .filter_map(|spec| spec.auth_dir)
+        .collect()
+}
+
 /// Where the Provider registry is read from, when it can be named at all.
 pub(crate) fn registry_location() -> Option<PathBuf> {
     registry_path().ok().flatten()

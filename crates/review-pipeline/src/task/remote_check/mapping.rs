@@ -159,6 +159,12 @@ impl RemoteCheckMapping {
             .iter()
             .find(|entry| entry.repository_id == repository_id)
     }
+
+    /// The first target whose GitHub repository is `github`: where a finished Task's gate
+    /// branches are deleted from (ADR-0144). `None` once the mapping no longer names it.
+    pub fn target_for_github(&self, github: &str) -> Option<&GithubPrTarget> {
+        self.entries.iter().find(|entry| entry.github == github)
+    }
 }
 
 fn is_repository_id(value: &str) -> bool {

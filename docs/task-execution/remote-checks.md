@@ -172,13 +172,21 @@ mapping and the private repository only as `<push-url>`, `<mapping>` and `<gate-
 
 ## 6. Clean up
 
-The branches and the pull request stay, so resume and repair rounds can use them. When the Task
-no longer needs them, `af task show` prints the two commands:
+The branches and the pull request stay while the Task runs, so resume and repair rounds can use
+them. When the Task finishes, af closes the draft gate pull request and deletes both
+`af-gate/<task-id>/` branches from the mapping's push target, with the same `gh` and `git`
+([ADR-0144](../adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). It records the outcome as a
+`gate_cleanup` in the Task's log, which `af task show` prints (`gate cleanup: done; …`) and
+`--json` carries under `gate_cleanups`. A failed cleanup never changes the Task's result; the
+next sweep (after a run, or `af storage prune --apply`) tries again while the mapping still names
+the repository, and until then `af task show` prints the two commands:
 
 ```text
 gh pr close <number> --repo owner/name
 git push <push-url> --delete af-gate/<task-id>/base af-gate/<task-id>/head
 ```
+
+`[storage] keep_gate_pull_requests = true` in your machine configuration keeps them open.
 
 ## 7. What the workflow must allow
 

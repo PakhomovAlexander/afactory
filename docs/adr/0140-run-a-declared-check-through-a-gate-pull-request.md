@@ -1,7 +1,9 @@
 # ADR-0140: Run a declared check through a gate pull request
 
 Status: accepted, 2026-10-04; amended 2026-10-05 ([the pipeline chooses](#amendment-2026-10-05-the-pipeline-chooses)),
-which replaces the per-machine selection of option 3 and of *Declaration and selection*.
+which replaces the per-machine selection of option 3 and of *Declaration and selection*; amended
+on 2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): when the Task
+finishes, the kernel closes its draft gate pull request and deletes its two `af-gate/` branches.
 Supersedes, for operator-authorized gate branches and the gate pull request only, the rule that
 publishing is a human action ([`docs/values.md`](../values.md), [`AGENTS.md`](../../AGENTS.md)).
 Delivery is unchanged ([ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md)).

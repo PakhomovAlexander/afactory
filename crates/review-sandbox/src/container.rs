@@ -80,6 +80,8 @@ impl Availability {
 pub struct ContainerProvider {
     availability: Availability,
     image: String,
+    /// Mount the check runtime's `tmpfs` directories (see [`crate::CheckRuntime`]).
+    check_runtime: bool,
 }
 
 #[derive(Debug)]
@@ -130,6 +132,7 @@ impl ContainerProvider {
         ContainerProvider {
             availability: Self::probe(None),
             image: DEFAULT_IMAGE.to_string(),
+            check_runtime: false,
         }
     }
 
@@ -138,6 +141,7 @@ impl ContainerProvider {
         ContainerProvider {
             availability: Self::probe(Some(deadline)),
             image: DEFAULT_IMAGE.to_string(),
+            check_runtime: false,
         }
     }
 
@@ -148,11 +152,20 @@ impl ContainerProvider {
         ContainerProvider {
             availability: Self::probe_one(&path),
             image: DEFAULT_IMAGE.to_string(),
+            check_runtime: false,
         }
     }
 
     pub fn with_image(mut self, image: impl Into<String>) -> Self {
         self.image = image.into();
+        self
+    }
+
+    /// Give every command a check's runtime directories: one empty, writable `tmpfs` per
+    /// variable of [`crate::CheckRuntime::container_environment`], gone with the container. The
+    /// sandbox stays the only bind.
+    pub fn with_check_runtime(mut self) -> Self {
+        self.check_runtime = true;
         self
     }
 
@@ -281,6 +294,15 @@ impl ContainerProvider {
         for (key, value) in environment {
             argv.push("-e".to_string());
             argv.push(format!("{key}={value}"));
+        }
+        if self.check_runtime {
+            for mount in crate::CheckRuntime::container_mounts() {
+                // Executable, because a check builds and runs test binaries in `TMPDIR`; world
+                // writable with the sticky bit, because the mount is the daemon's and the
+                // command runs as the invoking user.
+                argv.push("--tmpfs".to_string());
+                argv.push(format!("{mount}:rw,exec,mode=1777"));
+            }
         }
         argv.extend([
             "--workdir".to_string(),
@@ -784,6 +806,40 @@ mod tests {
         assert!(!argv.iter().any(|a| a.contains("/var/run/docker.sock")));
         assert!(!argv.iter().any(|a| a == "--privileged"));
         assert!(!argv.iter().any(|a| a.starts_with("--network=host")));
+        assert!(!argv.iter().any(|a| a == "--tmpfs"));
+    }
+
+    #[test]
+    fn a_check_runtime_adds_container_mounts_and_keeps_the_single_bind() {
+        let provider = ContainerProvider::with_runtime("/nonexistent/runtime")
+            .with_image("example/image:tag")
+            .with_check_runtime();
+        let argv = provider.invocation(
+            Path::new("/tmp/sandbox-root"),
+            "/bin/true",
+            &[],
+            &crate::CheckRuntime::container_environment(),
+            "af-gate-test",
+        );
+        let mounts: Vec<&String> = argv
+            .iter()
+            .zip(argv.iter().skip(1))
+            .filter(|(flag, _)| *flag == "--tmpfs")
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(
+            mounts,
+            [
+                "/af-check/home:rw,exec,mode=1777",
+                "/af-check/tmp:rw,exec,mode=1777",
+                "/af-check/scratch:rw,exec,mode=1777",
+                "/af-check/cache:rw,exec,mode=1777",
+            ]
+        );
+        assert!(argv.contains(&"HOME=/af-check/home".to_string()));
+        assert_eq!(argv.iter().filter(|a| *a == "--volume").count(), 1);
+        let image = argv.iter().position(|a| a == "example/image:tag").unwrap();
+        assert!(argv.iter().position(|a| a == "--tmpfs").unwrap() < image);
     }
 
     #[test]

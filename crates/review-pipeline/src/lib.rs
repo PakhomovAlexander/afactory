@@ -29,6 +29,7 @@ mod reviewer_inputs;
 mod reviewer_output;
 pub mod scatter;
 pub mod session;
+pub mod storage;
 pub mod task;
 mod warm;
 

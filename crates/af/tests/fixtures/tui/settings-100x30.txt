@@ -21,10 +21,10 @@ v hub  (project)            |layer      file                                 sta
                             |keep_versions = 3                       built-in
                             |source = "PakhomovAlexander/afactory"   built-in
                             |update_check = true                     built-in
-                            |
-                            |
-                            |
-                            |
-                            |
-                            |
+                            |[storage]
+                            |auto_gc = true                          built-in
+                            |keep_campaigns = 20                     built-in
+                            |keep_days = 14                          built-in
+                            |keep_gate_pull_requests = false         built-in
+                            |keep_tasks = 20                         built-in
 NORMAL  hub                                 j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

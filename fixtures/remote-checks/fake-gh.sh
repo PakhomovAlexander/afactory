@@ -41,6 +41,17 @@ case "$1" in
   api) shift;;
   *) echo "fake gh: unsupported command $1" >&2; exit 2;;
 esac
+if [ "$1" = "--method" ] && [ "$2" = "PATCH" ]; then
+  # Closing the gate pull request when its Task finishes (ADR-0144).
+  if [ -e "$STATE/refuse-close" ]; then
+    echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1
+  fi
+  case "$3 $4 $5" in
+    "repos/octo/gate/pulls/12 -f state=closed")
+      echo closed >> "$STATE/pulls-closed"; echo closed > "$STATE/pull-state"; pull; exit 0;;
+  esac
+  echo "fake gh: unsupported PATCH $3" >&2; exit 2
+fi
 if [ "$1" = "--method" ] && [ "$2" = "POST" ]; then
   if [ -e "$STATE/refuse-pull" ]; then
     echo "gh: Validation Failed (HTTP 422): pushes to $BARE are not allowed" >&2; exit 1

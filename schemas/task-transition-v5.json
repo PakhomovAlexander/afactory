@@ -476,6 +476,22 @@
               "$ref": "urn:af:schema:task-collected:1"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cleanup"
+          ],
+          "properties": {
+            "kind": {
+              "const": "gate_cleanup"
+            },
+            "cleanup": {
+              "$ref": "urn:af:schema:task-gate-cleanup:1"
+            }
+          }
         }
       ]
     }

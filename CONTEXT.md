@@ -111,8 +111,33 @@ _Avoid_: putting it in `.af/` — authority to act on a remote belongs to a pers
 The one draft pull request from `af-gate/<task-id>/head` to `af-gate/<task-id>/base` that a
 Remote Check opens, both branches being commits the kernel built from the Task's Snapshots and
 owned by that Task in its Store. Resume and repair rounds attach to it; it is not for review or
-merge, and RC1 never closes it.
+merge. When the Task finishes, af closes it and deletes both branches, recording a `gate_cleanup`
+that never changes the Task's result
+([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
 _Avoid_: the delivery pull request — delivery still never pushes or opens one.
+
+**Storage Budget**:
+The one machine-wide bound (`[storage] max_bytes`, machine layers only) on every byte af keeps
+between runs: warm toolchain keys, warm Workspaces, review campaign Stores, finished Tasks of
+every Task Store, Stores this release cannot read, and installed versions. Each is an entry af
+evicts whole, least recently used first, never while in use or within an hour of its last use; a
+finished Task goes through collection and keeps its tombstone. Its free-disk floor
+(`min_free_bytes`) refuses a check or a Worker Attempt with `insufficient_disk` before any
+spend. `af storage` shows it
+([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
+_Avoid_: "cache size" — the Warm Check Cache's `max_bytes` bounds one key; the Storage Budget
+bounds everything af keeps, how many keys included.
+
+**Store registry**:
+`$XDG_STATE_HOME/af/stores.toml`: every Task or review Store af opened or created outside its
+default roots (`--state`, `--state-root`), recorded best effort so the Storage Budget's sweep
+reaches it, and dropped once its path holds no Store.
+
+**Check runtime**:
+The directory `af-check-<pid>-<random>` af creates for one check and removes after it, holding
+the check's `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`. Every check gets one —
+Task, measurement, review gate and integration checks alike — and a check writes nothing it
+needs later anywhere else.
 
 **Collected Task**:
 A finished Task whose log ends in the `af/TaskCollected@1` tombstone `af task gc --apply` wrote:
