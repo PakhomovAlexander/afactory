@@ -1,0 +1,78 @@
+{
+  "schema": "af.nightly-build/1",
+  "status": "built",
+  "date": "2026-10-29",
+  "tag": "nightly-2026.10.29",
+  "version": "0.14.0-nightly.20261028",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_committed_unix": 1761700000,
+  "rejected": [
+    {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "check / check (ubuntu-latest) concluded failure; check / lint concluded failure"
+    }
+  ],
+  "previous_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "previous_tag": "nightly-2026.10.28",
+  "baseline_tag": "v0.13.0",
+  "baseline_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "cargo_version_on_main": "0.14.0-rc.3",
+  "skip_reason": null,
+  "build_image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "targets": [
+    {
+      "target": "x86_64-unknown-linux-musl",
+      "asset": "dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+      "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "bytes": 9000000,
+      "smoke": "passed",
+      "version_json": "version-x86_64-unknown-linux-musl.json"
+    },
+    {
+      "target": "aarch64-unknown-linux-musl",
+      "asset": "dist/af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz",
+      "sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bytes": 9000001,
+      "smoke": "passed",
+      "version_json": "version-aarch64-unknown-linux-musl.json"
+    }
+  ],
+  "sha256sums": {
+    "path": "dist/SHA256SUMS",
+    "signature_path": "dist/SHA256SUMS.minisig"
+  },
+  "timings": {
+    "plan": {
+      "started_unix_ms": 1761703200000,
+      "ended_unix_ms": 1761703200900
+    },
+    "export": {
+      "started_unix_ms": 1761703201000,
+      "ended_unix_ms": 1761703201900
+    },
+    "fetch": {
+      "started_unix_ms": 1761703202000,
+      "ended_unix_ms": 1761703202900
+    },
+    "build-x86_64-unknown-linux-musl": {
+      "started_unix_ms": 1761703203000,
+      "ended_unix_ms": 1761703203900
+    },
+    "build-aarch64-unknown-linux-musl": {
+      "started_unix_ms": 1761703204000,
+      "ended_unix_ms": 1761703204900
+    },
+    "package-x86_64-unknown-linux-musl": {
+      "started_unix_ms": 1761703205000,
+      "ended_unix_ms": 1761703205900
+    },
+    "package-aarch64-unknown-linux-musl": {
+      "started_unix_ms": 1761703206000,
+      "ended_unix_ms": 1761703206900
+    },
+    "sign": {
+      "started_unix_ms": 1761703207000,
+      "ended_unix_ms": 1761703207900
+    }
+  }
+}

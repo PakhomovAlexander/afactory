@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-delivery-record:1",
+  "title": "TaskDeliveryRecord@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "result_id",
+    "source_snapshot_id",
+    "derived_snapshot_id",
+    "target_id",
+    "receipt_id",
+    "status"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "result_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "derived_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "status": {
+      "enum": [
+        "prepared",
+        "delivered",
+        "failed"
+      ]
+    }
+  }
+}

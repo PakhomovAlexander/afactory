@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:head-delta:1",
+  "title": "HeadDelta@1 payload",
+  "description": "The kernel-derived relation between two consecutive heads of one node: exact from and to Snapshot IDs, the diff policy identity, the complete head-to-head path set with rename truncation metadata, and one mark per path over the union of the Notes paths and both Subject views. NOT a Change Set: it names no Base, carries no Subject identity and no Report Scope, and exists for whole-tree Subjects too.",
+  "x-semantic-constraints": [
+    "changed_paths are strictly sorted and unique",
+    "marks are strictly sorted by path and unique",
+    "every changed path has a mark",
+    "renamed_from is present exactly on renamed marks and differs from the path"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node", "from_snapshot_id", "to_snapshot_id", "diff_policy_version", "changed_paths", "marks"],
+  "properties": {
+    "node": { "type": "string", "minLength": 1 },
+    "from_snapshot_id": { "$ref": "#/$defs/digest" },
+    "to_snapshot_id": { "$ref": "#/$defs/digest" },
+    "diff_policy_version": { "type": "string", "minLength": 1 },
+    "rename_detection_truncated": { "type": "boolean" },
+    "changed_paths": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/path" } },
+    "marks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "mark"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "mark": { "enum": ["changed", "unchanged", "new", "reverted", "removed", "renamed"] },
+          "renamed_from": { "$ref": "#/$defs/path" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1 }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema": "af/telemetry-runs@1",
+  "directory": "<root>/xstate/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "runs": [
+    {
+      "store_id": "5555555555555555555555555555555555555555555555555555555555555555",
+      "run_id": "task:sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "trace_id": "98700944c22daf247220383e057810d5",
+      "kind": "task",
+      "task_id": "golden",
+      "executions": {
+        "retained": 2,
+        "sealed": [
+          1,
+          2
+        ],
+        "open": [],
+        "list": [
+          {
+            "execution_id": "1700000000000-4242-0a1b2c3d",
+            "span_id": "f77c8fd6a3608be7",
+            "ordinal": 1,
+            "store_sequence_at_start": "2",
+            "start_unix_ns": "1700000000003000000",
+            "end_unix_ns": "1700000000021000000",
+            "open": false,
+            "wall_us": 18000,
+            "segment": "sealed",
+            "outcome": "finished"
+          },
+          {
+            "execution_id": "1700000100000-4243-0b1c2d3e",
+            "span_id": "1d20f69c02011cc7",
+            "ordinal": 2,
+            "store_sequence_at_start": "14",
+            "start_unix_ns": "1700000100003000000",
+            "end_unix_ns": "1700000100021000000",
+            "open": false,
+            "wall_us": 18000,
+            "segment": "sealed",
+            "outcome": "finished"
+          }
+        ]
+      },
+      "first_start_unix_ns": "1700000000003000000",
+      "last_end_unix_ns": "1700000100021000000",
+      "active_us": 36000,
+      "execution_us": 36000,
+      "elapsed_us": 100018000,
+      "open": false,
+      "outcome": "finished",
+      "tokens": {},
+      "charge": "2400",
+      "attempts": 6,
+      "failures": 2,
+      "coverage": "complete",
+      "history": "prefix:2",
+      "missing_ordinals": [],
+      "retained": "retained executions 1–2",
+      "totals_cover": [
+        {
+          "execution_id": "1700000000000-4242-0a1b2c3d",
+          "ordinal": 1,
+          "open": false
+        },
+        {
+          "execution_id": "1700000100000-4243-0b1c2d3e",
+          "ordinal": 2,
+          "open": false
+        }
+      ]
+    }
+  ],
+  "unreadable": []
+}

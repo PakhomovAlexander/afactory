@@ -1,0 +1,2330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-builds:6",
+  "title": "af.perf-builds/6",
+  "description": "Per-side build provenance of one run, builds.json (ADR-0166, ADR-0169): the isolation (a trusted host process, or a pinned build image without network), source and its verified embedded commit, the authority overlay, every adapter outcome in priority order, both sides' adapter bindings, binary, artifact and Cargo.lock hashes, the verified toolchain and linker, sanitized argv and environment, bounded logs, budgets, cleanup, and every recipe setting each side and the shared supervisor were built with.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-builds/6"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/id"
+    },
+    "recipe_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "measured",
+        "synthetic"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "started_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "deadline_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "total_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 180
+            }
+          },
+          "required": [
+            "started_unix_ms",
+            "deadline_unix_ms",
+            "total_minutes"
+          ]
+        },
+        "caller_deadline_unix_ms": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            }
+          ]
+        },
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        },
+        "ended_unix_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        }
+      },
+      "required": [
+        "run",
+        "caller_deadline_unix_ms",
+        "deadline_unix_ms",
+        "ended_unix_ms"
+      ]
+    },
+    "build_cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "treatment": {
+          "type": "string",
+          "enum": [
+            "cold",
+            "warm"
+          ]
+        },
+        "scope": {
+          "const": "run_worktree_targets"
+        },
+        "identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "priming": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "started_unix_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740992
+                },
+                "ended_unix_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740992
+                },
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "$ref": "#/$defs/id"
+                      },
+                      "step": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "succeeded",
+                              "failed",
+                              "timeout",
+                              "budget_exceeded",
+                              "not_attempted"
+                            ]
+                          },
+                          "argv": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1024
+                            },
+                            "minItems": 1,
+                            "maxItems": 64
+                          },
+                          "environment": {
+                            "type": "object",
+                            "minProperties": 0,
+                            "maxProperties": 64,
+                            "patternProperties": {
+                              "^[A-Z_][A-Z0-9_]{0,63}$": {
+                                "type": "string",
+                                "maxLength": 1024
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "deadline_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2700
+                          },
+                          "elapsed_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9223372036854775807
+                          },
+                          "exit_code": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": -1,
+                                "maximum": 255
+                              }
+                            ]
+                          },
+                          "log": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "sha256": {
+                                "$ref": "#/$defs/digest"
+                              },
+                              "bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              },
+                              "truncated_bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              }
+                            },
+                            "required": [
+                              "sha256",
+                              "bytes",
+                              "truncated_bytes"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "argv",
+                          "environment",
+                          "deadline_seconds",
+                          "elapsed_ms",
+                          "exit_code",
+                          "log"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "step"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 8
+                }
+              },
+              "required": [
+                "started_unix_ms",
+                "ended_unix_ms",
+                "steps"
+              ]
+            }
+          ]
+        },
+        "observed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "worktree": {
+                "type": "string",
+                "enum": [
+                  "authority",
+                  "base",
+                  "head"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "empty",
+                  "primed"
+                ]
+              },
+              "compiled_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              }
+            },
+            "required": [
+              "worktree",
+              "state",
+              "compiled_bytes"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "measured_started_unix_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        }
+      },
+      "required": [
+        "treatment",
+        "scope",
+        "identity",
+        "priming",
+        "observed",
+        "measured_started_unix_ms"
+      ]
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "host_process",
+            "container"
+          ]
+        },
+        "environment": {
+          "const": "allowlist"
+        },
+        "credential_free_git": {
+          "type": "boolean"
+        },
+        "cargo_offline": {
+          "type": "boolean"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "reference": {
+                  "type": "string",
+                  "maxLength": 330,
+                  "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+                },
+                "id": {
+                  "$ref": "#/$defs/digest"
+                },
+                "platform": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^linux/[a-z0-9_]+$"
+                }
+              },
+              "required": [
+                "reference",
+                "id",
+                "platform"
+              ]
+            }
+          ]
+        },
+        "compile_network": {
+          "type": "string",
+          "enum": [
+            "host",
+            "none"
+          ]
+        },
+        "dependency_fetch": {
+          "type": "string",
+          "enum": [
+            "prefetched",
+            "host_network",
+            "container_network"
+          ]
+        },
+        "filesystem": {
+          "type": "string",
+          "enum": [
+            "trusted_host",
+            "run_mounts_only"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "kind",
+        "environment",
+        "credential_free_git",
+        "cargo_offline",
+        "image",
+        "compile_network",
+        "dependency_fetch",
+        "filesystem",
+        "detail"
+      ]
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rustc": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "cargo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "rustc",
+        "cargo",
+        "host"
+      ]
+    },
+    "linker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "system_cc",
+            "zig_cc",
+            "apple_ld"
+          ]
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          ]
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "identity",
+        "unavailable"
+      ]
+    },
+    "supervisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
+        },
+        "binary_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "$ref": "#/$defs/relative_path"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/digest"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "size"
+              ]
+            }
+          ]
+        },
+        "source_unchanged": {
+          "type": "boolean"
+        },
+        "cargo_lock_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "os": {
+              "type": "string",
+              "enum": [
+                "linux",
+                "macos"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_]+(?:-[a-z0-9_]+){2,3}$"
+            },
+            "toolchain": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "profile": {
+              "const": "release"
+            },
+            "builder": {
+              "type": "string",
+              "enum": [
+                "cargo",
+                "cargo_zigbuild"
+              ]
+            },
+            "cargo_zigbuild": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                }
+              ]
+            },
+            "zig": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                }
+              ]
+            },
+            "linker": {
+              "type": "string",
+              "enum": [
+                "system_cc",
+                "zig_cc",
+                "apple_ld"
+              ]
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^[a-z0-9_-]{1,64}$"
+              },
+              "minItems": 0,
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "rustflags": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^[A-Za-z0-9=_,.:+-]{1,128}$"
+              },
+              "minItems": 0,
+              "maxItems": 32
+            },
+            "instrumented": {
+              "type": "boolean"
+            },
+            "debug_symbols": {
+              "type": "boolean"
+            },
+            "frame_pointers": {
+              "type": "boolean"
+            },
+            "container_image": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 330,
+                  "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+                }
+              ]
+            }
+          },
+          "required": [
+            "os",
+            "target",
+            "toolchain",
+            "profile",
+            "builder",
+            "cargo_zigbuild",
+            "zig",
+            "linker",
+            "features",
+            "rustflags",
+            "instrumented",
+            "debug_symbols",
+            "frame_pointers",
+            "container_image"
+          ]
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "timeout",
+                    "budget_exceeded",
+                    "not_attempted"
+                  ]
+                },
+                "argv": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1024
+                  },
+                  "minItems": 1,
+                  "maxItems": 64
+                },
+                "environment": {
+                  "type": "object",
+                  "minProperties": 0,
+                  "maxProperties": 64,
+                  "patternProperties": {
+                    "^[A-Z_][A-Z0-9_]{0,63}$": {
+                      "type": "string",
+                      "maxLength": 1024
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "deadline_seconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2700
+                },
+                "elapsed_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "exit_code": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": -1,
+                      "maximum": 255
+                    }
+                  ]
+                },
+                "log": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "truncated_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    }
+                  },
+                  "required": [
+                    "sha256",
+                    "bytes",
+                    "truncated_bytes"
+                  ]
+                }
+              },
+              "required": [
+                "status",
+                "argv",
+                "environment",
+                "deadline_seconds",
+                "elapsed_ms",
+                "exit_code",
+                "log"
+              ]
+            }
+          ]
+        },
+        "log": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "truncated_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "sha256",
+            "bytes",
+            "truncated_bytes"
+          ]
+        }
+      },
+      "required": [
+        "source_sha",
+        "status",
+        "binary_sha256",
+        "artifact",
+        "source_unchanged",
+        "cargo_lock_sha256",
+        "settings",
+        "step",
+        "log"
+      ]
+    },
+    "sides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "failed"
+              ]
+            },
+            "worktree": {
+              "type": "string",
+              "enum": [
+                "base",
+                "head"
+              ]
+            },
+            "shared_with": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "const": "baseline"
+                }
+              ]
+            },
+            "adapter_outcomes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "adapter_id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4
+                  },
+                  "equivalence_group": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "compiled",
+                      "failed",
+                      "not_attempted"
+                    ]
+                  },
+                  "step": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "succeeded",
+                              "failed",
+                              "timeout",
+                              "budget_exceeded",
+                              "not_attempted"
+                            ]
+                          },
+                          "argv": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1024
+                            },
+                            "minItems": 1,
+                            "maxItems": 64
+                          },
+                          "environment": {
+                            "type": "object",
+                            "minProperties": 0,
+                            "maxProperties": 64,
+                            "patternProperties": {
+                              "^[A-Z_][A-Z0-9_]{0,63}$": {
+                                "type": "string",
+                                "maxLength": 1024
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "deadline_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2700
+                          },
+                          "elapsed_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9223372036854775807
+                          },
+                          "exit_code": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": -1,
+                                "maximum": 255
+                              }
+                            ]
+                          },
+                          "log": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "sha256": {
+                                "$ref": "#/$defs/digest"
+                              },
+                              "bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              },
+                              "truncated_bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              }
+                            },
+                            "required": [
+                              "sha256",
+                              "bytes",
+                              "truncated_bytes"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "argv",
+                          "environment",
+                          "deadline_seconds",
+                          "elapsed_ms",
+                          "exit_code",
+                          "log"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "adapter_id",
+                  "priority",
+                  "equivalence_group",
+                  "outcome",
+                  "step"
+                ]
+              },
+              "minItems": 0,
+              "maxItems": 4
+            },
+            "chosen_adapter": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "equivalence_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "probe_coverage": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable"
+              ]
+            },
+            "coverage_reason": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              ]
+            },
+            "overlay": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "adapter_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "digest": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "path": {
+                            "$ref": "#/$defs/relative_path"
+                          },
+                          "sha256": {
+                            "$ref": "#/$defs/digest"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "sha256"
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 32
+                    }
+                  },
+                  "required": [
+                    "adapter_id",
+                    "digest",
+                    "files"
+                  ]
+                }
+              ]
+            },
+            "binaries": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "af": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                },
+                "probe": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "af",
+                "probe"
+              ]
+            },
+            "artifacts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "af": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "$ref": "#/$defs/relative_path"
+                        },
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ]
+                    }
+                  ]
+                },
+                "probe": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "$ref": "#/$defs/relative_path"
+                        },
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "af",
+                "probe"
+              ]
+            },
+            "embedded_commit": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expected": {
+                      "type": "string",
+                      "maxLength": 12,
+                      "pattern": "^[0-9a-f]{12}$"
+                    },
+                    "verified": {
+                      "type": "boolean"
+                    },
+                    "method": {
+                      "const": "binary_bytes"
+                    }
+                  },
+                  "required": [
+                    "expected",
+                    "verified",
+                    "method"
+                  ]
+                }
+              ]
+            },
+            "source_unchanged": {
+              "type": "boolean"
+            },
+            "cargo_lock_sha256": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "settings": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "os": {
+                  "type": "string",
+                  "enum": [
+                    "linux",
+                    "macos"
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[a-z0-9_]+(?:-[a-z0-9_]+){2,3}$"
+                },
+                "toolchain": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                },
+                "profile": {
+                  "const": "release"
+                },
+                "builder": {
+                  "type": "string",
+                  "enum": [
+                    "cargo",
+                    "cargo_zigbuild"
+                  ]
+                },
+                "cargo_zigbuild": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    }
+                  ]
+                },
+                "zig": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    }
+                  ]
+                },
+                "linker": {
+                  "type": "string",
+                  "enum": [
+                    "system_cc",
+                    "zig_cc",
+                    "apple_ld"
+                  ]
+                },
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4096,
+                    "pattern": "^[a-z0-9_-]{1,64}$"
+                  },
+                  "minItems": 0,
+                  "maxItems": 32,
+                  "uniqueItems": true
+                },
+                "rustflags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4096,
+                    "pattern": "^[A-Za-z0-9=_,.:+-]{1,128}$"
+                  },
+                  "minItems": 0,
+                  "maxItems": 32
+                },
+                "instrumented": {
+                  "type": "boolean"
+                },
+                "debug_symbols": {
+                  "type": "boolean"
+                },
+                "frame_pointers": {
+                  "type": "boolean"
+                },
+                "container_image": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 330,
+                      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "os",
+                "target",
+                "toolchain",
+                "profile",
+                "builder",
+                "cargo_zigbuild",
+                "zig",
+                "linker",
+                "features",
+                "rustflags",
+                "instrumented",
+                "debug_symbols",
+                "frame_pointers",
+                "container_image"
+              ]
+            },
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "minItems": 1,
+              "maxItems": 64
+            },
+            "environment": {
+              "type": "object",
+              "minProperties": 0,
+              "maxProperties": 64,
+              "patternProperties": {
+                "^[A-Z_][A-Z0-9_]{0,63}$": {
+                  "type": "string",
+                  "maxLength": 1024
+                }
+              },
+              "additionalProperties": false
+            },
+            "product": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "timeout",
+                        "budget_exceeded",
+                        "not_attempted"
+                      ]
+                    },
+                    "argv": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1024
+                      },
+                      "minItems": 1,
+                      "maxItems": 64
+                    },
+                    "environment": {
+                      "type": "object",
+                      "minProperties": 0,
+                      "maxProperties": 64,
+                      "patternProperties": {
+                        "^[A-Z_][A-Z0-9_]{0,63}$": {
+                          "type": "string",
+                          "maxLength": 1024
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "deadline_seconds": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2700
+                    },
+                    "elapsed_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "exit_code": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": -1,
+                          "maximum": 255
+                        }
+                      ]
+                    },
+                    "log": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        },
+                        "truncated_bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "sha256",
+                        "bytes",
+                        "truncated_bytes"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "argv",
+                    "environment",
+                    "deadline_seconds",
+                    "elapsed_ms",
+                    "exit_code",
+                    "log"
+                  ]
+                }
+              ]
+            },
+            "log": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "$ref": "#/$defs/digest"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "truncated_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "sha256",
+                "bytes",
+                "truncated_bytes"
+              ]
+            }
+          },
+          "required": [
+            "source_sha",
+            "status",
+            "worktree",
+            "shared_with",
+            "adapter_outcomes",
+            "chosen_adapter",
+            "equivalence_group",
+            "probe_coverage",
+            "coverage_reason",
+            "overlay",
+            "binaries",
+            "artifacts",
+            "embedded_commit",
+            "source_unchanged",
+            "cargo_lock_sha256",
+            "settings",
+            "argv",
+            "environment",
+            "product",
+            "log"
+          ]
+        },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "failed"
+              ]
+            },
+            "worktree": {
+              "type": "string",
+              "enum": [
+                "base",
+                "head"
+              ]
+            },
+            "shared_with": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "const": "baseline"
+                }
+              ]
+            },
+            "adapter_outcomes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "adapter_id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4
+                  },
+                  "equivalence_group": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "compiled",
+                      "failed",
+                      "not_attempted"
+                    ]
+                  },
+                  "step": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "succeeded",
+                              "failed",
+                              "timeout",
+                              "budget_exceeded",
+                              "not_attempted"
+                            ]
+                          },
+                          "argv": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1024
+                            },
+                            "minItems": 1,
+                            "maxItems": 64
+                          },
+                          "environment": {
+                            "type": "object",
+                            "minProperties": 0,
+                            "maxProperties": 64,
+                            "patternProperties": {
+                              "^[A-Z_][A-Z0-9_]{0,63}$": {
+                                "type": "string",
+                                "maxLength": 1024
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "deadline_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2700
+                          },
+                          "elapsed_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9223372036854775807
+                          },
+                          "exit_code": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": -1,
+                                "maximum": 255
+                              }
+                            ]
+                          },
+                          "log": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "sha256": {
+                                "$ref": "#/$defs/digest"
+                              },
+                              "bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              },
+                              "truncated_bytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9223372036854775807
+                              }
+                            },
+                            "required": [
+                              "sha256",
+                              "bytes",
+                              "truncated_bytes"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "argv",
+                          "environment",
+                          "deadline_seconds",
+                          "elapsed_ms",
+                          "exit_code",
+                          "log"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "adapter_id",
+                  "priority",
+                  "equivalence_group",
+                  "outcome",
+                  "step"
+                ]
+              },
+              "minItems": 0,
+              "maxItems": 4
+            },
+            "chosen_adapter": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "equivalence_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "probe_coverage": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable"
+              ]
+            },
+            "coverage_reason": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              ]
+            },
+            "overlay": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "adapter_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "digest": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "path": {
+                            "$ref": "#/$defs/relative_path"
+                          },
+                          "sha256": {
+                            "$ref": "#/$defs/digest"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "sha256"
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 32
+                    }
+                  },
+                  "required": [
+                    "adapter_id",
+                    "digest",
+                    "files"
+                  ]
+                }
+              ]
+            },
+            "binaries": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "af": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                },
+                "probe": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "af",
+                "probe"
+              ]
+            },
+            "artifacts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "af": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "$ref": "#/$defs/relative_path"
+                        },
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ]
+                    }
+                  ]
+                },
+                "probe": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "$ref": "#/$defs/relative_path"
+                        },
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "sha256",
+                        "size"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "af",
+                "probe"
+              ]
+            },
+            "embedded_commit": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "expected": {
+                      "type": "string",
+                      "maxLength": 12,
+                      "pattern": "^[0-9a-f]{12}$"
+                    },
+                    "verified": {
+                      "type": "boolean"
+                    },
+                    "method": {
+                      "const": "binary_bytes"
+                    }
+                  },
+                  "required": [
+                    "expected",
+                    "verified",
+                    "method"
+                  ]
+                }
+              ]
+            },
+            "source_unchanged": {
+              "type": "boolean"
+            },
+            "cargo_lock_sha256": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "settings": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "os": {
+                  "type": "string",
+                  "enum": [
+                    "linux",
+                    "macos"
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "pattern": "^[a-z0-9_]+(?:-[a-z0-9_]+){2,3}$"
+                },
+                "toolchain": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                },
+                "profile": {
+                  "const": "release"
+                },
+                "builder": {
+                  "type": "string",
+                  "enum": [
+                    "cargo",
+                    "cargo_zigbuild"
+                  ]
+                },
+                "cargo_zigbuild": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    }
+                  ]
+                },
+                "zig": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    }
+                  ]
+                },
+                "linker": {
+                  "type": "string",
+                  "enum": [
+                    "system_cc",
+                    "zig_cc",
+                    "apple_ld"
+                  ]
+                },
+                "features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4096,
+                    "pattern": "^[a-z0-9_-]{1,64}$"
+                  },
+                  "minItems": 0,
+                  "maxItems": 32,
+                  "uniqueItems": true
+                },
+                "rustflags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 4096,
+                    "pattern": "^[A-Za-z0-9=_,.:+-]{1,128}$"
+                  },
+                  "minItems": 0,
+                  "maxItems": 32
+                },
+                "instrumented": {
+                  "type": "boolean"
+                },
+                "debug_symbols": {
+                  "type": "boolean"
+                },
+                "frame_pointers": {
+                  "type": "boolean"
+                },
+                "container_image": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 330,
+                      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "os",
+                "target",
+                "toolchain",
+                "profile",
+                "builder",
+                "cargo_zigbuild",
+                "zig",
+                "linker",
+                "features",
+                "rustflags",
+                "instrumented",
+                "debug_symbols",
+                "frame_pointers",
+                "container_image"
+              ]
+            },
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "minItems": 1,
+              "maxItems": 64
+            },
+            "environment": {
+              "type": "object",
+              "minProperties": 0,
+              "maxProperties": 64,
+              "patternProperties": {
+                "^[A-Z_][A-Z0-9_]{0,63}$": {
+                  "type": "string",
+                  "maxLength": 1024
+                }
+              },
+              "additionalProperties": false
+            },
+            "product": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "timeout",
+                        "budget_exceeded",
+                        "not_attempted"
+                      ]
+                    },
+                    "argv": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1024
+                      },
+                      "minItems": 1,
+                      "maxItems": 64
+                    },
+                    "environment": {
+                      "type": "object",
+                      "minProperties": 0,
+                      "maxProperties": 64,
+                      "patternProperties": {
+                        "^[A-Z_][A-Z0-9_]{0,63}$": {
+                          "type": "string",
+                          "maxLength": 1024
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "deadline_seconds": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2700
+                    },
+                    "elapsed_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9223372036854775807
+                    },
+                    "exit_code": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": -1,
+                          "maximum": 255
+                        }
+                      ]
+                    },
+                    "log": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "sha256": {
+                          "$ref": "#/$defs/digest"
+                        },
+                        "bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        },
+                        "truncated_bytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9223372036854775807
+                        }
+                      },
+                      "required": [
+                        "sha256",
+                        "bytes",
+                        "truncated_bytes"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "argv",
+                    "environment",
+                    "deadline_seconds",
+                    "elapsed_ms",
+                    "exit_code",
+                    "log"
+                  ]
+                }
+              ]
+            },
+            "log": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "$ref": "#/$defs/digest"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "truncated_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "sha256",
+                "bytes",
+                "truncated_bytes"
+              ]
+            }
+          },
+          "required": [
+            "source_sha",
+            "status",
+            "worktree",
+            "shared_with",
+            "adapter_outcomes",
+            "chosen_adapter",
+            "equivalence_group",
+            "probe_coverage",
+            "coverage_reason",
+            "overlay",
+            "binaries",
+            "artifacts",
+            "embedded_commit",
+            "source_unchanged",
+            "cargo_lock_sha256",
+            "settings",
+            "argv",
+            "environment",
+            "product",
+            "log"
+          ]
+        }
+      },
+      "required": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "adapter_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "baseline_group": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "candidate_group": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "equivalent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "baseline",
+        "candidate",
+        "baseline_group",
+        "candidate_group",
+        "equivalent"
+      ]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "limit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        }
+      },
+      "required": [
+        "manifest_sha256",
+        "bytes",
+        "limit_bytes"
+      ]
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "worktree_limit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 85899345920
+        },
+        "worktree_peak_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "build_log_limit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        }
+      },
+      "required": [
+        "worktree_limit_bytes",
+        "worktree_peak_bytes",
+        "build_log_limit_bytes"
+      ]
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "removed",
+            "retained",
+            "failed"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "status",
+        "detail"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "plan_digest",
+    "recipe_id",
+    "recipe_digest",
+    "provenance",
+    "execution",
+    "build_cache",
+    "isolation",
+    "toolchain",
+    "linker",
+    "supervisor",
+    "sides",
+    "adapter_binding",
+    "artifacts",
+    "budgets",
+    "cleanup"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

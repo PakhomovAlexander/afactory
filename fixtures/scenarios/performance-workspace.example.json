@@ -1,0 +1,43 @@
+{
+  "schema": "af/git-workspace-config@2",
+  "repository": "replace/project",
+  "repository_id": 1,
+  "actor": {
+    "id": 1,
+    "login": "replace-owner"
+  },
+  "token_file": "/replace/private/token",
+  "state_dir": "/replace/private/performance-state",
+  "repo": "/replace/project",
+  "task_store": "/replace/private-tasks",
+  "worktree_root": "/replace/private/performance-worktrees",
+  "base": "main",
+  "branch_prefix": "af-performance",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "af": "/replace/private/af",
+  "af_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "git": "/usr/bin/git",
+  "git_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "ssh_config": "/replace/private/ssh-config",
+  "ssh_config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "author_name": "Automation",
+  "author_email": "automation@example.invalid",
+  "required_checks": [
+    {
+      "kind": "check",
+      "name": "CI",
+      "app_id": 4
+    }
+  ],
+  "reviewers": [],
+  "publication_mode": "exclusive_owned_writer",
+  "operations": [
+    "publish_performance_pr_v1"
+  ],
+  "performance": {
+    "executable": "/replace/private/native-lab-adapter",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "destination": "native:claw"
+  }
+}
