@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a change to af's behaviour, contracts, or CLI.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Design changes are recorded as ADRs under `docs/adr/`; a request that changes a contract,
+        gate, budget, or sandbox boundary will end up as one, so it helps to frame it that way.
+        Project-specific pipelines and reviewer packages belong in the consuming repository, not here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do today, or what costs more than it should. Concrete runs beat abstractions.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What af should do instead, as a user would see it (command, policy, output).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to get there, including doing it in the consuming repository or with existing policy.
+    validations:
+      required: false
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Contracts and boundaries touched
+      description: Which contracts, fixtures, gates, budgets, or sandbox boundaries change, and which ADR the change revises.
+    validations:
+      required: false

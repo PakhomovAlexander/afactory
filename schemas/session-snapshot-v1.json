@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:session-snapshot:1",
+  "title": "SessionSnapshot@1 payload",
+  "description": "The content-addressed transcript of one Attempt's harness session, captured at seal through the two-phase protocol and re-materialized for a forked resume. The session identity is assigned by the kernel from the Attempt ID before the harness starts, never chosen by the provider, so a kernel that crashed after capture can still find the exact transcript it owes a deletion. The snapshot is node-private: only the next Attempt of the same node may resume it, and only with a fork, so the captured bytes are never mutated. The source names the adapter kind and the content identity of the harness path; a host path never enters a durable record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "node",
+    "attempt_id",
+    "session_id",
+    "head_snapshot_id",
+    "source",
+    "transcript_artifact_id",
+    "bytes",
+    "estimated_tokens"
+  ],
+  "properties": {
+    "node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{26}$"
+    },
+    "session_id": {
+      "$ref": "#/$defs/session_id"
+    },
+    "head_snapshot_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "transcript_artifact_id": {
+      "description": "The raw transcript bytes in the CAS. Re-materialized into the next Attempt's harness directory before a forked resume.",
+      "$ref": "#/$defs/digest"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 33554432
+    },
+    "estimated_tokens": {
+      "description": "What the transcript is expected to cost as input on resume, gated against the next Attempt's reservation beside the delta prompt.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "session_id": {
+      "description": "The kernel-assigned session identity: the Attempt's Round-scoped hex ID followed by a fixed suffix, in the canonical 8-4-4-4-12 shape the pinned CLI accepts for --session-id.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_kind",
+        "path_digest"
+      ],
+      "properties": {
+        "provider_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "path_digest": {
+          "description": "Content identity of the harness path the transcript was captured from. Never the path itself.",
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

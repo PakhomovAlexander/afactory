@@ -1,0 +1,6269 @@
+//! Machine-local provider inventory.
+//!
+//! The registry names auth directories, never credentials, arbitrary commands, arguments, or
+//! environment variables. Explicit bindings are admitted by the common Task's Provider admission
+//! Attempts (see `task`). Authentication status is obtained from the two fixed adapter CLIs
+//! with bounded output and wall time, and is the only thing `af provider status` probes by
+//! default. Subscription and quota windows are opt-in behind `--usage`: Codex exposes them
+//! through the official local app-server protocol, while Claude has no headless usage-status
+//! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
+//! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
+//! model session. Accepted response shapes are pinned by fixtures.
+//!
+//! Interactive login belongs to the official Provider CLI and to a human at a private terminal.
+//! `setup` starts one only when the operator opted in with `--login` *and* this process owns an
+//! interactive terminal, so an OAuth URL or authorization code can never be emitted into an
+//! agent transcript, a captured pipe, or a log. Nothing here captures, parses, persists, or
+//! re-emits that login's output.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use review_store::Cas;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
+
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
+
+pub mod auth_handoff;
+mod installation;
+pub mod task;
+
+use installation::{
+    CliInstallationFailure, diagnose_cli, locate_cli, probe_gave_up, status_answered,
+};
+
+const MAX_PROVIDERS: usize = 32;
+const MAX_PROBE_OUTPUT: usize = 64 * 1024;
+const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
+const MAX_CONCURRENT_PROBES: usize = 4;
+const MAX_PROVIDER_LIMITS: usize = 16;
+/// The Codex status and subscription probes. A loaded machine (a full build, an IDE indexing)
+/// can take seconds just to start `codex`; at 5 seconds the probe refused Tasks and failed
+/// tests on healthy providers, so it allows 15, still well inside Claude's structural 30.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const CLAUDE_STRUCTURAL_TIMEOUT: Duration = Duration::from_secs(30);
+const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
+const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAUDE_READERS;
+
+// The exit codes `af provider` promises, documented in `docs/providers.md` and ADR-0112.
+//
+// A classified outcome is the command's *result*, not a crash: it is printed on stdout as human
+// lines or as the versioned JSON document, and repeated as one diagnostic line on stderr when the
+// code is non-zero. `1` remains the unclassified failure and `2` remains clap's usage error, so
+// neither is reused here.
+pub const EXIT_OK: i32 = 0;
+pub const EXIT_HUMAN_ACTION_REQUIRED: i32 = 3;
+/// The official CLI is missing, not executable, or exits non-zero on its own version check.
+pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
+pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
+pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
+pub const EXIT_USAGE_UNAVAILABLE: i32 = 7;
+
+/// Printed before the official CLI takes over the terminal, never after: an operator who sees it
+/// only in a scrollback they later paste has already been told too late.
+const LOGIN_SECURITY_WARNING: &str = "\
+warning: the official Provider CLI login prints an OAuth URL and an authorization code.
+warning: both are credentials in transit. Keep them inside this private terminal.
+warning: never relay an OAuth URL or code through chat, an agent transcript, a ticket, or logs.";
+
+/// The status a context gets when its official CLI cannot start; `installation_failed` in JSON.
+const INSTALLATION_FAILED: &str = "installation failed";
+
+static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
+    OnceLock::new();
+static CLAUDE_READER_SLOTS: AtomicUsize = AtomicUsize::new(0);
+
+pub struct ProviderInventory {
+    pub providers: Vec<ProviderStatus>,
+    pub registry: Option<PathBuf>,
+    pub warning: Option<String>,
+}
+
+pub struct ProviderStatus {
+    pub id: String,
+    pub kind: String,
+    pub auth_context: String,
+    pub source: String,
+    pub status: String,
+    pub auth_type: String,
+    pub subscription: String,
+    pub limits: Vec<ProviderLimit>,
+    pub usage: UsageState,
+    pub detail: String,
+}
+
+#[derive(Clone)]
+pub struct ProviderLimit {
+    pub name: String,
+    /// The window this percentage covers, when the Provider states one. Carried separately from
+    /// `name` because the JSON surface must describe a window without echoing Provider-authored
+    /// labels.
+    pub window_minutes: Option<u64>,
+    pub used_percent: u8,
+    pub resets_at: Option<u64>,
+}
+
+/// Whether subscription and quota probing was asked for at all.
+///
+/// Status is a fast registry and authentication check by default; probing a plan costs a
+/// Provider process, a pseudo-terminal, or an app-server round trip, and can fail for reasons
+/// that say nothing about whether the Provider is authenticated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsageProbe {
+    Skip,
+    Probe,
+}
+
+/// What the optional usage probe concluded, kept strictly apart from authentication.
+///
+/// `Unavailable` means the probe was requested and did not answer — a timed-out or absent usage
+/// surface never demotes an authenticated Provider.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsageState {
+    /// `--usage` was not requested.
+    NotRequested,
+    /// The Provider is not authenticated, so there is no usage to report.
+    NotApplicable,
+    /// This authentication context exposes no machine-local usage surface.
+    Unsupported,
+    /// The probe answered.
+    Available,
+    /// The probe was requested, was applicable, and did not answer.
+    Unavailable,
+}
+
+impl UsageState {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::NotApplicable => "not_applicable",
+            Self::Unsupported => "unsupported",
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProviderKind {
+    Claude,
+    Codex,
+}
+
+impl ProviderKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            _ => Err(format!("unsupported provider kind `{value}`")),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        self.name()
+    }
+}
+
+#[derive(Clone)]
+struct ProviderSpec {
+    id: String,
+    kind: ProviderKind,
+    auth_dir: Option<PathBuf>,
+    explicit_selector: bool,
+    registry_declared: bool,
+    source: String,
+}
+
+pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
+    let (specs, registry, warning) = load_specs();
+    let mut providers = Vec::with_capacity(specs.len());
+    for chunk in specs.chunks(MAX_CONCURRENT_PROBES) {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .cloned()
+                .map(|spec| {
+                    let fallback = spec.clone();
+                    (
+                        fallback,
+                        scope.spawn(move || probe_provider(spec, cancelled, usage)),
+                    )
+                })
+                .collect();
+            providers.extend(handles.into_iter().map(|(spec, handle)| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| unavailable_status(&spec, "provider status probe panicked"))
+            }));
+        });
+    }
+    if cancelled.load(Ordering::Acquire) {
+        providers.extend(specs[providers.len()..].iter().map(unprobed_status));
+    }
+    cross_reference_logged_in_siblings(&mut providers);
+    drop_unused_ambient_contexts(&mut providers);
+    ProviderInventory {
+        providers,
+        registry,
+        warning,
+    }
+}
+
+/// Leave out a CLI's default context that has no login once a Provider of its kind is registered:
+/// the operator has set up the logins they use, and the default directory is one they do not.
+/// Before one is registered, the row and its `auth login` fix are how a new machine starts, and a
+/// default context with a login stays, since it is a login the operator may register (ADR-0141).
+fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
+    let registered: BTreeSet<String> = providers
+        .iter()
+        .filter(|provider| !is_ambient_candidate(provider))
+        .map(|provider| provider.kind.clone())
+        .collect();
+    providers.retain(|provider| {
+        !(is_ambient_candidate(provider)
+            && provider.status == "not authenticated"
+            && registered.contains(&provider.kind))
+    });
+}
+
+/// Point each logged-out context at the same-kind contexts on this machine that are logged in.
+///
+/// The usual cause of a `not authenticated` registry entry is an `auth_dir` naming a directory
+/// the operator never logged in to, while the intended login sits in another directory `af`
+/// also probed (often the ambient `CLAUDE_CONFIG_DIR`). Naming that sibling turns a bare
+/// status into the exact `auth_dir` correction; nothing here reads credentials or probes again.
+fn cross_reference_logged_in_siblings(providers: &mut [ProviderStatus]) {
+    let logged_in: Vec<(String, String)> = providers
+        .iter()
+        .filter(|provider| provider.status == "authenticated")
+        .map(|provider| {
+            let context = if provider.auth_context == "CLI default" {
+                "the CLI default directory".to_string()
+            } else {
+                provider.auth_context.clone()
+            };
+            (
+                provider.kind.clone(),
+                format!(
+                    "{} is authenticated in {context} ({})",
+                    provider.id, provider.subscription
+                ),
+            )
+        })
+        .collect();
+    for provider in providers
+        .iter_mut()
+        .filter(|provider| provider.status == "not authenticated")
+    {
+        for (_, sibling) in logged_in.iter().filter(|(kind, _)| *kind == provider.kind) {
+            if !provider.detail.is_empty() {
+                provider.detail.push_str("; ");
+            }
+            provider.detail.push_str(sibling);
+        }
+    }
+}
+
+/// The fast default: the registry plus one bounded authentication check per context.
+///
+/// Subscription and quota probing is opt-in because it is the slow, failure-prone half and
+/// proves nothing about authentication; end-to-end usability stays with `af provider doctor`,
+/// which is charged and explicit. Returns the documented exit code.
+pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
+    let cancelled = AtomicBool::new(false);
+    let inventory = discover_with_cancel(&cancelled, usage);
+    let unavailable_usage = inventory
+        .providers
+        .iter()
+        .any(|provider| provider.usage == UsageState::Unavailable);
+    let uninstalled: Vec<&ProviderStatus> = inventory
+        .providers
+        .iter()
+        .filter(|provider| provider.status == INSTALLATION_FAILED)
+        .collect();
+    // A CLI that cannot start outranks an unanswered optional usage probe.
+    let code = if !uninstalled.is_empty() {
+        EXIT_PROVIDER_CLI_MISSING
+    } else if unavailable_usage {
+        EXIT_USAGE_UNAVAILABLE
+    } else {
+        EXIT_OK
+    };
+    if let Some(warning) = inventory.warning.as_deref() {
+        eprintln!("warning: {warning}");
+    }
+    if json {
+        println!("{}", status_document(&inventory, usage, code));
+    } else {
+        print_status_table(&inventory, usage);
+    }
+    for provider in &uninstalled {
+        eprintln!("af provider status: {}", provider.detail);
+    }
+    if code == EXIT_USAGE_UNAVAILABLE {
+        eprintln!(
+            "af provider status: optional usage probing did not answer for every authenticated provider; authentication is unaffected"
+        );
+    }
+    Ok(code)
+}
+
+/// The `af provider status` table header; the browser's Providers pane prints the same one.
+pub(crate) fn status_table_header() -> String {
+    format!(
+        "{:<24} {:<8} {:<19} {:<18} SUBSCRIPTION",
+        "ID", "KIND", "STATUS", "AUTH"
+    )
+}
+
+/// One provider's row of the `af provider status` table.
+pub(crate) fn status_table_row(provider: &ProviderStatus) -> String {
+    format!(
+        "{:<24} {:<8} {:<19} {:<18} {}",
+        provider.id, provider.kind, provider.status, provider.auth_type, provider.subscription
+    )
+}
+
+/// An ambient CLI context `af` discovered but cannot bind: it needs `af provider setup` first.
+pub(crate) fn is_ambient_candidate(provider: &ProviderStatus) -> bool {
+    matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
+        && provider
+            .source
+            .starts_with("ambient CLI candidate; unstable local context label")
+}
+
+/// The setup line printed for an ambient `kind`, naming the first free `<kind>-main` ID.
+pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
+    let id = available_provider_id(kind, ids);
+    format!("set up {kind}: af provider setup {id} --kind {kind} --login")
+}
+
+/// Where the Provider registry is read from, when it can be named at all.
+pub(crate) fn registry_location() -> Option<PathBuf> {
+    registry_path().ok().flatten()
+}
+
+fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe) {
+    if inventory.providers.is_empty() {
+        println!("No supported provider CLI is installed and no provider registry entries exist");
+        return;
+    }
+    println!("{}", status_table_header());
+    let mut ambient = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    for provider in &inventory.providers {
+        ids.insert(provider.id.clone());
+        if is_ambient_candidate(provider) {
+            ambient.insert(provider.kind.clone());
+        }
+        println!("{}", status_table_row(provider));
+        for limit in &provider.limits {
+            println!("  limit  {}", format_limit(limit));
+        }
+        if !provider.detail.is_empty() {
+            println!("  note   {}", provider.detail);
+        }
+    }
+    if usage == UsageProbe::Skip {
+        println!();
+        println!("Subscription and quota windows are not probed by default; add --usage.");
+    }
+    if !ambient.is_empty() {
+        println!();
+        println!("Ambient IDs are discovered only and cannot be selected by --provider.");
+        for kind in ambient {
+            println!("  {}", setup_hint(&kind, &ids));
+        }
+    }
+}
+
+/// The versioned status document: stable states only.
+///
+/// It deliberately carries no account email, organization identity, plan-holder identity,
+/// credential, OAuth material, or Provider-authored text. Quota windows are reduced to the
+/// numbers `af` derived itself; the human table keeps the Provider's own window labels.
+fn status_document(
+    inventory: &ProviderInventory,
+    usage: UsageProbe,
+    exit_code: i32,
+) -> serde_json::Value {
+    let providers: Vec<serde_json::Value> =
+        inventory.providers.iter().map(status_provider).collect();
+    let registry = inventory
+        .registry
+        .as_ref()
+        .map(|path| path.display().to_string());
+    serde_json::json!({
+        "schema": "af/provider-status@1",
+        "exit_code": exit_code,
+        "usage_requested": usage == UsageProbe::Probe,
+        "registry": {
+            "path": registry,
+            "warning": inventory.warning,
+        },
+        "providers": providers,
+    })
+}
+
+fn status_provider(provider: &ProviderStatus) -> serde_json::Value {
+    let registered = !provider
+        .source
+        .starts_with("ambient CLI candidate; unstable local context label");
+    // The Provider CLI's own default directory has no path to report here.
+    let auth_context = match provider.auth_context.as_str() {
+        "CLI default" => None,
+        context => Some(context),
+    };
+    let mut windows = Vec::with_capacity(provider.limits.len());
+    for limit in &provider.limits {
+        windows.push(serde_json::json!({
+            "window_minutes": limit.window_minutes,
+            "used_percent": limit.used_percent,
+            "resets_at_unix": limit.resets_at,
+        }));
+    }
+    serde_json::json!({
+        "id": provider.id,
+        "kind": provider.kind,
+        "registered": registered,
+        "auth_context": auth_context,
+        "auth": auth_state_name(&provider.status),
+        "credential": credential_name(&provider.kind, &provider.auth_type),
+        "usability": usability_name(&provider.status),
+        "usage": {
+            "state": provider.usage.name(),
+            "windows": windows,
+        },
+    })
+}
+
+fn auth_state_name(status: &str) -> &'static str {
+    match status {
+        "authenticated" => "authenticated",
+        "not authenticated" => "not_authenticated",
+        "unavailable" => "unavailable",
+        INSTALLATION_FAILED => "installation_failed",
+        "not probed" => "not_probed",
+        _ => "unknown",
+    }
+}
+
+/// What kind of capability the context holds, never which account holds it.
+fn credential_name(kind: &str, auth_type: &str) -> &'static str {
+    let method = auth_type.split('/').next().unwrap_or_default().trim();
+    match (kind, method) {
+        (_, "-" | "") => "none",
+        ("claude", "api_key") | ("codex", "API key") => "api_key",
+        ("claude", "claude.ai" | "oauth") | ("codex", "ChatGPT") => "subscription",
+        _ => "other",
+    }
+}
+
+/// Status never claims a Provider is usable: only a charged `af provider doctor` can.
+pub(crate) fn usability_name(status: &str) -> &'static str {
+    match status {
+        "authenticated" => "usable_or_untested",
+        "not authenticated" | "unavailable" | INSTALLATION_FAILED => "unusable",
+        _ => "unknown",
+    }
+}
+
+fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
+    let base = format!("{kind}-main");
+    if !ids.contains(&base) {
+        return base;
+    }
+    (2..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !ids.contains(candidate))
+        .expect("the finite provider registry cannot exhaust numeric suffixes")
+}
+
+/// Add one explicit Provider without requiring the user to learn the registry's TOML shape.
+/// Existing entries and auth contexts are immutable through this absent-only command.
+pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<i32, String> {
+    validate_explicit_id(id)?;
+    let kind = ProviderKind::parse(kind)?;
+    let auth_dir = resolve_auth_dir(kind, auth_dir, false)?;
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let preserved = match add_to_registry_inner(&path, id, kind, &auth_dir, false)? {
+        RegistryAdd::Added(preserved) => preserved,
+        RegistryAdd::AlreadyPresent => {
+            unreachable!("plain add never reports an exact entry as success")
+        }
+        RegistryAdd::Conflict(conflict) => {
+            eprintln!("af provider add: {conflict}");
+            return Ok(EXIT_REGISTRY_CONFLICT);
+        }
+    };
+    println!(
+        "provider {id} registered in {} ({}, {})",
+        path.display(),
+        kind.name(),
+        auth_dir.display()
+    );
+    if let Some(previous) = preserved {
+        println!(
+            "previous provider registry preserved at {}",
+            previous.display()
+        );
+    }
+    println!("next: af provider status");
+    Ok(EXIT_OK)
+}
+
+/// Remove registered Providers by ID: the inverse of `add` and `setup`.
+///
+/// Only registry entries go. Each auth directory, and the login its Provider CLI keeps there, is
+/// left as it is. The registry is rewritten through the publication `add` uses (ADR-0136).
+pub fn remove(ids: &[String]) -> Result<i32, String> {
+    let mut wanted = BTreeSet::new();
+    for id in ids {
+        validate_removable_id(id)?;
+        wanted.insert(id.as_str());
+    }
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let (removed, preserved) = remove_from_registry(&path, &wanted)?;
+    for entry in &removed {
+        let context = match (&entry.kind, &entry.auth_dir) {
+            (Some(kind), Some(auth_dir)) => format!(" ({kind}, {auth_dir})"),
+            _ => String::new(),
+        };
+        println!(
+            "provider {} removed from {}{context}",
+            entry.id,
+            path.display()
+        );
+    }
+    println!("auth directories and their logins were not touched");
+    if let Some(previous) = preserved {
+        println!(
+            "previous provider registry preserved at {}",
+            previous.display()
+        );
+    }
+    println!("next: af provider status");
+    Ok(EXIT_OK)
+}
+
+/// What `af provider setup` concluded, as one closed vocabulary shared by both output shapes.
+enum SetupOutcome {
+    Registered {
+        preserved: Option<PathBuf>,
+    },
+    AlreadyRegistered,
+    HumanActionRequired(NextAction),
+    /// `diagnostic` is af-authored and reaches the document; `report` may add the CLI's own
+    /// first error line and suggested fix, and reaches only human output and stderr.
+    ProviderCliMissing {
+        diagnostic: String,
+        report: String,
+    },
+    RegistryConflict(String),
+    AuthenticationFailed(String),
+}
+
+/// Why a human has to act, and the exact command only they can run.
+struct NextAction {
+    kind: &'static str,
+    reason: String,
+    command: String,
+}
+
+impl SetupOutcome {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Registered { .. } => "registered",
+            Self::AlreadyRegistered => "already_registered",
+            Self::HumanActionRequired(_) => "human_action_required",
+            Self::ProviderCliMissing { .. } => "provider_cli_missing",
+            Self::RegistryConflict(_) => "registry_conflict",
+            Self::AuthenticationFailed(_) => "authentication_failed",
+        }
+    }
+
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Registered { .. } | Self::AlreadyRegistered => EXIT_OK,
+            Self::HumanActionRequired(_) => EXIT_HUMAN_ACTION_REQUIRED,
+            Self::ProviderCliMissing { .. } => EXIT_PROVIDER_CLI_MISSING,
+            Self::RegistryConflict(_) => EXIT_REGISTRY_CONFLICT,
+            Self::AuthenticationFailed(_) => EXIT_AUTHENTICATION_FAILED,
+        }
+    }
+
+    /// `af`-authored diagnostics only. Provider stdout, OAuth URLs and codes never reach here.
+    fn diagnostic(&self) -> Option<&str> {
+        match self {
+            Self::ProviderCliMissing { diagnostic, .. } => Some(diagnostic),
+            Self::RegistryConflict(detail) | Self::AuthenticationFailed(detail) => Some(detail),
+            Self::Registered { .. } | Self::AlreadyRegistered => None,
+            Self::HumanActionRequired(action) => Some(&action.reason),
+        }
+    }
+
+    /// What a human reads on the terminal and stderr: the diagnostic, or the fuller report.
+    fn report(&self) -> Option<&str> {
+        match self {
+            Self::ProviderCliMissing { report, .. } => Some(report),
+            _ => self.diagnostic(),
+        }
+    }
+
+    fn cli_cannot_start(failure: &CliInstallationFailure) -> Self {
+        Self::ProviderCliMissing {
+            diagnostic: failure.summary(),
+            report: failure.message(),
+        }
+    }
+}
+
+/// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
+///
+/// The complete status/login/publication flow is serialized on the registry lock. The waiter
+/// rechecks authentication after acquiring the lock, so concurrent first-time setup never drives
+/// one Provider auth context from two interactive processes.
+///
+/// An official CLI login is started only when `login` is set *and* this process owns an
+/// interactive terminal. Every other path is non-interactive by construction: an authenticated
+/// context is registered without a login, and a context that needs one returns the
+/// human-action-required result instead of leaking an OAuth exchange into a pipe.
+pub fn setup(
+    id: &str,
+    kind: &str,
+    auth_dir: Option<&Path>,
+    login: bool,
+    json: bool,
+) -> Result<i32, String> {
+    validate_explicit_id(id)?;
+    let kind = ProviderKind::parse(kind)?;
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
+    let mut report = SetupReport {
+        id,
+        kind,
+        auth_dir: &auth_dir,
+        registry: &path,
+        registered: false,
+        auth: "not_probed",
+        json,
+    };
+    // Registry paths are configurable, so the login lock lives in and is keyed by the canonical
+    // auth context itself. A waiter rechecks authentication only after acquiring this lock.
+    let auth_lock = auth_context_lock(kind, &auth_dir)?;
+    let _registry_lock = registry_lock(&path)?;
+    auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+    report.registered = match inspect_registration(&path, id, kind, &auth_dir)? {
+        Registration::Exact => true,
+        Registration::Absent => false,
+        Registration::Conflict(conflict) => {
+            return Ok(report.emit(&SetupOutcome::RegistryConflict(conflict)));
+        }
+    };
+    let spec = ProviderSpec {
+        id: id.to_string(),
+        kind,
+        auth_dir: Some(auth_dir.clone()),
+        explicit_selector: true,
+        registry_declared: report.registered,
+        source: path.display().to_string(),
+    };
+
+    // The Provider CLI owns both the credential and the answer about it; without that binary
+    // there is nothing to verify and nothing an interactive login could fix here.
+    if resolve_program(kind.command()).is_none() {
+        let detail = format!(
+            "{} is not on PATH; install the official {} CLI, then rerun",
+            kind.command(),
+            kind.name()
+        );
+        report.auth = "unknown";
+        return Ok(report.emit(&SetupOutcome::ProviderCliMissing {
+            diagnostic: detail.clone(),
+            report: detail,
+        }));
+    }
+
+    auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+    report.auth = "unknown";
+    let authenticated = match probe_authentication(&spec, &report) {
+        Ok(ready) => ready,
+        Err(code) => return Ok(code),
+    };
+    if !authenticated {
+        // Refusals before any child process: without `--login` the operator never asked for an
+        // OAuth exchange, and without a terminal on all three standard streams that exchange
+        // would be written into whatever is reading this process.
+        if !login || !interactive_terminal() {
+            let action = login_next_action(&spec, login);
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::HumanActionRequired(action)));
+        }
+        auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+        if let Err(error) = run_interactive_login(&spec) {
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::AuthenticationFailed(error)));
+        }
+        auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+        report.auth = "unknown";
+        let verified = match probe_authentication(&spec, &report) {
+            Ok(ready) => ready,
+            Err(code) => return Ok(code),
+        };
+        if !verified {
+            let detail = format!(
+                "{} login completed without authenticating {}",
+                kind.name(),
+                auth_dir.display()
+            );
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::AuthenticationFailed(detail)));
+        }
+    }
+    auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+    report.auth = "authenticated";
+
+    if report.registered {
+        return Ok(report.emit(&SetupOutcome::AlreadyRegistered));
+    }
+
+    let outcome = match add_to_registry_locked(&path, id, kind, &auth_dir, true)? {
+        RegistryAdd::Added(preserved) => SetupOutcome::Registered { preserved },
+        RegistryAdd::AlreadyPresent => SetupOutcome::AlreadyRegistered,
+        RegistryAdd::Conflict(conflict) => SetupOutcome::RegistryConflict(conflict),
+    };
+    report.registered = !matches!(outcome, SetupOutcome::RegistryConflict(_));
+    Ok(report.emit(&outcome))
+}
+
+/// `Ok(false)` means "no login here". `Err` carries the exit code of an already-printed
+/// classified outcome: a probe that could not answer is an authentication failure, and a CLI
+/// that cannot start at all is a missing Provider CLI, never a failed login.
+fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result<bool, i32> {
+    authentication_ready(spec).map_err(|error| match error {
+        AuthenticationProbe::Failed(error) => {
+            report.emit(&SetupOutcome::AuthenticationFailed(error))
+        }
+        AuthenticationProbe::CliCannotStart(failure) => {
+            report.emit(&SetupOutcome::cli_cannot_start(&failure))
+        }
+    })
+}
+
+/// An interactive terminal on stdin, stdout *and* stderr.
+///
+/// Every one of the three is a channel the official CLI may print the OAuth URL and code on, so
+/// a single redirected stream is enough to make starting that login unsafe.
+fn interactive_terminal() -> bool {
+    use std::io::IsTerminal;
+
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+fn login_next_action(spec: &ProviderSpec, login: bool) -> NextAction {
+    let command = setup_login_command(spec);
+    if login {
+        NextAction {
+            kind: "private_terminal",
+            reason: format!(
+                "af refuses to start the {} CLI login because this process is not attached to an interactive terminal on stdin, stdout and stderr; its OAuth URL and authorization code must never be relayed through a pipe, chat, an agent transcript, or logs",
+                spec.kind.name()
+            ),
+            command,
+        }
+    } else {
+        NextAction {
+            kind: "interactive_login",
+            reason: format!(
+                "provider {} has no {} login in this auth directory; starting the official CLI login is an explicit opt-in a human performs at a private terminal",
+                spec.id,
+                spec.kind.name()
+            ),
+            command,
+        }
+    }
+}
+
+/// Everything one classified setup result needs, printed once.
+///
+/// stdout carries the result — human lines or the versioned document — and stderr carries one
+/// diagnostic line whenever that result is not success, so a pipeline that discards stdout still
+/// shows the operator what happened.
+struct SetupReport<'a> {
+    id: &'a str,
+    kind: ProviderKind,
+    auth_dir: &'a Path,
+    registry: &'a Path,
+    registered: bool,
+    auth: &'a str,
+    json: bool,
+}
+
+impl SetupReport<'_> {
+    fn emit(&self, outcome: &SetupOutcome) -> i32 {
+        let code = outcome.exit_code();
+        if self.json {
+            println!("{}", self.document(outcome, code));
+        } else {
+            self.print_human(outcome);
+        }
+        if code != EXIT_OK {
+            eprintln!(
+                "af provider setup: {} ({})",
+                outcome.report().unwrap_or_else(|| outcome.name()),
+                outcome.name()
+            );
+        }
+        code
+    }
+
+    /// The versioned document: closed states, one `af`-authored diagnostic, and never an
+    /// account identity, credential, OAuth URL or code, or raw Provider output.
+    fn document(&self, outcome: &SetupOutcome, code: i32) -> serde_json::Value {
+        let next_action = match outcome {
+            SetupOutcome::HumanActionRequired(action) => Some(serde_json::json!({
+                "kind": action.kind,
+                "command": action.command,
+            })),
+            _ => None,
+        };
+        let usability = match self.auth {
+            "authenticated" => "usable_or_untested",
+            "not_authenticated" => "unusable",
+            _ => "unknown",
+        };
+        let auth_context = self.auth_dir.display().to_string();
+        serde_json::json!({
+            "schema": "af/provider-setup@1",
+            "result": outcome.name(),
+            "exit_code": code,
+            "login_launched": false,
+            "provider": {
+                "id": self.id,
+                "kind": self.kind.name(),
+                "auth_context": auth_context,
+                "registered": self.registered,
+                "auth": self.auth,
+                "usability": usability,
+            },
+            "next_action": next_action,
+            "diagnostic": outcome.diagnostic(),
+        })
+    }
+
+    fn print_human(&self, outcome: &SetupOutcome) {
+        let (id, kind, auth_dir) = (self.id, self.kind.name(), self.auth_dir.display());
+        match outcome {
+            SetupOutcome::Registered { preserved } => {
+                println!(
+                    "provider {id} authenticated and registered in {} ({kind}, {auth_dir})",
+                    self.registry.display()
+                );
+                if let Some(previous) = preserved {
+                    println!(
+                        "previous provider registry preserved at {}",
+                        previous.display()
+                    );
+                }
+                println!("next: af provider status");
+            }
+            SetupOutcome::AlreadyRegistered => {
+                println!("provider {id} is authenticated and registered ({kind}, {auth_dir})");
+                println!("next: af provider status");
+            }
+            SetupOutcome::HumanActionRequired(action) => {
+                println!("provider {id} is not authenticated ({kind}, {auth_dir})");
+                println!("human action required: {}", action.reason);
+                println!("next: run this yourself in a private interactive terminal:");
+                println!("  {}", action.command);
+                println!(
+                    "never relay the OAuth URL or authorization code it prints through chat, an agent transcript, a ticket, or logs"
+                );
+            }
+            SetupOutcome::ProviderCliMissing { report: detail, .. }
+            | SetupOutcome::RegistryConflict(detail)
+            | SetupOutcome::AuthenticationFailed(detail) => {
+                println!("provider {id} was not registered ({})", outcome.name());
+                println!("reason: {detail}");
+            }
+        }
+    }
+}
+
+/// Resolve an interrupted registry publication without guessing which version committed.
+pub fn recover() -> Result<(), String> {
+    let configured = registry_path()?.ok_or("no provider registry path is available")?;
+    recover_configured_registry(&configured)
+}
+
+fn recover_configured_registry(configured: &Path) -> Result<(), String> {
+    recover_configured_registry_with_hook(configured, || {})
+}
+
+fn recover_configured_registry_with_hook(
+    configured: &Path,
+    after_locks: impl FnOnce(),
+) -> Result<(), String> {
+    let configured_parent = configured
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", configured.display()))?;
+    match fs::metadata(configured_parent) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "provider registry directory {} is not a directory",
+                configured_parent.display()
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            create_dir_all_durable(configured_parent)?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry directory {}: {error}",
+                configured_parent.display()
+            ));
+        }
+    }
+    let resolved = resolve_registry(configured)?;
+    let locations = canonical_registry_locations(configured, resolved.as_deref())?;
+    let mut locks = Vec::with_capacity(locations.len());
+    for location in &locations {
+        locks.push(registry_lock(location)?);
+    }
+    after_locks();
+    let current_resolved = resolve_registry(configured)?;
+    let current_locations = canonical_registry_locations(configured, current_resolved.as_deref())?;
+    if current_resolved != resolved || current_locations != locations {
+        return Err(format!(
+            "provider registry alias {} changed while recovery locks were acquired; retry",
+            configured.display()
+        ));
+    }
+    let transactions = locations
+        .iter()
+        .filter_map(|location| match registry_transaction_exists(location) {
+            Ok(true) => Some(Ok(location)),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if transactions.len() > 1 {
+        return Err(format!(
+            "provider registry {} and its resolved target both have unfinished publications; refusing ambiguous recovery",
+            configured.display()
+        ));
+    }
+    if let Some(location) = transactions.first() {
+        return recover_registry(location);
+    }
+    println!(
+        "provider registry {} has no unfinished publication",
+        configured.display()
+    );
+    Ok(())
+}
+
+fn canonical_registry_locations(
+    configured: &Path,
+    resolved: Option<&Path>,
+) -> Result<BTreeSet<PathBuf>, String> {
+    let mut locations = BTreeSet::new();
+    locations.insert(canonical_registry_location(configured)?);
+    if let Some(resolved) = resolved {
+        locations.insert(canonical_registry_location(resolved)?);
+    }
+    Ok(locations)
+}
+
+fn canonical_registry_location(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("provider registry {} has no file name", path.display()))?;
+    let parent = fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "cannot resolve provider registry directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    Ok(parent.join(name))
+}
+
+fn validate_explicit_id(id: &str) -> Result<(), String> {
+    safe_id(id)?;
+    if matches!(id, "claude-ambient" | "codex-ambient") {
+        return Err(format!(
+            "provider id `{id}` is reserved for ambient discovery"
+        ));
+    }
+    Ok(())
+}
+
+/// An ambient label is refused by name: status lists it, so it looks removable, but no registry
+/// entry stands behind it.
+fn validate_removable_id(id: &str) -> Result<(), String> {
+    safe_id(id)?;
+    let (cli, selector, default) = match id {
+        "claude-ambient" => ("claude", "CLAUDE_CONFIG_DIR", "~/.claude"),
+        "codex-ambient" => ("codex", "CODEX_HOME", "~/.codex"),
+        _ => return Ok(()),
+    };
+    Err(format!(
+        "`{id}` is an ambient discovery label, not a registry entry, so there is nothing to \
+         remove; it is listed while the directory the {cli} CLI uses by default ({selector}, or \
+         {default}) is not the auth directory of a registered Provider, and, once a {cli} \
+         Provider is registered, only while that directory holds a login"
+    ))
+}
+
+fn resolve_auth_dir(
+    kind: ProviderKind,
+    auth_dir: Option<&Path>,
+    create: bool,
+) -> Result<PathBuf, String> {
+    let auth_dir = match auth_dir {
+        Some(path) => path.to_path_buf(),
+        None => default_auth_dir(kind)?,
+    };
+    if !auth_dir.is_absolute()
+        || auth_dir
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err("--auth-dir must be an absolute path without `..`".into());
+    }
+    // The registry format is TOML and therefore cannot represent an arbitrary Unix byte path.
+    // Resolve the deepest existing ancestor first: a printable alias can otherwise point through
+    // a symlink to a non-UTF-8 parent and create an unpublishable leaf before canonicalization.
+    validate_utf8_destination(&auth_dir)?;
+    match fs::symlink_metadata(&auth_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "auth directory {} must not be a symlink",
+                auth_dir.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound && create => {
+            create_private_directory(&auth_dir)?;
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect auth directory {}: {error}",
+                auth_dir.display()
+            ));
+        }
+    }
+    let unresolved = fs::symlink_metadata(&auth_dir).map_err(|error| {
+        format!(
+            "cannot inspect auth directory {}: {error}",
+            auth_dir.display()
+        )
+    })?;
+    if unresolved.file_type().is_symlink() {
+        return Err(format!(
+            "auth directory {} must not be a symlink",
+            auth_dir.display()
+        ));
+    }
+    validate_secure_directory_chain(&auth_dir, "auth directory")?;
+    let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
+        format!(
+            "auth directory {} cannot be resolved: {error}",
+            auth_dir.display()
+        )
+    })?;
+    if auth_dir.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            auth_dir.display()
+        ));
+    }
+    if !auth_dir.is_dir() {
+        return Err(format!(
+            "auth directory {} is not a directory",
+            auth_dir.display()
+        ));
+    }
+    validate_private_auth_directory(&auth_dir)?;
+    Ok(auth_dir)
+}
+
+fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect auth directory {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "auth directory {} must be a real directory",
+            path.display()
+        ));
+    }
+    validate_secure_directory_chain(path, "auth directory")?;
+    let effective_uid = nix::unistd::geteuid().as_raw();
+    if metadata.uid() != effective_uid {
+        return Err(format!(
+            "auth directory {} is owned by uid {}, not the current uid {effective_uid}",
+            path.display(),
+            metadata.uid()
+        ));
+    }
+    if metadata.mode() & 0o022 != 0 {
+        let fix = chmod_fix(path, "go-w");
+        return Err(format!(
+            "auth directory {} is writable by another user; fix: {fix}",
+            path.display(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_utf8_destination(path: &Path) -> Result<(), String> {
+    if path.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            path.display()
+        ));
+    }
+    let mut suffix = Vec::new();
+    let mut ancestor = path;
+    let mut resolved = loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                break fs::canonicalize(ancestor).map_err(|error| {
+                    format!(
+                        "auth directory ancestor {} cannot be resolved: {error}",
+                        ancestor.display()
+                    )
+                })?;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let name = ancestor.file_name().ok_or_else(|| {
+                    format!("auth directory {} has no existing ancestor", path.display())
+                })?;
+                suffix.push(name.to_os_string());
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    format!("auth directory {} has no existing ancestor", path.display())
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect auth directory ancestor {}: {error}",
+                    ancestor.display()
+                ));
+            }
+        }
+    };
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    if resolved.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} resolves through a non-UTF-8 path and cannot be stored in TOML",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn missing_directories(path: &Path, what: &str) -> Result<(Vec<PathBuf>, PathBuf), String> {
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match fs::metadata(cursor) {
+            Ok(metadata) if metadata.is_dir() => return Ok((missing, cursor.to_path_buf())),
+            Ok(_) => {
+                return Err(format!("{what} {} is not a directory", cursor.display()));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| format!("{what} {} has no existing ancestor", path.display()))?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect {what} {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+}
+
+fn validate_secure_directory_chain(path: &Path, what: &str) -> Result<(), String> {
+    validate_directory_chain(path, what, true)
+}
+
+fn validate_creation_ancestor(path: &Path, what: &str) -> Result<(), String> {
+    validate_directory_chain(path, what, false)
+}
+
+fn validate_directory_chain(
+    path: &Path,
+    what: &str,
+    require_owned_leaf: bool,
+) -> Result<(), String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("cannot resolve {what} {}: {error}", path.display()))?;
+    let mut roots = vec![path.to_path_buf()];
+    if canonical != path {
+        roots.push(canonical);
+    }
+    let mut checked = BTreeSet::new();
+    for root in roots {
+        let mut current = Some(root.as_path());
+        let mut leaf = true;
+        while let Some(directory) = current {
+            if checked.insert(directory.to_path_buf()) {
+                let metadata = fs::metadata(directory).map_err(|error| {
+                    format!(
+                        "cannot inspect rename-controlling directory {} for {what}: {error}",
+                        directory.display()
+                    )
+                })?;
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "rename-controlling path {} for {what} is not a directory",
+                        directory.display()
+                    ));
+                }
+                if leaf && require_owned_leaf {
+                    validate_owned_not_writable_by_others(directory, &metadata, what)?;
+                } else {
+                    validate_rename_controlling_directory(directory, &metadata, what)?;
+                }
+            }
+            leaf = false;
+            current = directory.parent();
+        }
+    }
+    Ok(())
+}
+
+fn validate_rename_controlling_directory(
+    path: &Path,
+    metadata: &fs::Metadata,
+    what: &str,
+) -> Result<(), String> {
+    validate_rename_controlling_directory_for_uid(
+        path,
+        metadata,
+        what,
+        nix::unistd::geteuid().as_raw(),
+    )
+}
+
+fn validate_rename_controlling_directory_for_uid(
+    path: &Path,
+    metadata: &fs::Metadata,
+    what: &str,
+    effective_uid: u32,
+) -> Result<(), String> {
+    validate_rename_controlling_directory_values(
+        path,
+        metadata.uid(),
+        metadata.mode(),
+        what,
+        effective_uid,
+    )
+}
+
+fn validate_rename_controlling_directory_values(
+    path: &Path,
+    owner_uid: u32,
+    mode: u32,
+    what: &str,
+    effective_uid: u32,
+) -> Result<(), String> {
+    if owner_uid != effective_uid && owner_uid != 0 {
+        return Err(format!(
+            "rename-controlling directory {} for {what} is owned by uid {}, not the current uid {effective_uid} or root; move {what} under a directory controlled by the current user",
+            path.display(),
+            owner_uid
+        ));
+    }
+    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+        return Err(format!(
+            "rename-controlling directory {} for {what} is writable by another user without the sticky bit; fix: secure that directory or move {what} under a private parent",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn chmod_fix(path: &Path, mode: &str) -> String {
+    path.to_str().map_or_else(
+        || format!("remove the unsafe permission bits from {}", path.display()),
+        |path| format!("chmod {mode} -- {}", shell_words::quote(path)),
+    )
+}
+
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    create_private_directory_tree(path, "auth directory", false)
+}
+
+fn create_private_directory_tree(path: &Path, what: &str, durable: bool) -> Result<(), String> {
+    use rustix::fs::{AtFlags, Mode, OFlags, chmodat, mkdirat, open, openat};
+
+    let (missing, existing) = missing_directories(path, what)?;
+    // Reject an unsafe rename-controlling ancestor before creating even the first descendant.
+    validate_creation_ancestor(&existing, what)?;
+    let canonical = fs::canonicalize(&existing)
+        .map_err(|error| format!("cannot resolve {what} {}: {error}", existing.display()))?;
+    let mut parent: File = open(
+        &canonical,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("opening {what} ancestor {}: {error}", existing.display()))?
+    .into();
+    if !bound_directory_is_current(&existing, &parent).unwrap_or(false) {
+        return Err(format!(
+            "{what} ancestor {} changed before directory creation; retry",
+            existing.display()
+        ));
+    }
+
+    for directory in missing.into_iter().rev() {
+        let name = directory
+            .file_name()
+            .ok_or_else(|| format!("{what} {} has no directory component", directory.display()))?;
+        let created = match mkdirat(&parent, name, Mode::RWXU) {
+            Ok(()) => true,
+            Err(error) if error == rustix::io::Errno::EXIST => false,
+            Err(error) => {
+                return Err(format!(
+                    "cannot create {what} {}: {error}",
+                    directory.display()
+                ));
+            }
+        };
+        if created {
+            // Mode 0700 never exposes group/world access, while this handle-relative chmod repairs
+            // owner access removed by a restrictive umask before the next descendant is opened.
+            chmodat(&parent, name, Mode::RWXU, AtFlags::empty()).map_err(|error| {
+                format!("cannot secure {what} {}: {error}", directory.display())
+            })?;
+        }
+        let child: File = openat(
+            &parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            format!(
+                "opening newly created {what} {} without following links: {error}",
+                directory.display()
+            )
+        })?
+        .into();
+        let metadata = child
+            .metadata()
+            .map_err(|error| format!("inspecting {what} {}: {error}", directory.display()))?;
+        validate_owned_not_writable_by_others(&directory, &metadata, what)?;
+        if durable {
+            child
+                .sync_all()
+                .map_err(|error| format!("syncing {what} {}: {error}", directory.display()))?;
+            parent.sync_all().map_err(|error| {
+                format!("syncing parent of {what} {}: {error}", directory.display())
+            })?;
+        }
+        parent = child;
+    }
+    validate_secure_directory_chain(path, what)
+}
+
+struct BoundDirectoryLock {
+    _lock: File,
+    directory: File,
+}
+
+impl BoundDirectoryLock {
+    fn ensure_directory_current(&self, path: &Path, what: &str) -> Result<(), String> {
+        if !bound_directory_is_current(path, &self.directory).unwrap_or(false) {
+            return Err(format!(
+                "{what} {} changed while locked; retry",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn bind_directory(path: &Path, what: &str) -> Result<File, String> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    validate_secure_directory_chain(path, what)?;
+    let directory: File = open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        format!(
+            "opening {what} {} without following links: {error}",
+            path.display()
+        )
+    })?
+    .into();
+    if !bound_directory_is_current(path, &directory).unwrap_or(false) {
+        return Err(format!(
+            "{what} {} changed while it was being secured; retry",
+            path.display()
+        ));
+    }
+    Ok(directory)
+}
+
+fn bound_directory_is_current(path: &Path, directory: &File) -> std::io::Result<bool> {
+    let path = fs::symlink_metadata(path)?;
+    let directory = directory.metadata()?;
+    Ok(!path.file_type().is_symlink()
+        && path.is_dir()
+        && directory.is_dir()
+        && path.dev() == directory.dev()
+        && path.ino() == directory.ino())
+}
+
+/// Create-or-open a lock file beneath an already bound directory.
+///
+/// APFS can answer a concurrent `openat(O_CREAT)` of the same name with a spurious `ENOENT`
+/// while another process is creating that very file. The directory itself is bound and
+/// verified current by the caller, so `ENOENT` here is that race, not a missing parent; retry
+/// a bounded number of times before reporting it. A genuinely absent directory still fails
+/// after the retries with the same error.
+#[cfg(unix)]
+fn open_lock_at(
+    directory: &impl std::os::fd::AsFd,
+    name: &std::ffi::OsStr,
+) -> Result<File, rustix::io::Errno> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mode = Mode::RUSR | Mode::WUSR;
+    let mut attempts = 0;
+    loop {
+        match openat(directory, name, flags, mode) {
+            Ok(fd) => return Ok(fd.into()),
+            Err(rustix::io::Errno::NOENT) if attempts < 32 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<BoundDirectoryLock, String> {
+    auth_context_lock_with_hook(kind, auth_dir, || {})
+}
+
+fn auth_context_lock_with_hook(
+    kind: ProviderKind,
+    auth_dir: &Path,
+    before_wait: impl FnOnce(),
+) -> Result<BoundDirectoryLock, String> {
+    let directory = bind_directory(auth_dir, "auth directory")?;
+    let lock_path = auth_dir.join(format!(".af-{}-setup.lock", kind.name()));
+    let file: File = {
+        open_lock_at(
+            &directory,
+            lock_path.file_name().ok_or_else(|| {
+                format!("auth-context lock {} has no file name", lock_path.display())
+            })?,
+        )
+        .map_err(|error| {
+            format!(
+                "opening {} auth-context lock {}: {error}",
+                kind.name(),
+                lock_path.display()
+            )
+        })?
+    };
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "inspecting {} auth-context lock {}: {error}",
+            kind.name(),
+            lock_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{} auth-context lock {} must be a regular file",
+            kind.name(),
+            lock_path.display()
+        ));
+    }
+    {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| {
+                format!(
+                    "securing {} auth-context lock {}: {error}",
+                    kind.name(),
+                    lock_path.display()
+                )
+            })?;
+        let secured_metadata = file.metadata().map_err(|error| {
+            format!(
+                "re-inspecting {} auth-context lock {}: {error}",
+                kind.name(),
+                lock_path.display()
+            )
+        })?;
+        validate_owned_not_writable_by_others(&lock_path, &secured_metadata, "auth-context lock")?;
+        if !bound_directory_is_current(auth_dir, &directory).unwrap_or(false) {
+            return Err(format!(
+                "auth directory {} changed while its setup lock was opened; retry",
+                auth_dir.display()
+            ));
+        }
+    }
+    before_wait();
+    fs2::FileExt::lock_exclusive(&file).map_err(|error| {
+        format!(
+            "locking {} auth context {}: {error}",
+            kind.name(),
+            auth_dir.display()
+        )
+    })?;
+    if !bound_directory_is_current(auth_dir, &directory).unwrap_or(false) {
+        return Err(format!(
+            "auth directory {} changed while waiting for its setup lock; retry",
+            auth_dir.display()
+        ));
+    }
+    Ok(BoundDirectoryLock {
+        _lock: file,
+        directory,
+    })
+}
+
+/// What the registry already says about this exact `(id, kind, auth_dir)` triple.
+///
+/// A `Conflict` is a classified refusal that the operator resolves by choosing another ID or
+/// context; an unreadable or unfinished registry stays an error, because it says nothing about
+/// whether this entry conflicts.
+enum Registration {
+    Exact,
+    Absent,
+    Conflict(String),
+}
+
+/// Conflicts are rejected before an interactive login; `add_to_registry_locked` repeats these
+/// checks under its lock, which is the check that actually decides publication.
+fn inspect_registration(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+) -> Result<Registration, String> {
+    let Some(text) = read_registry(path)? else {
+        return Ok(Registration::Absent);
+    };
+    let specs = parse_registry(&text, path)?;
+    if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
+        if existing.kind == kind && existing.auth_dir.as_deref() == Some(auth_dir) {
+            return Ok(Registration::Exact);
+        }
+        return Ok(Registration::Conflict(format!(
+            "provider `{id}` already names a different auth context"
+        )));
+    }
+    if let Some(existing) = specs
+        .iter()
+        .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
+    {
+        return Ok(Registration::Conflict(format!(
+            "{} auth context {} is already registered as provider `{}`",
+            kind.name(),
+            auth_dir.display(),
+            existing.id
+        )));
+    }
+    if specs.len() >= MAX_PROVIDERS {
+        return Ok(Registration::Conflict(format!(
+            "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
+            path.display()
+        )));
+    }
+    Ok(Registration::Absent)
+}
+
+/// Why setup's authentication probe gave no usable answer.
+enum AuthenticationProbe {
+    Failed(String),
+    CliCannotStart(CliInstallationFailure),
+}
+
+impl From<String> for AuthenticationProbe {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe> {
+    if let Some(auth_dir) = spec.auth_dir.as_deref() {
+        validate_private_auth_directory(auth_dir)?;
+    }
+    let program = locate_cli(spec).map_err(AuthenticationProbe::CliCannotStart)?;
+    let probe_path = sanitized_path();
+    let cancelled = AtomicBool::new(false);
+    let output = match run_probe(&program, spec, &probe_path, &cancelled) {
+        Ok(output) => output,
+        Err(error) => {
+            if !probe_gave_up(&error)
+                && let Some(failure) = diagnose_cli(&program, spec, &probe_path, &cancelled, None)
+            {
+                return Err(AuthenticationProbe::CliCannotStart(failure));
+            }
+            return Err(error.into());
+        }
+    };
+    if !output.status.success()
+        && !status_answered(spec.kind, &output.stdout)
+        && let Some(failure) = diagnose_cli(&program, spec, &probe_path, &cancelled, None)
+    {
+        return Err(AuthenticationProbe::CliCannotStart(failure));
+    }
+    let (status, _, detail) = match spec.kind {
+        ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
+        ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
+    };
+    match status.as_str() {
+        "authenticated" if output.status.success() => Ok(true),
+        "authenticated" => Err(format!(
+            "{} authentication status reported a login but exited unsuccessfully",
+            spec.kind.name()
+        )
+        .into()),
+        "not authenticated" => Ok(false),
+        _ => Err(if detail.is_empty() {
+            format!("{} authentication status is {status}", spec.kind.name())
+        } else {
+            detail
+        }
+        .into()),
+    }
+}
+
+/// Hand this terminal to the official CLI, having first said what that terminal will show.
+///
+/// The warning precedes the handover deliberately: afterwards the Provider owns the screen. `af`
+/// neither reads, parses, stores nor re-emits anything that login prints — the child inherits
+/// these standard streams, which the caller has already proven are an interactive terminal.
+fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
+    let program = resolve_program(spec.kind.command())
+        .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .ok_or("provider setup requires an explicit auth directory")?;
+    validate_private_auth_directory(auth_dir)?;
+    eprintln!("{LOGIN_SECURITY_WARNING}");
+    eprintln!(
+        "starting interactive {} login for {}",
+        spec.kind.name(),
+        auth_dir.display()
+    );
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .current_dir(Path::new("/"))
+        .env("PATH", sanitized_path());
+    for name in [
+        "HOME",
+        "USER",
+        "TERM",
+        "COLORTERM",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    match spec.kind {
+        ProviderKind::Claude => {
+            command.args(["auth", "login", "--claudeai"]);
+            command.env("CLAUDE_CONFIG_DIR", auth_dir);
+        }
+        ProviderKind::Codex => {
+            command.arg("login");
+            command.env("CODEX_HOME", auth_dir);
+        }
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} login exited with {status}; no provider was registered",
+            spec.kind.name()
+        ));
+    }
+    Ok(())
+}
+
+fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
+    let variable = match kind {
+        ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
+        ProviderKind::Codex => "CODEX_HOME",
+    };
+    if let Some(value) = std::env::var_os(variable)
+        && !value.is_empty()
+    {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!("{variable} must be absolute"));
+        }
+        return Ok(path);
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or("HOME is not set; pass --auth-dir")?;
+    if !home.is_absolute() {
+        return Err("HOME must be absolute; pass --auth-dir".into());
+    }
+    Ok(home.join(match kind {
+        ProviderKind::Claude => ".claude",
+        ProviderKind::Codex => ".codex",
+    }))
+}
+
+#[derive(Debug)]
+enum RegistryAdd {
+    Added(Option<PathBuf>),
+    AlreadyPresent,
+    /// Another entry already owns this ID or auth context, or the registry is full. The caller
+    /// reports it as the documented registry conflict rather than an unclassified failure.
+    Conflict(String),
+}
+
+fn add_to_registry_inner(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+    exact_is_success: bool,
+) -> Result<RegistryAdd, String> {
+    let _lock = registry_lock(path)?;
+    add_to_registry_locked(path, id, kind, auth_dir, exact_is_success)
+}
+
+fn add_to_registry_locked(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+    exact_is_success: bool,
+) -> Result<RegistryAdd, String> {
+    // A prior first-file publication may have crashed after creating its marker but before the
+    // registry appeared. Never treat that recovery state as an empty registry.
+    ensure_no_registry_transaction(path)?;
+    let existing = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "provider registry {} must be a regular file, not a symlink",
+                    path.display()
+                ));
+            }
+            Some(
+                read_registry(path)?
+                    .ok_or_else(|| format!("provider registry {} disappeared", path.display()))?,
+            )
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let mut document = match existing.as_deref() {
+        Some(text) => {
+            let specs = parse_registry(text, path)?;
+            if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
+                if exact_is_success
+                    && existing.kind == kind
+                    && existing.auth_dir.as_deref() == Some(auth_dir)
+                {
+                    return Ok(RegistryAdd::AlreadyPresent);
+                }
+                return Ok(RegistryAdd::Conflict(format!(
+                    "provider `{id}` already exists"
+                )));
+            }
+            if let Some(duplicate) = specs
+                .iter()
+                .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
+            {
+                return Ok(RegistryAdd::Conflict(format!(
+                    "{} auth context {} duplicates provider `{}`",
+                    kind.name(),
+                    auth_dir.display(),
+                    duplicate.id
+                )));
+            }
+            if specs.len() >= MAX_PROVIDERS {
+                return Ok(RegistryAdd::Conflict(format!(
+                    "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
+                    path.display()
+                )));
+            }
+            text.parse::<DocumentMut>()
+                .map_err(|error| format!("provider registry {}: {error}", path.display()))?
+        }
+        None => {
+            let mut document = DocumentMut::new();
+            document["version"] = value(1);
+            document
+        }
+    };
+    normalize_provider_tables(&mut document, path)?;
+    let providers = document["providers"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must be an array of tables",
+                path.display()
+            )
+        })?;
+    let mut provider = Table::new();
+    provider["id"] = value(id);
+    provider["kind"] = value(kind.name());
+    provider["auth_dir"] = value(auth_dir.to_str().ok_or_else(|| {
+        format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            auth_dir.display()
+        )
+    })?);
+    providers.push(provider);
+    let bytes = document.to_string();
+    if bytes.len() as u64 > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry {} would exceed {MAX_REGISTRY_BYTES} bytes",
+            path.display()
+        ));
+    }
+    parse_registry(&bytes, path)?;
+    write_registry(path, bytes.as_bytes(), existing.as_deref()).map(RegistryAdd::Added)
+}
+
+/// One entry `remove` took out, as the registry spelled it; a malformed entry may lack either.
+struct RemovedProvider {
+    id: String,
+    kind: Option<String>,
+    auth_dir: Option<String>,
+}
+
+fn remove_from_registry(
+    path: &Path,
+    ids: &BTreeSet<&str>,
+) -> Result<(Vec<RemovedProvider>, Option<PathBuf>), String> {
+    // An absent registry holds no entry, and finding that out must not create its directory and
+    // lock. A marker without a registry is an unfinished first publication, never absence.
+    let absent = matches!(
+        fs::symlink_metadata(path),
+        Err(error) if error.kind() == ErrorKind::NotFound
+    );
+    if absent && !registry_transaction_exists(path)? {
+        return Err(no_registry(path, ids));
+    }
+    let _lock = registry_lock(path)?;
+    remove_from_registry_locked(path, ids)
+}
+
+fn remove_from_registry_locked(
+    path: &Path,
+    ids: &BTreeSet<&str>,
+) -> Result<(Vec<RemovedProvider>, Option<PathBuf>), String> {
+    ensure_no_registry_transaction(path)?;
+    let existing = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(format!(
+                "provider registry {} must be a regular file, not a symlink",
+                path.display()
+            ));
+        }
+        Ok(_) => read_registry(path)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let Some(existing) = existing else {
+        return Err(no_registry(path, ids));
+    };
+    // The existing registry is read by shape alone. An entry whose auth directory is gone makes
+    // the whole registry invalid for every reader, and removing that entry is the repair. The
+    // version is still required, so a format this release does not know is never rewritten.
+    let mut document = existing
+        .parse::<DocumentMut>()
+        .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
+    if document.get("version").and_then(Item::as_integer) != Some(1) {
+        return Err(format!(
+            "provider registry {} must declare version = 1",
+            path.display()
+        ));
+    }
+    normalize_provider_tables(&mut document, path)?;
+    let providers = document["providers"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must be an array of tables",
+                path.display()
+            )
+        })?;
+    let mut removed = Vec::new();
+    providers.retain(|entry| {
+        let text = |key: &str| entry.get(key).and_then(Item::as_str).map(str::to_owned);
+        match text("id") {
+            Some(id) if ids.contains(id.as_str()) => {
+                removed.push(RemovedProvider {
+                    id,
+                    kind: text("kind"),
+                    auth_dir: text("auth_dir"),
+                });
+                false
+            }
+            _ => true,
+        }
+    });
+    let mut missing = ids.clone();
+    missing.retain(|id| !removed.iter().any(|entry| entry.id == *id));
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} in {}; nothing was removed",
+            not_registered(&missing),
+            path.display()
+        ));
+    }
+    // What is published is a registry every reader accepts, as after `add`.
+    let bytes = document.to_string();
+    parse_registry(&bytes, path).map_err(|error| {
+        format!(
+            "removing {} would leave provider registry {} invalid, so nothing was removed: \
+             {error}; if that is another stale entry, name it in the same command",
+            quoted(ids),
+            path.display()
+        )
+    })?;
+    let preserved = write_registry(path, bytes.as_bytes(), Some(&existing))?;
+    Ok((removed, preserved))
+}
+
+fn no_registry(path: &Path, ids: &BTreeSet<&str>) -> String {
+    format!(
+        "{}: provider registry {} does not exist",
+        not_registered(ids),
+        path.display()
+    )
+}
+
+fn not_registered(ids: &BTreeSet<&str>) -> String {
+    if ids.len() == 1 {
+        format!("provider {} is not registered", quoted(ids))
+    } else {
+        format!("providers {} are not registered", quoted(ids))
+    }
+}
+
+fn quoted(ids: &BTreeSet<&str>) -> String {
+    let named: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+    named.join(", ")
+}
+
+fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<(), String> {
+    let Some(providers) = document.get_mut("providers") else {
+        document["providers"] = Item::ArrayOfTables(ArrayOfTables::new());
+        return Ok(());
+    };
+    if providers.is_array_of_tables() {
+        return Ok(());
+    }
+    let array = providers.as_array().ok_or_else(|| {
+        format!(
+            "provider registry {} `providers` must be an array of tables",
+            path.display()
+        )
+    })?;
+    let mut tables = ArrayOfTables::new();
+    for entry in array.iter() {
+        let inline = entry.as_inline_table().ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must contain only tables",
+                path.display()
+            )
+        })?;
+        tables.push(inline.clone().into_table());
+    }
+    *providers = Item::ArrayOfTables(tables);
+    Ok(())
+}
+
+fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
+    registry_lock_controlled(path, None)
+}
+
+fn registry_lock_controlled(
+    path: &Path,
+    mut control: Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<BoundDirectoryLock, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    create_dir_all_durable(parent)?;
+    validate_registry_directory(parent)?;
+    let directory = bind_directory(parent, "provider registry directory")?;
+    let mut lock_name = path.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let file: File = {
+        open_lock_at(
+            &directory,
+            lock_path.file_name().ok_or_else(|| {
+                format!(
+                    "provider registry lock {} has no file name",
+                    lock_path.display()
+                )
+            })?,
+        )
+        .map_err(|error| {
+            format!(
+                "opening provider registry lock {}: {error}",
+                lock_path.display()
+            )
+        })?
+    };
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "inspecting provider registry lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "provider registry lock {} must be a regular file",
+            lock_path.display()
+        ));
+    }
+    {
+        validate_owned_not_writable_by_others(&lock_path, &metadata, "provider registry lock")?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| {
+                format!(
+                    "securing provider registry lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+            return Err(format!(
+                "provider registry directory {} changed while its lock was opened; retry",
+                parent.display()
+            ));
+        }
+    }
+    if let Some(check) = control.as_mut() {
+        loop {
+            check()?;
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => break,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25))
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "locking provider registry {}: {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+        check()?;
+    } else {
+        fs2::FileExt::lock_exclusive(&file).map_err(|error| {
+            format!("locking provider registry {}: {error}", lock_path.display())
+        })?;
+    }
+    if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+        return Err(format!(
+            "provider registry directory {} changed while waiting for its lock; retry",
+            parent.display()
+        ));
+    }
+    Ok(BoundDirectoryLock {
+        _lock: file,
+        directory,
+    })
+}
+
+fn write_registry(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    create_dir_all_durable(parent)?;
+    validate_registry_directory(parent)?;
+    let directory = bind_directory(parent, "provider registry directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating provider registry temporary file: {error}"))?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("setting provider registry permissions: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("writing provider registry: {error}"))?;
+    if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+        return Err(format!(
+            "provider registry directory {} changed before publication; retry",
+            parent.display()
+        ));
+    }
+    let preserved = match expected {
+        None => {
+            temporary.persist_noclobber(path).map_err(|error| {
+                format!(
+                    "provider registry {} appeared while adding an entry; retry: {}",
+                    path.display(),
+                    error.error
+                )
+            })?;
+            None
+        }
+        Some(expected) => Some(replace_registry_if_unchanged(path, temporary, expected)?),
+    };
+    if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+        eprintln!(
+            "warning: provider registry committed, but its directory {} changed during publication; inspect the registry and its preserved versions",
+            parent.display()
+        );
+    }
+    if let Err(error) = sync_directory(parent) {
+        eprintln!(
+            "warning: provider registry committed, but durability could not be confirmed: {error}"
+        );
+    }
+    Ok(preserved)
+}
+
+fn create_dir_all_durable(path: &Path) -> Result<(), String> {
+    create_private_directory_tree(path, "provider registry directory", true)
+}
+
+fn validate_owned_not_writable_by_others(
+    path: &Path,
+    metadata: &fs::Metadata,
+    what: &str,
+) -> Result<(), String> {
+    let effective_uid = nix::unistd::geteuid().as_raw();
+    if metadata.uid() != effective_uid {
+        return Err(format!(
+            "{what} {} is owned by uid {}, not the current uid {effective_uid}",
+            path.display(),
+            metadata.uid()
+        ));
+    }
+    if metadata.mode() & 0o022 != 0 {
+        let fix = chmod_fix(path, "go-w");
+        return Err(format!(
+            "{what} {} is writable by another user; fix: {fix}",
+            path.display(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_registry_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "cannot inspect provider registry directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "provider registry directory {} is not a directory",
+            path.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(path, &metadata, "provider registry directory")?;
+    validate_secure_directory_chain(path, "provider registry directory")
+}
+
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "syncing provider registry directory {}: {error}",
+                path.display()
+            )
+        })
+}
+
+fn replace_registry_if_unchanged(
+    path: &Path,
+    mut temporary: tempfile::NamedTempFile,
+    expected: &str,
+) -> Result<PathBuf, String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    let temporary_path = temporary.path().to_path_buf();
+    let candidate = read_registry_unchecked(&temporary_path)?
+        .ok_or_else(|| "staged provider registry disappeared".to_string())?;
+    let recovery = prepare_registry_recovery(
+        path,
+        &temporary_path,
+        temporary.as_file(),
+        expected,
+        &candidate,
+    )?;
+    let (transaction, transaction_file) = write_registry_transaction(
+        path,
+        &temporary_path,
+        expected,
+        temporary.as_file(),
+        &recovery,
+    )?;
+    // After the first exchange this pathname may hold somebody else's registry. Disable
+    // automatic cleanup before publishing so no error, rollback race, or Drop path can unlink a
+    // foreign inode.
+    temporary.disable_cleanup(true);
+    if let Err(error) = renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE) {
+        let _ = temporary.keep();
+        let mut maintenance_warnings = Vec::new();
+        if let Err(error) = make_recovery_inspectable(&recovery) {
+            maintenance_warnings.push(error);
+        }
+        if let Err(error) =
+            archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+        {
+            maintenance_warnings.push(error);
+        }
+        if !maintenance_warnings.is_empty() {
+            eprintln!(
+                "warning: provider registry publication failed and recovery maintenance was incomplete: {}",
+                maintenance_warnings.join("; ")
+            );
+        }
+        return Err(format!(
+            "conditionally replacing provider registry {} failed: {error}; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+
+    // The exchange is the irreversible cross-release commit point: every released reader sees
+    // either the complete old registry or this already-validated complete candidate. The marker
+    // gives newer readers stronger fail-closed recovery, but correctness never depends on an older
+    // pinned binary understanding it. Nothing after this point rolls the candidate back.
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let mut post_commit_warnings = Vec::new();
+    if let Err(error) = sync_directory(parent) {
+        post_commit_warnings.push(error);
+    }
+
+    // Move whatever the exchange displaced into the recovery directory. The original inode was
+    // hard-linked there before publication, so even a replacement of this mutable stage pathname
+    // cannot destroy a late write through an already-open descriptor.
+    let displaced_path = match fs::rename(&temporary_path, &recovery.exchange_stage) {
+        Ok(()) => recovery.exchange_stage.as_path(),
+        Err(error) => {
+            post_commit_warnings.push(format!(
+                "moving exchanged provider registry into {}: {error}; displaced version remains at {}",
+                recovery.exchange_stage.display(),
+                temporary_path.display()
+            ));
+            temporary_path.as_path()
+        }
+    };
+    if let Err(error) = recovery.directory_file.sync_all() {
+        post_commit_warnings.push(format!(
+            "syncing provider registry recovery directory: {error}"
+        ));
+    }
+    if let Err(error) = sync_directory(parent) {
+        post_commit_warnings.push(error);
+    }
+
+    if !registry_file_matches(displaced_path, &recovery.original_file, expected) {
+        post_commit_warnings.push(format!(
+            "provider registry {} changed immediately before commit; the displaced version was preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        if let Err(error) = make_recovery_inspectable(&recovery) {
+            post_commit_warnings.push(error);
+        }
+        if let Err(error) =
+            archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+        {
+            post_commit_warnings.push(error);
+        }
+        emit_registry_commit_warnings(&post_commit_warnings);
+        return Err(format!(
+            "provider registry {} was replaced by another writer after this update committed; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+
+    if let Err(error) = make_recovery_inspectable(&recovery) {
+        post_commit_warnings.push(error);
+    }
+    if let Err(error) =
+        archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+    {
+        post_commit_warnings.push(error);
+    }
+    // Rechecking afterward distinguishes a later non-cooperating replacement from publication.
+    // The candidate copy remains recoverable either way and was never rolled back.
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        emit_registry_commit_warnings(&post_commit_warnings);
+        return Err(format!(
+            "provider registry {} changed after commit; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+    if let Err(error) = ensure_no_registry_transaction(path) {
+        post_commit_warnings.push(error);
+    }
+    emit_registry_commit_warnings(&post_commit_warnings);
+    Ok(recovery.displaced_copy)
+}
+
+fn emit_registry_commit_warnings(warnings: &[String]) {
+    if !warnings.is_empty() {
+        eprintln!(
+            "warning: provider registry committed, but post-commit maintenance was incomplete: {}",
+            warnings.join("; ")
+        );
+    }
+}
+
+struct RegistryRecovery {
+    directory: PathBuf,
+    directory_file: File,
+    candidate_copy: PathBuf,
+    displaced_copy: PathBuf,
+    exchange_stage: PathBuf,
+    archived_marker: PathBuf,
+    original_file: File,
+}
+
+fn prepare_registry_recovery(
+    path: &Path,
+    stage: &Path,
+    candidate_file: &File,
+    expected: &str,
+    candidate: &str,
+) -> Result<RegistryRecovery, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let original_file = open_registry(path)
+        .map_err(|error| format!("opening provider registry before publication: {error}"))?;
+    if !registry_file_matches(path, &original_file, expected) {
+        return Err(format!(
+            "provider registry {} changed before publication; retry",
+            path.display()
+        ));
+    }
+
+    let mut recovery_builder = tempfile::Builder::new();
+    recovery_builder
+        .prefix(".af-provider-recovery-")
+        .permissions(fs::Permissions::from_mode(0o700));
+    let recovery = recovery_builder
+        .tempdir_in(parent)
+        .map_err(|error| format!("creating provider registry recovery directory: {error}"))?;
+    // Requesting 0700 prevents a permissive umask from exposing the directory. Repair owner
+    // access immediately so restrictive umasks such as 0777 cannot break this or later updates.
+    fs::set_permissions(recovery.path(), fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("securing provider registry recovery directory: {error}"))?;
+    let directory_file = File::open(recovery.path())
+        .map_err(|error| format!("opening provider registry recovery directory: {error}"))?;
+    let candidate_copy = recovery.path().join("candidate");
+    let displaced_copy = recovery.path().join("displaced");
+    let exchange_stage = recovery.path().join("exchange-stage");
+    let archived_marker = recovery.path().join("transaction-marker");
+    let mut candidate_copy_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NOFOLLOW)
+        .open(&candidate_copy)
+        .map_err(|error| format!("creating candidate provider registry recovery copy: {error}"))?;
+    candidate_copy_file
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .and_then(|()| candidate_copy_file.write_all(candidate.as_bytes()))
+        .and_then(|()| candidate_copy_file.sync_all())
+        .map_err(|error| format!("writing candidate provider registry recovery copy: {error}"))?;
+    fs::hard_link(path, &displaced_copy)
+        .map_err(|error| format!("linking prior provider registry for recovery: {error}"))?;
+    if !registry_file_matches(stage, candidate_file, candidate)
+        || !matches!(
+            read_registry_unchecked(&candidate_copy),
+            Ok(Some(current)) if current == candidate
+        )
+        || !registry_file_matches(&displaced_copy, &original_file, expected)
+    {
+        return Err(format!(
+            "provider registry {} changed while preparing publication; retry",
+            path.display()
+        ));
+    }
+    original_file
+        .sync_all()
+        .map_err(|error| format!("syncing prior provider registry: {error}"))?;
+    directory_file
+        .sync_all()
+        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
+    sync_directory(parent)?;
+
+    let directory = recovery.keep();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("securing provider registry recovery directory: {error}"))?;
+    directory_file.sync_all().map_err(|error| {
+        format!("syncing secured provider registry recovery directory: {error}")
+    })?;
+    sync_directory(parent)?;
+    Ok(RegistryRecovery {
+        directory,
+        directory_file,
+        candidate_copy,
+        displaced_copy,
+        exchange_stage,
+        archived_marker,
+        original_file,
+    })
+}
+
+fn registry_file_matches(path: &Path, file: &File, expected: &str) -> bool {
+    same_file(path, file).unwrap_or(false)
+        && matches!(read_registry_unchecked(path), Ok(Some(current)) if current == expected)
+}
+
+fn make_recovery_inspectable(recovery: &RegistryRecovery) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Err(error) = fs::set_permissions(&recovery.directory, fs::Permissions::from_mode(0o700))
+    {
+        failures.push(format!(
+            "making provider registry recovery directory inspectable: {error}"
+        ));
+    }
+    if let Err(error) = recovery.directory_file.sync_all() {
+        failures.push(format!(
+            "syncing inspectable provider registry recovery directory: {error}"
+        ));
+    }
+    if let Some(parent) = recovery.directory.parent() {
+        if let Err(error) = sync_directory(parent) {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn archive_transaction_if_ours(
+    path: &Path,
+    transaction: &Path,
+    transaction_file: &File,
+    recovery: &RegistryRecovery,
+) -> Result<(), String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    renameat_with(
+        CWD,
+        transaction,
+        CWD,
+        &recovery.archived_marker,
+        RenameFlags::NOREPLACE,
+    )
+    .map_err(|error| {
+        format!(
+            "archiving provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    let mut durability_warnings = Vec::new();
+    if let Err(error) = recovery.directory_file.sync_all() {
+        durability_warnings.push(format!(
+            "syncing archived provider registry transaction: {error}"
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    if let Err(error) = sync_directory(parent) {
+        durability_warnings.push(error);
+    }
+    if same_file(&recovery.archived_marker, transaction_file).unwrap_or(false) {
+        if !durability_warnings.is_empty() {
+            eprintln!(
+                "warning: provider registry transaction committed, but durability could not be confirmed: {}",
+                durability_warnings.join("; ")
+            );
+        }
+        return Ok(());
+    }
+
+    // A non-cooperating writer replaced the marker between publication and archival. Preserve
+    // its inode in recovery and restore a hard link beside the registry so readers stay fail
+    // closed. If another marker appeared in the meantime, the path is already fail closed.
+    match fs::hard_link(&recovery.archived_marker, transaction) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(format!(
+                "provider registry transaction {} changed and restoring its marker failed: {error}; replacement preserved at {}",
+                transaction.display(),
+                recovery.archived_marker.display()
+            ));
+        }
+    }
+    sync_directory(parent)?;
+    Err(format!(
+        "provider registry transaction {} changed; replacement preserved at {} and registry remains fail closed",
+        transaction.display(),
+        recovery.archived_marker.display()
+    ))
+}
+
+fn registry_transaction_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".transaction");
+    PathBuf::from(name)
+}
+
+fn registry_transaction_exists(path: &Path) -> Result<bool, String> {
+    let transaction = registry_transaction_path(path);
+    match fs::symlink_metadata(&transaction) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "cannot inspect provider registry transaction {}: {error}",
+            transaction.display()
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistryTransactionMarker {
+    version: u8,
+    stage: String,
+    recovery: String,
+    candidate_copy: String,
+    displaced_copy: String,
+    exchange_stage: String,
+    archived_marker: String,
+    expected_sha256: String,
+    candidate_sha256: String,
+}
+
+fn safe_relative_component(value: &str, field: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(format!(
+            "provider registry transaction `{field}` must be one relative path component"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "provider registry transaction `{field}` is not a SHA-256 digest"
+        ))
+    }
+}
+
+fn open_regular_file_at(
+    directory: &File,
+    name: &std::ffi::OsStr,
+    display: &Path,
+    label: &str,
+) -> Result<File, String> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let file: File = openat(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        format!(
+            "opening {label} {} without following links: {error}",
+            display.display()
+        )
+    })?
+    .into();
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspecting {label} {}: {error}", display.display()))?;
+    if !metadata.is_file() || metadata.len() > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "{label} {} must be a bounded regular file",
+            display.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(display, &metadata, label)?;
+    Ok(file)
+}
+
+fn bounded_file_bytes(file: &File, display: &Path, label: &str) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::FileExt;
+
+    let before = file
+        .metadata()
+        .map_err(|error| format!("inspecting {label} {}: {error}", display.display()))?;
+    if !before.is_file() || before.len() > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "{label} {} must be a bounded regular file",
+            display.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(display, &before, label)?;
+    let mut bytes = vec![0; MAX_REGISTRY_BYTES as usize + 1];
+    let mut offset = 0;
+    loop {
+        let read = file
+            .read_at(&mut bytes[offset..], offset as u64)
+            .map_err(|error| format!("reading {label} {}: {error}", display.display()))?;
+        if read == 0 {
+            break;
+        }
+        offset += read;
+        if offset > MAX_REGISTRY_BYTES as usize {
+            return Err(format!(
+                "{label} {} exceeds {MAX_REGISTRY_BYTES} bytes",
+                display.display()
+            ));
+        }
+    }
+    bytes.truncate(offset);
+    let after = file
+        .metadata()
+        .map_err(|error| format!("re-inspecting {label} {}: {error}", display.display()))?;
+    if before.dev() != after.dev() || before.ino() != after.ino() || after.len() != offset as u64 {
+        return Err(format!(
+            "{label} {} changed while it was read; retry",
+            display.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn registry_digest_from_file(file: &File, display: &Path, label: &str) -> Result<String, String> {
+    let bytes = bounded_file_bytes(file, display, label)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        format!(
+            "provider registry recovery {label} {} is not UTF-8",
+            display.display()
+        )
+    })?;
+    parse_registry(text, display).map_err(|error| {
+        format!(
+            "provider registry recovery {label} {} is invalid: {error}",
+            display.display()
+        )
+    })?;
+    Ok(review_core::hex::encode(&Sha256::digest(bytes)))
+}
+
+fn same_file_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bool {
+    let Ok(current) = open_regular_file_at(directory, name, Path::new(name), "secured file") else {
+        return false;
+    };
+    let Ok(current) = current.metadata() else {
+        return false;
+    };
+    let Ok(expected) = expected.metadata() else {
+        return false;
+    };
+    current.dev() == expected.dev() && current.ino() == expected.ino()
+}
+
+fn same_directory_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bool {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let Ok(current): Result<File, _> = openat(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(Into::into) else {
+        return false;
+    };
+    let Ok(current) = current.metadata() else {
+        return false;
+    };
+    let Ok(expected) = expected.metadata() else {
+        return false;
+    };
+    current.dev() == expected.dev() && current.ino() == expected.ino()
+}
+
+fn recover_registry(path: &Path) -> Result<(), String> {
+    recover_registry_with_hook(path, || {})
+}
+
+fn recover_registry_with_hook(path: &Path, before_archive: impl FnOnce()) -> Result<(), String> {
+    use rustix::fs::{Mode, OFlags, RenameFlags, openat, renameat_with};
+
+    let transaction = registry_transaction_path(path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let parent_directory = bind_directory(parent, "provider registry directory")?;
+    let transaction_name = transaction.file_name().ok_or_else(|| {
+        format!(
+            "provider registry transaction {} has no file name",
+            transaction.display()
+        )
+    })?;
+    if !registry_transaction_exists(path)? {
+        println!(
+            "provider registry {} has no unfinished publication",
+            path.display()
+        );
+        return Ok(());
+    }
+    let marker_file = open_regular_file_at(
+        &parent_directory,
+        transaction_name,
+        &transaction,
+        "provider registry transaction",
+    )?;
+    let marker_bytes =
+        bounded_file_bytes(&marker_file, &transaction, "provider registry transaction")?;
+    let marker_text = std::str::from_utf8(&marker_bytes).map_err(|_| {
+        format!(
+            "provider registry transaction {} is not UTF-8",
+            transaction.display()
+        )
+    })?;
+    let marker: RegistryTransactionMarker = toml::from_str(marker_text).map_err(|error| {
+        format!(
+            "provider registry transaction {} is invalid: {error}",
+            transaction.display()
+        )
+    })?;
+    if marker.version != 1 {
+        return Err(format!(
+            "provider registry transaction {} has unsupported version {}",
+            transaction.display(),
+            marker.version
+        ));
+    }
+    safe_relative_component(&marker.stage, "stage")?;
+    safe_relative_component(&marker.recovery, "recovery")?;
+    if !marker.recovery.starts_with(".af-provider-recovery-") {
+        return Err("provider registry transaction names an unexpected recovery directory".into());
+    }
+    for (field, value, leaf) in [
+        ("candidate_copy", &marker.candidate_copy, "candidate"),
+        ("displaced_copy", &marker.displaced_copy, "displaced"),
+        ("exchange_stage", &marker.exchange_stage, "exchange-stage"),
+        (
+            "archived_marker",
+            &marker.archived_marker,
+            "transaction-marker",
+        ),
+    ] {
+        let expected = Path::new(&marker.recovery).join(leaf);
+        if Path::new(value) != expected {
+            return Err(format!(
+                "provider registry transaction `{field}` does not name its recorded recovery child"
+            ));
+        }
+    }
+    validate_sha256(&marker.expected_sha256, "expected_sha256")?;
+    validate_sha256(&marker.candidate_sha256, "candidate_sha256")?;
+
+    let recovery = parent.join(&marker.recovery);
+    let recovery_name = std::ffi::OsStr::new(&marker.recovery);
+    let recovery_directory: File = openat(
+        &parent_directory,
+        recovery_name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        format!(
+            "opening provider registry recovery directory {} without following links: {error}",
+            recovery.display()
+        )
+    })?
+    .into();
+    let recovery_metadata = recovery_directory.metadata().map_err(|error| {
+        format!(
+            "inspecting provider registry recovery directory {}: {error}",
+            recovery.display()
+        )
+    })?;
+    if !recovery_metadata.is_dir() {
+        return Err(format!(
+            "provider registry recovery path {} is not a directory",
+            recovery.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(
+        &recovery,
+        &recovery_metadata,
+        "provider registry recovery directory",
+    )?;
+
+    let live_name = path
+        .file_name()
+        .ok_or_else(|| format!("provider registry {} has no file name", path.display()))?;
+    let live_file = open_regular_file_at(
+        &parent_directory,
+        live_name,
+        path,
+        "provider registry recovery live file",
+    )?;
+    let candidate = parent.join(&marker.candidate_copy);
+    let displaced = parent.join(&marker.displaced_copy);
+    let candidate_file = open_regular_file_at(
+        &recovery_directory,
+        std::ffi::OsStr::new("candidate"),
+        &candidate,
+        "provider registry recovery candidate copy",
+    )?;
+    let displaced_file = open_regular_file_at(
+        &recovery_directory,
+        std::ffi::OsStr::new("displaced"),
+        &displaced,
+        "provider registry recovery prior copy",
+    )?;
+    let live_digest = registry_digest_from_file(&live_file, path, "live file")?;
+    let candidate_digest =
+        registry_digest_from_file(&candidate_file, &candidate, "candidate copy")?;
+    let displaced_digest = registry_digest_from_file(&displaced_file, &displaced, "prior copy")?;
+    if candidate_digest != marker.candidate_sha256 || displaced_digest != marker.expected_sha256 {
+        return Err(format!(
+            "provider registry recovery files in {} do not match the transaction hashes; marker retained",
+            recovery.display()
+        ));
+    }
+    let state = if live_digest == marker.candidate_sha256 {
+        "the committed candidate is live"
+    } else if live_digest == marker.expected_sha256 {
+        "publication did not commit and the prior registry is live"
+    } else {
+        return Err(format!(
+            "provider registry {} matches neither transaction hash; marker retained",
+            path.display()
+        ));
+    };
+    before_archive();
+    let final_live_digest = registry_digest_from_file(&live_file, path, "live file")?;
+    let final_candidate_digest =
+        registry_digest_from_file(&candidate_file, &candidate, "candidate copy")?;
+    let final_displaced_digest =
+        registry_digest_from_file(&displaced_file, &displaced, "prior copy")?;
+    let final_marker_bytes =
+        bounded_file_bytes(&marker_file, &transaction, "provider registry transaction")?;
+    if !bound_directory_is_current(parent, &parent_directory).unwrap_or(false)
+        || !same_directory_at(&parent_directory, recovery_name, &recovery_directory)
+        || !same_file_at(&parent_directory, transaction_name, &marker_file)
+        || !same_file_at(&parent_directory, live_name, &live_file)
+        || !same_file_at(
+            &recovery_directory,
+            std::ffi::OsStr::new("candidate"),
+            &candidate_file,
+        )
+        || !same_file_at(
+            &recovery_directory,
+            std::ffi::OsStr::new("displaced"),
+            &displaced_file,
+        )
+        || final_live_digest != live_digest
+        || final_candidate_digest != candidate_digest
+        || final_displaced_digest != displaced_digest
+        || final_marker_bytes != marker_bytes
+    {
+        return Err("provider registry recovery state changed while validating it; retry".into());
+    }
+    let archived = parent.join(&marker.archived_marker);
+    renameat_with(
+        &parent_directory,
+        transaction_name,
+        &recovery_directory,
+        std::ffi::OsStr::new("transaction-marker"),
+        RenameFlags::NOREPLACE,
+    )
+    .map_err(|error| {
+        format!(
+            "archiving validated provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    if !same_file_at(
+        &recovery_directory,
+        std::ffi::OsStr::new("transaction-marker"),
+        &marker_file,
+    ) {
+        return Err(format!(
+            "archived provider registry transaction {} changed identity; inspect {}",
+            archived.display(),
+            recovery.display()
+        ));
+    }
+    recovery_directory
+        .sync_all()
+        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
+    parent_directory.sync_all().map_err(|error| {
+        format!(
+            "syncing provider registry directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    println!(
+        "provider registry recovery complete: {state}; candidate and prior versions remain in {}",
+        recovery.display()
+    );
+    Ok(())
+}
+
+fn write_registry_transaction(
+    path: &Path,
+    stage: &Path,
+    expected: &str,
+    candidate: &File,
+    recovery: &RegistryRecovery,
+) -> Result<(PathBuf, File), String> {
+    use std::io::Seek;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let stage_name = stage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "provider registry stage {} has no UTF-8 file name",
+                stage.display()
+            )
+        })?;
+    let recovery_name = recovery
+        .directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "provider registry recovery directory {} has no UTF-8 file name",
+                recovery.directory.display()
+            )
+        })?;
+    let recovery_path = |item: &Path| {
+        item.strip_prefix(parent)
+            .ok()
+            .and_then(Path::to_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!(
+                    "provider registry recovery path {} is not a UTF-8 child of {}",
+                    item.display(),
+                    parent.display()
+                )
+            })
+    };
+    let candidate_copy = recovery_path(&recovery.candidate_copy)?;
+    let displaced_copy = recovery_path(&recovery.displaced_copy)?;
+    let exchange_stage = recovery_path(&recovery.exchange_stage)?;
+    let archived_marker = recovery_path(&recovery.archived_marker)?;
+    let mut candidate_bytes = Vec::new();
+    candidate
+        .try_clone()
+        .and_then(|mut file| {
+            file.rewind()?;
+            file.read_to_end(&mut candidate_bytes)
+        })
+        .map_err(|error| format!("reading staged provider registry: {error}"))?;
+    let marker = format!(
+        "version = 1\nstage = {:?}\nrecovery = {:?}\ncandidate_copy = {:?}\ndisplaced_copy = {:?}\nexchange_stage = {:?}\narchived_marker = {:?}\nexpected_sha256 = {:?}\ncandidate_sha256 = {:?}\n",
+        stage_name,
+        recovery_name,
+        candidate_copy,
+        displaced_copy,
+        exchange_stage,
+        archived_marker,
+        review_core::hex::encode(&Sha256::digest(expected.as_bytes())),
+        review_core::hex::encode(&Sha256::digest(&candidate_bytes))
+    );
+    let transaction = registry_transaction_path(path);
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating provider transaction marker: {error}"))?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("setting provider transaction permissions: {error}"))?;
+    temporary
+        .write_all(marker.as_bytes())
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("writing provider transaction marker: {error}"))?;
+    let marker_file = temporary.persist_noclobber(&transaction).map_err(|error| {
+        format!(
+            "provider registry {} already has an unfinished transaction at {}: {}",
+            path.display(),
+            transaction.display(),
+            error.error
+        )
+    })?;
+    sync_directory(parent)?;
+    Ok((transaction, marker_file))
+}
+
+fn same_file(path: &Path, file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = fs::symlink_metadata(path)?;
+    let file = file.metadata()?;
+    Ok(path.dev() == file.dev() && path.ino() == file.ino())
+}
+
+pub fn format_limit(limit: &ProviderLimit) -> String {
+    let reset = limit
+        .resets_at
+        .map(format_reset)
+        .unwrap_or_else(|| "reset unavailable".to_string());
+    format!(
+        "{}: {}% used, {}% left, {reset}",
+        limit.name,
+        limit.used_percent,
+        100_u8.saturating_sub(limit.used_percent)
+    )
+}
+
+fn format_reset(resets_at: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let remaining = resets_at.saturating_sub(now);
+    if remaining == 0 {
+        "reset due".to_string()
+    } else if remaining >= 24 * 60 * 60 {
+        format!(
+            "resets in {}d {}h",
+            remaining / (24 * 60 * 60),
+            remaining % (24 * 60 * 60) / (60 * 60)
+        )
+    } else if remaining >= 60 * 60 {
+        format!(
+            "resets in {}h {}m",
+            remaining / (60 * 60),
+            remaining % (60 * 60) / 60
+        )
+    } else {
+        format!("resets in {}m", remaining.div_ceil(60))
+    }
+}
+
+fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
+    let (registry, path_warning) = match registry_path() {
+        Ok(path) => (path, None),
+        Err(error) => (None, Some(error)),
+    };
+    let (mut specs, load_warning) = match registry.as_deref() {
+        Some(path) => match read_registry(path) {
+            Ok(Some(text)) => match parse_registry(&text, path) {
+                Ok(specs) => (specs, None),
+                Err(_) => (
+                    Vec::new(),
+                    Some(format!(
+                        "provider registry {} is invalid; expected version 1 and [[providers]] entries with id, kind, and auth_dir",
+                        path.display()
+                    )),
+                ),
+            },
+            Ok(None) => (Vec::new(), None),
+            Err(error) => (Vec::new(), Some(error)),
+        },
+        _ => (Vec::new(), None),
+    };
+    let warning = path_warning.or(load_warning);
+
+    for default in implicit_defaults() {
+        let duplicate_context = specs.iter().any(|spec| same_context(spec, &default));
+        if !duplicate_context && !specs.iter().any(|spec| spec.id == default.id) {
+            specs.push(default);
+        }
+    }
+    specs.sort_by(|left, right| (left.kind, &left.id).cmp(&(right.kind, &right.id)));
+
+    (specs, registry, warning)
+}
+
+fn registry_path() -> Result<Option<PathBuf>, String> {
+    if let Some(path) = std::env::var_os("AF_PROVIDERS_FILE") {
+        if path.is_empty() {
+            return Err("AF_PROVIDERS_FILE is empty".to_string());
+        }
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err("AF_PROVIDERS_FILE must be absolute".to_string());
+        }
+        return Ok(Some(path));
+    }
+    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !config.is_empty() {
+            let config = PathBuf::from(config);
+            if !config.is_absolute() {
+                return Err("XDG_CONFIG_HOME must be absolute".to_string());
+            }
+            return Ok(Some(config.join("af").join("providers.toml")));
+        }
+    }
+    let path = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config").join("af").join("providers.toml"));
+    if path.as_ref().is_some_and(|path| !path.is_absolute()) {
+        return Err("HOME must be absolute to locate the provider registry".to_string());
+    }
+    Ok(path)
+}
+
+fn read_registry(path: &Path) -> Result<Option<String>, String> {
+    read_registry_with_hooks(path, || {}, || {})
+}
+
+fn read_registry_with_hooks(
+    path: &Path,
+    before_read: impl FnOnce(),
+    after_read: impl FnOnce(),
+) -> Result<Option<String>, String> {
+    let configured_parent = path.parent().filter(|parent| parent.exists());
+    let configured_parent_resolved = configured_parent
+        .map(|parent| {
+            fs::canonicalize(parent).map_err(|error| {
+                format!(
+                    "cannot resolve provider registry directory {}: {error}",
+                    parent.display()
+                )
+            })
+        })
+        .transpose()?;
+    if let Some(parent) = configured_parent_resolved.as_deref() {
+        validate_registry_directory(parent)?;
+    }
+    let configured_directory = configured_parent_resolved
+        .as_deref()
+        .map(|parent| bind_directory(parent, "provider registry directory"))
+        .transpose()?;
+    // Check beside the configured pathname even when the registry is absent. A writer may have
+    // created its marker before publishing the first file, or the pathname may have been swapped
+    // between a regular file and a symlink.
+    ensure_no_registry_transaction(path)?;
+    let Some(resolved) = resolve_registry(path)? else {
+        ensure_no_registry_transaction(path)?;
+        return Ok(None);
+    };
+    let resolved_parent = resolved
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", resolved.display()))?;
+    validate_registry_directory(resolved_parent)?;
+    let resolved_directory = bind_directory(resolved_parent, "provider registry directory")?;
+    ensure_registry_transactions_clear(path, &resolved)?;
+    before_read();
+    let registry = read_registry_resolved(path, &resolved)?;
+    after_read();
+    // A writer may have created the marker after the first check and exchanged the candidate
+    // while this read was in flight. Rechecking gives current readers the stronger recovery fence;
+    // older readers still see only the complete registry committed by the atomic exchange.
+    let current_resolved = resolve_registry(path)?;
+    if let Some(current_resolved) = current_resolved.as_deref() {
+        ensure_registry_transactions_clear(path, current_resolved)?;
+    } else {
+        ensure_no_registry_transaction(path)?;
+    }
+    if current_resolved.as_deref() != Some(resolved.as_path()) {
+        return Err(format!(
+            "provider registry target changed while reading {}; retry",
+            path.display()
+        ));
+    }
+    {
+        let configured_alias_changed = configured_parent
+            .zip(configured_parent_resolved.as_deref())
+            .is_some_and(|(parent, expected)| {
+                fs::canonicalize(parent).as_deref().ok() != Some(expected)
+            });
+        if configured_alias_changed
+            || configured_parent_resolved
+                .as_deref()
+                .zip(configured_directory.as_ref())
+                .is_some_and(|(parent, directory)| {
+                    !bound_directory_is_current(parent, directory).unwrap_or(false)
+                })
+            || !bound_directory_is_current(resolved_parent, &resolved_directory).unwrap_or(false)
+        {
+            return Err(format!(
+                "provider registry directory changed while reading {}; retry",
+                path.display()
+            ));
+        }
+    }
+    Ok(Some(registry))
+}
+
+fn ensure_registry_transactions_clear(configured: &Path, resolved: &Path) -> Result<(), String> {
+    ensure_no_registry_transaction(configured)?;
+    if configured != resolved {
+        ensure_no_registry_transaction(resolved)?;
+    }
+    Ok(())
+}
+
+fn resolve_registry(path: &Path) -> Result<Option<PathBuf>, String> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "cannot resolve provider registry {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn ensure_no_registry_transaction(path: &Path) -> Result<(), String> {
+    let transaction = registry_transaction_path(path);
+    match fs::symlink_metadata(&transaction) {
+        Ok(_) => {
+            return Err(format!(
+                "provider registry {} has an unfinished publication transaction at {}; registry reads fail closed — fix: af provider recover",
+                path.display(),
+                transaction.display()
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry transaction {}: {error}",
+                transaction.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_registry_unchecked(path: &Path) -> Result<Option<String>, String> {
+    let Some(resolved) = resolve_registry(path)? else {
+        return Ok(None);
+    };
+    read_registry_resolved(path, &resolved).map(Some)
+}
+
+fn read_registry_resolved(path: &Path, resolved: &Path) -> Result<String, String> {
+    let file = open_registry(resolved)
+        .map_err(|error| format!("cannot read provider registry {}: {error}", path.display()))?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "cannot inspect provider registry {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "provider registry {} must resolve to a regular file",
+            path.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(path, &metadata, "provider registry")?;
+    if metadata.len() > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry {} exceeds {MAX_REGISTRY_BYTES} bytes",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_REGISTRY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read provider registry {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry {} changed while reading or exceeds {MAX_REGISTRY_BYTES} bytes",
+            path.display()
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| format!("provider registry {} is not UTF-8", path.display()))
+}
+
+fn open_registry(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
+        .open(path)
+}
+
+fn implicit_defaults() -> Vec<ProviderSpec> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let mut defaults = Vec::new();
+    if resolve_program("claude").is_some() {
+        let configured_home = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        defaults.push(ProviderSpec {
+            id: "claude-ambient".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: canonical_if_present(
+                configured_home
+                    .clone()
+                    .or_else(|| home.as_ref().map(|home| home.join(".claude"))),
+            ),
+            explicit_selector: configured_home.is_some(),
+            registry_declared: false,
+            source: "ambient CLI candidate; unstable local context label".to_string(),
+        });
+    }
+    if resolve_program("codex").is_some() {
+        let configured_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+        defaults.push(ProviderSpec {
+            id: "codex-ambient".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: canonical_if_present(
+                configured_home
+                    .clone()
+                    .or_else(|| home.map(|home| home.join(".codex"))),
+            ),
+            explicit_selector: configured_home.is_some(),
+            registry_declared: false,
+            source: "ambient CLI candidate; unstable local context label".to_string(),
+        });
+    }
+    defaults
+}
+
+fn canonical_if_present(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.map(|path| fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn same_context(left: &ProviderSpec, right: &ProviderSpec) -> bool {
+    left.kind == right.kind
+        && match (&left.auth_dir, &right.auth_dir) {
+            (Some(left), Some(right)) => context_path(left) == context_path(right),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+fn context_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> {
+    // A document parses as a Table; toml parses a bare `Value` as one inline value.
+    let root: toml::Table = text
+        .parse()
+        .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
+    reject_unknown(
+        root.keys().map(String::as_str),
+        &["version", "providers"],
+        "registry",
+    )?;
+    if root.get("version").and_then(toml::Value::as_integer) != Some(1) {
+        return Err(format!(
+            "provider registry {} must declare version = 1",
+            path.display()
+        ));
+    }
+    let entries = match root.get("providers") {
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| {
+                format!(
+                    "provider registry {} `providers` must be an array of tables",
+                    path.display()
+                )
+            })?
+            .as_slice(),
+        None => &[],
+    };
+    if entries.len() > MAX_PROVIDERS {
+        return Err(format!(
+            "provider registry {} has {} entries; the limit is {MAX_PROVIDERS}",
+            path.display(),
+            entries.len()
+        ));
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut contexts = BTreeSet::new();
+    let mut specs = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let table = entry.as_table().ok_or_else(|| {
+            format!(
+                "provider registry {} entry {} is not a table",
+                path.display(),
+                index + 1
+            )
+        })?;
+        reject_unknown(
+            table.keys().map(String::as_str),
+            &["id", "kind", "auth_dir"],
+            "provider entry",
+        )?;
+        let id = table
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("provider entry {} has no string `id`", index + 1))?;
+        safe_id(id)?;
+        if matches!(id, "claude-ambient" | "codex-ambient") {
+            return Err(format!(
+                "provider id `{id}` is reserved for ambient discovery"
+            ));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(format!("provider id `{id}` is duplicated"));
+        }
+        let kind = table
+            .get("kind")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("provider `{id}` has no string `kind`"))
+            .and_then(ProviderKind::parse)?;
+        let auth_dir = table
+            .get("auth_dir")
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| format!("provider `{id}` has no string `auth_dir`"))?;
+        let auth_dir = PathBuf::from(auth_dir);
+        if !auth_dir.is_absolute()
+            || auth_dir
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return Err(format!(
+                "provider `{id}` auth_dir must be an absolute path without `..`"
+            ));
+        }
+        let unresolved = fs::symlink_metadata(&auth_dir).map_err(|error| {
+            format!(
+                "provider `{id}` auth_dir {} cannot be inspected: {error}",
+                auth_dir.display()
+            )
+        })?;
+        if unresolved.file_type().is_symlink() {
+            return Err(format!(
+                "provider `{id}` auth_dir {} must not be a symlink",
+                auth_dir.display()
+            ));
+        }
+        let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
+            format!(
+                "provider `{id}` auth_dir {} cannot be resolved: {error}",
+                auth_dir.display()
+            )
+        })?;
+        if !auth_dir.is_dir() {
+            return Err(format!(
+                "provider `{id}` auth_dir {} is not a directory",
+                auth_dir.display()
+            ));
+        }
+        let context = (kind, auth_dir.clone());
+        if !contexts.insert(context) {
+            return Err(format!(
+                "provider `{id}` duplicates another {} auth context",
+                kind.name()
+            ));
+        }
+        specs.push(ProviderSpec {
+            id: id.to_string(),
+            kind,
+            auth_dir: Some(auth_dir),
+            explicit_selector: true,
+            registry_declared: true,
+            source: path.display().to_string(),
+        });
+    }
+    Ok(specs)
+}
+
+fn reject_unknown<'a>(
+    actual: impl Iterator<Item = &'a str>,
+    allowed: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    if let Some(field) = actual.into_iter().find(|field| !allowed.contains(field)) {
+        return Err(format!("{label} contains unknown field `{field}`"));
+    }
+    Ok(())
+}
+
+fn safe_id(id: &str) -> Result<(), String> {
+    if id.is_empty()
+        || !id.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+        })
+    {
+        return Err(format!("provider id `{id}` is unsafe"));
+    }
+    Ok(())
+}
+
+fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe) -> ProviderStatus {
+    if spec
+        .auth_dir
+        .as_ref()
+        .is_some_and(|path| spec.explicit_selector && !path.is_absolute())
+    {
+        return unavailable_status(&spec, "provider auth selector must be absolute");
+    }
+    if spec.explicit_selector
+        && let Some(auth_dir) = spec.auth_dir.as_deref()
+        && let Err(error) = validate_private_auth_directory(auth_dir)
+    {
+        return unavailable_status(&spec, &error);
+    }
+    let program = match locate_cli(&spec) {
+        Ok(program) => program,
+        Err(failure) => return installation_failed_status(&spec, &failure),
+    };
+    let probe_path = sanitized_path();
+    let output = match run_probe(&program, &spec, &probe_path, cancelled) {
+        Ok(output) => output,
+        Err(error) => {
+            if !probe_gave_up(&error)
+                && let Some(failure) = diagnose_cli(&program, &spec, &probe_path, cancelled, None)
+            {
+                return installation_failed_status(&spec, &failure);
+            }
+            return unavailable_status(&spec, &error);
+        }
+    };
+    // A CLI that exited without any answer af recognizes may not start at all.
+    if !output.status.success()
+        && !status_answered(spec.kind, &output.stdout)
+        && let Some(failure) = diagnose_cli(&program, &spec, &probe_path, cancelled, None)
+    {
+        return installation_failed_status(&spec, &failure);
+    }
+    let (status, auth_type, mut detail) = match spec.kind {
+        ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
+        ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
+    };
+    if status == "not authenticated" {
+        detail = logged_out_detail(&spec);
+    }
+    let mut subscription = match spec.kind {
+        ProviderKind::Claude => claude_subscription(&output.stdout),
+        ProviderKind::Codex if auth_type == "API key" => "API billing".to_string(),
+        ProviderKind::Codex if auth_type == "ChatGPT" => "ChatGPT (plan unavailable)".to_string(),
+        ProviderKind::Codex => "-".to_string(),
+    };
+    let mut limits = Vec::new();
+    // An authenticated Provider stays authenticated whatever the optional probe concludes: the
+    // usage state is a separate axis, and a timeout on it is never evidence about a login.
+    let mut usage_state = match (status.as_str(), usage) {
+        ("authenticated", UsageProbe::Skip) => UsageState::NotRequested,
+        ("authenticated", UsageProbe::Probe) => UsageState::Unsupported,
+        _ => UsageState::NotApplicable,
+    };
+    if usage == UsageProbe::Probe
+        && spec.kind == ProviderKind::Claude
+        && status == "authenticated"
+        && claude_subscription_usage_supported(&output.stdout)
+    {
+        // Keep this sequential: only a fresh first-party subscription result authorizes opening
+        // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
+        // and third-party contexts merely to hide one provider-process startup.
+        match cached_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+            Ok(claude_limits) => {
+                limits.extend(claude_limits);
+                usage_state = UsageState::Available;
+            }
+            Err(error) => {
+                usage_state = UsageState::Unavailable;
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!("weekly limit unavailable: {error}"));
+            }
+        }
+    }
+    if usage == UsageProbe::Probe
+        && spec.kind == ProviderKind::Codex
+        && status == "authenticated"
+        && auth_type == "ChatGPT"
+    {
+        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
+            Ok(snapshot) => {
+                subscription = snapshot.subscription;
+                limits = snapshot.limits;
+                usage_state = UsageState::Available;
+                if let Some(warning) = snapshot.warning {
+                    if !detail.is_empty() {
+                        detail.push_str("; ");
+                    }
+                    detail.push_str(&format!("subscription status partial: {warning}"));
+                }
+            }
+            Err(error) => {
+                usage_state = UsageState::Unavailable;
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!("subscription status unavailable: {error}"));
+            }
+        }
+    }
+    ProviderStatus {
+        id: spec.id,
+        kind: spec.kind.name().to_string(),
+        auth_context: spec
+            .auth_dir
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "CLI default".to_string()),
+        source: spec.source,
+        status,
+        auth_type,
+        subscription,
+        limits,
+        usage: usage_state,
+        detail,
+    }
+}
+
+/// The placeholder a cancelled refresh leaves behind: never probed, never a claim about auth.
+fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
+    ProviderStatus {
+        id: spec.id.clone(),
+        kind: spec.kind.name().to_string(),
+        auth_context: spec
+            .auth_dir
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "CLI default".to_string()),
+        source: spec.source.clone(),
+        status: "not probed".to_string(),
+        auth_type: "-".to_string(),
+        subscription: "-".to_string(),
+        limits: Vec::new(),
+        usage: UsageState::NotRequested,
+        detail: "run `af provider status` again to probe this context".to_string(),
+    }
+}
+
+fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
+    ProviderStatus {
+        id: spec.id.clone(),
+        kind: spec.kind.name().to_string(),
+        auth_context: spec
+            .auth_dir
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "CLI default".to_string()),
+        source: spec.source.clone(),
+        status: "unavailable".to_string(),
+        auth_type: "-".to_string(),
+        subscription: "-".to_string(),
+        limits: Vec::new(),
+        usage: UsageState::NotApplicable,
+        detail: detail.to_string(),
+    }
+}
+
+/// A context whose CLI cannot start: never a claim about its login, and never usable.
+fn installation_failed_status(
+    spec: &ProviderSpec,
+    failure: &CliInstallationFailure,
+) -> ProviderStatus {
+    ProviderStatus {
+        status: INSTALLATION_FAILED.to_string(),
+        detail: failure.message(),
+        ..unavailable_status(spec, "")
+    }
+}
+
+struct ProbeOutput {
+    status: ExitStatus,
+    stdout: String,
+}
+
+struct SubscriptionSnapshot {
+    subscription: String,
+    limits: Vec<ProviderLimit>,
+    warning: Option<String>,
+}
+
+struct ParsedClaudeUsage {
+    limits: Vec<ProviderLimit>,
+    complete: bool,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ClaudeUsageCacheKey {
+    program: PathBuf,
+    auth_dir: Option<PathBuf>,
+}
+
+struct CachedClaudeUsage {
+    captured_at: Instant,
+    limits: Vec<ProviderLimit>,
+}
+
+struct ClaudeReaderSlot;
+
+impl ClaudeReaderSlot {
+    fn acquire() -> Result<Self, String> {
+        CLAUDE_READER_SLOTS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+                (slots < MAX_CLAUDE_READER_SLOTS).then_some(slots + 1)
+            })
+            .map(|_| Self)
+            .map_err(|_| "Claude usage terminal is still held by earlier probes".to_string())
+    }
+}
+
+impl Drop for ClaudeReaderSlot {
+    fn drop(&mut self) {
+        CLAUDE_READER_SLOTS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn claude_subscription_usage_supported(auth_status: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(auth_status) else {
+        return false;
+    };
+    parsed.get("loggedIn").and_then(serde_json::Value::as_bool) == Some(true)
+        && matches!(
+            parsed.get("authMethod").and_then(serde_json::Value::as_str),
+            Some("claude.ai" | "oauth")
+        )
+        && parsed
+            .get("apiProvider")
+            .and_then(serde_json::Value::as_str)
+            == Some("firstParty")
+}
+
+fn cached_claude_weekly_limits(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    let key = ClaudeUsageCacheKey {
+        program: program.to_path_buf(),
+        auth_dir: spec
+            .explicit_selector
+            .then(|| spec.auth_dir.clone())
+            .flatten(),
+    };
+    let cache = CLAUDE_USAGE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some(cached) = cache.get(&key)
+        && cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL
+    {
+        return Ok(cached.limits.clone());
+    }
+    let limits = probe_claude_weekly_limits(program, spec, probe_path, cancelled)?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.retain(|_, cached| cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL);
+        if cache.len() < MAX_PROVIDERS || cache.contains_key(&key) {
+            cache.insert(
+                key,
+                CachedClaudeUsage {
+                    captured_at: Instant::now(),
+                    limits: limits.clone(),
+                },
+            );
+        }
+    }
+    Ok(limits)
+}
+
+fn probe_claude_weekly_limits(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+
+    let reader_slot = ClaudeReaderSlot::acquire()?;
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 50,
+            cols: 160,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("cannot create Claude usage terminal: {error}"))?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("cannot read Claude usage terminal: {error}"))?;
+    let mut command = CommandBuilder::new(program.as_os_str());
+    command.args(["--setting-sources", "user", "/usage"]);
+    command.env_clear();
+    command.cwd("/");
+    command.env("PATH", probe_path);
+    if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
+        command.env("HOME", home);
+    }
+    if let Some(user) = std::env::var_os("USER") {
+        command.env("USER", user);
+    }
+    if spec.explicit_selector
+        && let Some(auth_dir) = &spec.auth_dir
+    {
+        command.env("CLAUDE_CONFIG_DIR", auth_dir);
+    }
+    command.env("TERM", "xterm-256color");
+    command.env("LC_ALL", "C");
+    command.env("TZ", "UTC");
+    // The fixed local command has no model turn or tools. Marking this narrow subprocess as
+    // sandboxed avoids mutating Claude's trust registry just to inspect account usage.
+    command.env("CLAUDE_CODE_SANDBOXED", "1");
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("cannot start Claude usage probe: {error}"))?;
+    let process_group = child.process_id();
+    // `try_wait` reaps, and a reaped pid may already name a stranger, so the leader's exit is
+    // observed without reaping and the group is ended first (ADR-0026). Where the platform
+    // cannot observe an exit without reaping, nothing is polled: PTY closure or the deadline
+    // reaches the cleanup below, which still kills the group while the leader is ours to signal.
+    let mut exit_watch = process_group.map(review_process::ExitWatch::new);
+    drop(pair.slave);
+
+    // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
+    let (sender, receiver) = sync_channel(1);
+    let (recycle_sender, recycle_receiver) = sync_channel(1);
+    let (reader_done_sender, reader_done_receiver) = sync_channel(1);
+    let reader_thread = thread::spawn(move || {
+        let _reader_slot = reader_slot;
+        let mut chunk = vec![0_u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if sender.send(Ok((chunk, count))).is_err() {
+                        break;
+                    }
+                    chunk = match recycle_receiver.recv() {
+                        Ok(chunk) => chunk,
+                        Err(_) => break,
+                    };
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    break;
+                }
+            }
+        }
+        let _ = reader_done_sender.send(());
+    });
+
+    let deadline = Instant::now() + CLAUDE_USAGE_PROBE_TIMEOUT;
+    let mut next_parse = Instant::now();
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT * 2);
+    let mut dirty = false;
+    let result = loop {
+        let quiet = match receiver.recv_timeout(Duration::from_millis(25)) {
+            Ok(Ok((chunk, count))) => {
+                append_bounded_window(&mut captured, &chunk[..count], MAX_PROBE_OUTPUT);
+                let _ = recycle_sender.send(chunk);
+                dirty = true;
+                false
+            }
+            Ok(Err(error)) => {
+                break Err(format!("cannot read Claude usage terminal: {error}"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break Err("Claude usage terminal closed without a weekly limit".to_string());
+            }
+            Err(RecvTimeoutError::Timeout) => true,
+        };
+        if dirty && (quiet || Instant::now() >= next_parse) {
+            if let Ok(usage) = parse_claude_weekly_limits(bounded_tail(&captured, MAX_PROBE_OUTPUT))
+                && usage.complete
+            {
+                break Ok(usage.limits);
+            }
+            dirty = false;
+            next_parse = Instant::now() + Duration::from_millis(250);
+        }
+        if let Some(watch) = exit_watch.as_mut()
+            && watch.exited() == Some(true)
+        {
+            break Err("Claude usage screen exited without a weekly limit".to_string());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            break Err("provider status refresh cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            break Err(format!(
+                "Claude usage probe timed out after {} seconds",
+                CLAUDE_USAGE_PROBE_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    // Once the leader is reaped its process-group id may already belong to a stranger, so the
+    // group is ended while the leader is still ours to signal — nothing above reaps it, so a
+    // descendant that outlived an exited leader is still in the group this kill reaches.
+    if let Some(process_group) = process_group {
+        terminate_probe_group(process_group);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pair.master);
+    drop(receiver);
+    drop(recycle_sender);
+    // A descendant that escaped the process group may retain the PTY slave. Never let that turn
+    // into an unbounded join.
+    match reader_done_receiver.recv_timeout(Duration::from_millis(250)) {
+        Ok(()) => {
+            let _ = reader_thread.join();
+        }
+        Err(_) if reader_done_receiver.try_recv().is_ok() => {
+            let _ = reader_thread.join();
+        }
+        Err(_) => {}
+    }
+    result
+}
+
+fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String> {
+    // Ink uses cursor-position controls instead of literal spaces in recent releases. Compacting
+    // whitespace after removing terminal controls gives old and new screen renderers one stable
+    // text shape without attempting to emulate a terminal.
+    let screen = compact_terminal_text(output);
+    let sections = [
+        ("Currentweek(allmodels)", "Claude all models 1w"),
+        ("Currentweek(Fable)", "Claude Fable 1w"),
+        ("Currentweek(Sonnetonly)", "Claude Sonnet 1w"),
+        ("Currentweek(Opusonly)", "Claude Opus 1w"),
+    ];
+    let mut limits = Vec::with_capacity(sections.len());
+    for (section, name) in sections {
+        if let Some(used_percent) = percent_used_after(&screen, section) {
+            limits.push(ProviderLimit {
+                name: name.to_string(),
+                window_minutes: Some(7 * 24 * 60),
+                used_percent,
+                // Claude renders a localized wall-clock string rather than an epoch. Do not
+                // guess a timestamp; the percentage is the stable compatibility surface.
+                resets_at: None,
+            });
+        }
+    }
+    if limits
+        .first()
+        .is_none_or(|limit| limit.name != "Claude all models 1w")
+    {
+        return Err("unrecognized Claude usage screen".to_string());
+    }
+    let after_weekly_limit = screen
+        .rsplit_once("Currentweek(allmodels)")
+        .map(|(_, after)| after)
+        .unwrap_or_default();
+    Ok(ParsedClaudeUsage {
+        limits,
+        complete: after_weekly_limit.contains("Usagecredits")
+            || after_weekly_limit.contains("Extrausage")
+            || after_weekly_limit.contains("Esctocancel"),
+    })
+}
+
+fn percent_used_after(text: &str, section: &str) -> Option<u8> {
+    let section = text.rsplit_once(section)?.1;
+    let percent_sign = section.match_indices('%').find_map(|(index, _)| {
+        section[index + 1..]
+            .trim_start()
+            .starts_with("used")
+            .then_some(index)
+    })?;
+    let before_marker = &section[..percent_sign];
+    let digits_reversed: String = before_marker
+        .chars()
+        .rev()
+        .skip_while(|character| character.is_whitespace())
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let digits: String = digits_reversed.chars().rev().collect();
+    digits.parse::<u8>().ok().filter(|percent| *percent <= 100)
+}
+
+fn compact_terminal_text(output: &[u8]) -> String {
+    let mut clean = Vec::with_capacity(output.len());
+    let mut index = 0;
+    while index < output.len() {
+        match output[index] {
+            0x1b if output.get(index + 1) == Some(&b'[') => {
+                index += 2;
+                while index < output.len() {
+                    let byte = output[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            0x1b if output.get(index + 1) == Some(&b']') => {
+                index += 2;
+                while index < output.len() {
+                    if output[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if output[index] == 0x1b && output.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            0x1b => index += usize::from(output.get(index + 1).is_some()) + 1,
+            byte if byte.is_ascii_whitespace() => index += 1,
+            byte if byte >= 0x20 => {
+                clean.push(byte);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    match String::from_utf8(clean) {
+        Ok(clean) => clean,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
+}
+
+fn append_bounded_window(buffer: &mut Vec<u8>, chunk: &[u8], window: usize) {
+    if chunk.len() >= window {
+        buffer.clear();
+        buffer.extend_from_slice(&chunk[chunk.len() - window..]);
+        return;
+    }
+    if buffer.len().saturating_add(chunk.len()) > window.saturating_mul(2) {
+        let keep_from = buffer.len().saturating_sub(window);
+        buffer.copy_within(keep_from.., 0);
+        buffer.truncate(buffer.len() - keep_from);
+    }
+    buffer.extend_from_slice(chunk);
+}
+
+fn bounded_tail(buffer: &[u8], window: usize) -> &[u8] {
+    &buffer[buffer.len().saturating_sub(window)..]
+}
+
+fn configure_probe_environment(
+    command: &mut Command,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+) {
+    command
+        .env_clear()
+        .current_dir(Path::new("/"))
+        .env("PATH", probe_path);
+    if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
+        command.env("HOME", home);
+    }
+    if let Some(user) = std::env::var_os("USER") {
+        command.env("USER", user);
+    }
+    if spec.explicit_selector
+        && let Some(auth_dir) = &spec.auth_dir
+    {
+        command.env(
+            match spec.kind {
+                ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
+                ProviderKind::Codex => "CODEX_HOME",
+            },
+            auth_dir,
+        );
+    }
+}
+
+fn probe_codex_subscription(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<SubscriptionSnapshot, String> {
+    // The bounded request is called directly: only Task identity checks add an Attempt deadline.
+    parse_codex_subscription_response(&probe_codex_request_before(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+        None,
+    )?)
+}
+
+fn probe_codex_request_before(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    request: &serde_json::Value,
+    attempt_deadline: Option<Instant>,
+) -> Result<serde_json::Value, String> {
+    probe_codex_request_observed(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        request,
+        attempt_deadline,
+        &mut false,
+    )
+}
+
+/// `answered` is set once the app-server answers initialization: from then on the CLI has
+/// started, whatever the request itself concludes.
+fn probe_codex_request_observed(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    request: &serde_json::Value,
+    attempt_deadline: Option<Instant>,
+    answered: &mut bool,
+) -> Result<serde_json::Value, String> {
+    check_task_probe_control(attempt_deadline, cancelled)?;
+    let mut command = Command::new(program);
+    command.args(["app-server", "--stdio"]);
+    configure_probe_environment(&mut command, spec, probe_path);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = review_process::spawn(&mut command)
+        .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
+    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut reaped = false;
+    let mut stdin = child.stdin.take().expect("provider stdin was piped");
+    let mut stdout = child.stdout.take().expect("provider stdout was piped");
+    if let Err(error) = set_nonblocking(&stdout) {
+        stop_probe(&mut child);
+        return Err(error);
+    }
+    if let Err(error) = writeln!(
+        stdin,
+        "{{\"method\":\"initialize\",\"id\":1,\"params\":{{\"clientInfo\":{{\"name\":\"afactory\",\"version\":\"{}\"}}}}}}",
+        env!("CARGO_PKG_VERSION")
+    )
+    .and_then(|()| stdin.flush())
+    {
+        stop_probe(&mut child);
+        return Err(format!("cannot initialize Codex app-server probe: {error}"));
+    }
+
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut exceeded = false;
+    let mut requested_limits = false;
+    let result = 'probe: loop {
+        loop {
+            match drain_available(&mut stdout, &mut captured, &mut exceeded) {
+                Ok(true) if !exceeded => {}
+                Ok(_) => break,
+                Err(error) => break 'probe Err(error),
+            }
+        }
+        if exceeded {
+            break Err(format!(
+                "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
+            ));
+        }
+        if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
+            *answered = true;
+            if response.get("error").is_some() {
+                break Err("Codex app-server rejected initialization".to_string());
+            }
+            if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
+                .and_then(|()| writeln!(stdin, "{request}"))
+                .and_then(|()| stdin.flush())
+            {
+                break Err(format!("cannot request Codex subscription status: {error}"));
+            }
+            requested_limits = true;
+        }
+        if requested_limits && let Some(response) = response_for_id(&captured, 2) {
+            break Ok(response);
+        }
+        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+            Ok(Some(_)) => {
+                reaped = true;
+                break Err("Codex app-server probe exited without a rate-limit response".into());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                break Err(format!("Codex app-server probe failed: {error}"));
+            }
+        }
+        if cancelled.load(Ordering::Acquire) {
+            break Err("provider status refresh cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            break Err(format!(
+                "Codex subscription probe timed out after {} seconds",
+                PROBE_TIMEOUT.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    // A reaped child was already killed with its group before the reap; killing again would
+    // target a pid the kernel may have reused.
+    if !reaped {
+        stop_probe(&mut child);
+    }
+    result
+}
+
+fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
+    captured
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| line.ends_with(b"\n"))
+        .filter_map(|line| {
+            let line = line
+                .strip_suffix(b"\n")
+                .unwrap_or(line)
+                .strip_suffix(b"\r")
+                .unwrap_or(line);
+            serde_json::from_slice::<serde_json::Value>(line).ok()
+        })
+        .find(|message| message.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id))
+}
+
+fn parse_codex_subscription_response(
+    response: &serde_json::Value,
+) -> Result<SubscriptionSnapshot, String> {
+    if response.get("error").is_some() {
+        return Err("Codex app-server rejected the rate-limit request".to_string());
+    }
+    let result = response
+        .get("result")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "unrecognized Codex rate-limit response".to_string())?;
+    let mut snapshots: Vec<&serde_json::Value> = result
+        .get("rateLimitsByLimitId")
+        .and_then(serde_json::Value::as_object)
+        .map(|snapshots| snapshots.values().collect())
+        .unwrap_or_default();
+    snapshots.extend(result.get("rateLimits"));
+    snapshots.sort_by_key(|snapshot| {
+        snapshot
+            .get("limitId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    });
+    let plan = snapshots.iter().find_map(|snapshot| {
+        snapshot
+            .get("planType")
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalize_codex_plan)
+    });
+    let mut limits = Vec::new();
+    let mut seen_limits = BTreeSet::new();
+    let mut skipped_windows = 0_usize;
+    let mut truncated = false;
+    for snapshot in snapshots {
+        let bucket = snapshot
+            .get("limitName")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str))
+            .map(|value| safe_display(value, "Codex"))
+            .unwrap_or_else(|| "Codex".to_string());
+        for field in ["primary", "secondary"] {
+            let Some(window) = snapshot.get(field).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let used_percent = match window
+                .get("usedPercent")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|used| u8::try_from(used).ok())
+                .filter(|used| *used <= 100)
+            {
+                Some(used) => used,
+                None => {
+                    skipped_windows += 1;
+                    continue;
+                }
+            };
+            let window_minutes = window
+                .get("windowDurationMins")
+                .and_then(serde_json::Value::as_u64);
+            if !seen_limits.insert((bucket.clone(), window_minutes)) {
+                continue;
+            }
+            if limits.len() == MAX_PROVIDER_LIMITS {
+                truncated = true;
+                continue;
+            }
+            limits.push(ProviderLimit {
+                name: match window_minutes {
+                    Some(minutes) => format!("{bucket} {}", format_window(minutes)),
+                    None => bucket.clone(),
+                },
+                window_minutes,
+                used_percent,
+                resets_at: window.get("resetsAt").and_then(serde_json::Value::as_u64),
+            });
+        }
+    }
+    if plan.is_none() && limits.is_empty() {
+        return Err("Codex rate-limit response has no usable subscription information".to_string());
+    }
+    let mut warnings = Vec::new();
+    if skipped_windows > 0 {
+        warnings.push(format!(
+            "skipped {skipped_windows} malformed rate-limit windows"
+        ));
+    }
+    if truncated {
+        warnings.push(format!(
+            "additional rate-limit windows omitted at the {MAX_PROVIDER_LIMITS}-window safety limit"
+        ));
+    }
+    Ok(SubscriptionSnapshot {
+        subscription: plan
+            .map(|plan| format!("ChatGPT {plan}"))
+            .unwrap_or_else(|| "ChatGPT (plan unavailable)".to_string()),
+        limits,
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+    })
+}
+
+fn normalize_codex_plan(value: &str) -> Option<&'static str> {
+    match value {
+        "free" => Some("Free"),
+        "go" => Some("Go"),
+        "plus" => Some("Plus"),
+        "pro" | "prolite" => Some("Pro"),
+        "team" => Some("Team"),
+        "self_serve_business_prolite" | "self_serve_business_usage_based" | "business" => {
+            Some("Business")
+        }
+        "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based" | "enterprise" => {
+            Some("Enterprise")
+        }
+        "edu" | "edu_plus" | "edu_pro" => Some("Education"),
+        "unknown" => Some("Unknown"),
+        _ => None,
+    }
+}
+
+fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+    let (specs, _, warning) = load_specs();
+    let spec = specs
+        .into_iter()
+        .find(|spec| spec.id == provider_id && spec.registry_declared)
+        .ok_or_else(|| {
+            warning.unwrap_or_else(|| {
+                format!(
+                    "provider `{provider_id}` is not an explicit entry in the machine-local registry"
+                )
+            })
+        })?;
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .ok_or_else(|| format!("provider `{provider_id}` has no explicit auth directory"))?;
+    validate_private_auth_directory(auth_dir)
+        .map_err(|error| format!("provider `{provider_id}` has an unsafe auth context: {error}"))?;
+    Ok(spec)
+}
+
+fn authentication_command(spec: &ProviderSpec) -> String {
+    if spec.registry_declared && spec.auth_dir.as_deref().and_then(Path::to_str).is_some() {
+        return setup_login_command(spec);
+    }
+    login_command(spec)
+}
+
+/// The `af provider setup … --login` invocation naming exactly this context.
+///
+/// `--login` is always spelled out: the command is only ever offered to a human who must then
+/// run it at a private terminal, and setup without it deliberately refuses to start a login.
+fn setup_login_command(spec: &ProviderSpec) -> String {
+    match spec.auth_dir.as_deref().and_then(Path::to_str) {
+        Some(auth_dir) => format!(
+            "af provider setup {} --kind {} --auth-dir {} --login",
+            shell_words::quote(&spec.id),
+            spec.kind.name(),
+            shell_words::quote(auth_dir)
+        ),
+        None => login_command(spec),
+    }
+}
+
+/// The harness login command that writes credentials into exactly the context `spec` probes.
+///
+/// The selector is repeated on the command line so a login started from another shell cannot
+/// land in a different directory than the one `af` reads for this Provider.
+fn login_command(spec: &ProviderSpec) -> String {
+    let (selector, login) = match spec.kind {
+        ProviderKind::Claude => ("CLAUDE_CONFIG_DIR", "claude auth login"),
+        ProviderKind::Codex => ("CODEX_HOME", "codex login"),
+    };
+    match spec.auth_dir.as_deref() {
+        Some(auth_dir) => auth_dir.to_str().map_or_else(
+            || {
+                format!(
+                    "set {selector} to the displayed non-UTF-8 auth directory, then run `{login}`"
+                )
+            },
+            |auth_dir| format!("{selector}={} {login}", shell_words::quote(auth_dir)),
+        ),
+        None => login.to_string(),
+    }
+}
+
+/// Why a `not authenticated` row is not authenticated, and the one command that fixes it.
+///
+/// The harness CLI is the authority on whether a directory holds a login; `af` never inspects
+/// credential files. What it can add is the directory it actually asked about and, for a
+/// registry entry, the reminder that `auth_dir` itself may be the mistake.
+fn logged_out_detail(spec: &ProviderSpec) -> String {
+    let harness = match spec.kind {
+        ProviderKind::Claude => "Claude",
+        ProviderKind::Codex => "Codex",
+    };
+    let context = spec
+        .auth_dir
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "the CLI default directory".to_string());
+    let mut detail = format!(
+        "no {harness} login in {context}; fix: {}",
+        authentication_command(spec)
+    );
+    if spec.registry_declared {
+        detail.push_str(", or point auth_dir at the directory that holds the intended login");
+    }
+    detail
+}
+
+fn safe_display(value: &str, fallback: &str) -> String {
+    let value: String = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(48)
+        .collect();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
+pub fn format_window(minutes: u64) -> String {
+    if minutes % (7 * 24 * 60) == 0 {
+        format!("{}w", minutes / (7 * 24 * 60))
+    } else if minutes % (24 * 60) == 0 {
+        format!("{}d", minutes / (24 * 60))
+    } else if minutes % 60 == 0 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+// Only Task identity checks bound the probe by an Attempt deadline; a status refresh bounds it by
+// its own cancellation flag.
+fn run_probe(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<ProbeOutput, String> {
+    run_probe_before(program, spec, probe_path, cancelled, None)
+}
+
+fn run_probe_before(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+) -> Result<ProbeOutput, String> {
+    check_task_probe_control(attempt_deadline, cancelled)?;
+    let mut command = Command::new(program);
+    match spec.kind {
+        ProviderKind::Claude => {
+            command.args(["auth", "status", "--json"]);
+        }
+        ProviderKind::Codex => {
+            command.args(["login", "status"]);
+        }
+    }
+    configure_probe_environment(&mut command, spec, probe_path);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    let mut child = review_process::spawn(&mut command)
+        .map_err(|error| format!("cannot start provider status probe: {error}"))?;
+    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut stdout = child.stdout.take().expect("provider stdout was piped");
+    let mut stderr = child.stderr.take().expect("provider stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
+        stop_probe(&mut child);
+        return Err(error);
+    }
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut discarded = Vec::new();
+    let mut exceeded = false;
+    let timeout = match spec.kind {
+        ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
+        ProviderKind::Codex => PROBE_TIMEOUT,
+    };
+    let deadline = Instant::now() + timeout;
+    let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
+    let status = loop {
+        if let Err(error) = drain_probe_streams(
+            spec.kind,
+            &mut stdout,
+            &mut stderr,
+            &mut captured,
+            &mut discarded,
+            &mut exceeded,
+        ) {
+            stop_probe(&mut child);
+            return Err(error);
+        }
+        if exceeded {
+            stop_probe(&mut child);
+            return Err(format!(
+                "provider status output exceeds {MAX_PROBE_OUTPUT} bytes"
+            ));
+        }
+        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_probe(&mut child);
+                return Err(format!("provider status probe failed: {error}"));
+            }
+        }
+        if cancelled.load(Ordering::Acquire) {
+            stop_probe(&mut child);
+            return Err("provider status refresh cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            stop_probe(&mut child);
+            return Err(format!(
+                "provider status probe timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    // The group was ended before the reap, inside `try_reap_killing_group`.
+    while drain_probe_streams(
+        spec.kind,
+        &mut stdout,
+        &mut stderr,
+        &mut captured,
+        &mut discarded,
+        &mut exceeded,
+    )? && !exceeded
+    {}
+    if exceeded {
+        return Err(format!(
+            "provider status output exceeds {MAX_PROBE_OUTPUT} bytes"
+        ));
+    }
+    let stdout = String::from_utf8(captured)
+        .map_err(|_| "provider status output is not UTF-8".to_string())?;
+    Ok(ProbeOutput { status, stdout })
+}
+
+// The optional limit is the original native Attempt deadline. Status probes keep their own
+// timeout; a Task recheck never receives a fresh wall budget.
+fn check_task_probe_control(
+    deadline: Option<Instant>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    if let Some(deadline) = deadline {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Task Provider identity check cancelled".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Task Provider identity check deadline elapsed".into());
+        }
+    }
+    Ok(())
+}
+
+fn drain_probe_streams(
+    kind: ProviderKind,
+    stdout: &mut impl Read,
+    stderr: &mut impl Read,
+    captured: &mut Vec<u8>,
+    discarded: &mut Vec<u8>,
+    exceeded: &mut bool,
+) -> Result<bool, String> {
+    let (stdout_read, stderr_read) = match kind {
+        ProviderKind::Claude => (
+            drain_available(stdout, captured, exceeded)?,
+            drain_available(stderr, discarded, exceeded)?,
+        ),
+        ProviderKind::Codex => (
+            drain_available(stdout, discarded, exceeded)?,
+            // codex-cli 0.149.0 deliberately renders login status on stderr.
+            drain_available(stderr, captured, exceeded)?,
+        ),
+    };
+    Ok(stdout_read || stderr_read)
+}
+
+fn stop_probe(child: &mut Child) {
+    terminate_probe_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn terminate_probe_group(process_group: u32) {
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(process_group as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
+fn set_nonblocking(stdout: &impl std::os::fd::AsFd) -> Result<(), String> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+
+    fcntl(stdout, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+        .map(|_| ())
+        .map_err(|error| format!("cannot make provider output nonblocking: {error}"))
+}
+
+fn drain_available(
+    stdout: &mut impl Read,
+    captured: &mut Vec<u8>,
+    exceeded: &mut bool,
+) -> Result<bool, String> {
+    let mut chunk = [0_u8; 8192];
+    match stdout.read(&mut chunk) {
+        Ok(0) => Ok(false),
+        Ok(count) => {
+            let remaining = MAX_PROBE_OUTPUT.saturating_sub(captured.len());
+            captured.extend_from_slice(&chunk[..count.min(remaining)]);
+            *exceeded |= count > remaining;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(format!("cannot read provider status output: {error}")),
+    }
+}
+
+fn sanitized_path() -> std::ffi::OsString {
+    let directories = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| fs::canonicalize(path).ok())
+        .filter(|path| path.is_dir());
+    std::env::join_paths(directories).unwrap_or_default()
+}
+
+fn parse_claude_status(success: bool, stdout: &str) -> (String, String, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(stdout) {
+        Ok(value) => value,
+        Err(error) => {
+            if !success {
+                return (
+                    "unavailable".to_string(),
+                    "-".to_string(),
+                    "Claude auth status exited unsuccessfully".to_string(),
+                );
+            }
+            return (
+                "unknown".to_string(),
+                "-".to_string(),
+                format!("unrecognized Claude auth status shape: {error}"),
+            );
+        }
+    };
+    match parsed.get("loggedIn").and_then(serde_json::Value::as_bool) {
+        Some(true) if !success => {
+            return (
+                "unavailable".to_string(),
+                "-".to_string(),
+                "Claude auth status exited unsuccessfully".to_string(),
+            );
+        }
+        Some(true) => {}
+        Some(false) => {
+            return (
+                "not authenticated".to_string(),
+                "-".to_string(),
+                String::new(),
+            );
+        }
+        None => {
+            return (
+                "unknown".to_string(),
+                "-".to_string(),
+                "unrecognized Claude auth status shape: `loggedIn` is not boolean".to_string(),
+            );
+        }
+    }
+    let method = normalize_claude_method(
+        parsed
+            .get("authMethod")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+    );
+    let provider = normalize_claude_provider(
+        parsed
+            .get("apiProvider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+    );
+    (
+        "authenticated".to_string(),
+        format!("{method} / {provider}"),
+        String::new(),
+    )
+}
+
+fn claude_subscription(stdout: &str) -> String {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return "-".to_string();
+    };
+    if parsed.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
+        return "-".to_string();
+    }
+    match parsed
+        .get("apiProvider")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("bedrock") => return "AWS Bedrock billing".to_string(),
+        Some("vertex") => return "Google Vertex billing".to_string(),
+        _ => {}
+    }
+    match parsed.get("authMethod").and_then(serde_json::Value::as_str) {
+        Some("api_key") => "API billing".to_string(),
+        Some("claude.ai" | "oauth") => ["subscriptionType", "planType", "plan"]
+            .into_iter()
+            .find_map(|field| {
+                parsed
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(normalize_claude_plan)
+            })
+            .map(|plan| format!("Claude {plan}"))
+            .unwrap_or_else(|| "Claude subscription (tier unavailable)".to_string()),
+        _ => "-".to_string(),
+    }
+}
+
+fn normalize_claude_plan(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "free" => Some("Free"),
+        "pro" => Some("Pro"),
+        "max" | "max_5x" | "max_20x" => Some("Max"),
+        "team" => Some("Team"),
+        "enterprise" => Some("Enterprise"),
+        _ => None,
+    }
+}
+
+/// Whether `codex login status` said it has no login: its whole answer is the CLI's logged-out
+/// line, nothing more. A logged-out default context is left out of the listing once its kind is
+/// registered (ADR-0141), so any other output, including an error that mentions "not logged in"
+/// or prints that line beside a diagnostic, stays a failed probe, which is listed.
+fn codex_reports_logged_out(captured: &str) -> bool {
+    captured.trim().eq_ignore_ascii_case("not logged in")
+}
+
+fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
+    if let Some(auth_type) = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Logged in using "))
+    {
+        if !success {
+            return (
+                "unavailable".to_string(),
+                "-".to_string(),
+                "Codex login status exited unsuccessfully".to_string(),
+            );
+        }
+        return (
+            "authenticated".to_string(),
+            normalize_codex_auth(auth_type).to_string(),
+            String::new(),
+        );
+    }
+    if codex_reports_logged_out(stdout) {
+        return (
+            "not authenticated".to_string(),
+            "-".to_string(),
+            String::new(),
+        );
+    }
+    if !success {
+        return (
+            "unavailable".to_string(),
+            "-".to_string(),
+            "Codex login status exited unsuccessfully".to_string(),
+        );
+    }
+    ("unknown".to_string(), "-".to_string(), String::new())
+}
+
+fn normalize_claude_method(value: &str) -> &'static str {
+    match value {
+        "api_key" => "api_key",
+        "claude.ai" => "claude.ai",
+        "oauth" => "oauth",
+        _ => "other",
+    }
+}
+
+fn normalize_claude_provider(value: &str) -> &'static str {
+    match value {
+        "firstParty" => "firstParty",
+        "bedrock" => "bedrock",
+        "vertex" => "vertex",
+        _ => "other",
+    }
+}
+
+fn normalize_codex_auth(value: &str) -> &'static str {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "chatgpt" {
+        "ChatGPT"
+    } else if normalized.contains("api key") {
+        "API key"
+    } else {
+        "other"
+    }
+}
+
+pub(crate) fn resolve_program(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(program))
+        .filter_map(|candidate| fs::canonicalize(candidate).ok())
+        .find(|candidate| is_executable(candidate))
+}
+
+fn is_executable(path: &Path) -> bool {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let external = "version = 1\n# external change\nproviders = []\n";
+        fs::write(&path, external).unwrap();
+        assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), external);
+        assert!(!registry_transaction_path(&path).exists());
+        assert_eq!(read_registry(&path).unwrap().as_deref(), Some(external));
+    }
+
+    #[test]
+    fn crash_between_exchange_and_validation_fails_closed_with_both_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let stage = root.path().join(".provider-stage");
+        let transaction = registry_transaction_path(&path);
+        fs::write(&path, "candidate\n").unwrap();
+        fs::write(&stage, "displaced\n").unwrap();
+        fs::write(&transaction, "version = 1\nstage = \".provider-stage\"\n").unwrap();
+
+        let error = read_registry(&path).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "candidate\n");
+        assert_eq!(fs::read_to_string(&stage).unwrap(), "displaced\n");
+    }
+
+    #[test]
+    fn marker_created_during_a_read_blocks_the_tentative_value() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let transaction = registry_transaction_path(&path);
+        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+
+        ensure_no_registry_transaction(&path).unwrap();
+        let tentative = read_registry_unchecked(&path).unwrap();
+        fs::write(&transaction, "version = 1\n").unwrap();
+
+        assert!(tentative.is_some());
+        assert!(ensure_no_registry_transaction(&path).is_err());
+        assert!(read_registry(&path).is_err());
+    }
+
+    #[test]
+    fn symlinked_registry_checks_the_marker_beside_the_resolved_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let alias = root.path().join("providers-alias.toml");
+        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        symlink(&path, &alias).unwrap();
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+
+        let error = read_registry(&alias).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+
+    #[test]
+    fn reader_rechecks_a_leaf_symlink_retargeted_to_a_fenced_registry() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("providers-first.toml");
+        let second = root.path().join("providers-second.toml");
+        let alias = root.path().join("providers-alias.toml");
+        fs::write(&first, "version = 1\n# first\nproviders = []\n").unwrap();
+        fs::write(&second, "version = 1\n# second\nproviders = []\n").unwrap();
+        symlink(&first, &alias).unwrap();
+        let second_transaction = registry_transaction_path(&second);
+        fs::write(&second_transaction, "version = 1\n").unwrap();
+
+        let error = read_registry_with_hooks(
+            &alias,
+            || {},
+            || {
+                fs::remove_file(&alias).unwrap();
+                symlink(&second, &alias).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(error.contains(second.to_str().unwrap()), "{error}");
+        assert!(second_transaction.is_file());
+    }
+
+    #[test]
+    fn reader_rejects_a_candidate_that_is_exchanged_and_rolled_back_mid_read() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let stage = root.path().join("stage");
+        let transaction = registry_transaction_path(&path);
+        fs::write(&path, "version = 1\n# original\nproviders = []\n").unwrap();
+        fs::write(&stage, "version = 1\n# candidate\nproviders = []\n").unwrap();
+
+        let result = read_registry_with_hooks(
+            &path,
+            || {
+                fs::write(&transaction, "version = 1\n").unwrap();
+                renameat_with(CWD, &stage, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+            },
+            || {
+                renameat_with(CWD, &stage, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+            },
+        );
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(fs::read_to_string(&path).unwrap().contains("# original"));
+        assert!(fs::read_to_string(&stage).unwrap().contains("# candidate"));
+    }
+
+    #[test]
+    fn rollback_race_preserves_the_second_replacement_at_the_stage_path() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(&path, "candidate\n").unwrap();
+        let candidate = File::open(&path).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(b"first external replacement\n").unwrap();
+        let stage_path = stage.path().to_path_buf();
+        stage.disable_cleanup(true);
+
+        assert!(same_file(&path, &candidate).unwrap());
+        let second = root.path().join("second");
+        fs::write(&second, "second external replacement\n").unwrap();
+        fs::rename(&second, &path).unwrap();
+        renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+        let _ = stage.keep();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "first external replacement\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&stage_path).unwrap(),
+            "second external replacement\n"
+        );
+    }
+
+    #[test]
+    fn recovery_hardlink_preserves_late_writes_after_stage_replacement() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut displaced = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let stage_path = stage.path().to_path_buf();
+        let recovery =
+            prepare_registry_recovery(&path, &stage_path, stage.as_file(), original, candidate)
+                .unwrap();
+
+        renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+        let external = "version = 1\n# second replacement\nproviders = []\n";
+        let second = root.path().join("second");
+        fs::write(&second, external).unwrap();
+        fs::rename(&second, &stage_path).unwrap();
+        displaced.write_all(b"# late concurrent write\n").unwrap();
+        displaced.sync_all().unwrap();
+
+        let preserved = fs::read_to_string(&recovery.displaced_copy).unwrap();
+        assert!(preserved.starts_with(original));
+        assert!(preserved.ends_with("# late concurrent write\n"));
+        assert_eq!(fs::read_to_string(&stage_path).unwrap(), external);
+    }
+
+    #[test]
+    fn successful_replace_records_and_preserves_recovery_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+
+        let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
+            .unwrap()
+            .unwrap();
+        let recovery = preserved.parent().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), candidate);
+        assert_eq!(fs::read_to_string(&preserved).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(recovery.join("candidate")).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            fs::read_to_string(recovery.join("exchange-stage")).unwrap(),
+            original
+        );
+        assert!(!registry_transaction_path(&path).exists());
+    }
+
+    #[test]
+    fn recovery_archives_only_a_hash_validated_precommit_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+
+        recover_registry(&path).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!transaction.exists());
+        assert!(recovery.archived_marker.is_file());
+        assert_eq!(
+            fs::read_to_string(recovery.candidate_copy).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            fs::read_to_string(recovery.displaced_copy).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn recovery_rejects_a_symlinked_candidate_and_retains_the_marker() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+        fs::remove_file(&recovery.candidate_copy).unwrap();
+        symlink(&recovery.displaced_copy, &recovery.candidate_copy).unwrap();
+
+        let error = recover_registry(&path).unwrap_err();
+        assert!(error.contains("without following links"), "{error}");
+        assert!(transaction.is_file());
+    }
+
+    #[test]
+    fn recovery_revalidates_held_files_immediately_before_archival() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+        let replaced = recovery.directory.join("replaced-candidate");
+        let replacement = recovery.directory.join("replacement-candidate");
+
+        let error = recover_registry_with_hook(&path, || {
+            fs::write(&replacement, candidate).unwrap();
+            fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::rename(&recovery.candidate_copy, &replaced).unwrap();
+            fs::rename(&replacement, &recovery.candidate_copy).unwrap();
+        })
+        .unwrap_err();
+        assert!(error.contains("state changed while validating"), "{error}");
+        assert!(transaction.is_file());
+    }
+
+    #[test]
+    fn recovery_revalidates_marker_bytes_immediately_before_archival() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+
+        let error = recover_registry_with_hook(&path, || {
+            let mut marker = OpenOptions::new().write(true).open(&transaction).unwrap();
+            marker.write_all(b"X").unwrap();
+            marker.sync_all().unwrap();
+        })
+        .unwrap_err();
+        assert!(error.contains("state changed while validating"), "{error}");
+        assert!(transaction.is_file());
+    }
+
+    #[test]
+    fn recovery_rejects_parent_replaced_by_a_symlink_to_the_held_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("registry");
+        let displaced_parent = root.path().join("registry-held");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(&parent).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+
+        let error = recover_registry_with_hook(&path, || {
+            fs::rename(&parent, &displaced_parent).unwrap();
+            symlink(&displaced_parent, &parent).unwrap();
+        })
+        .unwrap_err();
+        assert!(error.contains("state changed while validating"), "{error}");
+        assert!(transaction.is_file());
+    }
+
+    #[test]
+    fn recovery_through_an_alias_handles_the_marker_that_fences_reads() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let alias = root.path().join("providers-alias.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        symlink(&path, &alias).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+        assert!(read_registry(&alias).is_err());
+
+        recover_configured_registry(&alias).unwrap();
+
+        assert!(!transaction.exists());
+        assert!(recovery.archived_marker.is_file());
+        assert_eq!(read_registry(&alias).unwrap().as_deref(), Some(original));
+    }
+
+    #[test]
+    fn recovery_deduplicates_a_registry_reached_through_a_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("registry");
+        let alias_directory = root.path().join("registry-alias");
+        fs::create_dir(&directory).unwrap();
+        symlink(&directory, &alias_directory).unwrap();
+        let path = directory.join("providers.toml");
+        let alias = alias_directory.join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(&directory).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+
+        recover_configured_registry(&alias).unwrap();
+
+        assert!(!transaction.exists());
+        assert!(recovery.archived_marker.is_file());
+        assert_eq!(read_registry(&alias).unwrap().as_deref(), Some(original));
+    }
+
+    #[test]
+    fn recovery_revalidates_a_symlinked_ancestor_after_acquiring_locks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("registry-first");
+        let second = root.path().join("registry-second");
+        let alias_directory = root.path().join("registry-alias");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        symlink(&first, &alias_directory).unwrap();
+        let alias = alias_directory.join("providers.toml");
+        let second_registry = second.join("providers.toml");
+        let second_transaction = registry_transaction_path(&second_registry);
+        fs::write(&second_transaction, "version = 1\n").unwrap();
+
+        let error = recover_configured_registry_with_hook(&alias, || {
+            fs::remove_file(&alias_directory).unwrap();
+            symlink(&second, &alias_directory).unwrap();
+        })
+        .unwrap_err();
+
+        assert!(
+            error.contains("changed while recovery locks were acquired"),
+            "{error}"
+        );
+        assert!(second_transaction.is_file());
+    }
+
+    #[test]
+    fn recovery_through_an_alias_refuses_two_competing_markers() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let alias = root.path().join("providers-alias.toml");
+        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        symlink(&path, &alias).unwrap();
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+        fs::write(registry_transaction_path(&alias), "version = 1\n").unwrap();
+
+        let error = recover_configured_registry(&alias).unwrap_err();
+        assert!(error.contains("refusing ambiguous recovery"), "{error}");
+        assert!(registry_transaction_path(&path).is_file());
+        assert!(registry_transaction_path(&alias).is_file());
+    }
+
+    #[test]
+    fn recovery_identifies_a_committed_candidate_and_refuses_unknown_live_bytes() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        for tamper in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("providers.toml");
+            let original = "version = 1\nproviders = []\n";
+            let candidate = "version = 1\n# candidate\nproviders = []\n";
+            fs::write(&path, original).unwrap();
+            let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+            stage.write_all(candidate.as_bytes()).unwrap();
+            stage.as_file().sync_all().unwrap();
+            let stage_path = stage.path().to_path_buf();
+            let recovery =
+                prepare_registry_recovery(&path, &stage_path, stage.as_file(), original, candidate)
+                    .unwrap();
+            let (transaction, marker_file) = write_registry_transaction(
+                &path,
+                &stage_path,
+                original,
+                stage.as_file(),
+                &recovery,
+            )
+            .unwrap();
+            drop(marker_file);
+            renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+            if tamper {
+                fs::write(&path, "version = 1\n# unknown\nproviders = []\n").unwrap();
+                let error = recover_registry(&path).unwrap_err();
+                assert!(
+                    error.contains("matches neither transaction hash"),
+                    "{error}"
+                );
+                assert!(transaction.is_file());
+            } else {
+                recover_registry(&path).unwrap();
+                assert_eq!(fs::read_to_string(&path).unwrap(), candidate);
+                assert!(!transaction.exists());
+                assert!(recovery.archived_marker.is_file());
+            }
+        }
+    }
+
+    #[test]
+    fn a_marker_beside_a_missing_registry_still_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+
+        let error = read_registry(&path).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn add_rejects_a_marker_beside_a_missing_registry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+
+        let error =
+            add_to_registry_inner(&path, "codex-main", ProviderKind::Codex, root.path(), false)
+                .unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(!path.exists());
+        assert!(registry_transaction_path(&path).is_file());
+    }
+
+    #[test]
+    fn first_registry_publication_never_clobbers_an_external_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let external = "version = 1\n# external creation\nproviders = []\n";
+        fs::write(&path, external).unwrap();
+        assert!(write_registry(&path, b"version = 1\n", None).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), external);
+    }
+
+    #[test]
+    fn ambient_registration_hints_choose_an_unused_id() {
+        let ids = BTreeSet::from(["claude-main".to_string(), "claude-main-2".to_string()]);
+        assert_eq!(available_provider_id("claude", &ids), "claude-main-3");
+    }
+
+    #[test]
+    fn durable_directory_creation_builds_the_complete_hierarchy() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("config/af");
+        create_dir_all_durable(&directory).unwrap();
+        assert!(directory.is_dir());
+        create_dir_all_durable(&directory).unwrap();
+    }
+
+    #[test]
+    fn directory_creation_rejects_an_unsafe_ancestor_without_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        let auth = shared.join("new/auth");
+        let registry = shared.join("new-config/af");
+
+        assert!(create_private_directory(&auth).is_err());
+        assert!(create_dir_all_durable(&registry).is_err());
+        assert!(!shared.join("new").exists());
+        assert!(!shared.join("new-config").exists());
+    }
+
+    #[test]
+    fn rename_controlling_ancestor_rejects_a_foreign_non_root_owner() {
+        let error = validate_rename_controlling_directory_values(
+            Path::new("/foreign-owned"),
+            1001,
+            0o040755,
+            "auth directory",
+            1000,
+        )
+        .unwrap_err();
+        assert!(error.contains("owned by uid 1001"), "{error}");
+        assert!(
+            validate_rename_controlling_directory_values(
+                Path::new("/root-owned"),
+                0,
+                0o040755,
+                "auth directory",
+                1000,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn auth_lock_rejects_a_directory_replaced_while_waiting() {
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir().unwrap();
+        let auth = root.path().join("auth");
+        let displaced = root.path().join("old-auth");
+        fs::create_dir(&auth).unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
+        let first = auth_context_lock(ProviderKind::Codex, &auth).unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker_auth = auth.clone();
+        let worker = std::thread::spawn(move || {
+            auth_context_lock_with_hook(ProviderKind::Codex, &worker_auth, || {
+                ready_tx.send(()).unwrap();
+            })
+        });
+        ready_rx.recv().unwrap();
+        fs::rename(&auth, &displaced).unwrap();
+        fs::create_dir(&auth).unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
+        drop(first);
+
+        let error = match worker.join().unwrap() {
+            Ok(_) => panic!("replaced auth directory was accepted after lock wait"),
+            Err(error) => error,
+        };
+        assert!(error.contains("changed while waiting"), "{error}");
+    }
+
+    #[test]
+    fn auth_lock_rejects_a_symlink_to_the_held_directory_after_waiting() {
+        use std::os::unix::fs::symlink;
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir().unwrap();
+        let auth = root.path().join("auth");
+        let displaced = root.path().join("old-auth");
+        fs::create_dir(&auth).unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o700)).unwrap();
+        let first = auth_context_lock(ProviderKind::Codex, &auth).unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker_auth = auth.clone();
+        let worker = std::thread::spawn(move || {
+            auth_context_lock_with_hook(ProviderKind::Codex, &worker_auth, || {
+                ready_tx.send(()).unwrap();
+            })
+        });
+        ready_rx.recv().unwrap();
+        fs::rename(&auth, &displaced).unwrap();
+        symlink(&displaced, &auth).unwrap();
+        drop(first);
+
+        let error = match worker.join().unwrap() {
+            Ok(_) => panic!("symlink to held auth directory was accepted after lock wait"),
+            Err(error) => error,
+        };
+        assert!(error.contains("changed while waiting"), "{error}");
+    }
+
+    #[test]
+    fn registry_allows_multiple_accounts_of_one_kind() {
+        let registry = r#"version = 1
+[[providers]]
+id = "claude-work"
+kind = "claude"
+auth_dir = "/profiles/claude-work"
+[[providers]]
+id = "claude-personal"
+kind = "claude"
+auth_dir = "/profiles/claude-personal"
+"#;
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("claude-work");
+        let personal = root.path().join("claude-personal");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&personal).unwrap();
+        let registry = registry
+            .replace("/profiles/claude-work", work.to_str().unwrap())
+            .replace("/profiles/claude-personal", personal.to_str().unwrap());
+        let providers = parse_registry(&registry, Path::new("/registry.toml")).unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(
+            providers
+                .iter()
+                .all(|provider| provider.kind == ProviderKind::Claude)
+        );
+    }
+
+    #[test]
+    fn registry_rejects_ids_reserved_for_ambient_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
+            let registry = format!(
+                "version = 1\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
+                root.path().to_str().unwrap()
+            );
+            let error = match parse_registry(&registry, Path::new("/registry.toml")) {
+                Ok(_) => panic!("reserved ambient id was accepted"),
+                Err(error) => error,
+            };
+            assert!(error.contains("reserved for ambient discovery"), "{error}");
+        }
+    }
+
+    #[test]
+    fn registry_rejects_a_symlinked_auth_context_before_canonicalization() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("real-auth");
+        let linked = root.path().join("linked-auth");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &linked).unwrap();
+        let registry = format!(
+            "version = 1\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            linked.to_str().unwrap()
+        );
+
+        let error = match parse_registry(&registry, Path::new("/registry.toml")) {
+            Ok(_) => panic!("symlinked auth context was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("must not be a symlink"), "{error}");
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_ids_and_contexts() {
+        let duplicate_id = r#"version = 1
+[[providers]]
+id = "work"
+kind = "claude"
+auth_dir = "/profiles/one"
+[[providers]]
+id = "work"
+kind = "codex"
+auth_dir = "/profiles/two"
+"#;
+        assert!(parse_registry(duplicate_id, Path::new("/registry.toml")).is_err());
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let duplicate_context = format!(
+            r#"version = 1
+[[providers]]
+id = "one"
+kind = "codex"
+auth_dir = "{}"
+[[providers]]
+id = "two"
+kind = "codex"
+auth_dir = "{}"
+"#,
+            shared.display(),
+            shared.display()
+        );
+        assert!(parse_registry(&duplicate_context, Path::new("/registry.toml")).is_err());
+    }
+
+    #[test]
+    fn provider_auth_types_are_parsed_without_credentials() {
+        // Captured from `claude auth status --json` on 2026-08-21.
+        let (status, auth_type, detail) = parse_claude_status(
+            true,
+            include_str!("../tests/fixtures/providers/claude-2.1.238-authenticated.json"),
+        );
+        assert_eq!(status, "authenticated");
+        assert_eq!(auth_type, "api_key / firstParty");
+        assert_eq!(
+            claude_subscription(include_str!(
+                "../tests/fixtures/providers/claude-2.1.238-authenticated.json"
+            )),
+            "API billing"
+        );
+        assert!(detail.is_empty());
+        // Captured from `codex login status` on 2026-08-21.
+        let (status, auth_type, _) = parse_codex_status(
+            true,
+            include_str!("../tests/fixtures/providers/codex-0.149.0-chatgpt.txt"),
+        );
+        assert_eq!(status, "authenticated");
+        assert_eq!(auth_type, "ChatGPT");
+    }
+
+    #[test]
+    fn codex_subscription_plan_and_all_quota_windows_are_parsed() {
+        // Captured from `account/rateLimits/read` on codex-cli 0.149.0, with opaque reset-credit
+        // identifiers omitted because the provider inventory never consumes or displays them.
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 3);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(snapshot.limits[0].used_percent, 37);
+        assert_eq!(snapshot.limits[1].name, "GPT-5.3-Codex-Spark 5h");
+        assert_eq!(snapshot.limits[2].name, "GPT-5.3-Codex-Spark 1w");
+        assert!(snapshot.warning.is_none());
+    }
+
+    #[test]
+    fn claude_weekly_limit_and_remaining_percentage_are_parsed_from_usage_screen() {
+        // Captured from Claude Code 2.1.101 `/usage` on 2026-08-24. The provider adapter opens
+        // this local screen in a PTY; it does not read the OAuth credential or call a model.
+        let usage = parse_claude_weekly_limits(include_bytes!(
+            "../tests/fixtures/providers/claude-2.1.101-usage.txt"
+        ))
+        .unwrap();
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 1);
+        let limit = &limits[0];
+        assert_eq!(limit.name, "Claude all models 1w");
+        assert_eq!(limit.used_percent, 88);
+        assert_eq!(
+            format_limit(limit),
+            "Claude all models 1w: 88% used, 12% left, reset unavailable"
+        );
+    }
+
+    #[test]
+    fn claude_usage_parser_ignores_terminal_formatting_sequences() {
+        let output = b"\x1b]0;Claude Code\x07\x1b[1mCurrent week (all models)\x1b[0m\r\n\
+                       \x1b[48;5;102m89\x1b[0m%\x1b[2Kused\r\n";
+        let limits = parse_claude_weekly_limits(output).unwrap().limits;
+        assert_eq!(limits[0].used_percent, 89);
+    }
+
+    #[test]
+    fn claude_usage_parser_handles_cursor_positioned_words() {
+        let output = b"Current\x1b[11Gweek\x1b[16G(all\x1b[20Gmodels)\r\n\
+                       \x1b[54G90%\x1b[58Gused\r\n\
+                       Current\x1b[11Gweek\x1b[16G(Fable)\r\n\
+                       \x1b[54G96%\x1b[58Gused\r\n\
+                       Usage\x1b[6Gcredits\r\nEsc\x1b[5Gto\x1b[8Gcancel\r\n";
+        let usage = parse_claude_weekly_limits(output).unwrap();
+        assert!(usage.complete);
+        assert_eq!(usage.limits[0].used_percent, 90);
+        assert_eq!(usage.limits[1].used_percent, 96);
+    }
+
+    #[test]
+    fn claude_usage_capture_retains_only_the_newest_bounded_bytes() {
+        let mut captured = b"abcdef".to_vec();
+        append_bounded_window(&mut captured, b"ghi", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"defghi");
+
+        append_bounded_window(&mut captured, b"0123456789", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"456789");
+    }
+
+    #[test]
+    fn claude_fable_and_all_model_weekly_limits_are_parsed_from_usage_screen() {
+        let usage = parse_claude_weekly_limits(include_bytes!(
+            "../tests/fixtures/providers/claude-2.1.241-usage.txt"
+        ))
+        .unwrap();
+        assert!(usage.complete);
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].name, "Claude all models 1w");
+        assert_eq!(limits[0].used_percent, 90);
+        assert_eq!(limits[1].name, "Claude Fable 1w");
+        assert_eq!(limits[1].used_percent, 96);
+        assert_eq!(
+            format_limit(&limits[1]),
+            "Claude Fable 1w: 96% used, 4% left, reset unavailable"
+        );
+    }
+
+    #[test]
+    fn claude_usage_probe_is_only_enabled_for_first_party_subscription_auth() {
+        assert!(claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+        ));
+        assert!(!claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty"}"#
+        ));
+        assert!(!claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"oauth","apiProvider":"bedrock"}"#
+        ));
+    }
+
+    #[test]
+    fn claude_usage_probe_reads_the_fixed_screen_and_reaps_the_session() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("claude");
+        fs::write(
+            &program,
+            "#!/bin/sh\n[ \"$3\" = /usage ] || exit 2\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "claude-test".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: None,
+            explicit_selector: false,
+            source: "test".to_string(),
+            registry_declared: false,
+        };
+
+        let probe_path = sanitized_path();
+        let limits =
+            probe_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].used_percent, 42);
+        assert_eq!(limits[0].resets_at, None);
+    }
+
+    #[test]
+    fn claude_usage_cache_skips_a_second_interactive_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("claude");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf x >> \"$0.count\"\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "claude-cache-test".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: Some(directory.path().to_path_buf()),
+            explicit_selector: true,
+            source: "test".to_string(),
+            registry_declared: false,
+        };
+        let probe_path = sanitized_path();
+
+        let first =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        let second =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+
+        assert_eq!(first[0].used_percent, 42);
+        assert_eq!(second[0].used_percent, 42);
+        assert_eq!(
+            fs::read_to_string(program.with_extension("count")).unwrap(),
+            "x"
+        );
+    }
+
+    #[test]
+    fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-mixed.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 2 malformed rate-limit windows")
+        );
+    }
+
+    #[test]
+    fn unusable_per_limit_map_falls_back_to_legacy_snapshot() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-fallback.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 1 malformed rate-limit windows")
+        );
+    }
+
+    #[test]
+    fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let pid_file = directory.path().join("descendant.pid");
+        let script = format!(
+            "#!/bin/sh\n\
+             IFS= read -r _\n\
+             printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+             IFS= read -r _\n\
+             IFS= read -r _\n\
+             sleep 30 &\n\
+             echo $! > '{}'\n\
+             exit 0\n",
+            pid_file.display()
+        );
+        fs::write(&program, script).unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+
+        let probe_path = sanitized_path();
+        let Err(error) =
+            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
+        else {
+            panic!("early app-server exit unexpectedly returned subscription data");
+        };
+        assert!(error.contains("exited without a rate-limit response"));
+        let process = nix::unistd::Pid::from_raw(
+            fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+        );
+        for _ in 0..100 {
+            if nix::sys::signal::kill(process, None) == Err(nix::errno::Errno::ESRCH) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("Codex app-server descendant {process} survived probe cleanup");
+    }
+
+    #[test]
+    fn claude_subscription_tier_is_optional_and_never_inferred_for_api_keys() {
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"oauth","apiProvider":"firstParty","subscriptionType":"max_20x"}"#
+            ),
+            "Claude Max"
+        );
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+            ),
+            "Claude subscription (tier unavailable)"
+        );
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","subscriptionType":"max"}"#
+            ),
+            "API billing"
+        );
+    }
+
+    #[test]
+    fn app_server_response_scanner_waits_for_a_complete_matching_line() {
+        let captured = br#"{"id":1,"result":{}}
+{"id":2,"result":{"rateLimits":{}}}"#;
+        assert!(response_for_id(captured, 1).is_some());
+        assert!(response_for_id(captured, 2).is_none());
+        let complete = [captured.as_slice(), b"\n"].concat();
+        assert!(response_for_id(&complete, 2).is_some());
+    }
+
+    #[test]
+    fn captured_logged_out_shapes_are_distinct_from_contract_drift() {
+        let (status, _, _) = parse_claude_status(
+            false,
+            include_str!("../tests/fixtures/providers/claude-2.1.238-logged-out.json"),
+        );
+        assert_eq!(status, "not authenticated");
+        let (status, _, _) = parse_codex_status(
+            false,
+            include_str!("../tests/fixtures/providers/codex-0.149.0-logged-out.txt"),
+        );
+        assert_eq!(status, "not authenticated");
+        // The phrase inside an error, or the line beside a diagnostic, is a failed probe, not a
+        // logout.
+        for error in [
+            "Error: cannot determine whether user is not logged in\n",
+            "Error: failed to read auth store\nNot logged in\n",
+            "Not logged in\nError: status backend failed\n",
+        ] {
+            assert_eq!(parse_codex_status(false, error).0, "unavailable", "{error}");
+            assert_eq!(parse_codex_status(true, error).0, "unknown", "{error}");
+        }
+        assert_eq!(parse_claude_status(true, "{}").0, "unknown");
+        assert_eq!(parse_codex_status(true, "changed output").0, "unknown");
+        assert_eq!(
+            parse_claude_status(
+                false,
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+            )
+            .0,
+            "unavailable"
+        );
+        assert_eq!(
+            parse_codex_status(false, "Logged in using ChatGPT").0,
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn logged_out_rows_name_the_context_the_login_command_and_the_registry_fix() {
+        let declared = ProviderSpec {
+            id: "claude-personal".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: Some(PathBuf::from("/profiles/claude-personal")),
+            explicit_selector: true,
+            registry_declared: true,
+            source: "/registry.toml".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&declared),
+            "no Claude login in /profiles/claude-personal; fix: af provider setup claude-personal --kind claude --auth-dir /profiles/claude-personal --login, or point auth_dir at the directory that holds the intended login"
+        );
+        let ambient = ProviderSpec {
+            id: "claude-ambient".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "ambient".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&ambient),
+            "no Claude login in the CLI default directory; fix: claude auth login"
+        );
+        let codex = ProviderSpec {
+            id: "codex-ambient".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: Some(PathBuf::from("/profiles/codex")),
+            explicit_selector: false,
+            registry_declared: false,
+            source: "ambient".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&codex),
+            "no Codex login in /profiles/codex; fix: CODEX_HOME=/profiles/codex codex login"
+        );
+        let spaced = ProviderSpec {
+            auth_dir: Some(PathBuf::from("/profiles/claude personal;work")),
+            ..declared
+        };
+        assert_eq!(
+            authentication_command(&spaced),
+            "af provider setup claude-personal --kind claude --auth-dir '/profiles/claude personal;work' --login"
+        );
+        assert_eq!(
+            chmod_fix(Path::new("/profiles/claude personal;work"), "go-w"),
+            "chmod go-w -- '/profiles/claude personal;work'"
+        );
+    }
+
+    #[test]
+    fn a_logged_out_default_context_is_left_out_once_its_kind_is_registered() {
+        fn status(id: &str, kind: &str, ambient: bool, status: &str) -> ProviderStatus {
+            ProviderStatus {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                auth_context: "-".to_string(),
+                source: if ambient {
+                    "ambient CLI candidate; unstable local context label".to_string()
+                } else {
+                    "registry".to_string()
+                },
+                status: status.to_string(),
+                auth_type: "-".to_string(),
+                subscription: "-".to_string(),
+                limits: Vec::new(),
+                usage: UsageState::NotRequested,
+                detail: String::new(),
+            }
+        }
+        let ids = |providers: &[ProviderStatus]| -> Vec<String> {
+            providers
+                .iter()
+                .map(|provider| provider.id.clone())
+                .collect()
+        };
+        let mut providers = vec![
+            status("claude-ambient", "claude", true, "not authenticated"),
+            status("claude-personal", "claude", false, "not authenticated"),
+            status("codex-ambient", "codex", true, "not authenticated"),
+        ];
+        drop_unused_ambient_contexts(&mut providers);
+        // No Codex Provider is registered: its default context is how setup starts. A registered
+        // Provider stays whatever its login.
+        assert_eq!(ids(&providers), ["claude-personal", "codex-ambient"]);
+        // A default context with a login stays: it is a login the operator may register.
+        let mut providers = vec![
+            status("claude-ambient", "claude", true, "authenticated"),
+            status("claude-work", "claude", false, "authenticated"),
+            status("codex-ambient", "codex", true, "unavailable"),
+            status("codex-main", "codex", false, "authenticated"),
+        ];
+        drop_unused_ambient_contexts(&mut providers);
+        assert_eq!(ids(&providers).len(), 4);
+    }
+
+    #[test]
+    fn logged_out_rows_point_at_logged_in_siblings_of_the_same_kind() {
+        fn row(id: &str, kind: &str, context: &str, status: &str, plan: &str) -> ProviderStatus {
+            ProviderStatus {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                auth_context: context.to_string(),
+                source: String::new(),
+                status: status.to_string(),
+                auth_type: "-".to_string(),
+                subscription: plan.to_string(),
+                limits: Vec::new(),
+                usage: UsageState::NotRequested,
+                detail: if status == "not authenticated" {
+                    "no login".to_string()
+                } else {
+                    String::new()
+                },
+            }
+        }
+        let mut providers = vec![
+            row(
+                "claude-ambient",
+                "claude",
+                "CLI default",
+                "authenticated",
+                "Claude Max",
+            ),
+            row(
+                "claude-personal",
+                "claude",
+                "/profiles/stale",
+                "not authenticated",
+                "-",
+            ),
+            row(
+                "claude-work",
+                "claude",
+                "/profiles/claude-work",
+                "unavailable",
+                "-",
+            ),
+            row(
+                "codex-personal",
+                "codex",
+                "/profiles/codex",
+                "authenticated",
+                "ChatGPT Pro",
+            ),
+            row(
+                "codex-work",
+                "codex",
+                "/profiles/codex-work",
+                "not authenticated",
+                "-",
+            ),
+        ];
+        cross_reference_logged_in_siblings(&mut providers);
+        assert_eq!(
+            providers[1].detail,
+            "no login; claude-ambient is authenticated in the CLI default directory (Claude Max)"
+        );
+        assert_eq!(
+            providers[4].detail,
+            "no login; codex-personal is authenticated in /profiles/codex (ChatGPT Pro)"
+        );
+        assert!(providers[0].detail.is_empty());
+        assert!(providers[2].detail.is_empty());
+        assert!(providers[3].detail.is_empty());
+
+        let mut alone = vec![row(
+            "claude-personal",
+            "claude",
+            "/profiles/stale",
+            "not authenticated",
+            "-",
+        )];
+        cross_reference_logged_in_siblings(&mut alone);
+        assert_eq!(alone[0].detail, "no login");
+    }
+
+    #[test]
+    fn identifiers_and_output_boundaries_are_enforced() {
+        assert!(safe_id("claude-work").is_ok());
+        assert!(safe_id("../work").is_err());
+
+        let mut input = std::io::Cursor::new(vec![b'x'; MAX_PROBE_OUTPUT + 1]);
+        let mut captured = Vec::new();
+        let mut exceeded = false;
+        while drain_available(&mut input, &mut captured, &mut exceeded).unwrap() && !exceeded {}
+        assert_eq!(captured.len(), MAX_PROBE_OUTPUT);
+        assert!(exceeded);
+    }
+}
