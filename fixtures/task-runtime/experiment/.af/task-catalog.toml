@@ -1,0 +1,28 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."fixture/experiment"]
+version = "1.0.0"
+digest = "sha256:916ec2788a5e5428f9c828ebba34cb02f9e6f194992cd0430c6b4e20ec42a82c"
+path = ".af/task-packages/fixture/experiment"
+
+[packages."fixture/experiment-evaluator"]
+version = "1.0.0"
+digest = "sha256:c78c0ea5f141ec62817082a3aca6d14a6f2fe3ab2dbe3f1d93ad18d74c7f6b75"
+path = ".af/task-packages/fixture/experiment-evaluator"
+
+[packages."fixture/experiment-trial"]
+version = "1.0.0"
+digest = "sha256:8de5257f3aa28bc1b1b107a9188a125683df190a11454bbba3f2515966fedc58"
+path = ".af/task-packages/fixture/experiment-trial"
+
+[packages."fixture/implementer"]
+version = "1.0.0"
+digest = "sha256:4678f2d56e8a3e0ed0b0fe54eca0b8bf37f5b30e71514a62eb37efc2f93cc02c"
+path = ".af/task-packages/fixture/implementer"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false

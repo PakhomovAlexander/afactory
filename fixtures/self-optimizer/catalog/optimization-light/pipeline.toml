@@ -1,0 +1,328 @@
+schema = "af.pipeline/1"
+name = "builtin/optimization-light"
+version = "1.0.0"
+max_attempts = 83
+max_parallel = 1
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.source.affinity]
+kind = "unbound"
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+[contract.inputs.history]
+artifact_type = "af/OptimizationHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.history.affinity]
+kind = "unbound"
+
+[contract.outputs.economics]
+artifact_type = "af/OptimizationEconomics@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.economics.affinity]
+kind = "unbound"
+[contract.outputs.proposal]
+artifact_type = "af/OptimizationProposal@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.proposal.affinity]
+kind = "unbound"
+[contract.outputs.comparison]
+artifact_type = "af/ExperimentComparison@1"
+cardinality = "one"
+optional = false
+covers = ["experiment"]
+[contract.outputs.comparison.affinity]
+kind = "unbound"
+[contract.outputs.snapshot]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.snapshot.affinity]
+kind = "derived_from"
+input = "source"
+[contract.outputs.verification]
+artifact_type = "af/OptimizationVerification@1"
+cardinality = "one"
+optional = false
+covers = ["verified"]
+[contract.outputs.verification.affinity]
+kind = "derived_from"
+input = "source"
+[contract.outputs.result]
+artifact_type = "af/OptimizationResult@1"
+cardinality = "one"
+optional = true
+covers = []
+[contract.outputs.result.affinity]
+kind = "unbound"
+
+[accepts]
+kinds = ["optimize"]
+[accepts.required_facts]
+experimental = true
+finalize = true
+light = true
+
+[slots.diagnose]
+worker = "builtin/optimization-light-diagnose"
+role = "diagnose"
+input_type = "af/OptimizationDiagnosisInput@1"
+output_type = "af/OptimizationDiagnostic@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = []
+[slots.propose]
+worker = "builtin/optimization-light-propose"
+role = "propose"
+input_type = "af/OptimizationProposalInput@1"
+output_type = "af/OptimizationProposal@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["diagnose"]
+[slots.baseline]
+worker = "builtin/optimization-check-baseline"
+role = "optimize"
+input_type = "af/OptimizationArmInput@1"
+output_type = "af/OptimizationArmReceipt@1"
+min_attempts = 0
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["candidate"]
+[slots.candidate]
+worker = "builtin/optimization-check-candidate"
+role = "optimize"
+input_type = "af/OptimizationArmInput@1"
+output_type = "af/OptimizationArmReceipt@1"
+min_attempts = 0
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["baseline"]
+[slots.evaluator]
+worker = "builtin/optimization-check-evaluator"
+role = "evaluate"
+input_type = "af/OptimizationEvaluationInput@1"
+output_type = "af/OptimizationEvaluation@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["baseline", "candidate", "diagnose", "propose"]
+
+[[nodes]]
+id = "profile"
+[nodes.operator]
+op = "optimization_profile"
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "diagnose"
+[nodes.operator]
+op = "worker"
+slot = "diagnose"
+[nodes.inputs.profile]
+kind = "node"
+node = "profile"
+port = "profile"
+[nodes.inputs.configuration]
+kind = "node"
+node = "profile"
+port = "configuration"
+[nodes.inputs.recipes]
+kind = "node"
+node = "profile"
+port = "recipes"
+[nodes.inputs.economics]
+kind = "node"
+node = "profile"
+port = "economics"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[[nodes]]
+id = "propose"
+[nodes.operator]
+op = "worker"
+slot = "propose"
+[nodes.inputs.profile]
+kind = "node"
+node = "profile"
+port = "profile"
+[nodes.inputs.configuration]
+kind = "node"
+node = "profile"
+port = "configuration"
+[nodes.inputs.recipes]
+kind = "node"
+node = "profile"
+port = "recipes"
+[nodes.inputs.economics]
+kind = "node"
+node = "profile"
+port = "economics"
+[nodes.inputs.diagnostic]
+kind = "node"
+node = "diagnose"
+port = "diagnostic"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[[nodes]]
+id = "prepare"
+[nodes.operator]
+op = "optimization_prepare"
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.profile]
+kind = "node"
+node = "profile"
+port = "profile"
+[nodes.inputs.recipes]
+kind = "node"
+node = "profile"
+port = "recipes"
+[nodes.inputs.diagnostic]
+kind = "node"
+node = "diagnose"
+port = "diagnostic"
+[nodes.inputs.proposal]
+kind = "node"
+node = "propose"
+port = "proposal"
+
+[[nodes]]
+id = "experiment"
+[nodes.operator]
+op = "optimization_experiment"
+baseline_slot = "baseline"
+candidate_slot = "candidate"
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+[nodes.inputs.configuration]
+kind = "node"
+node = "prepare"
+port = "configuration"
+
+[[nodes]]
+id = "evaluate"
+[nodes.operator]
+op = "verify"
+slot = "evaluator"
+[nodes.inputs.source]
+kind = "node"
+node = "prepare"
+port = "candidate"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.configuration]
+kind = "node"
+node = "prepare"
+port = "configuration"
+[nodes.inputs.comparison]
+kind = "node"
+node = "experiment"
+port = "comparison"
+
+[[nodes]]
+id = "finalize"
+[nodes.operator]
+op = "optimization_finalize"
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+[nodes.inputs.candidate]
+kind = "node"
+node = "prepare"
+port = "candidate"
+[nodes.inputs.configuration]
+kind = "node"
+node = "prepare"
+port = "configuration"
+[nodes.inputs.comparison]
+kind = "node"
+node = "experiment"
+port = "comparison"
+[nodes.inputs.evaluation]
+kind = "node"
+node = "evaluate"
+port = "evaluation"
+[nodes.inputs.profile]
+kind = "node"
+node = "profile"
+port = "profile"
+[nodes.inputs.diagnostic]
+kind = "node"
+node = "diagnose"
+port = "diagnostic"
+[nodes.inputs.proposal]
+kind = "node"
+node = "propose"
+port = "proposal"
+
+[outputs.economics]
+kind = "node"
+node = "profile"
+port = "economics"
+[outputs.proposal]
+kind = "node"
+node = "propose"
+port = "proposal"
+[outputs.comparison]
+kind = "node"
+node = "experiment"
+port = "comparison"
+[outputs.snapshot]
+kind = "node"
+node = "finalize"
+port = "snapshot"
+[outputs.verification]
+kind = "node"
+node = "finalize"
+port = "verification"
+[outputs.result]
+kind = "node"
+node = "finalize"
+port = "result"
+
+[coverage.experiment]
+kind = "node"
+node = "experiment"
+port = "comparison"
+[coverage.verified]
+kind = "node"
+node = "finalize"
+port = "verification"

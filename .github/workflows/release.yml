@@ -1,0 +1,271 @@
+# The release train (ADR-0045). One workflow, two entry points, one human act:
+#
+#   scripts/release.sh X.Y.Z   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
+#   merge it                   →  this run tags vX.Y.Z, checks the tagged commit on Linux and
+#                                 macOS, builds every target, onboards and plans a fresh
+#                                 repository with each built binary, signs SHA256SUMS, and
+#                                 publishes the release.
+#
+# A manually pushed vX.Y.Z tag takes the same path from the tag onward.
+# Builds run alongside validation; publish joins both required branches.
+# Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
+# onboarded and planned a fresh repository; nothing is published unsigned.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: 1.88.0
+  CARGO_ZIGBUILD: cargo-zigbuild==0.23.4
+  ZIG: ziglang==0.15.2
+
+jobs:
+  resolve:
+    name: resolve the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the tag on a release commit
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2 # eligibility compares the first-parent workspace version
+      - name: Decide whether this commit is a release, and tag it
+        id: resolve
+        run: bash scripts/resolve-release.sh
+
+  # This also provides ordinary main CI when resolve finds no new release.
+  # github.sha is the exact commit just tagged by resolve (or the pushed tag commit).
+  check:
+    needs: resolve
+    uses: ./.github/workflows/validate.yml
+    with:
+      release: ${{ needs.resolve.outputs.tag != '' }}
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: none
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: zig-qemu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Install the pinned Rust toolchain and target
+        # With the components rust-toolchain.toml declares: without them the first cargo
+        # invocation makes rustup install them into the toolchain it just wrote, and that
+        # collides ("detected conflict: 'bin/cargo-fmt'"). The check job installs them too.
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --target "${{ matrix.target }}"
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+        with:
+          kind: release-${{ matrix.target }}-zig0.15.2-zigbuild0.23.4
+      - name: Install zig (static Linux builds)
+        if: matrix.cross != 'none'
+        run: pip install --user "$CARGO_ZIGBUILD" "$ZIG"
+      - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
+        if: matrix.cross == 'zig-qemu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+      - name: Build
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/build-metrics.jsonl
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.cross }}" == "none" ]]; then
+            python3 scripts/ci-step.py release-build cargo build --release --locked --bin af --target "${{ matrix.target }}"
+          else
+            python3 scripts/ci-step.py release-build cargo zigbuild --release --locked --bin af --target "${{ matrix.target }}"
+          fi
+      - name: Prove, plan, and package
+        shell: bash
+        env:
+          AF_SELF_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          tag="${{ needs.resolve.outputs.tag }}"
+          target="${{ matrix.target }}"
+          bin="$PWD/target/$target/release/af"
+          # How this runner executes the built binary: directly, or through user-mode qemu.
+          run="$RUNNER_TEMP/run-af"
+          if [[ "${{ matrix.cross }}" == "zig-qemu" ]]; then
+            printf '#!/bin/sh\nexec qemu-aarch64-static "%s" "$@"\n' "$bin" > "$run"
+          else
+            printf '#!/bin/sh\nexec "%s" "$@"\n' "$bin" > "$run"
+          fi
+          chmod +x "$run"
+          reported="$("$run" --version)"
+          [[ "$reported" == "af ${tag#v}" ]] || { echo "built binary reports '$reported', expected 'af ${tag#v}'"; exit 1; }
+          "$run" --version --json | tee version.json
+          grep -q '"release_key": "embedded"' version.json || { echo "this build embeds no release key (crates/af/keys/release.pub); a release must"; exit 1; }
+          # A functional smoke of this very binary (the aarch64 one under qemu): onboard a fresh
+          # repository and plan it, token-free, with no Campaign state and no Provider.
+          (
+            export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+            smoke="$RUNNER_TEMP/smoke"
+            rm -rf "$smoke" && mkdir -p "$smoke"
+            git -C "$smoke" init -q
+            "$run" onboard --repo "$smoke" --runner codex --gate check=true --apply
+            git -C "$smoke" add -A
+            git -C "$smoke" -c user.name=release -c user.email=release@example.invalid \
+              commit -q -m "onboarded by the built binary"
+            "$run" review plan --repo "$smoke" \
+              --policy-rev HEAD --base HEAD --candidate HEAD --json > "$RUNNER_TEMP/plan.json"
+            grep -q '"schema": *"af/review-plan@1"' "$RUNNER_TEMP/plan.json" || {
+              echo "the built binary planned no af/review-plan@1 document"
+              cat "$RUNNER_TEMP/plan.json"
+              exit 1
+            }
+          )
+          # The archive: the binary at its root (what `af self` and install.sh expect), plus
+          # completions and man pages rendered by that very binary so they cannot drift.
+          rm -rf dist && mkdir -p dist/completions dist/man
+          cp "$bin" dist/af
+          for shell in bash zsh fish elvish powershell; do
+            "$run" completions "$shell" > "dist/completions/af.$shell"
+          done
+          "$run" self man dist/man
+          tar -czf "af-$tag-$target.tar.gz" -C dist af completions man
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: af-${{ needs.resolve.outputs.tag }}-${{ matrix.target }}
+          path: af-${{ needs.resolve.outputs.tag }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain build timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-metrics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/build-metrics.jsonl
+            ${{ runner.temp }}/cache-metrics.json
+          if-no-files-found: warn
+
+  publish:
+    name: sign and publish
+    needs: [resolve, check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: af-*
+          path: dist
+          merge-multiple: true
+      - name: Checksum and sign
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -f crates/af/keys/release.pub ]] || { echo "crates/af/keys/release.pub is missing; see crates/af/keys/README.md"; exit 1; }
+          [[ -n "$MINISIGN_SECRET_KEY" ]] || { echo "the MINISIGN_SECRET_KEY secret is not set; see crates/af/keys/README.md"; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          (cd dist && sha256sum ./*.tar.gz) | sed 's| \./| |' > SHA256SUMS
+          key="$RUNNER_TEMP/minisign.key"
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -W -s "$key" -m SHA256SUMS -t "af ${{ needs.resolve.outputs.tag }}"
+          rm -f "$key"
+          minisign -V -q -m SHA256SUMS -p crates/af/keys/release.pub
+          cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.resolve.outputs.version }}"
+          awk -v version="$version" '
+            /^## \[/ { inside = ($0 ~ "^## \\[" version "\\]") ; next }
+            inside { print }' CHANGELOG.md > notes.md
+          [[ -s notes.md ]] || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+          grep -qi "authority compatibility" notes.md || { echo "the $version section must state authority compatibility"; exit 1; }
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.resolve.outputs.tag }}"
+          flags=(--verify-tag --title "$tag" --notes-file notes.md --draft)
+          [[ "${{ needs.resolve.outputs.prerelease }}" == "true" ]] && flags+=(--prerelease)
+          gh release create "$tag" "${flags[@]}" dist/*.tar.gz SHA256SUMS SHA256SUMS.minisig install.sh
+          gh release edit "$tag" --draft=false
+          echo "published $tag"
+
+  # The repository runs its newest release (ADR-0138): once published, pin it in .af/af.lock on
+  # main. The release PR cannot carry the pin, because the digests exist only once SHA256SUMS
+  # does. A push with this token starts no workflow; the next pull request's `make check` covers
+  # the commit, and fails if this job ever leaves the pin more than one release behind.
+  pin:
+    name: pin the release in .af/af.lock
+    needs: [resolve, publish]
+    if: needs.resolve.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the pin commit to main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Install the published release
+        shell: bash
+        env:
+          AF_INSTALL_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          sh install.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin it on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bash scripts/pin-release.sh "${{ needs.resolve.outputs.version }}" --push

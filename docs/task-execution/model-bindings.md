@@ -1,0 +1,145 @@
+# Model bindings for Task files
+
+Task files accept captured command Workers and native Claude/Codex Model Workers. A Model
+Worker's manifest declares its Provider family, versioned model ID and effort. The catalog
+maps its package name to a machine-local Provider registry label:
+
+```toml
+[providers]
+"team/implementer" = "claude-main"
+"team/reviewer" = "codex-main"
+```
+
+The registry contains authentication directory selectors. Credentials and those directories
+are not copied into shared packages or execution plans. The native identity adapters support
+first-party Claude subscription accounts and Codex ChatGPT accounts exposing an email identity.
+Unavailable identity or unsupported authentication types fail admission. An alias or directory
+name never proves independence.
+
+Planning probes only accounts used by the selected Pipeline. It obtains account metadata from
+`claude auth status --json` or Codex's local `account/read` protocol, then records a
+domain-separated principal digest. Raw account metadata and email addresses are not stored in
+Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
+part of the exact binding. Bare model-family aliases and `-latest` selectors are refused.
+
+Planning performs no model inference. The compiler adds a visible internal capability node
+for each distinct effective Model binding and invocation policy. Slots with the same capability
+share that node. A catalog that declares no explicit cost reserves **4,096 tokens, one Attempt
+and 45 seconds** inside the Task's limits. Admission serving a required verifier is protected
+alongside that verifier. Pipeline and Task limits must have room for these Attempts; children
+do not create another allowance.
+
+A catalog may declare an explicit finite admission cost instead:
+
+```toml
+schema = "af.task-catalog/2"
+# Keep the catalog's other package, policy and binding declarations.
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
+```
+
+Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
+resources. Each distinct capability still has one Attempt. This example is a project choice,
+not a default: size the whole Task for this cost, business work and protected verification.
+The captured run authority records the cost and the original catalog bytes; changing local
+files after planning cannot change either.
+See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
+
+```text
+account identity probe       planning: no model call
+         |
+   exact compiled plan
+         |
+ normal Task admission      generated plans still require developer approval
+         |
+ Provider capability probe  durable reservation -> start -> charge -> settle
+         |
+   passed receipt
+      /       \
+  Worker A   Worker B        same native binding, isolated invocations
+```
+
+The capability probe receives only the installed acknowledgement prompt in an empty working
+directory. Its exact prompt and context manifest are persisted before dispatch. It uses the
+same native adapter as downstream Workers. Failure retains reported usage and blocks their
+dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
+Successful receipts survive replay without another paid probe.
+
+A short probe prompt does not bound the native client's complete context. The native client adds its own context, so an observed probe can charge many times the
+prompt's own tokens, and no observed figure guarantees a future upper bound.
+Any individual reservation overrun retains exact usage and blocks further dispatch, even if
+the acknowledgement passed and the wider Task has tokens left. Raising a Task total cannot
+clear that fence or change a completed Task.
+
+Before a planned Task resumes, the adapter checks the current account and recompiles against
+the recorded binding. Account, model, package or policy changes cannot silently alter an
+admitted plan. Finished Tasks remain inspectable without Provider calls.
+
+Every native invocation also rechecks that exact local account, executable path and
+authentication context before sending private input. The token-free check shares the remaining
+Attempt deadline and cancellation control. Unavailable or changed identity refuses with zero
+new charge while preserving earlier admission and spend. Credentials can still change between
+the check and their consumption by the native client; this is not an atomic session guarantee.
+See [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
+The executable is the file the `af` process resolved when it started. A native client that
+updates itself during a Task repoints its launcher at a new version file; later Workers keep
+running the captured file, and the next `af` process resolves the new one. If the update removed
+the captured file, the remaining Workers run the installed client once it proves the same
+account, also when the file vanishes during a Worker's recheck or just before its start. Only a
+client that is no longer installed refuses, with `Captured Task Provider executable was removed
+and no installed client replaces it`.
+See [ADR-0126](../adr/0126-keep-the-captured-native-executable-when-its-launcher-moves.md).
+
+Native Task usage retains exact cumulative components and charge across multiple turns, even
+when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
+file cannot erase observed usage. The original Task budget still applies; an overrun never
+authorizes another call. Wider values use additive usage/provenance and Review presentation
+contracts, while representable values retain their previous encoding. See
+[ADR-0085](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md).
+
+Malformed native usage preserves known contributions in `TaskUsageObservation@1`. Its billing
+completeness is separate from optional metadata validity. Incomplete billing refuses business
+output and retains at least the original reservation and known charge floor; a fully reported
+failure retains its exact charge. The sidecar preserves both facts before CAS publication and
+through recovery. The refusal's diagnostic keeps the reason the Worker failed with, after
+`Native billing usage is incomplete:`. Valid native calls retain their previous artifact
+identities. See
+[ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+Generic Claude Task returns also account for an optional per-model usage breakdown, without
+adding its overlapping top-level summary twice. A breakdown that no top-level billed counter
+exceeds is the complete bill: Claude Code 2.1.285 counts requests there that its top-level
+summary leaves out. Malformed summaries, and a top-level counter above the breakdown, preserve
+known charge and refuse output. The adapter requires an explicit `--model`, and that model
+refuses other reported model activity while retaining its usage; an entirely zero foreign entry
+is unused metadata. This is detection after execution, not prevention of internal client
+inference or its input delivery.
+The adapter disables native nonessential traffic and terminal-title generation through owned
+environment settings. Static client evidence supports the automatic title path; it does not
+prove suppression of every internal call. Personal authentication grants remain unchanged.
+An absent breakdown retains the plain native usage format. See
+[ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md) and
+[ADR-0125](../adr/0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md).
+
+The native adapter's controlled invocation boundary can stop an owned process group and retain
+cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
+Common CLI Task, planning, Review and doctor execution share that control with their writer
+heartbeat. A failed exact-writer lease check interrupts supervised Workers, commands, Gates and
+Integration checks; the runtime retains paid observations and blocks later work and selection.
+This does not install CLI signal handlers or a domain-level Task cancellation command. The
+heartbeat observes its lease through its own Store connection, and renews through it when the
+work still holds the shared one with 2 s of lease left, so a long Store operation cannot fence
+a live writer. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md),
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
+[ADR-0128](../adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md).
+
+Codex final-message capture reads a bounded regular file through the held private output
+directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back
+to a different message; an absent or empty regular file retains the existing event-message
+fallback. These checks preserve observed usage on refusal.
+
+Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
+refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.
