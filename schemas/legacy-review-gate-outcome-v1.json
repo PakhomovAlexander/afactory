@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-gate-outcome:1",
+  "title": "legacy-review-gate-outcome@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round_event_id", "review_node", "gate_decision_id", "outcome"],
+  "properties": {
+    "round_event_id": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
+    "review_node": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "gate_decision_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/digest" },
+    "outcome": { "enum": ["passed", "failed"] }
+  }
+}

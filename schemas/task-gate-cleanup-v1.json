@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-gate-cleanup:1",
+  "title": "af/TaskGateCleanup@1",
+  "description": "One attempt to remove what a finished Task's remote checks left on GitHub (ADR-0144): its draft gate pull requests closed and its two `af-gate/<task-id>/` branches deleted from the mapping's push target. Carried inline by one `gate_cleanup` TaskTransition@5 that references no artifact; it never changes the Task's result. A failed attempt keeps its redacted reason and is retried by a later sweep. The branches name the Task whose log carries the record, which the typed contract checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "github",
+    "pull_requests",
+    "branches",
+    "outcome"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskGateCleanup@1"
+    },
+    "github": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$"
+    },
+    "pull_requests": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "branches": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "string",
+          "maxLength": 145,
+          "pattern": "^af-gate/[A-Za-z0-9][A-Za-z0-9_-]*/base$"
+        },
+        {
+          "type": "string",
+          "maxLength": 145,
+          "pattern": "^af-gate/[A-Za-z0-9][A-Za-z0-9_-]*/head$"
+        }
+      ],
+      "items": false
+    },
+    "outcome": {
+      "enum": [
+        "done",
+        "failed"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "failed"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "reason"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "reason"
+      ]
+    }
+  }
+}

@@ -1,0 +1,2063 @@
+//! Pure compilation of reusable Task Pipelines. Registry entries come from captured trusted
+//! packages; declarations in a Pipeline cannot invent an operator's interface or authority.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use review_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance, TaskBudget};
+use review_core::task::pipeline::{
+    PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
+    TaskOperatorV1, ValueRefV1, WorkerSlotV1,
+};
+use review_core::task::{ArtifactInputV1, TaskRevisionV1};
+use serde::{Deserialize, Serialize};
+
+use crate::{Node, NodeKind, Pipeline, Planned, Port, PortContract, SnapshotAffinity};
+
+/// The installed name of a check's remote form: `operator/check/remote/<name>`, present only
+/// for a check the captured code policy declares with a `remote` table (ADR-0140).
+pub const REMOTE_CHECK_SIGNATURE_PREFIX: &str = "operator/check/remote/";
+
+/// Metadata authenticated by the package resolver. The key is the Worker package name, or
+/// the installed operator name. Evidence is keyed by output and exact verifier policy ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorSignature {
+    pub contract: PipelineContractV1,
+    pub effects: BTreeSet<String>,
+    pub evidence: BTreeMap<String, BTreeSet<String>>,
+    /// Public output envelopes retain these exact input receipts. Runtime admission verifies
+    /// that provenance; a Pipeline's covers declaration cannot create a retention guarantee.
+    #[serde(default)]
+    pub retains: BTreeMap<String, BTreeSet<String>>,
+    pub roles: BTreeSet<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub worker_input_type: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub worker_output_type: Option<String>,
+    /// The sole typed receipt port available to `when`. Ordinary artifacts cannot branch.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub outcome_port: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub attempt: Option<OperatorAttemptCost>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorAttemptCost {
+    pub tokens: u64,
+    pub wall_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Address {
+    pub node: String,
+    pub port: String,
+}
+
+impl Address {
+    pub fn qualified(&self) -> String {
+        format!("{}.{}", self.node, self.port)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CompiledOperator {
+    RootInputs,
+    /// Installed captured post-Round operation; never constructible by a Pipeline.
+    ReviewIntegrationChecks {
+        sequence_policy_id: String,
+    },
+    Select,
+    /// Installed host bootstrap, never a Pipeline-supplied operation. All listed slots use
+    /// the same captured Provider capability and share this admission Attempt.
+    ProviderAdmission {
+        bindings: BTreeSet<String>,
+    },
+    /// Installed Campaign Review frontend only. A reusable Pipeline cannot invent canonical
+    /// Review operations or make these declarations through TaskOperatorV1.
+    ReviewDomain {
+        review_node: String,
+        operation: ReviewOperation,
+    },
+    Primitive {
+        operator: TaskOperatorV1,
+        signature: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReviewOperation {
+    Generation,
+    Gate,
+    Reviewer { slot: String },
+    Gather,
+    Ledger,
+    Slicer,
+    Scatter { slot: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledNode {
+    pub operator: CompiledOperator,
+    pub contract: PipelineContractV1,
+    pub inputs: BTreeMap<String, Address>,
+    pub conditions: Vec<CompiledCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledCondition {
+    pub source: Address,
+    pub outcome: ReceiptOutcomeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledCall {
+    pub pipeline: String,
+    pub inputs: BTreeMap<String, Address>,
+    pub outputs: BTreeMap<String, Address>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coverage: BTreeMap<String, Address>,
+    pub max_attempts: u32,
+    pub max_parallel: u32,
+}
+
+/// Installed, captured authority for bounded data expansion. The owner coordinates without
+/// an Attempt; registered children inherit this one operator, contract and allowance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedChildTemplateV1 {
+    pub operator: CompiledOperator,
+    pub contract: PipelineContractV1,
+    pub allowance: NodeAllowance,
+    pub max_children: u32,
+    pub source_input: String,
+    pub item_input: String,
+    /// Child port to the exact already admitted parent port.
+    pub inherited_inputs: BTreeMap<String, String>,
+}
+
+/// Captured preparation authority for a generated experimental closure.  Unlike an owned-child
+/// template this does not supply an operator or allowance: those bytes arrive in a separately
+/// approved child plan and are checked against the immutable slot before registration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalSlotTemplateV1 {
+    pub slot_id: String,
+    pub max_concurrency: u32,
+}
+
+/// One executable child in an approved experimental closure.  The invocation contains the
+/// complete typed inputs; the compiled definition contains the exact Worker/operator binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentPlannedChildV1 {
+    pub definition: CompiledNode,
+    pub invocation: review_core::task::execution::TaskInvocationV1,
+    pub allowance: NodeAllowance,
+}
+
+pub const EXPERIMENT_EXECUTION_PLAN_V1: &str = "af/ExperimentExecutionPlan@1";
+
+/// Runtime form of the complete child closure.  It is deliberately separate from CompiledTask:
+/// registering it never mutates the captured outer graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentExecutionPlanV1 {
+    pub schema: String,
+    pub parent_node: String,
+    pub children: BTreeMap<String, ExperimentPlannedChildV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledTask {
+    pub schema: String,
+    pub nodes: BTreeMap<String, CompiledNode>,
+    pub order: Vec<String>,
+    pub inputs: BTreeMap<String, ArtifactInputV1>,
+    pub outputs: BTreeMap<String, Address>,
+    pub coverage: BTreeMap<String, Address>,
+    pub calls: BTreeMap<String, CompiledCall>,
+    pub slots: BTreeMap<String, WorkerSlotV1>,
+    /// Every default whose contract constrained a replacement, including mapped child slots.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replaced_workers: BTreeMap<String, BTreeSet<String>>,
+    pub max_parallel: u32,
+    pub allowances: BTreeMap<String, NodeAllowance>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub experimental_slots: BTreeMap<String, ExperimentalSlotTemplateV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub review_integration: Option<CompiledReviewIntegrationV1>,
+    /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
+}
+
+impl CompiledTask {
+    /// Every compiled check node that lists remote checks, with the checks it lists, child
+    /// pipelines included. Empty for a graph whose checks all run on this machine.
+    pub fn remote_checks(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.nodes
+            .iter()
+            .filter_map(|(name, node)| match &node.operator {
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::Check { remote_checks, .. },
+                    ..
+                } if !remote_checks.is_empty() => Some((name.clone(), remote_checks.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Review requires a complete predecessor barrier, including optional input producers.
+    /// Ordinary Task operators retain conditional/optional-input recovery semantics.
+    pub fn requires_successful_predecessors(&self, node: &str) -> bool {
+        self.nodes
+            .get(node)
+            .is_some_and(|node| matches!(node.operator, CompiledOperator::ReviewDomain { .. }))
+    }
+
+    pub fn require_provider_admission(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+        limits: &review_core::task::TaskLimitsV1,
+    ) -> Result<(), String> {
+        self.install_provider_admission(bindings, cost)?;
+        self.budget(limits.clone())?;
+        Ok(())
+    }
+
+    /// Structural admission expansion, without conflating capacity refusal with an invalid DAG.
+    /// Model bindings that share one exact execution and invocation policy share one
+    /// `root.providers.admit{index}` node, in the order of that grouping key.
+    pub fn install_provider_admission(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+    ) -> Result<(), String> {
+        use review_core::task::plan::WorkerExecutionV1;
+        if cost.tokens == 0 || cost.wall_ms == 0 {
+            return Err("Provider admission requires a bounded paid reservation".into());
+        }
+        if self
+            .nodes
+            .values()
+            .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        {
+            return Err("Provider admission can be compiled only once".into());
+        }
+        let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (slot, binding) in bindings {
+            if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
+                let key =
+                    serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
+                        .map_err(|e| e.to_string())?;
+                capabilities.entry(key).or_default().insert(slot.clone());
+            }
+        }
+        for (index, slots) in capabilities.into_values().enumerate() {
+            let name = format!("root.providers.admit{index}");
+            if self.nodes.contains_key(&name) || self.nodes.len() >= 64 {
+                return Err("Provider admission exceeds the installed graph bound".into());
+            }
+            let mut protected = false;
+            for (id, node) in &mut self.nodes {
+                let slot = match &node.operator {
+                    CompiledOperator::Primitive {
+                        operator:
+                            TaskOperatorV1::Worker { slot }
+                            | TaskOperatorV1::Verify { slot }
+                            | TaskOperatorV1::FixVerify { slot },
+                        ..
+                    }
+                    | CompiledOperator::ReviewDomain {
+                        operation:
+                            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                        ..
+                    } => Some(slot),
+                    _ => None,
+                };
+                if slot.is_some_and(|slot| slots.contains(slot)) {
+                    node.conditions.push(CompiledCondition {
+                        source: Address {
+                            node: name.clone(),
+                            port: "result".into(),
+                        },
+                        outcome: ReceiptOutcomeV1::Passed,
+                    });
+                    protected |= self
+                        .allowances
+                        .get(id)
+                        .is_some_and(|a| a.verification_attempts > 0);
+                }
+            }
+            self.nodes.insert(
+                name.clone(),
+                CompiledNode {
+                    operator: CompiledOperator::ProviderAdmission { bindings: slots },
+                    contract: PipelineContractV1 {
+                        inputs: BTreeMap::new(),
+                        outputs: BTreeMap::from([(
+                            "result".into(),
+                            PipelinePortV1 {
+                                artifact_type:
+                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V1.into(),
+                                cardinality: review_core::PortCardinality::One,
+                                optional: false,
+                                affinity: PortAffinityV1::Unbound {},
+                                root_default: None,
+                                covers: BTreeSet::new(),
+                            },
+                        )]),
+                    },
+                    inputs: BTreeMap::new(),
+                    conditions: vec![],
+                },
+            );
+            self.allowances.insert(
+                name.clone(),
+                NodeAllowance {
+                    tokens_per_attempt: cost.tokens,
+                    wall_ms_per_attempt: cost.wall_ms,
+                    max_attempts: 1,
+                    verification_attempts: u32::from(protected),
+                },
+            );
+            self.order.insert(index, name);
+        }
+        self.order = self.scheduler_plan()?.order;
+        Ok(())
+    }
+
+    /// Select transports original receipts without rewriting their producers. The Store
+    /// separately checks that the actual selected value is the admitted coverage value.
+    pub fn evidence_origins(&self, address: &Address) -> Result<BTreeSet<Address>, String> {
+        let mut pending = vec![address.clone()];
+        let mut seen = BTreeSet::new();
+        let mut leaves = BTreeSet::new();
+        while let Some(address) = pending.pop() {
+            if !seen.insert(address.clone()) {
+                continue;
+            }
+            let node = self
+                .nodes
+                .get(&address.node)
+                .ok_or("Unknown evidence producer")?;
+            if matches!(node.operator, CompiledOperator::Select) {
+                for arm in ["passed", "failed", "inconclusive"] {
+                    pending.push(
+                        node.inputs
+                            .get(arm)
+                            .ok_or("Missing evidence branch")?
+                            .clone(),
+                    );
+                }
+            } else {
+                leaves.insert(address);
+            }
+        }
+        Ok(leaves)
+    }
+
+    pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        self.validate_experimental_slots()?;
+        let templates = self.owned_template_allowances()?;
+        // Before dispatch, protect the declared verifier reserve and one Attempt for every
+        // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
+        let mut minimum_tokens = limits.verification.tokens;
+        let mut minimum_attempts = u64::from(limits.verification.attempts);
+        let mut scope_minimum: BTreeMap<String, u64> = self
+            .token_scopes
+            .keys()
+            .map(|name| (name.clone(), 0))
+            .collect();
+        let mut root_attempts = self
+            .allowances
+            .values()
+            .map(|a| u64::from(a.verification_attempts))
+            .sum::<u64>();
+        // An unconditional owner protects one initial child, never a phantom parent or the
+        // maximum fanout. Each real child competes for the common reservation when admitted.
+        for (name, allowance) in self.allowances.iter().chain(
+            self.owned_children
+                .iter()
+                .map(|(name, template)| (name, &template.allowance)),
+        ) {
+            let node = self
+                .nodes
+                .get(name)
+                .ok_or("Allowance has no compiled node")?;
+            let protected = allowance
+                .tokens_per_attempt
+                .checked_mul(u64::from(allowance.verification_attempts))
+                .ok_or("Task scope verifier token overflow")?;
+            for (scope, minimum) in &mut scope_minimum {
+                if self.token_scopes[scope].contains(name) {
+                    *minimum = minimum
+                        .checked_add(protected)
+                        .ok_or("Task scope token total overflow")?;
+                }
+            }
+            if allowance.verification_attempts == 0
+                && node.conditions.iter().all(|condition| {
+                    self.nodes
+                        .get(&condition.source.node)
+                        .is_some_and(|source| {
+                            matches!(source.operator, CompiledOperator::ProviderAdmission { .. })
+                        })
+                })
+            {
+                minimum_tokens = minimum_tokens
+                    .checked_add(allowance.tokens_per_attempt)
+                    .ok_or("Task resource total overflow")?;
+                minimum_attempts += 1;
+                root_attempts += 1;
+                for (scope, minimum) in &mut scope_minimum {
+                    if self.token_scopes[scope].contains(name) {
+                        *minimum = minimum
+                            .checked_add(allowance.tokens_per_attempt)
+                            .ok_or("Task scope token total overflow")?;
+                    }
+                }
+            }
+        }
+        for (scope, minimum) in scope_minimum {
+            if minimum > self.token_scopes[&scope].tokens {
+                return Err(format!(
+                    "Task token scope {scope} cannot retain verification and mandatory work"
+                ));
+            }
+        }
+        if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
+            return Err("Task cannot retain verification reserves and mandatory work within its token and Attempt allowance".into());
+        }
+        if self
+            .calls
+            .get("root")
+            .is_some_and(|call| root_attempts > u64::from(call.max_attempts))
+        {
+            return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
+        }
+        TaskBudget::new(limits, self.execution_allowances()?)?
+            .with_call_limits(
+                self.calls
+                    .iter()
+                    .map(|(scope, call)| (scope.clone(), call.max_attempts))
+                    .collect(),
+            )?
+            .with_owned_templates(templates)?
+            .with_token_scopes(self.token_scopes.clone())
+    }
+
+    pub fn validate_experimental_slots(&self) -> Result<(), String> {
+        for (owner, slot) in &self.experimental_slots {
+            if !self.nodes.contains_key(owner)
+                || self.allowances.contains_key(owner)
+                || self.owned_children.contains_key(owner)
+                || !review_core::is_digest(&slot.slot_id)
+                || slot.max_concurrency == 0
+                || slot.max_concurrency > self.max_parallel.max(1)
+            {
+                return Err("Experimental slot needs a static zero-Attempt owner, exact slot identity and bounded concurrency".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn owned_template_allowances(
+        &self,
+    ) -> Result<BTreeMap<String, OwnedNodeAllowance>, String> {
+        self.owned_children.iter().map(|(owner, template)| {
+            let parent = self.nodes.get(owner).ok_or("Owned template has no static owner")?;
+            if self.allowances.contains_key(owner) || template.max_children == 0
+                || template.allowance.verification_attempts != 0
+                || !parent.contract.inputs.contains_key(&template.source_input)
+                || !template.contract.inputs.contains_key(&template.item_input)
+                || template.inherited_inputs.contains_key(&template.item_input)
+                || template.contract.inputs.len() != template.inherited_inputs.len() + 1
+                || template.inherited_inputs.iter().any(|(child, parent_port)| {
+                    template.contract.inputs.get(child) != parent.contract.inputs.get(parent_port)
+                        || !parent.contract.inputs.contains_key(parent_port)
+                })
+            {
+                return Err("Owned template must inherit an exact bounded contract without a parent Attempt".into());
+            }
+            Ok((owner.clone(), OwnedNodeAllowance { allowance: template.allowance.clone(), max_children: template.max_children }))
+        }).collect()
+    }
+
+    pub fn run(&self, dispatch: &(dyn crate::Dispatch + Sync)) -> Result<crate::RunReport, String> {
+        let plan = self.scheduler_plan()?;
+        let limits = self
+            .calls
+            .iter()
+            .map(|(scope, call)| (scope.clone(), call.max_parallel as usize))
+            .collect();
+        Ok(crate::Scheduler::new(&plan, self.max_parallel as usize)
+            .with_scope_limits(limits)?
+            .run(dispatch))
+    }
+
+    /// Receipt interpretation belongs to the trusted domain adapter. The graph receives only
+    /// its typed outcome; diagnostics and missing execution never become a negative receipt.
+    pub fn node_selected(
+        &self,
+        node: &str,
+        inputs: &crate::ArtifactMap,
+        read_outcome: impl Fn(&str) -> Result<ReceiptOutcomeV1, String>,
+    ) -> Result<bool, String> {
+        let mut unavailable = false;
+        for (index, condition) in self
+            .nodes
+            .get(node)
+            .ok_or("Unknown Task node")?
+            .conditions
+            .iter()
+            .enumerate()
+        {
+            let ids = inputs
+                .get(&condition_input(index))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            match ids {
+                [id] if read_outcome(id)? != condition.outcome => return Ok(false),
+                [_] => (),
+                [] => unavailable = true,
+                _ => return Err("Branch condition has more than one receipt".into()),
+            }
+        }
+        if unavailable {
+            Err("Required branch receipt was not produced".into())
+        } else {
+            Ok(true)
+        }
+    }
+
+    pub fn select_output(
+        &self,
+        node: &str,
+        inputs: &crate::ArtifactMap,
+        read_outcome: impl Fn(&str) -> Result<ReceiptOutcomeV1, String>,
+    ) -> Result<crate::ArtifactMap, String> {
+        if !matches!(
+            self.nodes.get(node).map(|n| &n.operator),
+            Some(CompiledOperator::Select)
+        ) {
+            return Err("Node is not a typed Select".into());
+        }
+        let [receipt] = inputs.get("condition").map(Vec::as_slice).unwrap_or(&[]) else {
+            return Err("Select requires exactly one admitted receipt".into());
+        };
+        let arm = outcome_name(read_outcome(receipt)?);
+        let values = inputs.get(arm).ok_or("Select arm is absent")?;
+        if values.is_empty() {
+            return Err(format!(
+                "Selected {arm} branch did not produce its required value"
+            ));
+        }
+        Ok(BTreeMap::from([("output".into(), values.clone())]))
+    }
+
+    /// The existing graph planner remains the authority for DAG topology. Task lineage and
+    /// named evidence were proven separately; a same-Subject affinity cannot represent
+    /// S0 -> S1.
+    pub fn scheduler_plan(&self) -> Result<Planned, String> {
+        let mut pipeline = Pipeline::default();
+        for (id, node) in &self.nodes {
+            if node
+                .contract
+                .inputs
+                .keys()
+                .any(|name| name.starts_with("af_condition_"))
+            {
+                return Err("Task input uses a reserved scheduler guard name".into());
+            }
+            let ports = |ports: &BTreeMap<String, PipelinePortV1>| -> Vec<PortContract> {
+                ports
+                    .iter()
+                    .map(|(name, p)| PortContract {
+                        name: name.clone(),
+                        artifact_type: p.artifact_type.clone(),
+                        cardinality: p.cardinality,
+                        optional: p.optional,
+                        snapshot_affinity: SnapshotAffinity::Any,
+                    })
+                    .collect()
+            };
+            let mut input_ports = ports(&node.contract.inputs);
+            for (index, condition) in node.conditions.iter().enumerate() {
+                let source =
+                    &self.nodes[&condition.source.node].contract.outputs[&condition.source.port];
+                input_ports.push(PortContract {
+                    name: condition_input(index),
+                    artifact_type: source.artifact_type.clone(),
+                    cardinality: source.cardinality,
+                    optional: true,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                });
+                pipeline = pipeline.edge(
+                    Port::new(&condition.source.node, &condition.source.port),
+                    Port::new(id, condition_input(index)),
+                );
+            }
+            pipeline = pipeline.node(
+                Node::new(id, NodeKind::Task)
+                    .accepting_contracts(input_ports)
+                    .emitting_contracts(ports(&node.contract.outputs)),
+            );
+            for (name, source) in &node.inputs {
+                pipeline =
+                    pipeline.edge(Port::new(&source.node, &source.port), Port::new(id, name));
+            }
+        }
+        pipeline.plan().map_err(|e| e.to_string())
+    }
+}
+
+pub struct CompileContext<'a> {
+    pub pipelines: &'a BTreeMap<String, PipelineDefinitionV1>,
+    pub signatures: &'a BTreeMap<String, OperatorSignature>,
+    /// Explicit captured local settings keyed by physical qualified slot, never model input.
+    pub slot_workers: BTreeMap<String, String>,
+    /// Trusted Task-kind policy: each obligation identifies the public final output whose
+    /// Snapshot its evidence must judge. Pipeline authors cannot redirect this obligation.
+    pub acceptance_outputs: BTreeMap<String, String>,
+    /// Maximum physical expanded nodes, including root inputs and Select nodes.
+    pub max_nodes: usize,
+    pub max_depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Lineage {
+    Root(String),
+    Derived(Address, Box<Lineage>),
+    Choice(Address, Box<[Lineage; 3]>),
+}
+
+impl Lineage {
+    fn derived_from(&self, source: &Self) -> bool {
+        match self {
+            Self::Root(_) => false,
+            Self::Derived(_, parent) => parent.as_ref() == source || parent.derived_from(source),
+            Self::Choice(_, arms) => arms.iter().all(|arm| arm.derived_from(source)),
+        }
+    }
+}
+
+struct Compiler<'a> {
+    context: &'a CompileContext<'a>,
+    task: &'a TaskRevisionV1,
+    graph: CompiledTask,
+    stack: Vec<String>,
+    /// Lineage and evidence associated with physical output ports, never caller claims.
+    lineage: BTreeMap<Address, Lineage>,
+    evidence: BTreeMap<Address, BTreeSet<String>>,
+    availability: BTreeMap<Address, Vec<CompiledCondition>>,
+    outcomes: BTreeSet<Address>,
+    retained: BTreeMap<Address, BTreeSet<Address>>,
+    resource_refusals: Vec<String>,
+}
+
+pub fn compile_task(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<CompiledTask, String> {
+    let (graph, refusals) = compile_task_structure(task, root, context)?;
+    if !refusals.is_empty() {
+        return Err(refusals.join("; "));
+    }
+    graph.budget(task.limits.clone())?;
+    Ok(graph)
+}
+
+/// Token-free selection separates structural validity from resource feasibility. This does
+/// not admit execution: the Store always revalidates through the full compiler above.
+pub fn compile_task_structure(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, false)
+}
+
+/// Only the installed bootstrap compiler may use this mode. It proves a proposal's public
+/// port and structure without pretending that preparing a plan fulfills business acceptance.
+/// The common Store separately requires a fixed preparation plan and deferred verification.
+pub fn compile_task_preparation(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, true)
+}
+
+fn compile_structure_mode(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+    preparation: bool,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    task.validate()?;
+    if context.max_nodes == 0
+        || context.max_nodes > 64
+        || context.max_depth == 0
+        || context.max_depth > 4
+    {
+        return Err("Compilation requires bounded node and depth limits".into());
+    }
+    let definition = context
+        .pipelines
+        .get(root)
+        .ok_or("Root Pipeline is not installed")?;
+    definition.validate()?;
+    if !definition.accepts.kinds.contains(&task.kind)
+        || definition
+            .accepts
+            .required_facts
+            .iter()
+            .any(|(k, v)| task.facts.get(k) != Some(v))
+    {
+        return Err("Task kind or known facts do not fit the root Pipeline".into());
+    }
+    let mut compiler = Compiler {
+        context,
+        task,
+        stack: Vec::new(),
+        lineage: BTreeMap::new(),
+        evidence: BTreeMap::new(),
+        availability: BTreeMap::new(),
+        outcomes: BTreeSet::new(),
+        retained: BTreeMap::new(),
+        resource_refusals: Vec::new(),
+        graph: CompiledTask {
+            schema: "af.compiled-task/1".into(),
+            nodes: BTreeMap::new(),
+            order: Vec::new(),
+            inputs: task.inputs.clone(),
+            outputs: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: definition.max_parallel,
+            allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        },
+    };
+    let mut root_inputs = BTreeMap::new();
+    for (name, port) in &definition.contract.inputs {
+        let Some(input) = task.inputs.get(name) else {
+            if port.optional {
+                continue;
+            }
+            return Err(format!(
+                "Missing normalized root input {name}; apply an admitted constructor before compilation"
+            ));
+        };
+        input.validate()?;
+        if input.artifact_type != port.artifact_type || input.cardinality != port.cardinality {
+            return Err(format!(
+                "Root input {name} has an incompatible type or cardinality"
+            ));
+        }
+        let address = Address {
+            node: "root.inputs".into(),
+            port: name.clone(),
+        };
+        compiler.lineage.insert(
+            address.clone(),
+            Lineage::Root(
+                input
+                    .snapshot_id
+                    .clone()
+                    .unwrap_or_else(|| address.qualified()),
+            ),
+        );
+        root_inputs.insert(name.clone(), address);
+    }
+    if task
+        .inputs
+        .keys()
+        .any(|name| !definition.contract.inputs.contains_key(name))
+    {
+        return Err("Task has inputs absent from the root Pipeline contract".into());
+    }
+    let mut boundary_outputs = definition.contract.inputs.clone();
+    for port in boundary_outputs.values_mut() {
+        port.root_default = None;
+    }
+    compiler.require_node_capacity()?;
+    compiler.graph.nodes.insert(
+        "root.inputs".into(),
+        CompiledNode {
+            operator: CompiledOperator::RootInputs,
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: boundary_outputs,
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        },
+    );
+    let (outputs, coverage) = compiler.expand(root, "root", &root_inputs, &BTreeMap::new(), &[])?;
+    if context
+        .slot_workers
+        .keys()
+        .any(|slot| !compiler.graph.slots.contains_key(slot))
+    {
+        return Err("Local Worker binding names an unknown physical slot".into());
+    }
+    if preparation {
+        if !coverage.is_empty() || outputs.len() != 1 {
+            return Err(
+                "Planning bootstrap must expose only its proposal and no business coverage".into(),
+            );
+        }
+        let address = outputs
+            .get("proposal")
+            .ok_or("Planning bootstrap has no proposal output")?;
+        let port = compiler.port(address)?;
+        if port.optional
+            || !compiler.available(address, &[])
+            || port.cardinality != review_core::PortCardinality::One
+            || port.artifact_type != review_core::task::planning::PIPELINE_PROPOSAL_V1
+        {
+            return Err("Planning bootstrap requires one guaranteed typed proposal".into());
+        }
+        if compiler
+            .graph
+            .allowances
+            .values()
+            .any(|a| a.verification_attempts != 0)
+        {
+            return Err("Planner cannot consume business verifier credit".into());
+        }
+    } else {
+        for (name, required) in &task.required_outputs {
+            let address = outputs
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks required output {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != required.artifact_type
+                || produced.cardinality != required.cardinality
+            {
+                return Err(format!(
+                    "Pipeline output {name} cannot satisfy the Task contract"
+                ));
+            }
+        }
+        for (name, obligation) in &task.acceptance {
+            let address = coverage
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks acceptance coverage {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != obligation.evidence_type
+                || !compiler
+                    .evidence
+                    .get(address)
+                    .is_some_and(|ids| ids.contains(&obligation.verifier_policy))
+            {
+                return Err(format!("Coverage {name} lacks a trusted evidence producer"));
+            }
+            let target_name = context
+                .acceptance_outputs
+                .get(name)
+                .ok_or_else(|| format!("Task-kind policy has no final output for {name}"))?;
+            let target = outputs.get(target_name).ok_or_else(|| {
+                format!("Task-kind acceptance target {target_name} is unavailable")
+            })?;
+            if !task.required_outputs.contains_key(target_name)
+                || compiler.lineage.get(address) != compiler.lineage.get(target)
+            {
+                return Err(format!(
+                    "Coverage {name} does not judge the required final output {target_name}"
+                ));
+            }
+        }
+    }
+    compiler.graph.outputs = outputs;
+    compiler.graph.coverage = coverage;
+    compiler.graph.order = compiler.graph.scheduler_plan()?.order;
+    Ok((compiler.graph, compiler.resource_refusals))
+}
+
+type Boundary = (BTreeMap<String, Address>, BTreeMap<String, Address>);
+
+impl Compiler<'_> {
+    fn require_node_capacity(&self) -> Result<(), String> {
+        if self.graph.nodes.len() >= self.context.max_nodes {
+            return Err("Expanded Task exceeds the node limit".into());
+        }
+        Ok(())
+    }
+
+    fn select(
+        &mut self,
+        qualified: &str,
+        bound: &BTreeMap<String, Address>,
+        conditions: &[CompiledCondition],
+    ) -> Result<BTreeMap<String, Address>, String> {
+        if !bound
+            .keys()
+            .map(String::as_str)
+            .eq(["condition", "failed", "inconclusive", "passed"])
+        {
+            return Err("Select requires condition, passed, failed and inconclusive inputs".into());
+        }
+        let condition = &bound["condition"];
+        if !self.outcomes.contains(condition) || !self.available(condition, conditions) {
+            return Err("Select condition is not an available trusted receipt".into());
+        }
+        let first = self.port(&bound["passed"])?;
+        let mut output = first.clone();
+        output.affinity = PortAffinityV1::Unbound {};
+        output.optional = false;
+        output.root_default = None;
+        output.covers.clear();
+        let mut input_ports = BTreeMap::from([("condition".into(), self.port(condition)?.clone())]);
+        input_ports
+            .get_mut("condition")
+            .expect("condition")
+            .affinity = PortAffinityV1::Unbound {};
+        let mut lineages = Vec::new();
+        let mut evidence: Option<BTreeSet<String>> = None;
+        let mut retained: Option<BTreeSet<Address>> = None;
+        for outcome in [
+            ReceiptOutcomeV1::Passed,
+            ReceiptOutcomeV1::Failed,
+            ReceiptOutcomeV1::Inconclusive,
+        ] {
+            let arm = outcome_name(outcome);
+            let address = &bound[arm];
+            let mut path = conditions.to_vec();
+            path.push(CompiledCondition {
+                source: condition.clone(),
+                outcome,
+            });
+            if !self.available(address, &path) {
+                return Err(format!("Select {arm} value is unavailable on that path"));
+            }
+            self.compatible(address, &output)?;
+            let mut input = output.clone();
+            // Physical ports permit the two inactive arms. The compiler proved the selected
+            // arm required, and select_output checks its actual admitted value at runtime.
+            input.optional = true;
+            input_ports.insert(arm.into(), input);
+            lineages.push(
+                self.lineage
+                    .get(address)
+                    .cloned()
+                    .ok_or("Missing Select lineage")?,
+            );
+            let policies = self.evidence.get(address).cloned().unwrap_or_default();
+            evidence = Some(match evidence {
+                None => policies,
+                Some(previous) => previous.intersection(&policies).cloned().collect(),
+            });
+            let receipts = self
+                .retained
+                .get(address)
+                .cloned()
+                .unwrap_or_else(|| BTreeSet::from([address.clone()]));
+            retained = Some(match retained {
+                None => receipts,
+                Some(previous) => previous.intersection(&receipts).cloned().collect(),
+            });
+        }
+        self.require_node_capacity()?;
+        self.graph.nodes.insert(
+            qualified.into(),
+            CompiledNode {
+                operator: CompiledOperator::Select,
+                contract: PipelineContractV1 {
+                    inputs: input_ports,
+                    outputs: BTreeMap::from([("output".into(), output)]),
+                },
+                inputs: bound.clone(),
+                conditions: conditions.to_vec(),
+            },
+        );
+        let address = Address {
+            node: qualified.into(),
+            port: "output".into(),
+        };
+        let lineage = if lineages.iter().all(|lineage| lineage == &lineages[0]) {
+            lineages[0].clone()
+        } else {
+            Lineage::Choice(
+                condition.clone(),
+                Box::new(lineages.try_into().expect("three arms")),
+            )
+        };
+        self.lineage.insert(address.clone(), lineage);
+        self.availability
+            .insert(address.clone(), conditions.to_vec());
+        self.evidence
+            .insert(address.clone(), evidence.unwrap_or_default());
+        let mut retained = retained.unwrap_or_default();
+        retained.insert(address.clone());
+        self.retained.insert(address.clone(), retained);
+        if ["passed", "failed", "inconclusive"]
+            .iter()
+            .all(|arm| self.outcomes.contains(&bound[*arm]))
+        {
+            self.outcomes.insert(address.clone());
+        }
+        Ok(BTreeMap::from([("output".into(), address)]))
+    }
+
+    /// A measure node's signature, composed from the installed per-measure signatures of the
+    /// captured code policy: one `Measurement` output per named measure. Its repetitions
+    /// (`repetitions × wall_ms` of every measure) must fit the one measure Attempt, whose wall
+    /// is the captured `check_wall_ms`; a measure Attempt owns no checks.
+    fn measure_signature(
+        &self,
+        qualified: &str,
+        measures: &BTreeSet<String>,
+    ) -> Result<OperatorSignature, String> {
+        let base = self
+            .context
+            .signatures
+            .get("operator/measure")
+            .ok_or("The captured code policy declares no measures")?;
+        let allowance = base
+            .attempt
+            .as_ref()
+            .ok_or("operator/measure has no bounded Attempt cost")?;
+        let mut composed = base.clone();
+        composed.contract.outputs.clear();
+        composed.outcome_port = None;
+        let mut budget = 0u64;
+        for measure in measures {
+            let declared = self
+                .context
+                .signatures
+                .get(&format!("operator/measure/{measure}"))
+                .ok_or_else(|| {
+                    format!("{qualified} names measure {measure}, which the captured code policy does not declare")
+                })?;
+            if declared.contract.inputs != base.contract.inputs
+                || declared.effects != base.effects
+                || declared.contract.outputs.keys().ne([measure])
+            {
+                return Err(format!("Measure {measure} changed its installed contract"));
+            }
+            composed
+                .contract
+                .outputs
+                .extend(declared.contract.outputs.clone());
+            let cost = declared
+                .attempt
+                .as_ref()
+                .ok_or_else(|| format!("Measure {measure} has no bounded repetition budget"))?;
+            budget = budget
+                .checked_add(cost.wall_ms)
+                .ok_or("Measure repetition budget overflow")?;
+        }
+        if budget > allowance.wall_ms {
+            return Err(format!(
+                "{qualified} needs {budget} ms for its repetitions (repetitions × wall_ms), more than the captured check_wall_ms of {} ms",
+                allowance.wall_ms
+            ));
+        }
+        if let [only] = measures.iter().collect::<Vec<_>>()[..] {
+            composed.outcome_port = Some(only.clone());
+        }
+        Ok(composed)
+    }
+
+    /// A comparison folds two Measurements of the one measure its objective names. Both inputs
+    /// must come straight from measure nodes, whose output ports are named by their measure.
+    fn require_comparable(
+        &self,
+        qualified: &str,
+        objective: &str,
+        signature: &OperatorSignature,
+        bound: &BTreeMap<String, Address>,
+    ) -> Result<(), String> {
+        if self
+            .context
+            .signatures
+            .get(&format!("operator/compare/{objective}"))
+            != Some(signature)
+        {
+            return Err(format!(
+                "{qualified} names objective {objective}, which the captured code policy does not declare"
+            ));
+        }
+        let mut measured = BTreeSet::new();
+        for port in ["baseline", "candidate"] {
+            let address = bound
+                .get(port)
+                .ok_or_else(|| format!("{qualified} lacks {port}"))?;
+            let producer = self
+                .graph
+                .nodes
+                .get(&address.node)
+                .ok_or_else(|| format!("Unknown producer {}", address.qualified()))?;
+            if !matches!(
+                producer.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::Measure { .. },
+                    ..
+                }
+            ) {
+                return Err(format!(
+                    "{qualified} {port} must be a Measurement straight from a measure node"
+                ));
+            }
+            measured.insert(address.port.clone());
+        }
+        let [measure] = measured.iter().collect::<Vec<_>>()[..] else {
+            return Err(format!(
+                "{qualified} compares Measurements of different measures: {}",
+                measured.into_iter().collect::<Vec<_>>().join(" and ")
+            ));
+        };
+        if !self
+            .context
+            .signatures
+            .contains_key(&format!("operator/compare/{objective}/{measure}"))
+        {
+            return Err(format!(
+                "{qualified}: objective {objective} does not compare measure {measure}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn available(&self, address: &Address, conditions: &[CompiledCondition]) -> bool {
+        self.availability.get(address).is_none_or(|required| {
+            required
+                .iter()
+                .all(|condition| conditions.contains(condition))
+        })
+    }
+
+    fn port(&self, address: &Address) -> Result<&PipelinePortV1, String> {
+        self.graph
+            .nodes
+            .get(&address.node)
+            .and_then(|n| n.contract.outputs.get(&address.port))
+            .ok_or_else(|| format!("Unknown producer {}", address.qualified()))
+    }
+
+    /// The effective slot of an already compiled Worker node, or `None` for any other producer.
+    fn worker_slot(&self, node: &str) -> Option<&str> {
+        match &self.graph.nodes.get(node)?.operator {
+            CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker { slot },
+                ..
+            } => Some(slot.as_str()),
+            _ => None,
+        }
+    }
+
+    fn compatible(&self, source: &Address, target: &PipelinePortV1) -> Result<(), String> {
+        let produced = self.port(source)?;
+        if produced.artifact_type != target.artifact_type
+            || produced.cardinality != target.cardinality
+            || (produced.optional && !target.optional)
+        {
+            return Err(format!("Incompatible producer {}", source.qualified()));
+        }
+        Ok(())
+    }
+
+    fn affinity(
+        &self,
+        address: &Address,
+        affinity: &PortAffinityV1,
+        inputs: &BTreeMap<String, Address>,
+    ) -> Result<(), String> {
+        let (input, derived) = match affinity {
+            PortAffinityV1::Unbound {} => return Ok(()),
+            PortAffinityV1::SameAs { input } => (input, false),
+            PortAffinityV1::DerivedFrom { input } => (input, true),
+        };
+        let source = inputs
+            .get(input)
+            .and_then(|p| self.lineage.get(p))
+            .ok_or_else(|| format!("Affinity input {input} is unavailable"))?;
+        let lineage = self
+            .lineage
+            .get(address)
+            .ok_or("Producer has no Snapshot lineage")?;
+        if (!derived && lineage == source) || (derived && lineage.derived_from(source)) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Producer {} violates Snapshot lineage",
+                address.qualified()
+            ))
+        }
+    }
+
+    fn expand(
+        &mut self,
+        name: &str,
+        scope: &str,
+        inputs: &BTreeMap<String, Address>,
+        slot_mapping: &BTreeMap<String, String>,
+        inherited: &[CompiledCondition],
+    ) -> Result<Boundary, String> {
+        if self.stack.len() >= self.context.max_depth || self.stack.iter().any(|n| n == name) {
+            return Err(format!(
+                "Recursive Pipeline or expansion depth exceeded at {name}"
+            ));
+        }
+        let definition = self
+            .context
+            .pipelines
+            .get(name)
+            .ok_or_else(|| format!("Pipeline {name} is not installed"))?
+            .clone();
+        definition.validate()?;
+        self.stack.push(name.into());
+        for (port_name, port) in &definition.contract.inputs {
+            match inputs.get(port_name) {
+                Some(source) => {
+                    self.compatible(source, port)?;
+                    self.affinity(source, &port.affinity, inputs)?;
+                    if !port.optional && !self.available(source, inherited) {
+                        return Err(format!(
+                            "{scope} requires a conditionally unavailable input"
+                        ));
+                    }
+                }
+                None if port.optional => (),
+                None => return Err(format!("{scope} lacks required input {port_name}")),
+            }
+        }
+        if inputs
+            .keys()
+            .any(|p| !definition.contract.inputs.contains_key(p))
+        {
+            return Err(format!("{scope} binds an undeclared child input"));
+        }
+        let mut slots = BTreeMap::new();
+        for (local, slot) in &definition.slots {
+            let qualified = slot_mapping
+                .get(local)
+                .cloned()
+                .unwrap_or_else(|| format!("{scope}.slots.{local}"));
+            if let Some(parent) = self.graph.slots.get(&qualified) {
+                if parent.role != slot.role
+                    || parent.input_type != slot.input_type
+                    || parent.output_type != slot.output_type
+                    || parent.min_attempts < slot.min_attempts
+                    || parent.max_attempts > slot.max_attempts
+                {
+                    return Err(format!(
+                        "Child slot {local} has an incompatible parent binding"
+                    ));
+                }
+                if parent.worker != slot.worker && !slot.allow_local_replacement {
+                    return Err(format!(
+                        "Child slot {local} forbids replacing its Worker package"
+                    ));
+                }
+            } else {
+                let mut resolved = slot.clone();
+                if let Some(worker) = self.context.slot_workers.get(&qualified) {
+                    resolved.worker = worker.clone();
+                }
+                resolved.independent_from.clear();
+                self.graph.slots.insert(qualified.clone(), resolved);
+            }
+            let effective = &self.graph.slots[&qualified].worker;
+            if effective != &slot.worker {
+                if !slot.allow_local_replacement {
+                    return Err(format!("Slot {qualified} forbids Worker replacement"));
+                }
+                let original = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", slot.worker))
+                    .ok_or("Default Worker signature is missing")?;
+                let replacement = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{effective}"))
+                    .ok_or("Replacement Worker signature is missing")?;
+                if original.contract != replacement.contract
+                    || original.worker_input_type != replacement.worker_input_type
+                    || original.worker_output_type != replacement.worker_output_type
+                    || original.outcome_port != replacement.outcome_port
+                    || !replacement.roles.contains(&slot.role)
+                    || !replacement.effects.is_subset(&original.effects)
+                    || original.evidence.iter().any(|(port, policies)| {
+                        !policies
+                            .is_subset(replacement.evidence.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                    || original.retains.iter().any(|(port, inputs)| {
+                        !inputs.is_subset(replacement.retains.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                {
+                    return Err(format!(
+                        "Replacement Worker violates slot {qualified}'s public contract or authority"
+                    ));
+                }
+                self.graph
+                    .replaced_workers
+                    .entry(qualified.clone())
+                    .or_default()
+                    .insert(slot.worker.clone());
+            }
+            slots.insert(local.clone(), qualified);
+        }
+        if slot_mapping
+            .keys()
+            .any(|s| !definition.slots.contains_key(s))
+        {
+            return Err(format!("{scope} maps an undeclared child slot"));
+        }
+        for (local, slot) in &definition.slots {
+            for other in &slot.independent_from {
+                if slots[local] == slots[other] {
+                    return Err(format!(
+                        "{scope} maps independent slots to the same Worker slot"
+                    ));
+                }
+                self.graph
+                    .slots
+                    .get_mut(&slots[local])
+                    .expect("resolved slot")
+                    .independent_from
+                    .insert(slots[other].clone());
+            }
+        }
+        let mut values: BTreeMap<(String, String), Address> = BTreeMap::new();
+        let mut pending: BTreeMap<_, _> = definition
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.clone()))
+            .collect();
+        // Worker Notes are a node-private warm layer. A Worker node that declares an optional
+        // Notes input and binds nothing receives the Notes of the one earlier Worker node on the
+        // same effective slot, in definition order (a repair or a second pass), and nothing
+        // else: the binding is inserted here so the scheduler orders the two nodes and the
+        // cross-slot check below still validates it; two candidates are ambiguous and refused.
+        {
+            let notes_ports = |slot: &str| -> Option<(Option<String>, Option<String>)> {
+                let effective = slots.get(slot)?;
+                let declaration = self.graph.slots.get(effective)?;
+                let signature = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", declaration.worker))?;
+                let notes = |port: &PipelinePortV1| {
+                    port.artifact_type == review_core::task::WORKER_NOTES_V1
+                };
+                let input = signature
+                    .contract
+                    .inputs
+                    .iter()
+                    .find(|(_, port)| notes(port) && port.optional)
+                    .map(|(name, _)| name.clone());
+                let output = signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .find(|(_, port)| notes(port))
+                    .map(|(name, _)| name.clone());
+                Some((input, output))
+            };
+            for (index, node) in definition.nodes.iter().enumerate() {
+                let TaskOperatorV1::Worker { slot } = &node.operator else {
+                    continue;
+                };
+                let Some((Some(input_port), _)) = notes_ports(slot) else {
+                    continue;
+                };
+                if node.inputs.contains_key(&input_port) {
+                    continue;
+                }
+                let sources: Vec<(String, String)> = definition.nodes[..index]
+                    .iter()
+                    .filter_map(|earlier| {
+                        let TaskOperatorV1::Worker { slot: earlier_slot } = &earlier.operator
+                        else {
+                            return None;
+                        };
+                        if slots.get(earlier_slot) != slots.get(slot) {
+                            return None;
+                        }
+                        let (_, output_port) = notes_ports(earlier_slot)?;
+                        Some((earlier.id.clone(), output_port?))
+                    })
+                    .collect();
+                match sources.len() {
+                    0 => {}
+                    1 => {
+                        let (source, port) = sources.into_iter().next().expect("one source");
+                        pending
+                            .get_mut(&node.id)
+                            .expect("every definition node is pending")
+                            .inputs
+                            .insert(input_port, ValueRefV1::Node { node: source, port });
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{scope}.{} has more than one same-slot Notes source",
+                            node.id
+                        ));
+                    }
+                }
+            }
+        }
+        while !pending.is_empty() {
+            let mut progressed = false;
+            for local in pending.keys().cloned().collect::<Vec<_>>() {
+                let node = &pending[&local];
+                if node
+                    .when
+                    .as_ref()
+                    .is_some_and(|condition| pending.contains_key(&condition.node))
+                    || node.inputs.values().any(|v| match v {
+                        ValueRefV1::Input { .. } => false,
+                        ValueRefV1::Node { node, .. } => pending.contains_key(node),
+                    })
+                {
+                    continue;
+                }
+                let mut conditions = inherited.to_vec();
+                if let Some(condition) = &node.when {
+                    let receipts: BTreeSet<_> = values
+                        .iter()
+                        .filter(|((n, _), address)| {
+                            n == &condition.node && self.outcomes.contains(*address)
+                        })
+                        .map(|(_, address)| address.clone())
+                        .collect();
+                    if receipts.len() != 1 {
+                        return Err(format!(
+                            "{}.{} condition requires one trusted outcome port",
+                            scope, node.id
+                        ));
+                    }
+                    let source = receipts.into_iter().next().expect("one receipt");
+                    if !self.available(&source, inherited) {
+                        return Err(
+                            "Branch condition is not available on every enclosing path".into()
+                        );
+                    }
+                    let compiled = CompiledCondition {
+                        source,
+                        outcome: condition.outcome,
+                    };
+                    if conditions
+                        .iter()
+                        .any(|old| old.source == compiled.source && old.outcome != compiled.outcome)
+                    {
+                        return Err("Branch condition contradicts its enclosing path".into());
+                    }
+                    if !conditions.contains(&compiled) {
+                        conditions.push(compiled);
+                    }
+                }
+                let mut bound = BTreeMap::new();
+                for (port, reference) in &node.inputs {
+                    match resolve(reference, inputs, &values) {
+                        Some(address) => {
+                            bound.insert(port.clone(), address);
+                        }
+                        None if matches!(reference, ValueRefV1::Input {port} if definition.contract.inputs[port].optional) =>
+                            {}
+                        None => {
+                            return Err(format!("{}.{} has an unavailable input", scope, node.id));
+                        }
+                    }
+                }
+                let qualified = format!("{scope}.nodes.{}", node.id);
+                let outputs = match &node.operator {
+                    TaskOperatorV1::Call { pipeline, bindings } => {
+                        let mapped = bindings
+                            .iter()
+                            .map(|(child, parent)| {
+                                slots
+                                    .get(parent)
+                                    .cloned()
+                                    .map(|p| (child.clone(), p))
+                                    .ok_or("Unknown parent slot")
+                            })
+                            .collect::<Result<BTreeMap<_, _>, _>>()?;
+                        let (outputs, _) =
+                            self.expand(pipeline, &qualified, &bound, &mapped, &conditions)?;
+                        outputs
+                    }
+                    TaskOperatorV1::Select {} => self.select(&qualified, &bound, &conditions)?,
+                    operator => {
+                        let (signature_name, operator) = match operator {
+                            TaskOperatorV1::Worker { slot }
+                            | TaskOperatorV1::Verify { slot }
+                            | TaskOperatorV1::FixVerify { slot } => {
+                                let effective = &slots[slot];
+                                let declaration = &self.graph.slots[effective];
+                                let key = format!("worker/{}", declaration.worker);
+                                let signature = self
+                                    .context
+                                    .signatures
+                                    .get(&key)
+                                    .ok_or("Worker has no trusted signature")?;
+                                if !signature.roles.contains(&declaration.role)
+                                    || signature.worker_input_type.as_ref()
+                                        != Some(&declaration.input_type)
+                                    || signature.worker_output_type.as_ref()
+                                        != Some(&declaration.output_type)
+                                {
+                                    return Err(format!(
+                                        "Worker {} does not implement slot {slot}",
+                                        declaration.worker
+                                    ));
+                                }
+                                let operator = match operator {
+                                    TaskOperatorV1::Worker { .. } => TaskOperatorV1::Worker {
+                                        slot: effective.clone(),
+                                    },
+                                    TaskOperatorV1::Verify { .. } => TaskOperatorV1::Verify {
+                                        slot: effective.clone(),
+                                    },
+                                    _ => TaskOperatorV1::FixVerify {
+                                        slot: effective.clone(),
+                                    },
+                                };
+                                (key, operator)
+                            }
+                            TaskOperatorV1::OptimizationExperiment {
+                                baseline_slot,
+                                candidate_slot,
+                            } => (
+                                "operator/optimization-experiment".into(),
+                                TaskOperatorV1::OptimizationExperiment {
+                                    baseline_slot: slots[baseline_slot].clone(),
+                                    candidate_slot: slots[candidate_slot].clone(),
+                                },
+                            ),
+                            other => (format!("operator/{}", operator_name(other)?), other.clone()),
+                        };
+                        let composed = match &operator {
+                            TaskOperatorV1::Measure { measures } => {
+                                Some(self.measure_signature(&qualified, measures)?)
+                            }
+                            _ => None,
+                        };
+                        let signature = match &composed {
+                            Some(signature) => signature,
+                            None => self
+                                .context
+                                .signatures
+                                .get(&signature_name)
+                                .ok_or_else(|| format!("Unsupported {signature_name}"))?,
+                        };
+                        signature.contract.validate()?;
+                        if signature.retains.iter().any(|(output, inputs)| {
+                            !signature.contract.outputs.contains_key(output)
+                                || inputs
+                                    .iter()
+                                    .any(|input| !signature.contract.inputs.contains_key(input))
+                        }) {
+                            return Err(
+                                "Operator retention signature names an undeclared port".into()
+                            );
+                        }
+                        if signature
+                            .contract
+                            .inputs
+                            .keys()
+                            .any(|name| name.starts_with("af_condition_"))
+                        {
+                            return Err("Operator input uses a reserved condition port".into());
+                        }
+                        if let Some(port) = &signature.outcome_port {
+                            let receipt = signature
+                                .contract
+                                .outputs
+                                .get(port)
+                                .ok_or("Unknown outcome port")?;
+                            if receipt.optional
+                                || receipt.cardinality != review_core::PortCardinality::One
+                            {
+                                return Err("A branch outcome must be one required receipt".into());
+                            }
+                        }
+                        if !signature
+                            .effects
+                            .is_subset(&self.task.authority.allowed_effects)
+                        {
+                            return Err(format!("Task authority does not permit {signature_name}"));
+                        }
+                        for (port_name, port) in &signature.contract.inputs {
+                            match bound.get(port_name) {
+                                Some(source) => {
+                                    self.compatible(source, port)?;
+                                    self.affinity(source, &port.affinity, &bound)?;
+                                    if !port.optional && !self.available(source, &conditions) {
+                                        return Err(format!(
+                                            "{qualified} requires an unavailable branch output"
+                                        ));
+                                    }
+                                }
+                                None if port.optional => (),
+                                None => return Err(format!("{qualified} lacks {port_name}")),
+                            }
+                        }
+                        // Worker Notes are a node-private warm layer: a retry or repair node
+                        // may receive the notes of an earlier node on the SAME slot, and nothing
+                        // else. Slots declared independent are different slots by construction.
+                        for (port_name, port) in &signature.contract.inputs {
+                            if port.artifact_type != review_core::task::WORKER_NOTES_V1 {
+                                continue;
+                            }
+                            let Some(source) = bound.get(port_name) else {
+                                continue;
+                            };
+                            let TaskOperatorV1::Worker { slot } = &operator else {
+                                return Err(format!(
+                                    "{qualified} is not a Worker but consumes Worker Notes"
+                                ));
+                            };
+                            if self.worker_slot(&source.node) != Some(slot.as_str()) {
+                                return Err(format!(
+                                    "{qualified} consumes Worker Notes from another slot; Notes never cross slots"
+                                ));
+                            }
+                        }
+                        if bound
+                            .keys()
+                            .any(|p| !signature.contract.inputs.contains_key(p))
+                        {
+                            return Err(format!("{qualified} binds an unknown operator input"));
+                        }
+                        if matches!(
+                            operator,
+                            TaskOperatorV1::RepairAccept {} | TaskOperatorV1::ReviewContinue {}
+                        ) && !bound.contains_key("verification")
+                        {
+                            return Err(
+                                "Repair acceptance must bind its reserved fix verifier".into()
+                            );
+                        }
+                        if matches!(operator, TaskOperatorV1::ReviewReduce {})
+                            && !bound.keys().eq(signature.contract.inputs.keys())
+                        {
+                            return Err(format!(
+                                "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
+                            ));
+                        }
+                        if matches!(operator, TaskOperatorV1::ReviewAccept {})
+                            && !self.graph.calls.values().any(|call| {
+                                call.coverage.get("reviewed") == bound.get("review")
+                                    && call
+                                        .outputs
+                                        .values()
+                                        .any(|address| Some(address) == bound.get("review"))
+                            })
+                        {
+                            return Err("Implementation requires a child Pipeline's public reviewed coverage".into());
+                        }
+                        if let TaskOperatorV1::Compare { objective } = &operator {
+                            self.require_comparable(&qualified, objective, signature, &bound)?;
+                        }
+                        self.require_node_capacity()?;
+                        let paid = matches!(
+                            operator,
+                            TaskOperatorV1::Worker { .. }
+                                | TaskOperatorV1::Verify { .. }
+                                | TaskOperatorV1::FixVerify { .. }
+                                | TaskOperatorV1::Check { .. }
+                                | TaskOperatorV1::DocumentCheck {}
+                                | TaskOperatorV1::ReportCheck {}
+                                | TaskOperatorV1::Measure { .. }
+                        );
+                        if paid && signature.attempt.is_none() {
+                            return Err(format!("{signature_name} has no bounded Attempt cost"));
+                        }
+                        if let TaskOperatorV1::Check {
+                            checks,
+                            remote_checks,
+                        } = &operator
+                        {
+                            for check in checks.iter().chain(remote_checks) {
+                                if self
+                                    .context
+                                    .signatures
+                                    .get(&format!("operator/check/{check}"))
+                                    != Some(signature)
+                                {
+                                    return Err(format!(
+                                        "Pipeline {} node {}: check {check} is not installed under the captured check policy",
+                                        definition.name, node.id
+                                    ));
+                                }
+                            }
+                            // Where a check runs is the pipeline's choice, but what its remote
+                            // form is belongs to the policy (ADR-0140): only a check declared
+                            // with a `remote` table installs its remote signature.
+                            for check in remote_checks {
+                                if !self.context.signatures.contains_key(&format!(
+                                    "{REMOTE_CHECK_SIGNATURE_PREFIX}{check}"
+                                )) {
+                                    return Err(format!(
+                                        "Pipeline {} node {} lists check {check} in \
+                                         `remote_checks`, but the captured code policy declares \
+                                         it without a `remote` table; declare \
+                                         [checks.{check}.remote] or move it to `checks`",
+                                        definition.name, node.id
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(cost) = &signature.attempt {
+                            let slot = match &operator {
+                                TaskOperatorV1::Worker { slot }
+                                | TaskOperatorV1::Verify { slot }
+                                | TaskOperatorV1::FixVerify { slot } => self.graph.slots.get(slot),
+                                _ => None,
+                            };
+                            self.graph.allowances.insert(
+                                qualified.clone(),
+                                NodeAllowance {
+                                    tokens_per_attempt: cost.tokens,
+                                    wall_ms_per_attempt: cost.wall_ms,
+                                    max_attempts: slot.map_or(1, |s| s.max_attempts),
+                                    verification_attempts: if matches!(
+                                        operator,
+                                        TaskOperatorV1::Verify { .. }
+                                            | TaskOperatorV1::FixVerify { .. }
+                                            | TaskOperatorV1::Check { .. }
+                                            | TaskOperatorV1::DocumentCheck {}
+                                            | TaskOperatorV1::ReportCheck {}
+                                    ) || signature
+                                        .evidence
+                                        .values()
+                                        .any(|policies| !policies.is_empty())
+                                    {
+                                        slot.map_or(1, |s| s.min_attempts.max(1))
+                                    } else {
+                                        0
+                                    },
+                                },
+                            );
+                        }
+                        let measures = matches!(operator, TaskOperatorV1::Measure { .. });
+                        self.graph.nodes.insert(
+                            qualified.clone(),
+                            CompiledNode {
+                                operator: CompiledOperator::Primitive {
+                                    operator,
+                                    signature: signature_name,
+                                },
+                                contract: signature.contract.clone(),
+                                inputs: bound.clone(),
+                                conditions: conditions.clone(),
+                            },
+                        );
+                        let mut outputs = BTreeMap::new();
+                        for (port_name, port) in &signature.contract.outputs {
+                            let address = Address {
+                                node: qualified.clone(),
+                                port: port_name.clone(),
+                            };
+                            let lineage = match &port.affinity {
+                                PortAffinityV1::Unbound {} => Lineage::Root(address.qualified()),
+                                PortAffinityV1::SameAs { input } => self
+                                    .lineage
+                                    .get(bound.get(input).ok_or("Missing lineage input")?)
+                                    .cloned()
+                                    .ok_or("Missing lineage")?,
+                                PortAffinityV1::DerivedFrom { input } => Lineage::Derived(
+                                    address.clone(),
+                                    Box::new(
+                                        self.lineage
+                                            .get(bound.get(input).ok_or("Missing lineage input")?)
+                                            .cloned()
+                                            .ok_or("Missing lineage")?,
+                                    ),
+                                ),
+                            };
+                            let mut retained = BTreeSet::from([address.clone()]);
+                            let mut evidence = signature
+                                .evidence
+                                .get(port_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            if let Some(inputs) = signature.retains.get(port_name) {
+                                for input in inputs {
+                                    let Some(source) = bound.get(input) else {
+                                        continue;
+                                    };
+                                    retained.insert(source.clone());
+                                    if let Some(ancestors) = self.retained.get(source) {
+                                        retained.extend(ancestors.iter().cloned());
+                                    }
+                                    if self.lineage.get(source) == Some(&lineage) {
+                                        evidence.extend(
+                                            self.evidence
+                                                .get(source)
+                                                .into_iter()
+                                                .flatten()
+                                                .cloned(),
+                                        );
+                                    }
+                                }
+                            }
+                            self.lineage.insert(address.clone(), lineage);
+                            self.retained.insert(address.clone(), retained);
+                            self.availability
+                                .insert(address.clone(), conditions.clone());
+                            // Every Measurement of a measure node is its own outcome receipt;
+                            // `when` still needs the node to have exactly one.
+                            if signature.outcome_port.as_ref() == Some(port_name) || measures {
+                                self.outcomes.insert(address.clone());
+                            }
+                            self.evidence.insert(address.clone(), evidence);
+                            outputs.insert(port_name.clone(), address);
+                        }
+                        outputs
+                    }
+                };
+                for (port, address) in outputs {
+                    values.insert((local.clone(), port), address);
+                }
+                pending.remove(&local);
+                progressed = true;
+            }
+            if !progressed {
+                return Err(format!("Pipeline {name} contains a dependency cycle"));
+            }
+        }
+        // A call must retain all verification reservations plus its unconditional paid work.
+        // A declared child limit cannot make repair itself consume the protected verifier slot.
+        let prefix = format!("{scope}.nodes.");
+        let required_attempts = self
+            .graph
+            .allowances
+            .iter()
+            .filter(|(node, _)| node.starts_with(&prefix))
+            .try_fold(0u32, |total, (node, allowance)| {
+                let mandatory = if allowance.verification_attempts > 0 {
+                    allowance.verification_attempts
+                } else {
+                    u32::from(self.graph.nodes[node].conditions == inherited)
+                };
+                total
+                    .checked_add(mandatory)
+                    .ok_or("Pipeline minimum Attempt count overflow")
+            })?;
+        if required_attempts > definition.max_attempts {
+            self.resource_refusals.push(format!("Pipeline {name} cannot retain its verification reserves and mandatory work within {} Attempts",definition.max_attempts));
+        }
+        let mut outputs = BTreeMap::new();
+        let mut coverage = BTreeMap::new();
+        for (public, reference) in &definition.outputs {
+            let address = resolve(reference, inputs, &values).ok_or("Unavailable public output")?;
+            let contract = &definition.contract.outputs[public];
+            self.compatible(&address, contract)?;
+            self.affinity(&address, &contract.affinity, inputs)?;
+            if !contract.optional && !self.available(&address, inherited) {
+                return Err(format!(
+                    "Required public output {public} is unavailable on some paths"
+                ));
+            }
+            for obligation in &contract.covers {
+                let producer = resolve(&definition.coverage[obligation], inputs, &values)
+                    .ok_or("Unavailable evidence output")?;
+                if producer != address
+                    && !self
+                        .retained
+                        .get(&address)
+                        .is_some_and(|retained| retained.contains(&producer))
+                {
+                    return Err(format!(
+                        "Public output {public} does not retain coverage {obligation}"
+                    ));
+                }
+                if self.evidence.get(&producer).is_none_or(BTreeSet::is_empty) {
+                    return Err(format!("Coverage {obligation} has no trusted producer"));
+                }
+                coverage.insert(obligation.clone(), producer);
+            }
+            outputs.insert(public.clone(), address);
+        }
+        self.graph.calls.insert(
+            scope.into(),
+            CompiledCall {
+                pipeline: name.into(),
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                coverage: coverage.clone(),
+                max_attempts: definition.max_attempts,
+                max_parallel: definition.max_parallel,
+            },
+        );
+        self.stack.pop();
+        Ok((outputs, coverage))
+    }
+}
+
+fn resolve(
+    reference: &ValueRefV1,
+    inputs: &BTreeMap<String, Address>,
+    values: &BTreeMap<(String, String), Address>,
+) -> Option<Address> {
+    match reference {
+        ValueRefV1::Input { port } => inputs.get(port).cloned(),
+        ValueRefV1::Node { node, port } => values.get(&(node.clone(), port.clone())).cloned(),
+    }
+}
+
+fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
+    match operator {
+        TaskOperatorV1::OptimizationProject {} => Ok("optimization-project"),
+        TaskOperatorV1::OptimizationProfile {} => Ok("optimization-profile"),
+        TaskOperatorV1::OptimizationPrepare {} => Ok("optimization-prepare"),
+        TaskOperatorV1::OptimizationFinalize {} => Ok("optimization-finalize"),
+        TaskOperatorV1::OptimizationExperiment { .. } => Ok("optimization-experiment"),
+        TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
+        TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
+        TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
+        TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
+        TaskOperatorV1::ReportSeal {} => Ok("report-seal"),
+        TaskOperatorV1::ReportCheck {} => Ok("report-check"),
+        TaskOperatorV1::ReportAccept {} => Ok("report-accept"),
+        TaskOperatorV1::Seal {} => Ok("seal"),
+        TaskOperatorV1::Accept {} => Ok("accept"),
+        TaskOperatorV1::Check { .. } => Ok("check"),
+        TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
+        TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
+        TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
+        TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
+        TaskOperatorV1::RepairAccept {} => Ok("repair-accept"),
+        TaskOperatorV1::ReviewContinue {} => Ok("review-continue"),
+        TaskOperatorV1::Measure { .. } => Ok("measure"),
+        TaskOperatorV1::Compare { .. } => Ok("compare"),
+        _ => Err("Operator requires package expansion".into()),
+    }
+}
+
+pub fn condition_input(index: usize) -> String {
+    format!("af_condition_{index}")
+}
+
+fn outcome_name(outcome: ReceiptOutcomeV1) -> &'static str {
+    match outcome {
+        ReceiptOutcomeV1::Passed => "passed",
+        ReceiptOutcomeV1::Failed => "failed",
+        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    }
+}
+
+/// One immutable installed sequence outside the Round DAG. Its allowance exists before
+/// activation; a protected Store phase supplies the only admissible invocation input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledReviewIntegrationV1 {
+    pub node: String,
+    pub sequence_policy_id: String,
+    pub allowance: NodeAllowance,
+}
+impl CompiledReviewIntegrationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.len() > 4096
+            || !self.node.split('.').all(review_core::task::is_name)
+            || !review_core::is_digest(&self.sequence_policy_id)
+            || self.allowance.tokens_per_attempt != 0
+            || self.allowance.max_attempts != 1
+            || self.allowance.verification_attempts != 0
+            || self.allowance.wall_ms_per_attempt == 0
+        {
+            return Err("Integration sequence requires an exact node, policy and one zero-token bounded Attempt".into());
+        }
+        Ok(())
+    }
+    pub fn definition(&self) -> CompiledNode {
+        let port = |kind: &str, affinity| PipelinePortV1 {
+            artifact_type: kind.into(),
+            cardinality: review_core::PortCardinality::One,
+            optional: false,
+            affinity,
+            root_default: None,
+            covers: BTreeSet::new(),
+        };
+        CompiledNode {
+            operator: CompiledOperator::ReviewIntegrationChecks {
+                sequence_policy_id: self.sequence_policy_id.clone(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "phase".into(),
+                    port(
+                        review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
+                        PortAffinityV1::Unbound {},
+                    ),
+                )]),
+                outputs: BTreeMap::from([(
+                    "checks".into(),
+                    port(
+                        review_core::contract::INTEGRATION_CHECKS_V1,
+                        PortAffinityV1::SameAs {
+                            input: "phase".into(),
+                        },
+                    ),
+                )]),
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        }
+    }
+}
+impl CompiledTask {
+    pub fn execution_allowances(&self) -> Result<BTreeMap<String, NodeAllowance>, String> {
+        let mut allowances = self.allowances.clone();
+        if let Some(phase) = &self.review_integration {
+            phase.validate()?;
+            if self.nodes.contains_key(&phase.node)
+                || self.owned_children.contains_key(&phase.node)
+                || allowances
+                    .insert(phase.node.clone(), phase.allowance.clone())
+                    .is_some()
+            {
+                return Err("Dormant Integration node collides with the Round graph".into());
+            }
+        }
+        Ok(allowances)
+    }
+}

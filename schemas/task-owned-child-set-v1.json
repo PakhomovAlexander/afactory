@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-owned-child-set:1",
+  "title": "TaskOwnedChildSet@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "parent_invocation_id",
+    "source_artifact_id",
+    "children"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "parent_invocation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "source_artifact_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "children": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "source_item_id",
+          "invocation_id"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "source_item_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "invocation_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      },
+      "uniqueItems": true
+    }
+  },
+  "$comment": "Data grants no authority. The Store validates exact captured membership and canonical order. Rust also rejects repeated node, item, or invocation identities across distinct entries; JSON Schema cannot express field-wise uniqueness."
+}

@@ -1,0 +1,141 @@
+//! Fresh writer liveness for heartbeat polling, without loading execution authority.
+use super::*;
+
+impl EventStore {
+    /// Read the exact durable writer/epoch, expiry and latest policy clock in one SQLite
+    /// snapshot. This grants no dispatch, publication, renewal or recovery authority. All of
+    /// those operations still validate the complete Task projection and its current CAS refs.
+    /// No lease fact or integrity result is retained between calls.
+    pub fn task_lease_state(&self, lease: &TaskLease) -> Result<u64, StoreError> {
+        self.task_lease_state_at(lease, now()?)
+    }
+
+    /// `task_lease_state` observed at `now_unix_ms`, the clock its caller read.
+    pub(super) fn task_lease_state_at(
+        &self,
+        lease: &TaskLease,
+        now_unix_ms: u64,
+    ) -> Result<u64, StoreError> {
+        let run_id = task_run_id(lease.task_id())?;
+        // Include the latest lease change, the latest transition of any kind and the stream
+        // tail, so a changed writer, future policy clock or foreign event cannot hide behind
+        // an earlier lease row.
+        let mut query = self.conn.prepare(
+            "WITH lease AS (
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+                AND json_extract(payload,'$.change.kind') IN
+                    ('opened','lease_taken','lease_renewed','lease_released')
+                ORDER BY sequence DESC LIMIT 1
+             ), transition AS (
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
+                ORDER BY sequence DESC LIMIT 1
+             ), tail AS (
+                SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1
+             )
+             SELECT sequence,type,payload,node_id,attempt_id,causation_id,correlation_id
+             FROM events WHERE run_id=?1 AND sequence IN
+                (0,(SELECT sequence FROM lease),(SELECT sequence FROM transition),
+                   (SELECT sequence FROM tail)) ORDER BY sequence",
+        )?;
+        let rows = query.query_map([&run_id], |row| {
+            Ok((
+                crate::store::u64_column(row, 0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                (3..7).all(|column| {
+                    row.get::<_, Option<String>>(column)
+                        .is_ok_and(|v| v.is_none())
+                }),
+            ))
+        })?;
+        let mut expiry = None;
+        let mut clock = 0;
+        let mut writer = None;
+        let mut genesis = false;
+        for row in rows {
+            let (sequence, kind, raw, plain) = row?;
+            if !plain {
+                return Err(conflict(
+                    "Task lease observation has foreign event metadata",
+                ));
+            }
+            let event_type = kind
+                .parse::<EventType>()
+                .map_err(|e| conflict(e.to_string()))?;
+            let payload = serde_json::from_str(&raw)?;
+            let event = RunEvent {
+                event_id: String::new(),
+                run_id: run_id.clone(),
+                sequence,
+                event_type,
+                occurred_at: String::new(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: None,
+                artifact_refs: vec![],
+                payload,
+            };
+            let value = read_task_transition(&event)?;
+            if sequence == 0 {
+                if !matches!(value.change, TaskChangeV1::Opened { .. }) || value.epoch != 1 {
+                    return Err(conflict("Invalid Task lease genesis"));
+                }
+                genesis = true;
+            }
+            let owner = (value.writer, value.epoch);
+            match value.change {
+                TaskChangeV1::Opened {
+                    lease_until_unix_ms,
+                    ..
+                }
+                | TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms,
+                }
+                | TaskChangeV1::LeaseRenewed {
+                    lease_until_unix_ms,
+                } => {
+                    expiry = Some(lease_until_unix_ms);
+                    writer = Some(owner);
+                }
+                TaskChangeV1::LeaseReleased {} => {
+                    expiry = Some(value.now_unix_ms);
+                    writer = Some(owner);
+                }
+                _ if writer.as_ref() != Some(&owner) => {
+                    return Err(conflict(format!(
+                        "Task writer lease is expired or fenced: event {sequence} was written by \
+                         {} epoch {}, not the lease holder",
+                        owner.0, owner.1
+                    )));
+                }
+                _ => {}
+            }
+            if value.now_unix_ms < clock {
+                return Err(conflict("Task lease observation clock moved backwards"));
+            }
+            clock = value.now_unix_ms;
+        }
+        let until = expiry
+            .filter(|_| genesis)
+            .ok_or_else(|| conflict("Unknown Task lease"))?;
+        if writer.as_ref() != Some(&(lease.writer.clone(), lease.epoch)) {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: the lease is held by {:?}, not {} \
+                 epoch {}",
+                writer, lease.writer, lease.epoch
+            )));
+        }
+        // The holder's clock may have been read before its own heartbeat recorded a later
+        // renewal through its other connection: it is observed at the last recorded time, as
+        // its transitions are judged (ADR-0128). Every other writer was refused above.
+        let time = now_unix_ms.max(clock);
+        if time >= until {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: observed at {now_unix_ms}, expiry \
+                 {until}, last recorded {clock}"
+            )));
+        }
+        Ok(until)
+    }
+}
