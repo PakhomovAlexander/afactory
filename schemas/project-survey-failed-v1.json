@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey-failed:1",
+  "title": "SurveyFailed@1",
+  "description": "A Project Store event (ADR-0159): a Survey of `head` could not be recorded. The reason is af's own sentence, never a path or an email.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "head",
+    "reason",
+    "recorded_unix_ms"
+  ],
+  "properties": {
+    "head": {
+      "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "allOf": [
+        {
+          "pattern": "\\S"
+        },
+        {
+          "pattern": "^[^@\\x00-\\x1f\\x7f-\\x9f]*$"
+        }
+      ]
+    },
+    "recorded_unix_ms": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+    }
+  }
+}

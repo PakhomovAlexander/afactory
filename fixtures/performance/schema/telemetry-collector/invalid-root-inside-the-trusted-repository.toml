@@ -1,0 +1,20 @@
+# A telemetry collector configuration that must be refused (ADR-0197): its durable root lies inside the trusted repository.
+
+schema = "af.perf-telemetry-collector/1"
+repository = "PakhomovAlexander/afactory"
+workflow = "performance-telemetry.yml"
+api_url = "https://api.github.com"
+token_env = "AF_PERF_TELEMETRY_TOKEN"
+root = "/var/lib/af-perf-telemetry/afactory.git/history"
+authority_repository = "/var/lib/af-perf-telemetry/afactory.git"
+trusted_refs = ["refs/heads/main"]
+# Completed runs created within this many days are listed every cycle, oldest first, at most
+# `runs_max` of them; a run whose result is kept is never downloaded again.
+lookback_days = 13
+collection_seconds = 1800
+runs_max = 200
+artifact_bytes_max = 268435456
+# The durable root's bounds: bytes, results, and how long a result is kept.
+bytes_max = 34359738368
+results_max = 2048
+retention_days = 365

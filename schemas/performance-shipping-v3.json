@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-shipping:3",
+  "title": "af.perf-shipping/3",
+  "description": "A shipping-budget demonstration (ADR-0183, ADR-0184) under one reviewed suite: every run once, with its bundle and binary identity; every planned measured candidate slot of each budget's instances on each named environment as a sample, a failure or missing, samples checked strictly against the limit, the hosts and incomplete runs, and whether at least the minimum complete samples met every budget.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-shipping/3"
+    },
+    "suite_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "demonstrated",
+        "missed",
+        "pending"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "$ref": "#/$defs/id"
+          },
+          "plan_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "run_bundle": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "builds_sha256": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "candidate_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "candidate_binary": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "environment_id": {
+            "$ref": "#/$defs/id"
+          },
+          "recipe_id": {
+            "$ref": "#/$defs/id"
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "synthetic",
+              "mixed",
+              "none"
+            ]
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/digest"
+            },
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "run_id",
+          "plan_digest",
+          "run_bundle",
+          "builds_sha256",
+          "candidate_sha",
+          "candidate_binary",
+          "environment_id",
+          "recipe_id",
+          "provenance",
+          "hosts"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "budgets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "budget_id": {
+            "$ref": "#/$defs/id"
+          },
+          "environment_id": {
+            "$ref": "#/$defs/id"
+          },
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "limit": {
+            "$ref": "#/$defs/decimal"
+          },
+          "unit": {
+            "const": "ms"
+          },
+          "minimum_samples": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "candidate_sha": {
+                  "$ref": "#/$defs/git_sha"
+                },
+                "candidate_binary": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                },
+                "recipe_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "host_fingerprint": {
+                  "$ref": "#/$defs/digest"
+                },
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "planned": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "missing": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "samples": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "minItems": 0,
+                  "maxItems": 4096
+                },
+                "max": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "median": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "p95": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                },
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "met",
+                    "missed",
+                    "insufficient",
+                    "incomplete"
+                  ]
+                },
+                "runs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "minItems": 0,
+                  "maxItems": 256,
+                  "uniqueItems": true
+                },
+                "incomplete_runs": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "minItems": 0,
+                  "maxItems": 256,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "candidate_sha",
+                "candidate_binary",
+                "recipe_id",
+                "host_fingerprint",
+                "host",
+                "planned",
+                "failed",
+                "missing",
+                "samples",
+                "max",
+                "median",
+                "p95",
+                "result",
+                "runs",
+                "incomplete_runs"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 64
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "minItems": 0,
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missed",
+              "insufficient",
+              "incomplete"
+            ]
+          }
+        },
+        "required": [
+          "budget_id",
+          "environment_id",
+          "instance_id",
+          "limit",
+          "unit",
+          "minimum_samples",
+          "targets",
+          "runs",
+          "result"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 1024
+    }
+  },
+  "required": [
+    "schema",
+    "suite_sha256",
+    "policy_digest",
+    "status",
+    "reasons",
+    "runs",
+    "budgets"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    }
+  }
+}

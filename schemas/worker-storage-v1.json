@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/worker-storage-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "runtime", "name"],
+  "properties": {
+    "schema": {"const": "af.worker-storage/1"},
+    "runtime": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\u0000-\\u001f]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 128,
+      "pattern": "^af-storage-[A-Za-z0-9-]+$"
+    }
+  }
+}

@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-release-claim:1",
+  "title": "af.perf-release-claim/1",
+  "description": "The immutable claim a release handoff writes before any sample (ADR-0180): the deduplication identity (upstream run, tag and SHA, never the attempt) and its canonical key, the verified upstream workflow and publication attempt, the published release, the claiming run and its laboratory runs, and an explicit remeasurement's parent claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-release-claim/1"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "release",
+        "remeasure"
+      ]
+    },
+    "key": {
+      "$ref": "#/$defs/digest"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "maxLength": 201,
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "upstream_run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "tag": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-rc\\.(0|[1-9][0-9]{0,8}))?$"
+        },
+        "sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "repository",
+        "upstream_run_id",
+        "tag",
+        "sha"
+      ]
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workflow_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "workflow_path": {
+          "const": ".github/workflows/release.yml"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "published_in_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "workflow_id",
+        "workflow_path",
+        "run_attempt",
+        "published_in_attempt"
+      ]
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "prerelease": {
+          "type": "boolean"
+        },
+        "published_at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id",
+        "prerelease",
+        "published_at"
+      ]
+    },
+    "claimant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "maxLength": 201,
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "workflow_path": {
+          "const": ".github/workflows/performance-release.yml"
+        },
+        "actions_run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "actions_run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "lab_run_prefix": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^gh[1-9][0-9]{0,15}_a[1-9][0-9]{0,3}_$"
+        }
+      },
+      "required": [
+        "repository",
+        "workflow_path",
+        "actions_run_id",
+        "actions_run_attempt",
+        "lab_run_prefix"
+      ]
+    },
+    "remeasure_of": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "$ref": "#/$defs/digest"
+            },
+            "claim_artifact_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            },
+            "actions_run_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            },
+            "lab_run_id": {
+              "$ref": "#/$defs/id"
+            }
+          },
+          "required": [
+            "key",
+            "claim_artifact_id",
+            "actions_run_id",
+            "lab_run_id"
+          ]
+        }
+      ]
+    },
+    "claimed_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "key",
+    "identity",
+    "upstream",
+    "release",
+    "claimant",
+    "remeasure_of",
+    "claimed_unix_ms"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

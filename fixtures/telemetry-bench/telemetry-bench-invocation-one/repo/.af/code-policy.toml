@@ -1,0 +1,11 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 5000
+require_container = false
+
+[checks.syntax]
+name = "syntax"
+required = true
+
+[checks.syntax.command]
+program = "/usr/bin/true"
+args = []

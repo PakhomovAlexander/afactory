@@ -1,0 +1,16 @@
+{
+  "schema": "af.perf-dev-flow-contract/1",
+  "tasks": ["smoke-0", "smoke-1", "smoke-2"],
+  "expected_exit_codes": [3, 3, 0],
+  "dependency_closure": {
+    "smoke-app": ["smoke-app"],
+    "smoke-logic": ["smoke-logic", "smoke-app"],
+    "smoke-support": ["smoke-support", "smoke-logic", "smoke-app"]
+  },
+  "round_changes": ["smoke-app", "smoke-logic", "smoke-support"],
+  "final_semantics": {
+    "smoke_support::base": 2,
+    "smoke_logic::calculate": 4,
+    "smoke_app::feature": 5
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "af.perf-probe-request/2",
+  "case_id": "canonical_serialize",
+  "instance_id": "canonical_serialize__package_issue_255_large",
+  "contract_id": "canonical_serialize_v1",
+  "parameters": {
+    "package": "issue_255_large"
+  },
+  "repetitions": 1,
+  "scratch": "/tmp/af-perf/sample-0001",
+  "fixture_bytes": 5605230,
+  "seed": null
+}

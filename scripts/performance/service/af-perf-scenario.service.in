@@ -1,0 +1,15 @@
+# INERT example; replace @OWNER@ and review all paths before operator installation.
+[Unit]
+Description=AF bounded Scenario native lab submission and verification
+
+[Service]
+Type=oneshot
+User=@OWNER@
+UMask=0077
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/performance/scenario.py submit --config /etc/af-perf/scenario.json
+ExecStartPost=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/performance/scenario.py verify --config /etc/af-perf/scenario.json
+TimeoutStartSec=15min
+TimeoutStopSec=120
+KillMode=control-group
+PrivateTmp=no
+PrivateMounts=no

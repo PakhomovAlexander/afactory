@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-archive-status:1",
+  "title": "af.perf-archive-status/1",
+  "description": "An archive's operational status (ADR-0172): capacity, usage, runs, collection lag and the last successful collection, transport expiry risk and health problems.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-archive-status/1"
+    },
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "capacity_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "used_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "available_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "filesystem_free_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "runs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "pinned": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "objects": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "last_collection": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sequence": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 999999999999
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "imported",
+                "already_archived",
+                "refused",
+                "capacity_exhausted",
+                "transport_failed"
+              ]
+            },
+            "ended_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "sequence",
+            "status",
+            "ended_unix_ms",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "last_successful_collection_unix_ms": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        }
+      ]
+    },
+    "collection_lag_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "last": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          ]
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          ]
+        }
+      },
+      "required": [
+        "last",
+        "max"
+      ]
+    },
+    "transport": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "actions_run_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740992
+          },
+          "artifact_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740992
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expires_unix_ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740992
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "downloaded",
+              "expired",
+              "refused",
+              "not_collected"
+            ]
+          },
+          "risk": {
+            "type": "string",
+            "enum": [
+              "expiring",
+              "expired",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "actions_run_id",
+          "artifact_id",
+          "name",
+          "expires_unix_ms",
+          "state",
+          "risk"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "failed"
+          ]
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "capacity_exhausted",
+                  "capacity_low",
+                  "collection_failed",
+                  "no_collection",
+                  "transport_expired",
+                  "transport_expiring"
+                ]
+              },
+              "detail": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "code",
+              "detail"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "status",
+        "problems"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "now_unix_ms",
+    "capacity_bytes",
+    "used_bytes",
+    "available_bytes",
+    "filesystem_free_bytes",
+    "runs",
+    "pinned",
+    "objects",
+    "last_collection",
+    "last_successful_collection_unix_ms",
+    "collection_lag_ms",
+    "transport",
+    "health"
+  ]
+}

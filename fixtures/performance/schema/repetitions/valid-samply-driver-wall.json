@@ -1,0 +1,33 @@
+{
+  "schema": "af.perf-repetitions/1",
+  "instance_id": "canonical_serialize_small__package_small_envelope",
+  "side": "candidate",
+  "attempt": 1,
+  "tool": "samply",
+  "binary_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "boundary": "driver_wall",
+  "repetitions": [
+    {
+      "index": 1,
+      "completed": true,
+      "recording": {
+        "path": "captures/canonical_serialize_small__package_small_envelope/candidate/1/rep-0001.json.gz",
+        "bytes": 2049,
+        "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "observer": null,
+      "region_ns": null
+    },
+    {
+      "index": 2,
+      "completed": true,
+      "recording": {
+        "path": "captures/canonical_serialize_small__package_small_envelope/candidate/1/rep-0002.json.gz",
+        "bytes": 2050,
+        "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "observer": null,
+      "region_ns": null
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "schema": "af/telemetry-context@1",
+  "directory": "<root>",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "6767676767676767676767676767676767676767676767676767676767676767",
+    "run_id": "task:sha256:9898989898989898989898989898989898989898989898989898989898989898",
+    "trace_id": "<trace>",
+    "kind": "task",
+    "history": "prefix:1",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–1"
+  },
+  "attempt": "golden-content-attempt-1",
+  "state": "captured",
+  "compose_span_id": "02898a9d195c61b3",
+  "level": "content",
+  "manifest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "rendered_bytes": 420,
+  "estimated_tokens": "105",
+  "layers": [
+    "source",
+    "output_schemas",
+    "reply_format"
+  ],
+  "input": {
+    "event": "gen_ai.content.input",
+    "span_id": "02898a9d195c61b3",
+    "segment_id": "1700000400000-4246-2b3c4d5e",
+    "seq": 9,
+    "time_unix_ns": "1700000400007000000",
+    "occurrence_id": "1700000400000-4246-2b3c4d5e:8",
+    "digest": "sha256:735a7d3d98e961ed6b22fb107cc132cb9fc0755cb56d20a65edab8f3ccc5bd7b",
+    "source_digest": "sha256:735a7d3d98e961ed6b22fb107cc132cb9fc0755cb56d20a65edab8f3ccc5bd7b",
+    "original_bytes": 420,
+    "retained_bytes": 420,
+    "truncated": false,
+    "media_type": "application/json",
+    "state": "stored",
+    "content": "{\"schema\":\"af.worker-request/1\",\"instructions\":\"Review the lighthouse.\",\"inputs\":{\"source\":[{\"artifact_id\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_type\":\"af/SourceTree@1\",\"snapshot_id\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"payload\":{\"snapshot_id\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}]},\"feedback\":[]}"
+  },
+  "system": {
+    "event": "gen_ai.content.system",
+    "span_id": "02898a9d195c61b3",
+    "segment_id": "1700000400000-4246-2b3c4d5e",
+    "seq": 12,
+    "time_unix_ns": "1700000400008000000",
+    "occurrence_id": "1700000400000-4246-2b3c4d5e:11",
+    "digest": "sha256:e496f3beb304003595bc5015aff43f134ac3a2f0b0ef929441dc5b74379d33e7",
+    "source_digest": "sha256:e496f3beb304003595bc5015aff43f134ac3a2f0b0ef929441dc5b74379d33e7",
+    "original_bytes": 276,
+    "retained_bytes": 276,
+    "truncated": false,
+    "media_type": "application/json",
+    "state": "stored",
+    "content": "{\"entries\":[{\"name\":\"source\",\"required_by\":\"declared input port\",\"artifact_id\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_type\":\"af/SourceTree@1\",\"rendered_bytes\":200,\"estimated_tokens\":50}],\"rendered_bytes\":420,\"estimated_tokens\":105}"
+  },
+  "unreadable": []
+}

@@ -1,0 +1,4 @@
+markdownlint-cli2 v0.22.1 (markdownlint v0.40.0)
+Finding: docs/design/issue-triage.md docs/issue-triage-runner.md changelog.d/issue-triage-captured-paragraph.md !node_modules !**/node_modules !.git
+Linting: 3 file(s)
+Summary: 0 error(s)

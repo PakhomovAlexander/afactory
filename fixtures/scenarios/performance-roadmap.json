@@ -1,0 +1,45 @@
+{
+  "schema": "af/scenario-roadmap-proposal@2",
+  "id": "performance",
+  "objective": "Reduce Store replay cost while preserving checked history",
+  "horizon": {
+    "start_unix_ms": 1793577600000,
+    "end_unix_ms": 1796169600000
+  },
+  "max_tokens": 100000,
+  "goals": [
+    {
+      "id": "store-replay",
+      "objective": "Reduce replay latency for the bounded Store workload",
+      "partition": "product_component",
+      "component": "Store replay",
+      "scope": "Current-release Task event replay",
+      "workload": "A captured Store with 1000 finished Tasks",
+      "metric": {
+        "name": "p95 replay latency",
+        "direction": "decrease",
+        "unit": "milliseconds"
+      },
+      "acceptance": [
+        "At least 10 percent lower p95 on the same captured workload"
+      ],
+      "guardrails": [
+        "Identical replayed Task identities, accounting and acceptance"
+      ],
+      "priority": 1,
+      "dependencies": [],
+      "conflicts": [],
+      "estimated_tokens": null,
+      "proposed_eligible": true,
+      "deferral_reason": null,
+      "remaining_work": [
+        "Research, implement if worthwhile, experiment, verify and report this goal"
+      ],
+      "sources": [],
+      "loop_tokens": 10000
+    }
+  ],
+  "daily_tokens": 20000,
+  "rolling_tokens": 50000,
+  "rolling_window_ms": 604800000
+}

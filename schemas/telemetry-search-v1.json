@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-search:1",
+  "title": "af/telemetry-search@1",
+  "description": "`af telemetry search TEXT --json` (design §6 Index, §9, §10; ADR-0153): the retained text blobs whose redacted text holds `query` as one phrase, from the FTS5 table `content_fts` that ingest keeps when `[telemetry] content_index = true`, at most 50 blobs in digest order (`more` when there are others) and at most 20 occurrences each (`more_occurrences`). Each match gives the blob's digest, a bounded excerpt (at most 320 bytes) of its redacted text around the phrase, and its stored occurrences: the event that names it, its time, its span and the span path from the root, its run and Store, and the kernel Attempt it belongs to. `--since D` keeps occurrences at or after `since_unix_ns`; `--run RUN` keeps one run's (`run_id`). The command is refused, exit 2, below `[telemetry] level = \"content\"` or with `content_index = false`, so this document exists only at `content`. Telemetry ids carry no authority, and no Worker ever reads this content (ADR-0153).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "query",
+    "matches",
+    "more",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-search@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "query": {
+      "type": "string"
+    },
+    "since_unix_ns": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "matches": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "excerpt",
+          "occurrences",
+          "more_occurrences"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 320
+          },
+          "occurrences": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "occurrence_id",
+                "event",
+                "time_unix_ns",
+                "span_id",
+                "span_path"
+              ],
+              "properties": {
+                "occurrence_id": {
+                  "type": "string"
+                },
+                "event": {
+                  "type": "string"
+                },
+                "time_unix_ns": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "span_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{16}$"
+                },
+                "span_path": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "store_id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "attempt_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "more_occurrences": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "more": {
+      "type": "boolean"
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "smoke-0",
+  "kind": "implement",
+  "goal": "Add the smoke application's feature and prove it with a real test.",
+  "pipeline": {
+    "name": "default-light/implementation",
+    "fallback": "refuse"
+  },
+  "strategy": "small",
+  "facts": {
+    "standard": true
+  },
+  "limits": {
+    "tokens": 2500000,
+    "max_attempts": 7,
+    "wall_ms": 18600000,
+    "verification": {
+      "tokens": 1200000,
+      "attempts": 5,
+      "wall_ms": 11100000
+    }
+  },
+  "verification": "review"
+}

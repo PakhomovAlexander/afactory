@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-binding:1",
+  "title": "af.perf-telemetry-binding/1",
+  "description": "Immutable Actions run/attempt planning receipt: original event commit and branch head, planned baseline/candidate/control. Retained separately from untrusted measurement results.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-binding/1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "run_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740992
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "pull_request",
+        "schedule",
+        "release",
+        "workflow_dispatch"
+      ]
+    },
+    "event_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "run_head_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "candidate_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "baseline_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "control_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "pr",
+        "nightly",
+        "release",
+        "manual"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "run_id",
+    "attempt",
+    "event",
+    "event_sha",
+    "run_head_sha",
+    "candidate_sha",
+    "baseline_sha",
+    "control_sha",
+    "profile"
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

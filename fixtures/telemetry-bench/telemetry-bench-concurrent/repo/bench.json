@@ -1,0 +1,9 @@
+{
+  "fixture": "telemetry-bench-concurrent",
+  "harness": {
+    "mode": "paced",
+    "lines": 200,
+    "line_bytes": 1024,
+    "interval_ms": 5
+  }
+}
