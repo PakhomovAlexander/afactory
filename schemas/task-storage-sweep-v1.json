@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-storage-sweep:1",
+  "title": "af/TaskStorageSweep@1",
+  "description": "What the Storage Budget's sweep at the end of `af task run` removed (ADR-0144), recorded as an observation of the Task that run executed. Carried inline by one `storage_sweep` TaskTransition@5 that references no artifact; it never changes the Task's result. Bounded like a gate cleanup: at most 256 removals and 64 failures are listed and the rest only counted. A sweep that removed nothing and failed nothing records nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "removals",
+    "omitted_removals",
+    "failures",
+    "omitted_failures",
+    "stop",
+    "max_bytes",
+    "total_before",
+    "total_after"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskStorageSweep@1"
+    },
+    "removals": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/removal"
+      }
+    },
+    "omitted_removals": {
+      "description": "Removals counted but not listed: beyond the 256 listed, or with a path no record can name.",
+      "$ref": "#/$defs/count"
+    },
+    "failures": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    },
+    "omitted_failures": {
+      "$ref": "#/$defs/count"
+    },
+    "stop": {
+      "description": "`fits`: the total fits the budget; `nothing_evictable`: still over it, and the rest is in use or was used within the hour.",
+      "enum": [
+        "fits",
+        "nothing_evictable"
+      ]
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/count"
+    },
+    "total_before": {
+      "$ref": "#/$defs/count"
+    },
+    "total_after": {
+      "$ref": "#/$defs/count"
+    }
+  },
+  "anyOf": [
+    {
+      "properties": {
+        "removals": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "failures": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "omitted_removals": {
+          "minimum": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "removal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path",
+        "bytes",
+        "rule"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "warm_key",
+            "workspace",
+            "campaign",
+            "task",
+            "unreadable_store",
+            "version",
+            "claim"
+          ]
+        },
+        "path": {
+          "description": "The entry's absolute path; for a finished Task, its Store.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^/"
+        },
+        "task_id": {
+          "description": "The collected Task, for a `task` removal and only for one.",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "rule": {
+          "enum": [
+            "collection",
+            "budget",
+            "recovery"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "task"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "task_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    }
+  }
+}

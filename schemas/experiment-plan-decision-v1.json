@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:experiment-plan-decision:1","type":"object","additionalProperties":false,
+  "required":["schema","prepared_id","task_revision_id","outer_plan_id","slot_id","specification_id","compiled_child_plan_id","policy_id","developer","authorization_id","key_policy_id","signature_id","decision","expires_unix_ms","reason"],
+  "properties":{"schema":{"const":"af.experiment-plan-decision/1"},"prepared_id":{"$ref":"#/$defs/id"},"task_revision_id":{"$ref":"#/$defs/id"},"outer_plan_id":{"$ref":"#/$defs/id"},"slot_id":{"$ref":"#/$defs/id"},"specification_id":{"$ref":"#/$defs/id"},"compiled_child_plan_id":{"$ref":"#/$defs/id"},"policy_id":{"$ref":"#/$defs/id"},"developer":{"type":"string","minLength":1},"authorization_id":{"$ref":"#/$defs/id"},"key_policy_id":{"$ref":"#/$defs/id"},"signature_id":{"$ref":"#/$defs/id"},"decision":{"enum":["approved","rejected"]},"expires_unix_ms":{"type":"integer","minimum":1,"maximum":9007199254740991},"reason":{"type":"string","minLength":1}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}
+}

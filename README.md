@@ -1,0 +1,253 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/banner/banner-dark.svg">
+  <img alt="afactory: agent pipelines made fast" src="brand/banner/banner-light.svg" width="100%">
+</picture>
+
+[![CI](https://img.shields.io/github/actions/workflow/status/PakhomovAlexander/afactory/release.yml?branch=main&style=flat-square&labelColor=0F0F0F&color=36EEA8&label=CI)](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/PakhomovAlexander/afactory?style=flat-square&labelColor=0F0F0F&color=5195F5&label=release)](https://github.com/PakhomovAlexander/afactory/releases/latest)
+[![Licence](https://img.shields.io/badge/licence-Apache--2.0-EE366A?style=flat-square&labelColor=0F0F0F)](LICENSE)
+
+`af` is a multi-agent coding factory for Git repositories. Its first capability is a deterministic
+Review Kernel: `af review` runs a sandboxed, budgeted pipeline of model and command reviewers
+against a pinned Snapshot and folds what they return into a findings ledger with convergence.
+`af task` runs implementation Tasks the same way. One invariant holds everywhere: reviewers and
+implementers only ever mutate a sandbox and return typed artifacts; only the kernel integrates;
+publishing to a branch or pull request stays an explicit human action.
+
+**Status:** public alpha. See the latest release badge above for the published version;
+`af --version` reports the binary you actually run. APIs, configuration and persisted state may
+change before 1.0.
+Compatibility obligations start at 1.0: from the first 1.0
+release on, every change that affects committed `.af/` policy or a persisted artifact type is
+announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
+or `af onboard --refresh-lock` it needs. State written by a pre-1.0 release is not read
+([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
+
+## Install
+
+```sh
+curl -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
+af self setup-shell --write     # completions + man pages for your shell
+af self status                  # what is installed, the default, the release key, the pin here
+af self update --check          # exit 10 when a newer release exists; `af self update` installs it
+```
+
+The installer places the newest release in the self-managed layout (`$XDG_DATA_HOME/af/versions/<v>/`,
+default symlink at `~/.local/bin/af`) and `af` takes over from there. Every release ships
+per-target tarballs, a `SHA256SUMS` file, and `SHA256SUMS.minisig` signed with the release key in
+[`crates/af/keys/release.pub`](crates/af/keys/release.pub); the binary embeds that
+key and refuses an unsigned or badly signed release. `install.sh` verifies the archive digest and,
+when `minisign` is on `PATH`, the signature too.
+
+Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
+`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or another Linux or macOS
+target, build from source:
+
+```sh
+cargo install --path crates/af --locked
+```
+
+A source checkout can be ahead of the latest published release. `af --version --json` identifies
+its version, commit and target. A source build has no release receipt, so onboarding generates
+package pins but cannot create a verified `af` release pin; use an official installed release for
+that byte-binding pin. Onboarding leaves an existing release pin in the lock unchanged. Dispatch
+enforces the pinned bytes only through install receipts: a source build of any other version runs
+the pinned release, but a source build of the pinned version itself has no receipt to compare and
+runs as built.
+
+A source install has no signed release receipt, so `af self update`, `rollback`, and `uninstall`
+refuse to manage it. `af self status` identifies that state and prints the exact
+`af self install <version>` command. That command replaces the running source-installed executable
+with a verified release and adopts the self-managed layout. It never replaces an unrelated file at
+the default path.
+
+`af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
+BSDs: a source build on any of them stops with a compile error.
+
+## Quickstart
+
+Start from a clean, trusted Git checkout. Generate the proposed authority using the repository's
+real acceptance Gate:
+
+```sh
+af onboard                          # preview .af/ and the exact apply command; spends no tokens
+af onboard --runner codex --gate 'check=make check' --apply  # replace with this repository's Gate
+```
+
+Review all generated policy, Worker prompts, Gate commands and lock entries before trusting them.
+Intent-to-add makes new files visible in the diff without staging their contents:
+
+```sh
+git add --intent-to-add .af
+git diff -- .af
+```
+
+After approving that diff, commit only the authority and capture its local revision. No push or
+remote branch is needed:
+
+```sh
+git add .af
+git commit -m 'Configure Afactory review authority'
+policy_rev=$(git rev-parse HEAD)
+base_rev="$policy_rev"
+```
+
+Now make the source changes you want reviewed, keeping this shell open, then inspect the plan:
+
+```sh
+af review plan --policy-rev "$policy_rev" --base "$base_rev" --uncommitted
+```
+
+The policy revision must contain the reviewed, committed `.af/`. The Base independently selects
+what to compare against; for an existing branch change, set `base_rev` to its intended comparison
+commit. The plan can show an empty Change Set, but `run` refuses it: make a real candidate change
+before execution. Planning needs no Provider login, Gate execution or model calls.
+
+To execute that plan with the generated Codex Workers, register a Provider at your own terminal
+and supply its bindings explicitly (this step runs the Gate and spends model tokens):
+
+```sh
+af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
+af provider status                 # verify registered and ambient Claude / Codex contexts
+af review run --campaign pr-123 --policy-rev "$policy_rev" --base "$base_rev" --uncommitted \
+  --provider correctness=codex-main --provider architecture=codex-main --json
+```
+
+`af onboard` previews a deterministic authority bundle and writes nothing without `--apply`; it
+never executes a Gate or a model, reads a credential, or overwrites existing policy. Its preview
+prints a copyable apply command carrying the exact detected or explicit Gate; replace `make check`
+above when the repository uses another deterministic acceptance command. `af provider setup`
+verifies the named auth directory and writes only an ID, Provider kind, and auth-directory path to
+the machine-local registry; credentials remain owned by that CLI. An already authenticated context
+needs no login. Starting one is opt-in with `--login` and happens only at an interactive terminal,
+because the OAuth URL and authorization code it prints are credentials in transit that must never
+reach a pipe, chat, an agent transcript, or logs; without both, setup exits 3 and prints the exact
+command for a human to run ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)). An
+explicitly authorized Linux host can instead use the separately permissioned
+[private-host login protocol](docs/provider-auth-host.md) to let the user complete browser consent
+without terminal access. It reports `authenticated_unverified` and never implicitly calls a model
+or resumes a Task ([ADR-0137](docs/adr/0137-permit-provider-logins-through-private-host-capabilities.md)).
+Login starts from an empty allowlisted environment in an owned auth directory that is
+not writable by other users, and one canonical auth context admits only one setup/login at a time.
+`setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
+registry publication remains atomic for those older readers. `af provider add` registers an already
+authenticated context without opening a login and applies the same auth-directory safety checks.
+If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
+candidate, and prior hashes before archiving it; it reports which version is live and retains both
+preserved copies. Recovery is machine-local and also bypasses an older project pin.
+`af provider remove` drops named entries from the registry through the same atomic publication and
+leaves each auth directory and its login untouched; it is machine-local too
+([ADR-0136](docs/adr/0136-remove-a-registered-provider-by-id.md)).
+Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af provider
+status` is a fast registry and authentication check; `--usage` adds the optional subscription and
+quota probe, whose failure exits 7 and never demotes an authenticated Provider, and `af provider
+doctor` remains the charged end-to-end check. Both `status` and `setup` take `--json` for a stable
+versioned document; see [docs/providers.md](docs/providers.md). `af review
+plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
+and required Provider bindings without Campaign state, external calls, or tokens — the route line
+reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`
+opens or resumes the Campaign, runs the Gate, admits the Providers, dispatches the Workers, and
+prints the verdict; `af review report` shows the Campaign's wall-clock, per-Attempt Provider usage,
+and every Finding's disposition afterwards.
+
+Campaigns are light by default: one closed Round. If it finds defects, fix them and run the
+project's deterministic gate; do not start another Campaign. `--heavy` keeps the pipeline's full
+convergence window and is for when a human explicitly asks for deep convergence review
+([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). Campaign state lives
+under the XDG review-state root and grows with every Subject materialized:
+
+```sh
+af review campaigns                            # every Campaign, its verdicts and Round history
+af review gc --older-than 14 --keep 5          # preview: what would go, and how much
+af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directories
+```
+
+## What it does
+
+- **Review campaigns with light-by-default convergence.** One Campaign owns one event log and one
+  Ledger across as many Rounds as policy allows; Findings keep their identity across reviewers and
+  Rounds, and a Round closes only on a real verdict.
+- **Implementation Tasks delivered to new local worktrees.** `af task start --file` runs a Task
+  file through a Pipeline pinned in the committed Task catalog: an implementer edits a sandbox,
+  read-only acceptance checks inspect the sealed result, an independent evaluator approves a
+  content-addressed Snapshot, and `af task deliver` — only after explicit Task-ID confirmation —
+  creates a new branch and linked worktree. It never commits, pushes, opens a PR, or touches the
+  source checkout. `af catalog init --profile software --destination DIR` creates a new starter
+  directory with a runnable catalog.
+- **Deterministic gates that reuse CI checks.** A Gate is whatever the pipeline declares — usually
+  the project's own `make check` — executed through an admitted provider in a disposable clone. A
+  check that could not run is not a pass, and neither is a Gate with no required checks.
+- **Per-Attempt token budgets and Provider admission.** Budgets reserve before dispatch, scopes
+  nest, and the tightest one refuses by name. Every packaged model Worker needs a named Provider
+  from the machine-local registry, admitted by a charged preflight before any dispatch.
+- **Routing pipelines by changed paths.** `.af/af.toml` routes a docs-only change to a cheaper
+  pipeline and an oversized Diff to a Scatter pipeline; selection is token-free and pinned in the
+  Campaign Manifest so later Rounds never re-route.
+- **Signed, self-managed releases with a byte-binding lock.** `.af/af.lock` pins the release that
+  wrote it and its archive digest per target; inside such a project any `af` on `PATH` execs that
+  version, installing it on demand only when the bytes match.
+
+## Requirements
+
+- Git, and a Rust toolchain at or above 1.88 for source builds (`rust-toolchain.toml` pins it).
+- The `claude` and/or `codex` CLIs for model Workers. `af provider setup` verifies and registers a
+  context without reading credentials, and with `--login` runs that CLI's official login at your
+  terminal; `af provider status` shows what each context can do. Command Workers need neither.
+- Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
+  Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
+- Optional: `minisign`, for verifying release signatures at install time.
+
+## Configuration
+
+`af onboard --apply` creates `.af/` at the repository root:
+
+```text
+.af/
+  af.toml        project policy: minimum af release, default pipelines, routing
+  af.lock        the release pin (bytes per target) and every Worker package digest
+  pipelines/     pipeline definitions (this repository: review.toml, p1-review.toml, …)
+  workers/       Worker packages: <name>/reviewer.md (prompt) + reviewer.toml (manifest)
+```
+
+Configuration merges built-in → `/etc/af` → `~/.config/af` → every `.af/af.toml` above the
+repository → `.af/af.toml` → `.af/af.local.toml` → `AF_<TABLE>__<KEY>`; `af config show --origin`
+names where each value came from. Provider bindings such as `claude-main` and `codex-main` live in
+a machine-local registry, never in the repository. `af help layers`, `af help self`, and `af help
+exit-codes` explain the rest; every namespace and command has its own `--help`. Pipelines, routing,
+and budgets are described in [`docs/architecture.md`](docs/architecture.md).
+
+## Documentation
+
+- [`docs/README.md`](docs/README.md) — map of everything below.
+- [`docs/architecture.md`](docs/architecture.md) — how the kernel is built, boundary by boundary.
+- [`CONTEXT.md`](CONTEXT.md) — the vocabulary: Snapshot, Subject, Campaign, Round, Finding, Attempt.
+- [`docs/adr/README.md`](docs/adr/README.md) — the binding design decisions.
+- [`docs/tasks.md`](docs/tasks.md) — the `af task` guide.
+- [`docs/values.md`](docs/values.md) — the engineering values, in priority order, with their tests.
+- [`CHANGELOG.md`](CHANGELOG.md) — every release and its authority compatibility.
+
+## Development
+
+```sh
+make check                           # fmt + clippy + tests + release-selection check
+make review-kernel-container-probes  # live container probes; needs a usable runtime
+```
+
+The toolchain is pinned, the lockfile is committed, and `unsafe_code = "forbid"` is set
+workspace-wide. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request, and
+[`AGENTS.md`](AGENTS.md) if you are an agent working in this repository.
+
+## Releasing
+
+`make release VERSION=1.0.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
+section from the merged pull requests and their notes under `changelog.d/`, and opens the release
+pull request. Merging it tags the commit, runs `make check` on Linux
+and macOS, builds every target, signs `SHA256SUMS`, and publishes the release. The workflow then
+pins that release in this repository's own `.af/af.lock` on `main`, so `af` here always runs the
+newest release; `make check` fails if the pin falls behind
+([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)).
+
+## Security and licence
+
+Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md). Afactory is licensed under
+the Apache License, Version 2.0; see [`LICENSE`](LICENSE).

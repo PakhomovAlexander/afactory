@@ -1,0 +1,203 @@
+//! The process groups this process supervises right now, for a host that must stop at once
+//! (ADR-0129). Every supervised leader holds one slot from its spawn until just before its
+//! reap, so a listed id is always reserved by an unreaped leader. A full table only means a
+//! group is not listed: its own cancellation and deadline still stop it.
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+const SLOTS: usize = 256;
+
+static LIVE: [AtomicU32; SLOTS] = [const { AtomicU32::new(0) }; SLOTS];
+
+/// Held by an unlisting and across a stop's list-and-kill. A leader is unlisted before it is
+/// reaped, so while a stop holds this, every pid it read is still reserved by an unreaped
+/// leader: a recycled pid can never receive the kill.
+static GUARD: Mutex<()> = Mutex::new(());
+
+fn guard() -> std::sync::MutexGuard<'static, ()> {
+    GUARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// One leader's entry in a table; [`Registration::release`] empties it.
+pub(crate) struct Registration {
+    table: &'static [AtomicU32],
+    slot: Option<usize>,
+    pid: u32,
+}
+
+impl Registration {
+    pub(crate) fn new(pid: u32) -> Self {
+        register(&LIVE, pid)
+    }
+
+    /// Idempotent: only this leader's own entry is cleared.
+    pub(crate) fn release(&mut self) {
+        if let Some(slot) = self.slot.take() {
+            // Waits for a stop in progress, which may still be signalling this pid's group.
+            let _guard = guard();
+            let _ =
+                self.table[slot].compare_exchange(self.pid, 0, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn register(table: &'static [AtomicU32], pid: u32) -> Registration {
+    let slot = (pid != 0)
+        .then(|| {
+            table.iter().position(|entry| {
+                entry
+                    .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            })
+        })
+        .flatten();
+    Registration { table, slot, pid }
+}
+
+fn listed(table: &[AtomicU32]) -> Vec<u32> {
+    table
+        .iter()
+        .map(|entry| entry.load(Ordering::Acquire))
+        .filter(|pid| *pid != 0)
+        .collect()
+}
+
+/// The leader pids of every supervised process group not yet reaped.
+pub fn live_process_groups() -> Vec<u32> {
+    listed(&LIVE)
+}
+
+/// Best-effort `SIGKILL` to every supervised process group not yet reaped, for a host that is
+/// about to exit without waiting for its supervisors. An ordinary stop is a cancellation flag.
+pub fn kill_live_process_groups() {
+    // Listing and killing under the guard: no leader can be unlisted, and so reaped, between
+    // the read of its pid and the signal.
+    let _guard = guard();
+    for pid in listed(&LIVE) {
+        crate::kill_process_group(pid);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_registration_lists_its_leader_until_released_and_never_clears_another() {
+        static TABLE: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+        let mut first = register(&TABLE, 41);
+        let second = register(&TABLE, 42);
+        assert_eq!(listed(&TABLE), vec![41, 42]);
+        let full = register(&TABLE, 43);
+        assert_eq!(full.slot, None, "a full table leaves the group unlisted");
+        first.release();
+        first.release();
+        assert_eq!(listed(&TABLE), vec![42]);
+        let reused = register(&TABLE, 44);
+        assert_eq!(listed(&TABLE), vec![44, 42]);
+        drop(first);
+        assert_eq!(
+            listed(&TABLE),
+            vec![44, 42],
+            "a released entry stays released"
+        );
+        drop(second);
+        drop(reused);
+        assert!(listed(&TABLE).is_empty());
+        assert_eq!(register(&TABLE, 0).slot, None, "no process has pid 0");
+    }
+
+    /// An unlisting, which precedes every reap, waits for a stop that is listing and killing,
+    /// so the stop never signals a pid that was reaped and recycled meanwhile.
+    #[test]
+    fn an_unlisting_waits_for_a_stop_in_progress() {
+        static TABLE: [AtomicU32; 1] = [const { AtomicU32::new(0) }; 1];
+        let mut registration = register(&TABLE, 77);
+        let stop = guard();
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let unlisting = std::thread::spawn({
+            let released = released.clone();
+            move || {
+                registration.release();
+                released.store(true, Ordering::Release);
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !released.load(Ordering::Acquire),
+            "the unlisting waited for the stop"
+        );
+        assert_eq!(
+            listed(&TABLE),
+            vec![77],
+            "still listed while the stop holds it"
+        );
+        drop(stop);
+        unlisting.join().unwrap();
+        assert!(released.load(Ordering::Acquire));
+        assert!(listed(&TABLE).is_empty());
+    }
+
+    #[test]
+    fn a_supervised_leader_is_listed_while_it_runs_and_not_after_its_reap() {
+        let base = std::env::temp_dir().join(format!(
+            "review-process-live-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let (marker, release) = (base.with_extension("pid"), base.with_extension("release"));
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&release);
+        // The leader runs until the observer has looked, however slow the machine is.
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!(
+                "echo $$ > '{0}.tmp' && mv '{0}.tmp' '{0}'; while [ ! -e '{1}' ]; do sleep 0.01; done",
+                marker.display(),
+                release.display()
+            ),
+        ]);
+        let observer = std::thread::spawn({
+            let (marker, release) = (marker.clone(), release.clone());
+            move || {
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                let observed = loop {
+                    if let Some(pid) = std::fs::read_to_string(&marker)
+                        .ok()
+                        .and_then(|text| text.trim().parse::<u32>().ok())
+                    {
+                        break (pid, live_process_groups().contains(&pid));
+                    }
+                    if std::time::Instant::now() >= until {
+                        break (0, false);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                };
+                std::fs::write(&release, b"").unwrap();
+                observed
+            }
+        });
+        let output =
+            crate::run_supervised(&mut command, None, std::time::Duration::from_secs(60)).unwrap();
+        let (pid, listed_while_running) = observer.join().unwrap();
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&release);
+        assert!(output.status.success());
+        assert_ne!(pid, 0, "leader did not start");
+        assert!(listed_while_running, "a running leader is listed");
+        assert!(
+            !live_process_groups().contains(&pid),
+            "a reaped leader is never listed"
+        );
+    }
+}

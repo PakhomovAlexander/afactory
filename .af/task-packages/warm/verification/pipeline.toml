@@ -1,0 +1,128 @@
+schema = "af.pipeline/1"
+name = "warm/verification"
+version = "1.0.0"
+max_attempts = 3
+max_parallel = 2
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.outputs.snapshot]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.snapshot.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.outputs.verification]
+artifact_type = "af/VerificationResult@1"
+cardinality = "one"
+optional = false
+covers = ["verified"]
+
+[contract.outputs.verification.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["verification"]
+
+[accepts.required_facts]
+
+[slots.evaluator]
+worker = "warm/evaluator"
+role = "evaluate"
+input_type = "af/EvaluationInput@1"
+output_type = "af/TaskEvaluation@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = []
+
+[[nodes]]
+id = "checks"
+
+[nodes.operator]
+op = "check"
+checks = ["kernel", "markdownlint"]
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[[nodes]]
+id = "evaluate"
+
+[nodes.operator]
+op = "verify"
+slot = "evaluator"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.when]
+node = "checks"
+outcome = "passed"
+
+[[nodes]]
+id = "accept"
+
+[nodes.operator]
+op = "accept"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.evaluation]
+kind = "node"
+node = "evaluate"
+port = "result"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[outputs.snapshot]
+kind = "node"
+node = "accept"
+port = "snapshot"
+
+[outputs.verification]
+kind = "node"
+node = "accept"
+port = "result"
+
+[coverage.verified]
+kind = "node"
+node = "accept"
+port = "result"

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-usage-observation:1",
+  "title": "TaskUsageObservation@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["charge_complete"],
+  "properties": {
+    "reported_usage": { "$ref": "urn:af:schema:task-token-usage:3" },
+    "charge_complete": { "type": "boolean" }
+  },
+  "allOf": [{
+    "if": { "properties": { "charge_complete": { "const": true } } },
+    "then": { "required": ["reported_usage"] }
+  }]
+}
