@@ -374,6 +374,8 @@ Suite `/6` keeps the global cold-build allowance at 20 minutes for quick/nightly
 without changing sampling windows, total deadlines or serial feasibility checks.
 The [source-port design](../../docs/design/long-running-development-flow.md) describes bounded
 supervisor evidence transfer, isolated compilation dose and post-delivery validation.
+The retained `af.perf-dev-flow/2` record embeds the current Task inspection, checks and
+findings documents; earlier flow and embedded document versions are refused.
 `make perf-dev-flow-probe` runs the actual four-case supervisor regression in provisioned Docker;
 ordinary deterministic tests require no host unprivileged user namespaces. This tier remains
 manual/proposed/calibration-only, with no activation or new measurement claim.
