@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-cancelled:1",
+  "title": "Task cancelled af/task-cancelled@1",
+  "$comment": "What `af task cancel ID --json` prints (ADR-0211): the cancel request it recorded before it signalled the run's process, and the state the Task is left in, resumable with `af task run ID`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "request",
+    "state"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-cancelled@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "request": {
+      "$ref": "urn:af:schema:task-cancel-request:1"
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+    }
+  }
+}

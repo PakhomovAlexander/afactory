@@ -1,0 +1,42 @@
+schema = "af.perf-cli/5"
+description = "A minimal CLI registry."
+setup_script = "cli/setup.sh"
+
+[task_fixture]
+directory = "cli/task-roots"
+task_id = "perf-check-true"
+description = "The Task fixture."
+
+[seeds.task_state]
+writer = "seed_task_state"
+case_id = "cli_state_fixture"
+contract_id = "cli_state_fixture_v1"
+parameters = { state = "cli_state_10000" }
+probe_scratch = "seed"
+events = 10000
+description = "The Task state seed."
+
+[adapters.af_cli_v1]
+description = "The current command surface."
+priority = 1
+min_version = "0.12.0-rc.3"
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_discovery"
+parameters = { command = "version" }
+setup = "none"
+argv = ["{af}", "--version"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "stdout_line", index = 0, equals = "af {package_version}" },
+  { kind = "json_enumerates", path = "findings", first = 1, last = 100, where = { status = "open" }, numbered = [], distinct = [] },
+]
+description = "The version line."
+
+[[adapters.af_cli_v1.commands]]
+case_id = "cli_state_read"
+parameters = { command = "review_ledger", state = "cli_state_10000" }
+setup = "none"
+pending = "No Campaign fixture writer yet."
+description = "review ledger."

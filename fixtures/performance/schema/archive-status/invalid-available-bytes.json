@@ -1,0 +1,27 @@
+{
+  "schema": "af.perf-archive-status/1",
+  "now_unix_ms": 1800000000000,
+  "capacity_bytes": 107374182400,
+  "used_bytes": 98412,
+  "available_bytes": 107374083989,
+  "filesystem_free_bytes": 1099511627776,
+  "runs": 1,
+  "pinned": 1,
+  "objects": 8,
+  "last_collection": {
+    "sequence": 1,
+    "status": "imported",
+    "ended_unix_ms": 1800000000000,
+    "detail": "run fixture_run admitted with 8 members"
+  },
+  "last_successful_collection_unix_ms": 1800000000000,
+  "collection_lag_ms": {
+    "last": 39999999952,
+    "max": 39999999952
+  },
+  "transport": [],
+  "health": {
+    "status": "ok",
+    "problems": []
+  }
+}

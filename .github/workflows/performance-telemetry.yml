@@ -1,0 +1,311 @@
+# Telemetry experiments of the performance laboratory (ADR-0214, ADR-0215,
+# docs/performance-telemetry.md): Telemetry's own cost (`off` against `spans`, Claude `json`
+# against `stream-json` at each level) and its read latency, measured on a baseline and a candidate
+# binary with the bench scripts and fixtures of the trusted control revision, never the
+# candidate's. Separate from performance.yml, whose current producer includes the dispatch-head
+# repair; historical cohort bytes remain fixed. Advisory: no job here is a required check, nothing here changes a verdict, and nothing
+# edits a ruleset. Read-only permissions, no secrets, every action pinned to a commit, every
+# checkout without a credential.
+#
+# Each side is built in its own job, in the pinned sample image (repository variable
+# AF_PERF_GNU_BUILD_IMAGE, a reference pinned by digest; without it nothing is planned), and only
+# its binary and build record, by hash, reach the measuring job. There every execution of a
+# script, each binary's version query included, runs in its own container of that image with
+# network none, a read-only root, no capability, bounded PIDs, memory and file sizes, and only its
+# own directory of a verified disk-bounded scratch filesystem writable (`--mode linux_container`);
+# the controller, the result, the other side's binary and the runner's checkout are never bound.
+# The result is uploaded only when the control verifies it under its own measurement authority
+# and finds no credential in it (`telemetry-admit`); otherwise nothing is uploaded and the job
+# fails. Remote Check gate branches are never measured. Durable history is the trusted telemetry
+# collector's (`cli.py telemetry-collect`, scripts/performance/service/), never this workflow's.
+name: Performance telemetry
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * *"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Baseline: a full commit SHA or refs/heads/... or refs/tags/..."
+        required: true
+        type: string
+      head:
+        description: "Candidate: a full commit SHA or a fully qualified ref"
+        required: true
+        type: string
+      control:
+        description: "Trusted control revision whose scripts measure both sides (default: the base)"
+        required: false
+        type: string
+      profile:
+        description: "Profile of fixtures/performance/telemetry.toml"
+        required: true
+        default: manual
+        type: choice
+        options: [manual, pr, nightly, release]
+      experiments:
+        description: "Space-separated experiments (default: the profile's)"
+        required: false
+        type: string
+      rounds:
+        description: "Rounds, 1 to 8 (default: the profile's)"
+        required: false
+        type: string
+      pairs:
+        description: "Pairs per script run, 1 to 40 (default: the profile's)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-telemetry-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      binding: ${{ steps.schedule.outputs.binding }}
+      planned: ${{ steps.schedule.outputs.planned }}
+      control: ${{ steps.schedule.outputs.control }}
+      baseline: ${{ steps.schedule.outputs.baseline }}
+      candidate: ${{ steps.schedule.outputs.candidate }}
+      trigger: ${{ steps.schedule.outputs.trigger }}
+      profile: ${{ steps.schedule.outputs.profile }}
+      args: ${{ steps.schedule.outputs.args }}
+      retention_days: ${{ steps.schedule.outputs.retention_days }}
+      timeout_minutes: ${{ steps.schedule.outputs.timeout_minutes }}
+      work_bytes: ${{ steps.schedule.outputs.work_bytes }}
+      image: ${{ steps.schedule.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the trusted control revision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          INPUT_BASE: ${{ github.event.inputs.base }}
+          INPUT_CONTROL: ${{ github.event.inputs.control }}
+        run: |
+          set -eu
+          case "$EVENT_NAME" in
+            pull_request) control="$PR_BASE_SHA" ;;
+            schedule|release) control="$EVENT_SHA" ;;
+            workflow_dispatch) control="${INPUT_CONTROL:-$INPUT_BASE}" ;;
+            *) echo "event $EVENT_NAME is not scheduled" >&2; exit 1 ;;
+          esac
+          if ! printf '%s' "$control" | grep -Eq '^([0-9a-f]{40}|refs/(heads|tags)/[A-Za-z0-9][A-Za-z0-9._/-]*)$'; then
+            echo "control '$control' is not a full SHA or fully qualified ref" >&2
+            exit 1
+          fi
+          case "$control" in
+            refs/heads/*) ref="refs/remotes/origin/${control#refs/heads/}" ;;
+            *) ref="$control" ;;
+          esac
+          sha="$(git rev-parse --verify --quiet --end-of-options "$ref^{commit}")" || {
+            echo "control '$control' does not resolve to a commit" >&2; exit 1; }
+          git worktree add --detach "$RUNNER_TEMP/control" "$sha"
+      - name: Schedule from the trusted control
+        id: schedule
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUTS: ${{ toJSON(github.event.inputs) }}
+          # The sample image both sides are built and measured in, pinned by digest.
+          IMAGE: ${{ vars.AF_PERF_GNU_BUILD_IMAGE }}
+        run: |
+          set -eu
+          cli="$RUNNER_TEMP/control/scripts/performance/cli.py"
+          if [ ! -f "$RUNNER_TEMP/control/fixtures/performance/telemetry.toml" ]; then
+            echo "planned=false" >> "$GITHUB_OUTPUT"
+            echo "Telemetry experiments unavailable: the trusted control predates them." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! printf '%s' "$IMAGE" | grep -Eq '^[^[:space:]@]+@sha256:[0-9a-f]{64}$'; then
+            echo "planned=false" >> "$GITHUB_OUTPUT"
+            echo "Telemetry experiments unavailable: no sample image pinned by digest (AF_PERF_GNU_BUILD_IMAGE); nothing is measured uncontained." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          python3 "$cli" telemetry-schedule --repo . --event-name "$EVENT_NAME" \
+            --event "$GITHUB_EVENT_PATH" --inputs "$INPUTS" --sha "$GITHUB_SHA" \
+            --binding "$RUNNER_TEMP/binding.json" \
+            --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain the original run and attempt plan
+        if: steps.schedule.outputs.planned == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telemetry-schedule-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binding.json
+          retention-days: ${{ fromJSON(steps.schedule.outputs.retention_days) }}
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.side }})
+    needs: plan
+    if: needs.plan.outputs.planned == 'true'
+    # Matrix output names are unique per side; a failed-jobs rerun can consume a
+    # successful side's original exact artifact without guessing its attempt.
+    outputs:
+      baseline_artifact: ${{ steps.record.outputs.baseline_artifact }}
+      candidate_artifact: ${{ steps.record.outputs.candidate_artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [baseline, candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SIDE: ${{ matrix.side }}
+      SIDE_SHA: ${{ matrix.side == 'baseline' && needs.plan.outputs.baseline || needs.plan.outputs.candidate }}
+      CONTROL: ${{ needs.plan.outputs.control }}
+      IMAGE: ${{ needs.plan.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the trusted control and the side
+        run: |
+          set -eu
+          git worktree add --detach "$RUNNER_TEMP/control" "$CONTROL"
+          git worktree add --detach "$RUNNER_TEMP/side" "$SIDE_SHA"
+      - name: Refuse any credential before the side's code builds
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-credentials --git-dir .git --environment
+      - name: Pull the pinned image (trusted preparation)
+        run: docker pull --quiet "$IMAGE"
+      - name: Build the side's af once in the pinned image, credential-free, with its pinned toolchain
+        run: |
+          set -eu
+          python3 -B "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-contained-build \
+            --source "$RUNNER_TEMP/side" --source-sha "$SIDE_SHA" --output "$RUNNER_TEMP/build" \
+            --image "$IMAGE" --scratch-fs "$RUNNER_TEMP/build-scratch"
+          mkdir "$RUNNER_TEMP/af"
+          cp "$RUNNER_TEMP/build/af" "$RUNNER_TEMP/af/af"
+          sha256sum "$RUNNER_TEMP/af/af" | cut -d' ' -f1 > "$RUNNER_TEMP/af/af.sha256"
+      - name: Record the build
+        id: record
+        run: |
+          set -eu
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-build-record \
+            --side "$SIDE" --source-sha "$SIDE_SHA" --binary "$RUNNER_TEMP/af/af" --image "$IMAGE" \
+            --rustc "$(cat "$RUNNER_TEMP/build/af-rustc")" --cargo "$(cat "$RUNNER_TEMP/build/af-cargo")" \
+            --command "cargo build --release --locked --offline --bin af --target-dir /state/target" --output "$RUNNER_TEMP/af/af.build.json"
+          echo "${SIDE}_artifact=perf-telemetry-af-${SIDE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Publish the side's binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-telemetry-af-${{ matrix.side }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/af/
+          retention-days: 1
+          if-no-files-found: error
+
+  measure:
+    name: measure (${{ needs.plan.outputs.profile }})
+    needs: [plan, build]
+    if: needs.plan.outputs.planned == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout_minutes) }}
+    env:
+      CONTROL: ${{ needs.plan.outputs.control }}
+      BASELINE: ${{ needs.plan.outputs.baseline }}
+      CANDIDATE: ${{ needs.plan.outputs.candidate }}
+      IMAGE: ${{ needs.plan.outputs.image }}
+      WORK_BYTES: ${{ needs.plan.outputs.work_bytes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the trusted control
+        run: git worktree add --detach "$RUNNER_TEMP/control" "$CONTROL"
+      - name: Fetch the baseline binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.baseline_artifact }}
+          path: ${{ runner.temp }}/baseline
+      - name: Fetch the candidate binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.candidate_artifact }}
+          path: ${{ runner.temp }}/candidate
+      - name: Verify both binaries by the hash their build recorded
+        run: |
+          set -eu
+          for side in baseline candidate; do
+            test "$(sha256sum "$RUNNER_TEMP/$side/af" | cut -d' ' -f1)" = "$(cat "$RUNNER_TEMP/$side/af.sha256")"
+            chmod 0755 "$RUNNER_TEMP/$side/af"
+          done
+      - name: Refuse any credential before a candidate byte runs
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-credentials --git-dir .git --environment
+      - name: Bind this attempt to the original frozen plan
+        env:
+          PLAN_BINDING: ${{ needs.plan.outputs.binding }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-bind-attempt \
+            --output "$RUNNER_TEMP/binding.json"
+      - name: Retain this attempt's original plan binding
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telemetry-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binding.json
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: error
+      - name: Prepare the disk-bounded scratch and the pinned image (trusted preparation)
+        run: |
+          set -eu
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch \
+            --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs" --bytes "$WORK_BYTES" \
+            --telemetry-owner "$RUNNER_TEMP/telemetry-owner"
+          docker pull --quiet "$IMAGE"
+      - name: Measure from the trusted control, each execution contained (advisory)
+        env:
+          TRIGGER: ${{ needs.plan.outputs.trigger }}
+          PROFILE: ${{ needs.plan.outputs.profile }}
+          ARGS: ${{ needs.plan.outputs.args }}
+        run: |
+          set -eu
+          eval "set -- $(python3 -c 'import json,shlex,sys; print(" ".join(shlex.quote(a) for a in json.loads(sys.argv[1])))' "$ARGS")"
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-run \
+            --profile "$PROFILE" --trigger "$TRIGGER" --mode linux_container \
+            --image "$IMAGE" --scratch-fs "$RUNNER_TEMP/scratch-fs" \
+            --scratch-owner "$RUNNER_TEMP/telemetry-owner" \
+            --baseline-af "$RUNNER_TEMP/baseline/af" --candidate-af "$RUNNER_TEMP/candidate/af" \
+            --baseline-build "$RUNNER_TEMP/baseline/af.build.json" \
+            --candidate-build "$RUNNER_TEMP/candidate/af.build.json" \
+            --baseline-sha "$BASELINE" --candidate-sha "$CANDIDATE" --authority-sha "$CONTROL" \
+            --result-id "tl_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}" \
+            --output "$RUNNER_TEMP/telemetry-result" "$@"
+      - name: Admit the result for upload (verified, credential-free)
+        id: admit
+        if: ${{ !cancelled() }}
+        run: |
+          set -eu
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-admit \
+            --result "$RUNNER_TEMP/telemetry-result" \
+            --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain the admitted result bundle
+        if: ${{ !cancelled() && steps.admit.outputs.admitted == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/telemetry-result/
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: error
+      - name: Remove scratch only with trusted stopped ownership (otherwise retain recovery paths)
+        if: always()
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch --cleanup --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs" --telemetry-owner "$RUNNER_TEMP/telemetry-owner"

@@ -1,0 +1,58 @@
+{
+  "schema": "af.perf-schedule/2",
+  "actions": {
+    "repository": "owner/af",
+    "run_id": 9,
+    "run_attempt": 1,
+    "event": "push",
+    "ref": "refs/heads/main",
+    "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+  },
+  "status": "scheduled",
+  "reason": null,
+  "detail": "0 of 1 comparisons planned; advisory",
+  "pull_request": null,
+  "trust": {
+    "trusted": true,
+    "executor": "ephemeral_hosted",
+    "detail": "a push event is trusted: it runs reviewed code from main"
+  },
+  "enforcement": "required",
+  "policy_changed": null,
+  "comparisons": [
+    {
+      "role": "primary",
+      "run_id": "gh9_a1_primary",
+      "status": "unavailable",
+      "reason": "missing_parent",
+      "detail": "pushed commit c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3 has no parent",
+      "request": {
+        "trigger": "main_push",
+        "tier": "quick",
+        "scope": "full",
+        "base": null,
+        "head": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "control": null,
+        "authority": null,
+        "cases": [],
+        "shards": null,
+        "pairs": null,
+        "pr_number": null,
+        "pr_base_sha": null,
+        "pr_head_sha": null,
+        "build_image": "registry.example.invalid/lab/rust@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "plan_digest": null,
+      "plan_sha256": null,
+      "required_check_eligible": false,
+      "harness_changed": null,
+      "shards": 0,
+      "concurrent_jobs": 0,
+      "runner_label": null
+    }
+  ],
+  "matrix": [],
+  "concurrent_jobs": 0,
+  "retention_days": 90,
+  "release": null
+}
