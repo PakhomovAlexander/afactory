@@ -1,0 +1,28 @@
+{
+  "schema": "af/performance-publication-activation@1",
+  "adapter": {
+    "executable": "/replace/private/performance-workspace",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "operations": [
+      "publish_performance_pr_v1"
+    ],
+    "destinations": [
+      "github:replace/project"
+    ],
+    "max_wall_ms": 30000,
+    "max_output_bytes": 65536
+  },
+  "scope": {
+    "repository": "replace/project",
+    "repository_id": 1,
+    "repo": "/replace/project",
+    "task_state": "/replace/private-tasks",
+    "base": "main",
+    "branch_prefix": "af-performance",
+    "source_commit": "0000000000000000000000000000000000000000",
+    "source_content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "evidence_adapter": "lab",
+    "evidence_destination": "native:claw"
+  },
+  "title": "Improve the measured performance goal"
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "af.perf-probe/1",
+  "case_id": "canonical_serialize",
+  "instance_id": "canonical_serialize__package_issue_255_large",
+  "contract_id": "canonical_serialize_v1",
+  "fixture_digest": "sha256:abc68a30eb2c03f34cc2619fd3dffb7919a52f8838ba31be4b84d4ae9f038ffe",
+  "parameters": {
+    "package": "issue_255_large"
+  },
+  "metrics": {
+    "wall_ms": {
+      "value": "41.25",
+      "unit": "ms"
+    }
+  },
+  "correctness": {
+    "status": "passed",
+    "digest": "sha256:7d7e4d567a35bef0e9795ae35cbc20043b00e94543bebbe5e8acc23c9dafb4b7",
+    "count": 5605230,
+    "detail": "SYNTHETIC example; not a golden entry"
+  }
+}

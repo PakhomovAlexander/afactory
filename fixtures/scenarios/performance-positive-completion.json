@@ -1,0 +1,253 @@
+{
+  "schema": "af.perf-scenario-completion/1",
+  "request": {
+    "backend": "local",
+    "cohort_digest": null,
+    "configuration_digest": "sha256:345458326842c326e006f5cc905281282ef0c07c4510871d4883a530e63b365e",
+    "created_unix_ms": 1760000000000,
+    "environment_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+    "journal_id": "claw_originals_1",
+    "machine_id": "claw_vm_1",
+    "member_id": null,
+    "parameters_sha256": null,
+    "parent": null,
+    "partition": null,
+    "plan_sha256": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+    "producer_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+    "request_id": "exp_synthetic",
+    "schema": "af.perf-executor-request/3",
+    "sources": {
+      "authority_sha": "9ea151a1748afc90afabc76ff723b99aa9a11521",
+      "baseline_sha": "391178f3e88589ad2d7232071a40135beb21bb90",
+      "candidate_sha": "e08b79c0be5a3004b2db3cb8c83f7dba03aa6a05",
+      "control_sha": "8d71b256cd32b268931317214a5a30dc8c9c276d"
+    },
+    "submission": {
+      "kind": "manual",
+      "key": "native-scenario-example"
+    },
+    "work": "core"
+  },
+  "result_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "source_request_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "baseline_snapshot_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "candidate_snapshot_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "verdict": {
+    "aggregate": {
+      "coverage": {
+        "expected_records": 124,
+        "matched_records": 124,
+        "missing_records": 0
+      },
+      "exit_code": 0,
+      "reasons": [],
+      "result": "pass",
+      "satisfies_required_check": false
+    },
+    "algorithm": "paired_median_tolerance_v2",
+    "case_alpha": "1/40",
+    "cases": [
+      {
+        "alpha": "1/20",
+        "baseline": {
+          "max": "20",
+          "median": "20",
+          "p95": "20"
+        },
+        "budgets": [],
+        "candidate": {
+          "max": "20",
+          "median": "20",
+          "p95": "20"
+        },
+        "change": {
+          "absolute": "0",
+          "percent": "0"
+        },
+        "criticality": "advisory",
+        "exploratory": true,
+        "failures": [],
+        "instance_id": "synthetic_advisory",
+        "interval": {
+          "lower": "0",
+          "upper": "0"
+        },
+        "metric": {
+          "direction": "lower_is_better",
+          "key": "wall_ms",
+          "unit": "ms"
+        },
+        "missing_records": 0,
+        "outcome": "pass",
+        "pairs": 12,
+        "rank": 3,
+        "shard": 0,
+        "statistical_classification": "within_tolerance",
+        "status": "within_tolerance",
+        "tolerance": {
+          "absolute": "1",
+          "relative": "0.05"
+        }
+      },
+      {
+        "alpha": "1/40",
+        "baseline": {
+          "median": "100",
+          "p95": "100",
+          "max": "100"
+        },
+        "budgets": [],
+        "candidate": {
+          "median": "80",
+          "p95": "80",
+          "max": "80"
+        },
+        "change": {
+          "absolute": "-20",
+          "percent": "-20"
+        },
+        "criticality": "critical",
+        "exploratory": false,
+        "failures": [],
+        "instance_id": "synthetic_fast",
+        "interval": {
+          "lower": "-4",
+          "upper": "-4"
+        },
+        "metric": {
+          "direction": "lower_is_better",
+          "key": "wall_ms",
+          "unit": "ms"
+        },
+        "missing_records": 0,
+        "outcome": "pass",
+        "pairs": 12,
+        "rank": 2,
+        "shard": 1,
+        "statistical_classification": "improvement",
+        "status": "improvement",
+        "tolerance": {
+          "absolute": "1",
+          "relative": "0.05"
+        }
+      },
+      {
+        "alpha": "1/40",
+        "baseline": {
+          "max": "20",
+          "median": "20",
+          "p95": "20"
+        },
+        "budgets": [
+          {
+            "applicable": false,
+            "budget_id": "cli_discovery_under_50ms",
+            "limit": "50",
+            "observed_max": "20",
+            "result": "not_applicable",
+            "state": "pending_calibration"
+          }
+        ],
+        "candidate": {
+          "max": "20",
+          "median": "20",
+          "p95": "20"
+        },
+        "change": {
+          "absolute": "0",
+          "percent": "0"
+        },
+        "criticality": "critical",
+        "exploratory": false,
+        "failures": [],
+        "instance_id": "synthetic_process__size_1",
+        "interval": {
+          "lower": "0",
+          "upper": "0"
+        },
+        "metric": {
+          "direction": "lower_is_better",
+          "key": "wall_ms",
+          "unit": "ms"
+        },
+        "missing_records": 0,
+        "outcome": "pass",
+        "pairs": 12,
+        "rank": 2,
+        "shard": 0,
+        "statistical_classification": "within_tolerance",
+        "status": "within_tolerance",
+        "tolerance": {
+          "absolute": "1",
+          "relative": "0.05"
+        }
+      }
+    ],
+    "family_alpha": "1/20",
+    "family_size": 2,
+    "health": [
+      {
+        "end_mad_ratio": "0",
+        "end_median": "10",
+        "flags": [],
+        "shard": 0,
+        "shift": "0",
+        "start_mad_ratio": "0",
+        "start_median": "10",
+        "status": "healthy"
+      },
+      {
+        "end_mad_ratio": "0",
+        "end_median": "10",
+        "flags": [],
+        "shard": 1,
+        "shift": "0",
+        "start_mad_ratio": "0",
+        "start_median": "10",
+        "status": "healthy"
+      }
+    ],
+    "inputs": {
+      "builds_sha256": "sha256:8c6b48b980b4ddeae1d58985809da2f217fd80d5a0949373c46f67f01739ac16",
+      "run_bundle": "sha256:6188c9e5c4f97db1d95eb41f65b92820ac0b58947c700d18069569417b7dad65",
+      "shard_bundles": [
+        {
+          "bundle": "sha256:80f290e47efe637985cb8d4cc33487496ae74bac292cf4d7bc8f68ca34ddd517",
+          "shard": 0
+        },
+        {
+          "bundle": "sha256:ab9100585b5d1698d1e4bbac1360cfcb2b5216218f4bdcb85caadc7274eb46b0",
+          "shard": 1
+        }
+      ]
+    },
+    "plan_digest": "sha256:55df419fb7ae773534fc0c42f586762aa99cf93f363dfee285bf181cd75c864e",
+    "provenance": "measured",
+    "run_id": "local_synthetic",
+    "schema": "af.perf-verdict/2",
+    "scope": "bootstrap",
+    "shards": [
+      {
+        "expected_records": 76,
+        "failure": null,
+        "matched_records": 76,
+        "shard": 0,
+        "status": "complete"
+      },
+      {
+        "expected_records": 48,
+        "failure": null,
+        "matched_records": 48,
+        "shard": 1,
+        "status": "complete"
+      }
+    ]
+  },
+  "telemetry_is_diagnostic": true,
+  "experiment": {
+    "schema": "af.perf-scenario-experiment/1",
+    "work": "core",
+    "configuration_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "producer_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de"
+  }
+}

@@ -1,0 +1,88 @@
+# The owner's nightly build configuration (af.nightly-config/1, ADR-0265).
+#
+# An example for the owner's Linux VM; nothing installs it. Copy it to
+# /etc/af-nightly/nightly.toml, set the paths, run one night by hand first, then let the
+# systemd chain run every night (docs/nightly.md, ADR-0273). Each step without --date works on
+# today's UTC date and prints it:
+#
+#   python3 -I -B scripts/nightly/build.py build --config nightly.toml
+#   python3 -I -B scripts/nightly/measure.py submit --config nightly.toml
+#   python3 -I -B scripts/nightly/report.py compose --config nightly.toml
+#   python3 -I -B scripts/nightly/publish.py publish --config nightly.toml
+#
+# The build reads only these files and the GitHub check runs of main's commits; it writes only
+# builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
+# The measurement submits the night's two originals to the nightly executor and cycles it.
+# The report reads the night's record, the nightly executor's journal, GitHub and three host
+# facts, and writes only a new directory below reports_root (ADR-0271).
+# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0272).
+
+schema = "af.nightly-config/1"
+# The repository whose check runs decide which main commit is green.
+repository = "PakhomovAlexander/afactory"
+# A bare mirror of that repository (`git clone --mirror`) the host keeps fetched; the night
+# reads refs/heads/main and the release tags from it. Nothing in the nightly chain fetches it:
+# the executor's source mirror, which af-perf-source-refresh.timer keeps fetched, can serve
+# (mirror = "/var/lib/af-perf-executor/source.git"), or a mirror of its own you fetch before
+# 22:05 UTC.
+mirror = "/var/lib/af-nightly/afactory.git"
+# Each night's directory is builds_root/<YYYY-MM-DD>/.
+builds_root = "/var/lib/af-nightly/builds"
+# The laboratory's musl image (scripts/performance/images/Dockerfile, target `musl`), which
+# installs both Linux musl Rust targets, by the digest the performance executor pins as its
+# build_image for linux_x86_64_musl_claw; a nightly never pulls it.
+build_image = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# The user-mode runner the aarch64 binary's smoke runs under; without it the build refuses.
+qemu_aarch64 = "/usr/bin/qemu-aarch64-static"
+# The nightly minisign key pair, never the release key. The passphrase, if the key has one, is
+# read from AF_NIGHTLY_SIGN_PASSWORD; a key without one is used with `minisign -W`.
+sign_key = "/etc/af-nightly/nightly.key"
+public_key = "/etc/af-nightly/nightly.pub"
+# Check runs a green commit must carry, completed with success or skipped, beside every
+# `check /` run it has. Names of the release workflow's own jobs are refused here.
+required_checks = ["check / lint", "check / check (ubuntu-latest)"]
+# How many first-parent commits back from main's tip the walk may inspect.
+max_walk = 20
+# Optional: a file holding a read-only GitHub token. Without it the check runs are read
+# anonymously, which works for a public repository.
+# github_token_file = "/etc/af-nightly/github-token"
+# Where `compose` writes each night's report, reports_root/<date> (or <date>.<k> when the night
+# was composed before), and where `publish` takes the newest of them, when the command line
+# names neither a directory nor a root. Apart from builds_root and mirror.
+reports_root = "/var/lib/af-nightly/reports"
+
+# How `measure.py` waits for the night's core and telemetry originals (ADR-0273); `build.py`,
+# `report.py` and `publish.py` ignore it.
+[measure]
+# How long it cycles the nightly executor before it gives up on what is still queued or running
+# (30 to 600, default 300). A cycle that has started runs to its end.
+deadline_minutes = 300
+# How long it waits after a cycle that found the machine busy or nothing to run, or while
+# another process holds the journal (10 to 600, default 60).
+poll_seconds = 60
+
+# What `report.py compose` reads besides the night's record (ADR-0271); `build.py` ignores it.
+[report]
+# The nightly executor's configuration (docs/performance-local-executor.md#nightly-originals):
+# its `root` is the journal whose nightly:<tag>:core and nightly:<tag>:telemetry originals the
+# report verifies and shows, and its `machine_id` names the host.
+executor_config = "/etc/af-nightly/executor.toml"
+# How many earlier nights the trend shows beside this one: the last that many the journal holds
+# a core original of, by tag date (1 to 60, default 14).
+history_nights = 14
+# The instances the trend plots, as the suite names them; at most four. A name that is no
+# instance of the night's verdict leaves the trend unavailable with that reason.
+headline_instances = ["cli_discovery__command_version", "tui_open__registry_stores_20x10000",
+                      "source_capture__files_10000_tree_source_files_128b",
+                      "state_projection__log_events_10000_projection_application_cold"]
+# Publishing (scripts/nightly/publish.py, ADR-0272); the build never reads this table.
+[publish]
+# A file holding a GitHub token with contents write on the repository, separate from the
+# read-only github_token_file above; it creates, amends and prunes the nightly pre-releases.
+github_token_file = "/etc/af-nightly/github-publish-token"
+# Optional together: a file holding the Telegram bot token, and the chat the digest goes to
+# (a numeric chat id or @channel). Without them nothing is sent and the receipt says so.
+telegram_token_file = "/etc/af-nightly/telegram-token"
+telegram_chat_id = "-1001234567890"
+# How many nightly pre-releases stay on GitHub (3 to 60, default 14); older ones are deleted.
+keep_nights = 14

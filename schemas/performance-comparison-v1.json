@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-comparison:1",
+  "title": "af.perf-comparison/1",
+  "description": "Independent performance executor: comparison (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-comparison/1"
+    },
+    "comparison_id": {
+      "$ref": "#/$defs/id"
+    },
+    "journal_id": {
+      "$ref": "#/$defs/id"
+    },
+    "machine_id": {
+      "$ref": "#/$defs/id"
+    },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "main",
+            "pr",
+            "release",
+            "calibration"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind",
+        "key"
+      ]
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "control_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "baseline_sha",
+        "candidate_sha",
+        "control_sha",
+        "authority_sha"
+      ]
+    },
+    "configuration_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "producer_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "created_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "plan_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "core",
+          "telemetry",
+          "trace",
+          "cpu_profile"
+        ]
+      },
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "const": "local_serial"
+        },
+        "shards": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "build_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "reuse_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "shard_sampling_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "finish_reserve_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "available_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "first_child_shards": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "later_child_shards": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "children": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        }
+      },
+      "required": [
+        "backend",
+        "shards",
+        "build_seconds",
+        "reuse_seconds",
+        "shard_sampling_seconds",
+        "finish_reserve_seconds",
+        "available_seconds",
+        "first_child_shards",
+        "later_child_shards",
+        "children"
+      ]
+    },
+    "partitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "shards": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "request_id": {
+            "$ref": "#/$defs/id"
+          },
+          "build_from": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "needed_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000
+          }
+        },
+        "required": [
+          "index",
+          "shards",
+          "key",
+          "request_id",
+          "build_from",
+          "needed_seconds"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "request_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "key",
+        "request_id"
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lane": {
+            "type": "string",
+            "enum": [
+              "trace",
+              "cpu_profile"
+            ]
+          },
+          "recipe": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "observer": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "host_perf"
+                ]
+              }
+            ]
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "unsupported": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 4096
+              }
+            ]
+          }
+        },
+        "required": [
+          "lane",
+          "recipe",
+          "observer",
+          "key",
+          "request_id",
+          "unsupported"
+        ]
+      },
+      "minItems": 2,
+      "maxItems": 2
+    }
+  },
+  "required": [
+    "schema",
+    "comparison_id",
+    "journal_id",
+    "machine_id",
+    "submission",
+    "sources",
+    "configuration_digest",
+    "environment_digest",
+    "producer_digest",
+    "created_unix_ms",
+    "plan_sha256",
+    "run_id",
+    "lanes",
+    "schedule",
+    "partitions",
+    "telemetry",
+    "diagnostics"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

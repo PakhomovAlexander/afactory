@@ -1,0 +1,62 @@
+{
+  "workers": {
+    "implementer": {
+      "runner": {
+        "kind": "model",
+        "provider_kind": "codex",
+        "model": "configured-implementer",
+        "effort": "medium"
+      },
+      "provider": "configured-team",
+      "attempt": {
+        "tokens": 100000,
+        "wall_ms": 900000
+      }
+    },
+    "correctness": {
+      "runner": {
+        "kind": "model",
+        "provider_kind": "codex",
+        "model": "configured-correctness",
+        "effort": "medium"
+      },
+      "provider": "configured-team",
+      "attempt": {
+        "tokens": 100000,
+        "wall_ms": 900000
+      }
+    },
+    "bugs": {
+      "runner": {
+        "kind": "model",
+        "provider_kind": "codex",
+        "model": "configured-bugs",
+        "effort": "medium"
+      },
+      "provider": "configured-team",
+      "attempt": {
+        "tokens": 100000,
+        "wall_ms": 900000
+      }
+    },
+    "evaluator": {
+      "runner": {
+        "kind": "model",
+        "provider_kind": "codex",
+        "model": "configured-evaluator",
+        "effort": "medium"
+      },
+      "provider": "configured-team",
+      "attempt": {
+        "tokens": 100000,
+        "wall_ms": 900000
+      }
+    }
+  },
+  "independence": {
+    "command_workers_by_package": true,
+    "distinct_principals": false,
+    "distinct_providers": false,
+    "distinct_models": true
+  }
+}

@@ -1,0 +1,33 @@
+name: Raw note (triaged automatically)
+description: Something af did wrong or lacks, in one sentence and whatever evidence you have.
+labels: [triage/pending]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        File it raw: no class, size or duplicate search needed. Triage runs asynchronously and
+        labels the issue later (`docs/design/issue-triage.md`). The best evidence is, in order, an
+        af Task id with its workstream, a commit sha or PR number on `main`, or the exact command
+        with its stderr line. Prose alone is accepted.
+        Security vulnerabilities go through https://github.com/PakhomovAlexander/afactory/security/advisories/new, never here.
+  - type: textarea
+    id: saw
+    attributes:
+      label: What I saw
+      description: One paragraph. The title may be a sentence.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Anything pasteable, such as af Task ids, an `af task report` block, a commit sha, a command with its stderr, a gate log path, a screenshot.
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Steps, or "seen in Task X" when that is all that is known.
+    validations:
+      required: false

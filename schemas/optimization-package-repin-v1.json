@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-package-repin:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source_snapshot_id",
+    "candidate_snapshot_id",
+    "before_lock_id",
+    "after_lock_id",
+    "engine_release_id",
+    "entailed",
+    "protected_pins"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.optimization-package-repin/1"
+    },
+    "source_snapshot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "candidate_snapshot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "before_lock_id": {
+      "$ref": "#/$defs/id"
+    },
+    "after_lock_id": {
+      "$ref": "#/$defs/id"
+    },
+    "engine_release_id": {
+      "$ref": "#/$defs/id"
+    },
+    "entailed": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "before",
+          "after"
+        ],
+        "properties": {
+          "before": {
+            "$ref": "#/$defs/id"
+          },
+          "after": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "protected_pins": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/id"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:warm-set:3",
+  "title": "WarmSet@3 payload",
+  "description": "Exact carried layers selected before reservation. Review layers retain their original authority. Development records name each declared immutable cache or an explicit omission. Retry and replay use exactly this selection, never failed sibling source, state or conversations. WarmSet@2 is unsupported.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "node",
+    "round"
+  ],
+  "properties": {
+    "node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "source_attempt_id": {
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "notes_artifact_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "head_delta_artifact_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "head_delta_dropped": {
+      "type": "string",
+      "enum": [
+        "over_bound"
+      ],
+      "description": "Recorded when the Round's Head Delta was computed but exceeded its bound; never present beside head_delta_artifact_id."
+    },
+    "build_cache_artifact_id": {
+      "description": "The review.kernel/BuildCache@2 this Round's Gate captured for the kind the node declares. Explicitly unsafe; never a Cache Snapshot.",
+      "$ref": "#/$defs/digest"
+    },
+    "build_cache_dropped": {
+      "type": "string",
+      "enum": [
+        "not_captured",
+        "refused"
+      ],
+      "description": "Recorded when the node declared a build cache kind and none was carried; never present beside build_cache_artifact_id."
+    },
+    "workspace": {
+      "type": "string",
+      "enum": [
+        "full",
+        "rebased",
+        "reused"
+      ],
+      "description": "How the node's stable workspace template came to hold this Round's head. Present exactly with workspace_id; absent for a node that templates fresh per Round."
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/workspace_id",
+      "description": "The opaque identity of the node's stable workspace root within this Campaign. Never a host path."
+    },
+    "development": {
+      "type": "object",
+      "maxProperties": 3,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "outcome",
+              "artifact_id",
+              "manifest_id",
+              "compatibility_id"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "selected"
+              },
+              "artifact_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "manifest_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "compatibility_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "outcome",
+              "reason",
+              "compatibility_id"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "omitted"
+              },
+              "reason": {
+                "enum": [
+                  "no_input",
+                  "incompatible",
+                  "wrong_lineage",
+                  "missing",
+                  "corrupt",
+                  "over_bound"
+                ]
+              },
+              "compatibility_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "dependentRequired": {
+    "notes_artifact_id": [
+      "source_attempt_id"
+    ],
+    "workspace": [
+      "workspace_id"
+    ],
+    "workspace_id": [
+      "workspace"
+    ]
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    }
+  }
+}

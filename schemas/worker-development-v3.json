@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "https://afactory.dev/schemas/worker-development-v3.json",
+  "required": [
+    "schema",
+    "harness",
+    "binding_identity",
+    "tools",
+    "environment",
+    "writable_roots",
+    "state",
+    "cache",
+    "knowledge",
+    "dependencies",
+    "network",
+    "limits"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-development/3"
+    },
+    "harness": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "binding_identity": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tools": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "environment": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "writable_roots": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "source",
+          "state",
+          "scratch",
+          "build",
+          "cache",
+          "knowledge"
+        ]
+      }
+    },
+    "state": {
+      "enum": [
+        "attempt_private",
+        "disabled"
+      ]
+    },
+    "cache": {
+      "enum": [
+        "attempt_private",
+        "disabled"
+      ]
+    },
+    "knowledge": {
+      "enum": [
+        "attempt_private",
+        "disabled"
+      ]
+    },
+    "dependencies": {
+      "const": "available_only"
+    },
+    "network": {
+      "const": "deny"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "output_bytes",
+        "cpu_millicores",
+        "memory_bytes",
+        "processes",
+        "disk_bytes"
+      ],
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14400000
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "cpu_millicores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "disk_bytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 8589934592,
+          "multipleOf": 4096
+        },
+        "processes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "caches": {
+      "type": "object",
+      "maxProperties": 3,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "destination",
+          "path",
+          "selection",
+          "persistence",
+          "limits",
+          "fingerprints",
+          "keys",
+          "lifecycle"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "dependency",
+              "build",
+              "continuation"
+            ]
+          },
+          "destination": {
+            "enum": [
+              "build",
+              "cache",
+              "state"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^(?:[^/\\\\${}\\x00-\\x1f]+(?:/[^/\\\\${}\\x00-\\x1f]+)*)?$",
+            "not": {
+              "pattern": "(^|/)\\.{1,2}(/|$)"
+            }
+          },
+          "selection": {
+            "enum": [
+              "compatible",
+              "exact_source"
+            ]
+          },
+          "persistence": {
+            "enum": [
+              "discard",
+              "admitted_output"
+            ]
+          },
+          "limits": {
+            "description": "The limits the capture applied: bytes, traversed filesystem entries (directories included), directory depth and portable path length.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "max_bytes",
+              "max_entries",
+              "max_depth",
+              "max_path_bytes"
+            ],
+            "properties": {
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8589934592
+              },
+              "max_entries": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500000
+              },
+              "max_depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "max_path_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096
+              }
+            }
+          },
+          "fingerprints": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^/\\\\\\x00-\\x1f]+(?:/[^/\\\\\\x00-\\x1f]+)*$",
+              "not": {
+                "pattern": "(^|/)\\.{1,2}(/|$)"
+              }
+            }
+          },
+          "keys": {
+            "type": "object",
+            "maxProperties": 32,
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "dependency_source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "lifecycle": {
+            "const": "task",
+            "description": "Immutable layers follow the owning Task CAS retention, storage budget, leases and collection. Writable clones remain Attempt-private."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "persistence": {
+                  "const": "admitted_output"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "output"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "output"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "const": "dependency"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "dependency_source"
+              ],
+              "properties": {
+                "destination": {
+                  "const": "cache"
+                },
+                "persistence": {
+                  "const": "discard"
+                },
+                "limits": {
+                  "properties": {
+                    "max_bytes": {
+                      "maximum": 4294967296
+                    },
+                    "max_entries": {
+                      "maximum": 250000
+                    }
+                  }
+                }
+              },
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "input"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "output"
+                    ]
+                  }
+                ]
+              }
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "dependency_source"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "const": "build"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "destination": {
+                  "const": "build"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "role": {
+                  "const": "continuation"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "destination": {
+                  "const": "state"
+                },
+                "selection": {
+                  "const": "exact_source"
+                },
+                "path": {
+                  "minLength": 1,
+                  "not": {
+                    "pattern": "^(home|config)(/|$)"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "af.perf-schedule/2",
+  "actions": {
+    "repository": "owner/af",
+    "run_id": 4242,
+    "run_attempt": 1,
+    "event": "pull_request",
+    "ref": "refs/pull/7/merge",
+    "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+  },
+  "status": "skipped",
+  "reason": "gate_branch",
+  "detail": "base af-gate/task_1/base is a Remote Check gate branch; gate pull requests are never measured",
+  "pull_request": {
+    "number": 7,
+    "base_ref": "af-gate/task_1/base",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_repository": "someone/af",
+    "fork": true,
+    "merge_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+  },
+  "trust": {
+    "trusted": false,
+    "executor": "dedicated",
+    "detail": "a pull request is candidate-controlled: it runs only on ephemeral hosted runners, with no secret and read-only permissions"
+  },
+  "enforcement": "advisory",
+  "policy_changed": null,
+  "comparisons": [],
+  "matrix": [],
+  "concurrent_jobs": 0,
+  "retention_days": 14,
+  "release": null
+}
