@@ -1,0 +1,820 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-ledger:1",
+  "title": "af/telemetry-ledger@1",
+  "description": "`af telemetry ledger RUN --json` (design §7.5, §10; ADR-0153): one run's committed Store events, Finding and Demand summaries and accounting snapshots, in the order they were recorded, read from the telemetry directory alone, never a Store. `entries` lists every mirrored Store event (`af.store.event`: its log, sequence, type, id, causation, artifact references and the payload's digest and size), every Finding and Demand summary record and every lifecycle event (a Finding's disposition keyed by its key; a Demand's `opened`, `evidence_satisfied` with the Evidence id, `stale` and `waived`, keyed by the Demand id, never by a Finding key), ordered by their execution's segment start and their `seq`. `findings` and `demands` give each one's latest summary with its dispositions or lifecycle. `logs` gives, per Store log, how many events were mirrored, the highest sequence, and the sequences from 0 no retained record mirrors. `coverage` is `complete` only when nothing is missing from any log, every retained execution's segment was sealed by its writer with nothing dropped and its `af.run` recorded `af.ledger.coverage = complete`, the history is a prefix with no execution missing or open, and no Store mirror problem was recorded; otherwise `incomplete` with every reason in `coverage_reasons`. `run.history`, `run.retained` and `run.executions` say which executions everything covers; the history is never called complete. `accounting` gives each Attempt's charge snapshot with the highest `af.usage.sequence` (the kernel's accounting after its last committed accounting transition: `usage_observed`, `settled` or `released`) and, never merged with it, the latest sidecar observation of each execution that wrote one, with `wall_order` `unknown` across executions; `totals` are exact sums of the Attempts' charge snapshots. Counters are canonical decimal strings; times are unix nanoseconds as decimal strings. Nothing here is evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "run",
+    "coverage",
+    "coverage_reasons",
+    "logs",
+    "entries",
+    "findings",
+    "demands",
+    "accounting",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-ledger@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "$ref": "#/$defs/index"
+    },
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "coverage": {
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    },
+    "coverage_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/log"
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "demands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/demand"
+      }
+    },
+    "accounting": {
+      "$ref": "#/$defs/accounting"
+    },
+    "unreadable": {
+      "$ref": "#/$defs/unreadable"
+    }
+  },
+  "$defs": {
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "span_id",
+        "ordinal",
+        "start_unix_ns",
+        "end_unix_ns",
+        "open",
+        "wall_us",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "ordinal": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store_sequence_at_start": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "start_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "end_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "wall_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        },
+        "outcome": {
+          "type": "string"
+        }
+      }
+    },
+    "open_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        }
+      }
+    },
+    "executions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retained",
+        "sealed",
+        "open",
+        "list"
+      ],
+      "properties": {
+        "retained": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "open": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/open_execution"
+          }
+        },
+        "list": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution"
+          }
+        }
+      }
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "run_id",
+        "trace_id",
+        "history",
+        "missing_ordinals",
+        "retained",
+        "executions"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "kind": {
+          "enum": [
+            "task",
+            "review",
+            "optimize",
+            "measure"
+          ]
+        },
+        "history": {
+          "type": "string",
+          "pattern": "^(prefix:(0|[1-9][0-9]*)|partial)$"
+        },
+        "missing_ordinals": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "retained": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executions": {
+          "$ref": "#/$defs/executions"
+        }
+      }
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "mirrored",
+        "last_sequence",
+        "missing"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mirrored": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "to": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "execution_id",
+        "seq"
+      ],
+      "properties": {
+        "entry": {
+          "enum": [
+            "event",
+            "finding",
+            "demand",
+            "lifecycle"
+          ]
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "time_unix_ns": {
+          "$ref": "#/$defs/decimal"
+        },
+        "log": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "causation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "payload_digest": {
+          "type": "string"
+        },
+        "payload_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finding_key": {
+          "type": "string"
+        },
+        "demand_id": {
+          "type": "string"
+        },
+        "evidence_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "previous_status": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "entry": {
+                "const": "event"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "time_unix_ns",
+              "log",
+              "sequence",
+              "name"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entry": {
+                "const": "finding"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "finding_key",
+              "status"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entry": {
+                "const": "demand"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "demand_id",
+              "status"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entry": {
+                "const": "lifecycle"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "time_unix_ns",
+              "name"
+            ]
+          }
+        }
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "severity",
+        "effective_severity",
+        "status",
+        "scope",
+        "title",
+        "report_artifact_id",
+        "node_id",
+        "worker",
+        "dispositions"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "effective_severity": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        },
+        "report_artifact_id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dispositions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "previous_status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "previous_status": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "demand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "demand_id",
+        "kind",
+        "required",
+        "subject_id",
+        "snapshot_id",
+        "status",
+        "lifecycle"
+      ],
+      "properties": {
+        "demand_id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "subject_id": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "lifecycle": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "enum": [
+                  "opened",
+                  "evidence_satisfied",
+                  "stale",
+                  "waived"
+                ]
+              },
+              "evidence_id": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exact token counters as canonical decimal strings (ADR-0078); a counter the source did not deliver is absent, never zero (ADR-0143).",
+      "properties": {
+        "chargeable_tokens": {
+          "$ref": "#/$defs/decimal"
+        },
+        "input_tokens": {
+          "$ref": "#/$defs/decimal"
+        },
+        "output_tokens": {
+          "$ref": "#/$defs/decimal"
+        },
+        "cache_read_tokens": {
+          "$ref": "#/$defs/decimal"
+        },
+        "cache_write_tokens": {
+          "$ref": "#/$defs/decimal"
+        },
+        "reasoning_tokens": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation",
+        "counters"
+      ],
+      "description": "The separately identified native usage observation the kernel kept (`af.usage.native.*`); never added to a charge.",
+      "properties": {
+        "observation": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "counters": {
+          "$ref": "#/$defs/counters"
+        }
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempts",
+        "totals"
+      ],
+      "properties": {
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attempt"
+          }
+        },
+        "totals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempts",
+            "unknown_usage_attempts",
+            "counters"
+          ],
+          "properties": {
+            "attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown_usage_attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "counters": {
+              "$ref": "#/$defs/counters"
+            }
+          }
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "walls",
+        "wall_order"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "charge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequence",
+            "source",
+            "execution_id",
+            "counters"
+          ],
+          "properties": {
+            "sequence": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "source": {
+              "enum": [
+                "usage_observed",
+                "settled",
+                "released"
+              ]
+            },
+            "execution_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "counters": {
+              "$ref": "#/$defs/counters"
+            },
+            "observation": {
+              "enum": [
+                "complete",
+                "incomplete",
+                "unknown"
+              ]
+            },
+            "unknown_cause": {
+              "type": "string"
+            },
+            "native": {
+              "$ref": "#/$defs/native"
+            }
+          }
+        },
+        "walls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "execution_id",
+              "wall_sequence",
+              "counters"
+            ],
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "wall_sequence": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "started_unix_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "elapsed_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "counters": {
+                "$ref": "#/$defs/counters"
+              },
+              "native": {
+                "$ref": "#/$defs/native"
+              }
+            }
+          }
+        },
+        "wall_order": {
+          "enum": [
+            "unknown",
+            "one execution",
+            "none"
+          ]
+        }
+      }
+    }
+  }
+}

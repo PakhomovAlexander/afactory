@@ -1,0 +1,13 @@
+{
+  "schema": "af.perf-probe-request/2",
+  "case_id": "source_capture",
+  "instance_id": "source_capture__files_100_tree_source_files_128b",
+  "contract_id": "source_capture_v2",
+  "parameters": {
+    "files": 100,
+    "tree": "source_files_128b"
+  },
+  "repetitions": 1,
+  "scratch": "/perf/scratch/probe",
+  "seed": "/perf/scratch/seed/probe-work"
+}

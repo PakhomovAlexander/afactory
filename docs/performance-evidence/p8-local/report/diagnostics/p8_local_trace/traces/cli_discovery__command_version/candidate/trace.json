@@ -1,0 +1,1 @@
+{"capacity":65536,"clock":"monotonic_ns","dropped":0,"epoch_unix_ns":"1792563422323029000","open":0,"pid":85186,"schema":"af.perf-trace/1","spans":[{"end_ns":437084,"id":1,"parent":null,"phase":"cli_startup","start_ns":7417,"tid":1}]}

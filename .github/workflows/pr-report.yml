@@ -1,0 +1,47 @@
+# Every change is made through af Tasks, and its pull request description carries their
+# `af task report` block (ADR-0142) and the lines it adds per directory (ADR-0195). Dependabot
+# and `release/` pull requests are exempt.
+#
+# Only trusted code judges a pull request. `pull_request_target` runs this workflow as the base
+# branch holds it, not as the pull request changed it, and the job checks out the base branch,
+# never the pull request's head or merge ref, so it runs the base's checker. The description is
+# read from the event payload GitHub hands the job: no API call, no token beyond
+# `contents: read`, and no code from the pull request runs. The lines block is compared with
+# the pull request's own commits: the job fetches them as objects into the base checkout and
+# reads them with `git diff --numstat` alone; nothing of them is checked out, built or run. A
+# pull request can therefore change neither this workflow nor the checker that judges it; a
+# change to either takes effect for the pull requests opened after it merges.
+name: PR report
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# Under `pull_request_target`, `github.ref` is the base branch every pull request shares.
+concurrency:
+  group: pr-report-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: af task report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          # The base's history, for the fork point the lines block is counted from.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the pull request's commits (objects only; nothing of them is checked out or run)
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "refs/pull/$NUMBER/head"
+          git cat-file -e "$HEAD_SHA^{commit}" || git fetch --no-tags origin "$HEAD_SHA"
+      - name: Check the af task report and lines added blocks in the description
+        run: python3 scripts/check-pr-report.py --event "$GITHUB_EVENT_PATH"

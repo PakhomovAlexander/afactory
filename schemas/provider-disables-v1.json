@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-disables:1",
+  "title": "Machine-local Provider disables@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "providers"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.provider-disables/1"
+    },
+    "providers": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "not": {
+              "enum": [
+                "claude-ambient",
+                "codex-ambient"
+              ]
+            }
+          },
+          "expires_at": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unix_seconds",
+              "nanoseconds"
+            ],
+            "properties": {
+              "unix_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "nanoseconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999999999
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$comment": "IDs must also be unique, and timestamps representable by the machine wall clock. The complete serialized state is bounded to 65536 bytes, as is the registry; IDs have no separate length cap. Expiry applies exactly at the timestamp; expired entries are inert."
+}

@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-tools:1",
+  "title": "af/telemetry-tools@1",
+  "description": "`af telemetry tools RUN --json` (design §7.3, §10; ADR-0153): one row per tool call the run's harness streams showed, in start order (`--attempt ID`: one Attempt's, named in `attempt`). A Claude `tool_use` block is an `af.tool` from its line's arrival to the arrival of the `tool_result` that answers it, and a Codex `command_execution` or `mcp_tool_call` item one from `item.started` to `item.completed`; each row carries the turn that called it, the tool's name only when it is in the invocation's own tool set, its status and outcome, the bytes of its arguments and of its result, a command's exit code and an item's status from its closed enumeration — never the arguments or the result. Each row names the harness process it came from (`harness`: its `af.harness` span, segment, Attempt and node, its GenAI provider) and whether that process's stream can be analysed whole: `complete` when the observer dropped nothing (`dropped_chunks`), the tap saw no gap (`gaps`) and judged every frame, and it ended after Telemetry's release decision (`withheld` says whether that decision withheld the process's content); `incomplete` when one of those failed; `open` while the tap has not ended. Times are unix nanoseconds as decimal strings and microseconds; identifiers the harness supplied appear only as correlation ids (`corr`, the first 16 hex digits of SHA-256 over the segment id and the original). The run carries its history (`prefix:k` or `partial`, never complete) and the label of the executions the rows cover. Telemetry ids carry no authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "run",
+    "tools",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-tools@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "run_id",
+        "trace_id",
+        "history",
+        "missing_ordinals",
+        "retained"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "history": {
+          "type": "string",
+          "pattern": "^(prefix:(0|[1-9][0-9]*)|partial)$"
+        },
+        "missing_ordinals": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "retained": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "harness",
+          "span_id",
+          "start_unix_ns",
+          "start_offset_us",
+          "status",
+          "input_bytes"
+        ],
+        "properties": {
+          "harness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "span_id",
+              "segment_id",
+              "analysis"
+            ],
+            "properties": {
+              "span_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "analysis": {
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "open"
+                ]
+              },
+              "attempt_id": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "unknown"
+                ]
+              },
+              "dropped_chunks": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gaps": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "withheld": {
+                "type": "boolean"
+              }
+            }
+          },
+          "span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "start_unix_ns": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "start_offset_us": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "unset",
+              "open"
+            ]
+          },
+          "input_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "turn_span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "corr": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "duration_us": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "incomplete"
+            ]
+          },
+          "output_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "item_status": {
+            "enum": [
+              "in_progress",
+              "completed",
+              "failed",
+              "declined",
+              "other"
+            ]
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "attempt": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:error:1",
+  "title": "The error document af/error@1",
+  "$comment": "What every af command prints on stdout under --json when it fails, instead of its result (`af help json`): the command, the error sentence stderr also prints, and the process's exit code. A usage error clap finds is one too, exit 2. A refusal af classifies adds `cause`, `next_action`, the one af command to run next with the selectors the command was given (null when there is none), and `details`, the facts behind the cause: for `recovery_exhausted` the node, how often it was abandoned (`count`, of which `writer_lost` lost their writer and `host_cancelled` were interrupted) and its recovery `allowance`; for `refresh_refused` the selection `decision`; for `task_file_invalid` the `file`, the `field` and its `value`; for `input_unreadable` the `file` and what it is (`what`).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "command",
+    "error",
+    "exit_code"
+  ],
+  "dependentRequired": {
+    "next_action": [
+      "cause"
+    ],
+    "details": [
+      "cause"
+    ],
+    "cause": [
+      "next_action"
+    ]
+  },
+  "properties": {
+    "schema": {
+      "const": "af/error@1"
+    },
+    "command": {
+      "type": "string",
+      "pattern": "^af( [a-z][a-z0-9-]*)*$"
+    },
+    "error": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255
+    },
+    "cause": {
+      "enum": [
+        "usage",
+        "recovery_exhausted",
+        "refresh_refused",
+        "task_file_invalid",
+        "input_unreadable"
+      ]
+    },
+    "next_action": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^af [^\\u0000-\\u001f\\u007f]{1,4093}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "details": {
+      "type": "object",
+      "minProperties": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "usage"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exit_code": {
+            "const": 2
+          }
+        },
+        "not": {
+          "required": [
+            "details"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "recovery_exhausted"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 1
+          },
+          "next_action": {
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "count",
+              "writer_lost",
+              "host_cancelled",
+              "allowance"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "count": {
+                "$ref": "#/$defs/count"
+              },
+              "writer_lost": {
+                "$ref": "#/$defs/count"
+              },
+              "host_cancelled": {
+                "$ref": "#/$defs/count"
+              },
+              "allowance": {
+                "$ref": "#/$defs/count"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "refresh_refused"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 4
+          },
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "decision"
+            ],
+            "properties": {
+              "decision": {
+                "enum": [
+                  "infeasible",
+                  "needs_facts",
+                  "unavailable",
+                  "ambiguous",
+                  "invalid",
+                  "refused",
+                  "needs_generation"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "task_file_invalid"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "field",
+              "value"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "field": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "input_unreadable"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "what"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "what": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    }
+  }
+}
