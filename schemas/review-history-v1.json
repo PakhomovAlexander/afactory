@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-history:1",
+  "title": "review-history@1",
+  "$ref": "urn:af:schema:task-contracts:1#/$defs/reviewHistory"
+}

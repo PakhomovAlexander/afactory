@@ -1,0 +1,79 @@
+schema = "af.worker/1"
+name = "kernel/analyst"
+version = "1.0.0"
+
+[signature]
+effects = ["execute-checks", "read-source"]
+roles = ["author"]
+worker_input_type = "af/ReportInput@1"
+worker_output_type = "af/DocumentDraft@2"
+
+[signature.contract.inputs.comparison]
+artifact_type = "af/MeasurementComparison@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.comparison.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.measurements]
+artifact_type = "af/Measurement@1"
+cardinality = "many"
+optional = true
+covers = []
+
+[signature.contract.inputs.measurements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.sources]
+artifact_type = "af/ReportSources@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.sources.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.draft]
+artifact_type = "af/DocumentDraft@2"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.draft.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+
+[signature.retains]
+draft = ["comparison", "measurements", "requirements", "source", "sources"]
+
+[signature.attempt]
+tokens = 1500000
+wall_ms = 10800000
+
+[runner]
+kind = "model"
+provider_kind = "claude"
+model = "claude-opus-5-5"
+effort = "high"

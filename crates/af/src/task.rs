@@ -1,0 +1,1876 @@
+//! Delivery and inspection of verified Task results: only explicit delivery places the exact
+//! sealed Snapshot in a new local branch and linked worktree.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use review_config::layout;
+use review_process::{ExitPolicy, SupervisedOutput, run_supervised_with_policy};
+use review_source_git::{
+    Capture, Entry, EntryKind, Manifest, Repo, decode_path, digest_bytes, encode_path,
+};
+use review_store::Cas;
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::{normalize_absolute, resolve_filesystem_path, xdg_state_root};
+mod delivery_common;
+
+#[derive(Debug, Clone)]
+pub(super) struct DeliveryOptions {
+    repo: PathBuf,
+    state: Option<PathBuf>,
+    task_id: String,
+    branch: String,
+    worktree: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct InspectOptions {
+    repo: PathBuf,
+    state: Option<PathBuf>,
+    task_id: Option<String>,
+    json: bool,
+}
+
+pub(super) fn delivery_from_cli(
+    task_id: String,
+    repo: PathBuf,
+    branch: String,
+    worktree: PathBuf,
+    confirm: String,
+    state: Option<PathBuf>,
+    json: bool,
+) -> Result<DeliveryOptions, String> {
+    validate_task_id(&task_id)?;
+    if branch.is_empty() || worktree.as_os_str().is_empty() {
+        return Err("task deliver requires --branch and --worktree".into());
+    }
+    if confirm != task_id {
+        return Err("--confirm must exactly equal the Task ID".into());
+    }
+    Ok(DeliveryOptions {
+        repo,
+        state,
+        task_id,
+        branch,
+        worktree,
+        json,
+    })
+}
+
+pub(super) fn inspect_from_cli(
+    task_id: Option<String>,
+    repo: PathBuf,
+    state: Option<PathBuf>,
+    json: bool,
+) -> Result<InspectOptions, String> {
+    if let Some(task_id) = &task_id {
+        validate_task_id(task_id)?;
+    }
+    Ok(InspectOptions {
+        repo,
+        state,
+        task_id,
+        json,
+    })
+}
+
+fn validate_task_id(task_id: &str) -> Result<(), String> {
+    if review_core::task::is_name(task_id) {
+        Ok(())
+    } else {
+        Err("Task ID must be 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())
+    }
+}
+
+/// The parts of a verified Task Snapshot that delivery checks against the target repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotReceipt {
+    content_digest: String,
+    manifest_artifact_id: String,
+    repository_id: String,
+    /// The committed source revision; delivery accepts only Tasks captured from a commit.
+    source_revision: String,
+}
+
+/// One delivery transition of a Task result, in journal order.
+#[derive(Debug, Clone)]
+struct TaskEvent {
+    event_type: String,
+    artifact_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryTarget {
+    repository: String,
+    repository_id: String,
+    branch: String,
+    worktree: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryPrepared {
+    schema: String,
+    delivery_id: String,
+    task_id: String,
+    /// The exact Task result this delivery materializes.
+    result_id: String,
+    source_snapshot_id: String,
+    derived_snapshot_id: String,
+    source_revision: String,
+    target: DeliveryTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryReceipt {
+    schema: String,
+    delivery_id: String,
+    task_id: String,
+    /// The exact Task result this delivery materializes.
+    result_id: String,
+    source_snapshot_id: String,
+    derived_snapshot_id: String,
+    target: DeliveryTarget,
+    outcome: DeliveryOutcome,
+    /// Losslessly encoded Snapshot paths that the operator's ordinary `git add` will ignore in
+    /// the delivered worktree.
+    ignored_paths: Vec<String>,
+    /// The source Snapshot's paths under `.af/` that the declared layout does not name, with
+    /// their byte total. Recorded, never acted on: every one of them is in the delivered
+    /// worktree exactly as the Snapshot had it. Receipts written before this field existed, and
+    /// deliveries of a Snapshot whose authority tree is fully declared, carry no such group.
+    #[serde(default, skip_serializing_if = "layout::PathGroup::is_empty")]
+    undeclared_af_paths: layout::PathGroup,
+    remote_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum DeliveryOutcome {
+    Delivered,
+    Failed { reason: String },
+}
+
+/// Inspect the original receipt only after checking its published typed shape. Store binds
+/// delivery identity and status, while these private CLI types own the receipt/target fields.
+pub(super) fn validate_delivery_view(value: &serde_json::Value) -> Result<(), String> {
+    let typed = match value.get("schema").and_then(serde_json::Value::as_str) {
+        Some("af/task-delivery-prepared@1") => serde_json::to_value(
+            serde_json::from_value::<DeliveryPrepared>(value.clone())
+                .map_err(|error| format!("Invalid Task delivery preparation: {error}"))?,
+        ),
+        Some("af/task-delivery@1") => serde_json::to_value(
+            serde_json::from_value::<DeliveryReceipt>(value.clone())
+                .map_err(|error| format!("Invalid Task delivery receipt: {error}"))?,
+        ),
+        _ => return Err("Unsupported Task delivery inspection schema".into()),
+    }
+    .map_err(|error| error.to_string())?;
+    // Serde unit enum variants may ignore extra properties even with deny_unknown_fields.
+    // Comparing the typed shape also closes that case without changing persisted enums.
+    if typed != *value {
+        return Err("Task delivery inspection contains unsupported fields".into());
+    }
+    for field in ["source_snapshot_id", "derived_snapshot_id", "result_id"] {
+        if let Some(id) = typed.get(field)
+            && !id.as_str().is_some_and(review_core::is_digest)
+        {
+            return Err(format!("Task delivery inspection has an invalid {field}"));
+        }
+    }
+    Ok(())
+}
+
+struct DeliveryAssets {
+    source_snapshot_id: String,
+    source: SnapshotReceipt,
+    source_manifest: Manifest,
+    derived_snapshot_id: String,
+    derived: SnapshotReceipt,
+    derived_manifest: Manifest,
+}
+
+const DELIVERY_GIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct DeliveryGit {
+    directory: PathBuf,
+    home: PathBuf,
+}
+
+struct DeliveryLock {
+    _connection: Connection,
+}
+
+impl DeliveryLock {
+    fn acquire(state: &Path) -> Result<Self, String> {
+        let connection = Connection::open(state.join("task-delivery-lock.sqlite"))
+            .map_err(|error| error.to_string())?;
+        connection
+            .busy_timeout(Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE IF NOT EXISTS delivery_lock (singleton INTEGER PRIMARY KEY);
+                 BEGIN IMMEDIATE;",
+            )
+            .map_err(|error| format!("another Task delivery is active: {error}"))?;
+        Ok(Self {
+            _connection: connection,
+        })
+    }
+}
+
+impl DeliveryGit {
+    fn new(directory: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
+        Self {
+            directory: directory.into(),
+            home: home.into(),
+        }
+    }
+
+    fn command(&self) -> ProcessCommand {
+        let mut command = ProcessCommand::new("git");
+        command.env_clear();
+        command
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", &self.home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_ATTR_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .current_dir(&self.directory)
+            .args([
+                "--no-optional-locks",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.attributesFile=/dev/null",
+                "-c",
+                "core.sparseCheckout=false",
+                "-c",
+                "core.sparseCheckoutCone=false",
+                "-c",
+                "diff.external=",
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "credential.helper=",
+            ]);
+        command
+    }
+
+    fn run<I, S>(&self, args: I, input: Option<Vec<u8>>) -> Result<SupervisedOutput, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args: Vec<OsString> = args
+            .into_iter()
+            .map(|argument| argument.as_ref().to_os_string())
+            .collect();
+        let rendered = args
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut command = self.command();
+        command.args(&args);
+        run_supervised_with_policy(
+            &mut command,
+            input,
+            DELIVERY_GIT_TIMEOUT,
+            ExitPolicy::KillProcessGroup,
+        )
+        .map_err(|error| format!("git {rendered}: {error}"))
+    }
+
+    fn require<I, S>(&self, args: I, input: Option<Vec<u8>>) -> Result<Vec<u8>, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.run(args, input)?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(output.stdout)
+    }
+
+    fn check_ignore(&self, input: Vec<u8>) -> Result<SupervisedOutput, String> {
+        let mut command = self.command();
+        command.env_remove("GIT_CONFIG_GLOBAL");
+        command.env_remove("XDG_CONFIG_HOME");
+        if let Some(home) = std::env::var_os("HOME") {
+            command.env("HOME", home);
+        } else {
+            command.env_remove("HOME");
+        }
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            command.env("XDG_CONFIG_HOME", xdg);
+        }
+        if let Some(global) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+            command.env("GIT_CONFIG_GLOBAL", global);
+        }
+        command.args(["check-ignore", "-z", "--stdin"]);
+        run_supervised_with_policy(
+            &mut command,
+            Some(input),
+            DELIVERY_GIT_TIMEOUT,
+            ExitPolicy::KillProcessGroup,
+        )
+        .map_err(|error| format!("git check-ignore -z --stdin: {error}"))
+    }
+
+    fn ref_oid(&self, reference: &str) -> Result<Option<String>, String> {
+        let commit = format!("{reference}^{{commit}}");
+        let output = self.run(["rev-parse", "--verify", "--quiet", &commit], None)?;
+        if output.status.success() {
+            let oid = String::from_utf8(output.stdout)
+                .map_err(|_| format!("Git returned a non-UTF-8 object ID for {reference}"))?;
+            return Ok(Some(oid.trim().to_string()));
+        }
+        // `rev-parse --verify --quiet` uses exit 1 to mean that the ref does not
+        // resolve. Git may still print a platform warning on stderr (for example
+        // macOS falling back from DARWIN_USER_TEMP_DIR), which does not turn the
+        // missing ref into an infrastructure failure.
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        Err(format!(
+            "reading Git ref {reference}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let state = resolve_task_state(&options.state, &repository)?;
+    if state.starts_with(&repository) {
+        return Err("Task state must be outside the repository".into());
+    }
+    if !state.join("events.sqlite").is_file() {
+        return Err(format!("Task state {} does not exist", state.display()));
+    }
+    // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
+    // events remain durable in the Task database while an exact concurrent command is refused;
+    // a crash releases this lock and leaves the prepared event available for reconciliation.
+    let _delivery_lock = DeliveryLock::acquire(&state)?;
+    let worktree = resolve_delivery_path(&options.worktree, &repository, &state)?;
+    let repository_text = utf8_path(&repository, "repository")?;
+    let worktree_text = utf8_path(&worktree, "worktree")?;
+    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
+    let task =
+        delivery_common::projection(&state, &cas, &options.task_id)?.ok_or("Unknown Task")?;
+    let events = delivery_common::events(&task);
+    let assets = delivery_common::assets(&cas, &task)?;
+    let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
+    // What the declared layout says about the Snapshot this delivery would place in a worktree.
+    // A pure function of the recorded manifest, so it is the same answer the plan gave. Nothing
+    // is removed either way: `warn` records the group in the receipt, `refuse` stops here —
+    // before the prepared record, before `validate_branch`, and before any Git mutation.
+    let undeclared = layout::classify_manifest(&assets.source_manifest).undeclared;
+    let recorded_policy = &task.revision.authority.policy_id;
+    let policy = crate::task_execution::captured_undeclared_af_paths(&cas, recorded_policy)?;
+    if policy == layout::UndeclaredAfPathsPolicy::Refuse && !undeclared.is_empty() {
+        return Err(crate::af_paths::refusal(&undeclared));
+    }
+    let source_revision = assets.source.source_revision.clone();
+    let target = DeliveryTarget {
+        repository: repository_text,
+        repository_id: assets.source.repository_id.clone(),
+        branch: options.branch.clone(),
+        worktree: worktree_text,
+    };
+    // The Store binds every delivery record and receipt of this Task to its finished result.
+    let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
+        return Err("Task has no finished result".into());
+    };
+    let prepared = DeliveryPrepared {
+        schema: "af/task-delivery-prepared@1".into(),
+        delivery_id: delivery_id(
+            &options.task_id,
+            &assets.source_snapshot_id,
+            &assets.derived_snapshot_id,
+            &target,
+            result_id,
+        )?,
+        task_id: options.task_id.clone(),
+        result_id: result_id.clone(),
+        source_snapshot_id: assets.source_snapshot_id.clone(),
+        derived_snapshot_id: assets.derived_snapshot_id.clone(),
+        source_revision,
+        target,
+    };
+    let git_home = state.join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let git = DeliveryGit::new(&repository, &git_home);
+    validate_branch(&git, &prepared.target.branch)?;
+
+    if let Some(receipt) = latest_delivery_receipt(&cas, &events, "TaskDelivered@1")? {
+        ensure_same_delivery(&prepared, &receipt)?;
+        verify_sealed_delivery_identity(&git, &git_home, &prepared)?;
+        print_delivery(&options, &receipt)?;
+        return Ok(());
+    }
+
+    let unresolved = latest_delivery_transition(&cas, &events)?;
+    if let Some(existing) = unresolved {
+        ensure_same_preparation(&prepared, &existing)?;
+        match verify_existing_delivery(&git, &git_home, &assets, &existing) {
+            Ok(()) => {
+                let ignored_paths = ignored_delivery_paths(
+                    &DeliveryGit::new(&existing.target.worktree, &git_home),
+                    &assets.derived_manifest,
+                )?;
+                let receipt = delivered_receipt(&existing, ignored_paths, undeclared);
+                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+                print_delivery(&options, &receipt)?;
+                return Ok(());
+            }
+            Err(verification) => match rollback_owned_delivery(
+                &git,
+                &existing,
+                &assets.derived_manifest,
+                RollbackContext::Recovery,
+            ) {
+                Ok(()) => {
+                    let receipt = failed_receipt(
+                        &existing,
+                        &format!(
+                            "Incomplete delivery was rolled back before retry: {verification}"
+                        ),
+                    );
+                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                }
+                Err(rollback) => {
+                    let reason = format!(
+                        "delivery recovery preserved the unsealed branch/worktree because it could not prove the content was delivery-owned: verification failed: {verification}; rollback refused: {rollback}"
+                    );
+                    let receipt = failed_receipt(&existing, &reason);
+                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                    return Err(format!(
+                        "delivery recovery stopped and preserved branch `{}` at `{}`; retry this Task with a new absent branch and worktree (or remove the preserved target with normal Git controls before reusing it): {rollback}",
+                        existing.target.branch, existing.target.worktree
+                    ));
+                }
+            },
+        }
+    } else if let Some(failed) = latest_terminal_delivery_failure(&cas, &events)? {
+        release_failed_delivery_owner(&git, &prepared, &failed)?;
+    }
+
+    verify_source_authority(&repository, &git_home, &git, &cas, &assets)?;
+    ensure_delivery_target_absent(&git, &prepared)?;
+    let prepared_artifact = cas
+        .put_json(&serde_json::to_value(&prepared).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    store.append(
+        &cas,
+        &options.task_id,
+        "TaskDeliveryPrepared@1",
+        &prepared_artifact,
+    )?;
+
+    match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
+        Ok(ignored_paths) => {
+            let receipt = delivered_receipt(&prepared, ignored_paths, undeclared);
+            append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+            print_delivery(&options, &receipt)
+        }
+        Err(reason) => match rollback_owned_delivery(
+            &git,
+            &prepared,
+            &assets.derived_manifest,
+            RollbackContext::CurrentAttempt,
+        ) {
+            Ok(()) => {
+                let receipt = failed_receipt(&prepared, &reason);
+                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                Err(format!("delivery failed and was rolled back: {reason}"))
+            }
+            Err(rollback) => Err(format!(
+                "delivery failed: {reason}; rollback is incomplete: {rollback}; rerun the exact command to recover"
+            )),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn observe_adoption(
+    task_id: &str,
+    commit: &str,
+    workload: &str,
+    model: &str,
+    environment: &str,
+    evidence_task: Option<&str>,
+    repo: &Path,
+    explicit_state: Option<&PathBuf>,
+    json_output: bool,
+) -> Result<(), String> {
+    use review_core::task::optimization_light::{
+        AdoptionEquivalenceV1, OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+        OPTIMIZATION_ADOPTION_RECEIPT_V1, OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1,
+        OptimizationAdoptionObservationV1, OptimizationAdoptionReceiptV1,
+        OptimizationAdoptionTaskEvidenceV1,
+    };
+
+    validate_task_id(task_id)?;
+    if commit.trim().is_empty()
+        || workload.trim().is_empty()
+        || model.trim().is_empty()
+        || environment.trim().is_empty()
+    {
+        return Err(
+            "adoption observation requires commit, workload, model and environment identities"
+                .into(),
+        );
+    }
+    let repository = std::fs::canonicalize(repo)
+        .map_err(|error| format!("opening repository {}: {error}", repo.display()))?;
+    let state = resolve_task_state(&explicit_state.cloned(), &repository)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let mut store = review_store::EventStore::open(state.join("events.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let task = store
+        .task_projection(&cas, task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Unknown Task")?;
+    let delivery_record_id = task
+        .deliveries
+        .iter()
+        .rev()
+        .find(|(_, record)| {
+            record.status == review_core::task::delivery::TaskDeliveryStatusV1::Delivered
+        })
+        .map(|(id, _)| id)
+        .ok_or("Optimization Task has no completed local delivery")?;
+    let delivery_record = cas
+        .get_artifact(delivery_record_id)
+        .map_err(|error| error.to_string())?;
+    let adoption_receipts = delivery_record
+        .input_artifacts
+        .iter()
+        .filter_map(|id| {
+            cas.get_artifact(id)
+                .ok()
+                .filter(|artifact| artifact.artifact_type == OPTIMIZATION_ADOPTION_RECEIPT_V1)
+        })
+        .collect::<Vec<_>>();
+    let [receipt_envelope] = adoption_receipts.as_slice() else {
+        return Err("Delivered Task has no unique optimization adoption receipt".into());
+    };
+    let receipt: OptimizationAdoptionReceiptV1 =
+        serde_json::from_value(receipt_envelope.payload.clone()).map_err(|e| e.to_string())?;
+    receipt.validate()?;
+
+    let git_home = state.join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let source = Capture::new(&Repo::open(&repository, &git_home), &cas)
+        .committed(commit)
+        .map_err(|error| error.to_string())?;
+    let commit_snapshot_id = cas
+        .put_json(&serde_json::json!({
+            "schema":"af.optimization-adoption-commit/1",
+            "repository_id":source.repository_id,
+            "source_revision":source.source_revision,
+            "content_digest":source.content_digest,
+        }))
+        .map_err(|error| error.to_string())?;
+    let identify = |domain: &str, value: &str| {
+        cas.put_json(&serde_json::json!([domain, value]))
+            .map_err(|error| error.to_string())
+    };
+    let plan_id = task
+        .plan_id
+        .as_ref()
+        .ok_or("Optimization Task has no captured plan")?;
+    let plan_envelope = cas
+        .get_artifact(plan_id)
+        .map_err(|error| error.to_string())?;
+    let plan: review_core::task::plan::ExecutionPlanV1 =
+        serde_json::from_value(plan_envelope.payload).map_err(|error| error.to_string())?;
+    plan.validate()?;
+    let observed_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis() as u64;
+    let observation = OptimizationAdoptionObservationV1 {
+        schema: "af.optimization-adoption-observation/1".into(),
+        adoption_receipt_id: receipt_envelope.artifact_id.clone(),
+        commit_snapshot_id,
+        commit_tree_id: source.content_digest.clone(),
+        equivalence: if source.content_digest == receipt.delivered_tree_id {
+            AdoptionEquivalenceV1::Equivalent
+        } else {
+            AdoptionEquivalenceV1::Edited
+        },
+        observed_unix_ms: observed_unix_ms.into(),
+        workload_id: identify("af/optimization-workload/1", workload)?,
+        model_id: identify("af/optimization-model/1", model)?,
+        engine_id: plan.engine_id,
+        environment_id: identify("af/optimization-environment/1", environment)?,
+        causal_claim: false,
+    };
+    observation.validate()?;
+    let task_evidence = if let Some(observed_task_id) = evidence_task {
+        validate_task_id(observed_task_id)?;
+        if observed_task_id == task_id {
+            return Err(
+                "adoption evidence must name a later Task, not the optimization Task".into(),
+            );
+        }
+        let observed = store
+            .task_projection(&cas, observed_task_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Unknown adoption evidence Task")?;
+        let result_id = match &observed.phase {
+            review_core::task::TaskPhaseV1::Finished { result_id } => result_id.clone(),
+            _ => return Err("adoption evidence Task is not finished".into()),
+        };
+        let result_envelope = cas
+            .get_artifact(&result_id)
+            .map_err(|error| error.to_string())?;
+        let result: review_core::task::TaskResultV1 =
+            serde_json::from_value(result_envelope.payload).map_err(|error| error.to_string())?;
+        result.validate()?;
+        let observed_plan_id = observed
+            .plan_id
+            .clone()
+            .ok_or("adoption evidence Task has no captured plan")?;
+        let observed_plan_envelope = cas
+            .get_artifact(&observed_plan_id)
+            .map_err(|error| error.to_string())?;
+        let observed_plan: review_core::task::plan::ExecutionPlanV1 =
+            serde_json::from_value(observed_plan_envelope.payload)
+                .map_err(|error| error.to_string())?;
+        observed_plan.validate()?;
+
+        let mut binding_ids = observed_plan
+            .bindings
+            .values()
+            .map(|binding| {
+                serde_json::to_value(binding)
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| cas.put_json(&value).map_err(|error| error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        binding_ids.sort();
+        binding_ids.dedup();
+        let accounting = observed
+            .execution
+            .as_ref()
+            .map(|execution| execution.attempt_accounting())
+            .unwrap_or_default();
+        let mut attempt_ids = accounting
+            .iter()
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        attempt_ids.sort();
+        attempt_ids.dedup();
+        let mut unsuccessful_attempt_ids = accounting
+            .iter()
+            .filter(|attempt| {
+                !matches!(
+                    attempt.result,
+                    Some(review_core::task::execution::TaskAttemptResultV1::Succeeded { .. })
+                )
+            })
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        unsuccessful_attempt_ids.sort();
+        unsuccessful_attempt_ids.dedup();
+        let mut usage_ids = accounting
+            .iter()
+            .filter_map(|attempt| attempt.usage_id.clone())
+            .collect::<Vec<_>>();
+        usage_ids.sort();
+        usage_ids.dedup();
+        let mut runtime_evidence_ids = accounting
+            .iter()
+            .flat_map(|attempt| attempt.raw_artifact_ids.iter())
+            .filter_map(|id| {
+                cas.get_optional_artifact(id)
+                    .ok()
+                    .flatten()
+                    .filter(|artifact| {
+                        artifact.artifact_type
+                            == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    })
+                    .map(|_| id.clone())
+            })
+            .collect::<Vec<_>>();
+        runtime_evidence_ids.sort();
+        runtime_evidence_ids.dedup();
+        let mut missing_fields = BTreeSet::new();
+        if accounting.is_empty() {
+            missing_fields.insert("attempts".into());
+        }
+        if accounting.iter().any(|attempt| attempt.usage_id.is_none()) {
+            missing_fields.insert("usage".into());
+        }
+        if accounting.iter().any(|attempt| {
+            !attempt.raw_artifact_ids.iter().any(|id| {
+                cas.get_optional_artifact(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|artifact| {
+                        artifact.artifact_type
+                            == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    })
+            })
+        }) {
+            missing_fields.insert("runtime_evidence".into());
+        }
+        if binding_ids.is_empty() {
+            missing_fields.insert("worker_bindings".into());
+        }
+        let evidence = OptimizationAdoptionTaskEvidenceV1 {
+            schema: "af.optimization-adoption-task-evidence/1".into(),
+            adoption_receipt_id: receipt_envelope.artifact_id.clone(),
+            commit_snapshot_id: observation.commit_snapshot_id.clone(),
+            observed_task_id: observed_task_id.into(),
+            observed_task_revision_id: observed.revision_id,
+            observed_task_result_id: result_id,
+            observed_plan_id,
+            outcome: result.domain_conclusion,
+            attempt_ids,
+            unsuccessful_attempt_ids,
+            usage_ids,
+            runtime_evidence_ids,
+            binding_ids,
+            engine_id: observed_plan.engine_id,
+            environment_id: observed_plan.authority.policy_id,
+            missing_fields,
+            causal_claim: false,
+        };
+        evidence.validate()?;
+        let refs = [
+            evidence.adoption_receipt_id.clone(),
+            evidence.commit_snapshot_id.clone(),
+            evidence.observed_task_revision_id.clone(),
+            evidence.observed_task_result_id.clone(),
+            evidence.observed_plan_id.clone(),
+            evidence.engine_id.clone(),
+            evidence.environment_id.clone(),
+        ]
+        .into_iter()
+        .chain(evidence.usage_ids.iter().cloned())
+        .chain(evidence.runtime_evidence_ids.iter().cloned())
+        .chain(evidence.binding_ids.iter().cloned())
+        .collect();
+        Some(
+            cas.put_artifact(
+                OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: review_store::store::task::task_run_id(task_id)
+                        .map_err(|error| error.to_string())?,
+                    node_id: None,
+                    operation_id: "optimization-adoption-task-evidence-v1".into(),
+                },
+                refs,
+                None,
+                serde_json::to_value(&evidence).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
+            .0,
+        )
+    } else {
+        None
+    };
+    let same_observation = |existing: &OptimizationAdoptionObservationV1| {
+        existing.adoption_receipt_id == observation.adoption_receipt_id
+            && existing.commit_snapshot_id == observation.commit_snapshot_id
+            && existing.commit_tree_id == observation.commit_tree_id
+            && existing.equivalence == observation.equivalence
+            && existing.workload_id == observation.workload_id
+            && existing.model_id == observation.model_id
+            && existing.engine_id == observation.engine_id
+            && existing.environment_id == observation.environment_id
+    };
+    if let Some((observation_id, existing)) = task
+        .adoption_observations
+        .iter()
+        .find(|(_, existing)| same_observation(existing))
+    {
+        let envelope = cas
+            .get_artifact(observation_id)
+            .map_err(|e| e.to_string())?;
+        if task_evidence
+            .as_ref()
+            .is_none_or(|id| envelope.input_artifacts.contains(id))
+        {
+            return print_adoption_observation(
+                observation_id,
+                existing,
+                task_evidence.as_deref(),
+                json_output,
+            );
+        }
+        return Err(
+            "matching adoption observation already exists with different Task evidence".into(),
+        );
+    }
+    let observation_id = cas
+        .put_artifact(
+            OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+            review_core::Producer::KernelOperation {
+                run_id: review_store::store::task::task_run_id(task_id)
+                    .map_err(|error| error.to_string())?,
+                node_id: None,
+                operation_id: "optimization-adoption-observation-v1".into(),
+            },
+            vec![
+                receipt_envelope.artifact_id.clone(),
+                observation.commit_snapshot_id.clone(),
+                observation.workload_id.clone(),
+                observation.model_id.clone(),
+                observation.engine_id.clone(),
+                observation.environment_id.clone(),
+            ]
+            .into_iter()
+            .chain(task_evidence.iter().cloned())
+            .collect(),
+            None,
+            serde_json::to_value(&observation).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+        .0;
+    cas.flush().map_err(|error| error.to_string())?;
+    let lease = store
+        .take_task_lease(
+            &cas,
+            task_id,
+            &format!("observe-adoption-{}", std::process::id()),
+            60_000,
+        )
+        .map_err(|error| error.to_string())?;
+    let current = store
+        .task_projection(&cas, task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Unknown Task")?;
+    if let Some((existing_id, existing)) = current
+        .adoption_observations
+        .iter()
+        .find(|(_, existing)| same_observation(existing))
+    {
+        store
+            .release_task_lease(&cas, &lease)
+            .map_err(|error| error.to_string())?;
+        let envelope = cas.get_artifact(existing_id).map_err(|e| e.to_string())?;
+        if task_evidence
+            .as_ref()
+            .is_none_or(|id| envelope.input_artifacts.contains(id))
+        {
+            return print_adoption_observation(
+                existing_id,
+                existing,
+                task_evidence.as_deref(),
+                json_output,
+            );
+        }
+        return Err(
+            "matching adoption observation already exists with different Task evidence".into(),
+        );
+    }
+    let recorded = store
+        .record_task_adoption_observation(&cas, &lease, &observation_id)
+        .map_err(|error| error.to_string());
+    let released = store
+        .release_task_lease(&cas, &lease)
+        .map_err(|error| error.to_string());
+    recorded?;
+    released?;
+    print_adoption_observation(
+        &observation_id,
+        &observation,
+        task_evidence.as_deref(),
+        json_output,
+    )
+}
+
+fn print_adoption_observation(
+    observation_id: &str,
+    observation: &review_core::task::optimization_light::OptimizationAdoptionObservationV1,
+    task_evidence_id: Option<&str>,
+    json_output: bool,
+) -> Result<(), String> {
+    use review_core::task::optimization_light::AdoptionEquivalenceV1;
+    let output = serde_json::json!({"observation_id":observation_id,"observation":observation,"task_evidence_id":task_evidence_id});
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Adoption {}: {}",
+            observation_id,
+            match observation.equivalence {
+                AdoptionEquivalenceV1::Equivalent => "equivalent",
+                AdoptionEquivalenceV1::Edited => "edited",
+            }
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let state = resolve_task_state(&options.state, &repository)?;
+    let mut tasks = super::task_execution::list_common(&state)?;
+    let store = if sizes {
+        // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
+        // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
+        // Task `gc --apply` collects between them has a row and no footprint, so both are read
+        // again once, and the second pass lists it from its tombstone.
+        let mut store = None;
+        for attempt in 0..2 {
+            let (totals, footprints) = super::task_execution::list_sizes(&state)?;
+            let mut missing = None;
+            for task in &mut tasks {
+                if task.get("collected").is_some() {
+                    // A collected Task reaches no object: its row says so in numbers, in both
+                    // formats, rather than leaving the column empty.
+                    task["sizes"] = serde_json::json!({
+                        "exclusive_objects": 0, "exclusive_bytes": 0,
+                        "shared_objects": 0, "shared_bytes": 0,
+                    });
+                    continue;
+                }
+                let id = task["task_id"].as_str().unwrap_or_default().to_owned();
+                match footprints.get(&id) {
+                    Some(footprint) => task["sizes"] = footprint.clone(),
+                    None => {
+                        missing = Some(id);
+                        break;
+                    }
+                }
+            }
+            match missing {
+                None => {
+                    store = Some(totals);
+                    break;
+                }
+                Some(_) if attempt == 0 => {
+                    tasks = super::task_execution::list_common(&state)?;
+                }
+                Some(id) => return Err(format!("Task `{id}` has no recorded size")),
+            }
+        }
+        store
+    } else {
+        None
+    };
+    print_task_list(&options, tasks, store)
+}
+
+pub(super) fn show(options: InspectOptions) -> Result<(), String> {
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let state = resolve_task_state(&options.state, &repository)?;
+    let task_id = options.task_id.as_deref().expect("validated by parser");
+    if super::task_execution::show_if_common(task_id, &state, options.json)? {
+        return Ok(());
+    }
+    Err(format!("Task `{task_id}` was not found"))
+}
+
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@1` document, over
+/// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
+pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(), String> {
+    for task_id in task_ids {
+        validate_task_id(task_id).map_err(|error| format!("`{task_id}`: {error}"))?;
+    }
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let state = resolve_task_state(&options.state, &repository)?;
+    let report = super::task_execution::task_report::read(&state, task_ids)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|error| error.to_string())?
+        );
+    } else {
+        print!("{}", super::task_execution::task_report::markdown(&report));
+    }
+    Ok(())
+}
+
+fn resolve_delivery_path(
+    requested: &Path,
+    repository: &Path,
+    state: &Path,
+) -> Result<PathBuf, String> {
+    let absolute = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("reading current directory: {error}"))?
+            .join(requested)
+    };
+    let absolute = normalize_absolute(&absolute)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(&absolute)
+        && metadata.file_type().is_symlink()
+    {
+        return Err("delivery worktree path cannot be a symlink".into());
+    }
+    let resolved = resolve_filesystem_path(&absolute)?;
+    let parent = resolved
+        .parent()
+        .ok_or("delivery worktree must have a parent directory")?;
+    if !parent.is_dir() {
+        return Err(format!(
+            "delivery worktree parent {} must already exist",
+            parent.display()
+        ));
+    }
+    if resolved == repository || resolved.starts_with(repository) {
+        return Err("delivery worktree must be outside the source checkout".into());
+    }
+    if resolved == state || resolved.starts_with(state) {
+        return Err("delivery worktree must be outside the Task state directory".into());
+    }
+    Ok(resolved)
+}
+
+fn utf8_path(path: &Path, kind: &str) -> Result<String, String> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("delivery {kind} path must be valid UTF-8"))
+}
+
+fn delivery_id(
+    task_id: &str,
+    source_snapshot_id: &str,
+    derived_snapshot_id: &str,
+    target: &DeliveryTarget,
+    result_id: &str,
+) -> Result<String, String> {
+    let value = serde_json::json!({
+        "task_id": task_id,
+        "source_snapshot_id": source_snapshot_id,
+        "derived_snapshot_id": derived_snapshot_id,
+        "target": target,
+        "result_id": result_id,
+    });
+    let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "delivery-{}",
+        review_core::hex::encode(&Sha256::digest(bytes))
+    ))
+}
+
+fn owner_ref(prepared: &DeliveryPrepared) -> Result<String, String> {
+    if !review_core::is_digest(&prepared.result_id) {
+        return Err("Delivery has an invalid result identity".into());
+    }
+    Ok(format!(
+        "refs/afactory/task-deliveries/{}/{}",
+        prepared.task_id,
+        &prepared.result_id[7..]
+    ))
+}
+
+fn branch_ref(branch: &str) -> String {
+    format!("refs/heads/{branch}")
+}
+
+fn validate_branch(git: &DeliveryGit, branch: &str) -> Result<(), String> {
+    if branch.starts_with('-') || branch.as_bytes().contains(&0) {
+        return Err("delivery branch is not a safe local branch name".into());
+    }
+    let output = git.run(["check-ref-format", "--branch", branch], None)?;
+    if !output.status.success() {
+        return Err(format!(
+            "invalid delivery branch `{branch}`: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn latest_event_json(
+    cas: &Cas,
+    events: &[TaskEvent],
+    event_type: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == event_type)
+        .map(|event| {
+            cas.get_json(&event.artifact_id)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
+}
+
+fn latest_delivery_receipt(
+    cas: &Cas,
+    events: &[TaskEvent],
+    event_type: &str,
+) -> Result<Option<DeliveryReceipt>, String> {
+    latest_event_json(cas, events, event_type)?
+        .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+fn latest_delivery_transition(
+    cas: &Cas,
+    events: &[TaskEvent],
+) -> Result<Option<DeliveryPrepared>, String> {
+    let latest = events.iter().rev().find(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+        )
+    });
+    let Some(event) = latest else {
+        return Ok(None);
+    };
+    if event.event_type != "TaskDeliveryPrepared@1" {
+        return Ok(None);
+    }
+    serde_json::from_value(
+        cas.get_json(&event.artifact_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map(Some)
+    .map_err(|error| error.to_string())
+}
+
+fn latest_terminal_delivery_failure(
+    cas: &Cas,
+    events: &[TaskEvent],
+) -> Result<Option<DeliveryReceipt>, String> {
+    let latest = events.iter().rev().find(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+        )
+    });
+    let Some(event) = latest.filter(|event| event.event_type == "TaskDeliveryFailed@1") else {
+        return Ok(None);
+    };
+    let receipt: DeliveryReceipt = serde_json::from_value(
+        cas.get_json(&event.artifact_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !matches!(&receipt.outcome, DeliveryOutcome::Failed { .. }) {
+        return Err("TaskDeliveryFailed@1 does not carry a failed delivery receipt".into());
+    }
+    Ok(Some(receipt))
+}
+
+fn release_failed_delivery_owner(
+    git: &DeliveryGit,
+    requested: &DeliveryPrepared,
+    failed: &DeliveryReceipt,
+) -> Result<(), String> {
+    if failed.task_id != requested.task_id
+        || failed.result_id != requested.result_id
+        || failed.source_snapshot_id != requested.source_snapshot_id
+        || failed.derived_snapshot_id != requested.derived_snapshot_id
+        || failed.target.repository != requested.target.repository
+        || failed.target.repository_id != requested.target.repository_id
+    {
+        return Err("terminal failed delivery disagrees with the requested Task authority".into());
+    }
+    let reference = owner_ref(requested)?;
+    let Some(oid) = git.ref_oid(&reference)? else {
+        return Ok(());
+    };
+    if oid != requested.source_revision {
+        return Err("failed delivery ownership ref moved; refusing to release it".into());
+    }
+    git.require(["update-ref", "-d", &reference, &oid], None)?;
+    Ok(())
+}
+
+fn ensure_same_delivery(
+    requested: &DeliveryPrepared,
+    existing: &DeliveryReceipt,
+) -> Result<(), String> {
+    if existing.schema != "af/task-delivery@1"
+        || existing.delivery_id != requested.delivery_id
+        || existing.task_id != requested.task_id
+        || existing.result_id != requested.result_id
+        || existing.source_snapshot_id != requested.source_snapshot_id
+        || existing.derived_snapshot_id != requested.derived_snapshot_id
+        || existing.target != requested.target
+        || existing.outcome != DeliveryOutcome::Delivered
+    {
+        return Err("Task was already delivered to a different target".into());
+    }
+    Ok(())
+}
+
+fn ensure_same_preparation(
+    requested: &DeliveryPrepared,
+    existing: &DeliveryPrepared,
+) -> Result<(), String> {
+    if requested != existing {
+        return Err("Task has an incomplete delivery prepared for a different target".into());
+    }
+    Ok(())
+}
+
+fn verify_source_authority(
+    repository: &Path,
+    git_home: &Path,
+    git: &DeliveryGit,
+    cas: &Cas,
+    assets: &DeliveryAssets,
+) -> Result<(), String> {
+    let head = git.require(["rev-parse", "--verify", "HEAD^{commit}"], None)?;
+    let head = String::from_utf8(head)
+        .map_err(|_| "Git HEAD object ID is not UTF-8".to_string())?
+        .trim()
+        .to_string();
+    if assets.source.source_revision != head {
+        return Err("target repository HEAD no longer equals the Task source revision".into());
+    }
+    let repo = Repo::open(repository, git_home);
+    let committed = Capture::new(&repo, cas)
+        .committed("HEAD")
+        .map_err(|error| format!("capturing target HEAD: {error}"))?;
+    let committed_manifest_id = put_manifest(cas, &committed.manifest)?;
+    if committed.repository_id != assets.source.repository_id
+        || committed.content_digest != assets.source.content_digest
+        || committed.source_revision.as_ref() != Some(&assets.source.source_revision)
+        || committed_manifest_id != assets.source.manifest_artifact_id
+        || committed.manifest != assets.source_manifest
+    {
+        return Err("target repository does not exactly match the Task source Snapshot".into());
+    }
+    let staged = git.run(
+        [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+        ],
+        None,
+    )?;
+    if !staged.status.success() {
+        if staged.status.code() == Some(1) {
+            return Err("target repository has staged changes".into());
+        }
+        return Err(format!(
+            "checking staged changes: {}",
+            String::from_utf8_lossy(&staged.stderr).trim()
+        ));
+    }
+    let dirty = Capture::new(&repo, cas)
+        .dirty()
+        .map_err(|error| format!("checking target worktree: {error}"))?;
+    if dirty.repository_id != assets.source.repository_id
+        || dirty.content_digest != assets.source.content_digest
+        || dirty.manifest != assets.source_manifest
+    {
+        return Err("target repository worktree is not clean at the Task source Snapshot".into());
+    }
+    Ok(())
+}
+
+fn ensure_delivery_target_absent(
+    git: &DeliveryGit,
+    prepared: &DeliveryPrepared,
+) -> Result<(), String> {
+    if Path::new(&prepared.target.worktree).exists() {
+        return Err("delivery worktree path already exists".into());
+    }
+    if git.ref_oid(&branch_ref(&prepared.target.branch))?.is_some() {
+        return Err("delivery branch already exists".into());
+    }
+    if git.ref_oid(&owner_ref(prepared)?)?.is_some() {
+        return Err("Task already owns an unresolved local delivery ref".into());
+    }
+    Ok(())
+}
+
+fn execute_delivery(
+    git: &DeliveryGit,
+    git_home: &Path,
+    cas: &Cas,
+    assets: &DeliveryAssets,
+    prepared: &DeliveryPrepared,
+) -> Result<Vec<String>, String> {
+    create_delivery_refs(git, prepared)?;
+    git.require(
+        [
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--no-checkout"),
+            OsStr::new("--"),
+            OsStr::new(&prepared.target.worktree),
+            OsStr::new(&prepared.target.branch),
+        ],
+        None,
+    )?;
+    let worktree = Path::new(&prepared.target.worktree);
+    ensure_empty_linked_worktree(worktree)?;
+    // `--no-checkout` prevents candidate-controlled filters from executing, but also starts with
+    // an empty per-worktree index. Populate that index from the immutable source tree through
+    // plumbing only, without touching the still-empty worktree.
+    DeliveryGit::new(worktree, git_home).require(["read-tree", "HEAD"], None)?;
+    review_source_git::materialize(&assets.derived_manifest, cas, worktree)
+        .map_err(|error| format!("materializing verified Snapshot: {error}"))?;
+    verify_existing_delivery(git, git_home, assets, prepared)?;
+    ignored_delivery_paths(
+        &DeliveryGit::new(&prepared.target.worktree, git_home),
+        &assets.derived_manifest,
+    )
+}
+
+fn create_delivery_refs(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Result<(), String> {
+    let input = format!(
+        "start\ncreate {} {}\ncreate {} {}\nprepare\ncommit\n",
+        owner_ref(prepared)?,
+        prepared.source_revision,
+        branch_ref(&prepared.target.branch),
+        prepared.source_revision,
+    )
+    .into_bytes();
+    git.require(["update-ref", "--stdin"], Some(input))?;
+    Ok(())
+}
+
+fn ensure_empty_linked_worktree(worktree: &Path) -> Result<(), String> {
+    if !worktree.join(".git").is_file() {
+        return Err("Git did not create a linked-worktree administration file".into());
+    }
+    for entry in std::fs::read_dir(worktree).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry.file_name() != OsStr::new(".git") {
+            return Err(format!(
+                "new no-checkout worktree unexpectedly contains `{}`",
+                entry.file_name().to_string_lossy()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_delivery(
+    source_git: &DeliveryGit,
+    git_home: &Path,
+    assets: &DeliveryAssets,
+    prepared: &DeliveryPrepared,
+) -> Result<(), String> {
+    let git = verify_sealed_delivery_identity(source_git, git_home, prepared)?;
+    if source_git
+        .ref_oid(&branch_ref(&prepared.target.branch))?
+        .as_deref()
+        != Some(prepared.source_revision.as_str())
+    {
+        return Err("delivery branch ref is absent or has moved".into());
+    }
+    let worktree = Path::new(&prepared.target.worktree);
+    let branch = git.require(["symbolic-ref", "--quiet", "--short", "HEAD"], None)?;
+    if String::from_utf8(branch)
+        .map_err(|_| "delivered branch is not UTF-8".to_string())?
+        .trim()
+        != prepared.target.branch
+    {
+        return Err("delivered worktree is on a different branch".into());
+    }
+    let head = git.require(["rev-parse", "--verify", "HEAD^{commit}"], None)?;
+    if String::from_utf8(head)
+        .map_err(|_| "delivered HEAD is not UTF-8".to_string())?
+        .trim()
+        != prepared.source_revision
+    {
+        return Err("delivered branch no longer points at the Task source revision".into());
+    }
+    if !index_matches_head(&git)? {
+        return Err("delivered worktree index no longer equals the Task source tree".into());
+    }
+    let first = scan_delivery_manifest(worktree)?;
+    let actual = scan_delivery_manifest(worktree)?;
+    if first != actual
+        || actual != assets.derived_manifest
+        || actual.content_digest() != assets.derived.content_digest
+    {
+        return Err("delivered worktree bytes do not equal the verified Snapshot".into());
+    }
+    Ok(())
+}
+
+fn verify_sealed_delivery_identity(
+    source_git: &DeliveryGit,
+    git_home: &Path,
+    prepared: &DeliveryPrepared,
+) -> Result<DeliveryGit, String> {
+    if source_git.ref_oid(&owner_ref(prepared)?)?.as_deref()
+        != Some(prepared.source_revision.as_str())
+    {
+        return Err("delivery ownership ref is absent or has moved".into());
+    }
+    let worktree = Path::new(&prepared.target.worktree);
+    let metadata = std::fs::symlink_metadata(worktree)
+        .map_err(|error| format!("opening delivered worktree: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || !worktree.join(".git").is_file() {
+        return Err("delivered worktree path is not the expected linked worktree".into());
+    }
+    let git = DeliveryGit::new(worktree, git_home);
+    if git_common_dir(&git)? != git_common_dir(source_git)? {
+        return Err("delivered worktree is attached to a different Git repository".into());
+    }
+    let top = git.require(["rev-parse", "--show-toplevel"], None)?;
+    let top = String::from_utf8(top).map_err(|_| "delivered Git root is not UTF-8".to_string())?;
+    let top = std::fs::canonicalize(top.trim()).map_err(|error| error.to_string())?;
+    if top != worktree {
+        return Err("delivered path resolves to a different Git worktree".into());
+    }
+    let delivered_repo = Repo::open(worktree, git_home);
+    if delivered_repo
+        .repository_id()
+        .map_err(|error| error.to_string())?
+        != prepared.target.repository_id
+    {
+        return Err("delivered worktree belongs to a different repository".into());
+    }
+    Ok(git)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RollbackContext {
+    CurrentAttempt,
+    Recovery,
+}
+
+fn rollback_owned_delivery(
+    git: &DeliveryGit,
+    prepared: &DeliveryPrepared,
+    derived_manifest: &Manifest,
+    context: RollbackContext,
+) -> Result<(), String> {
+    let owner = git.ref_oid(&owner_ref(prepared)?)?;
+    let branch = git.ref_oid(&branch_ref(&prepared.target.branch))?;
+    let worktree = Path::new(&prepared.target.worktree);
+    if owner.is_none() {
+        if branch.is_some() || worktree.exists() {
+            return Err(
+                "delivery has no ownership ref; refusing to remove the branch or path".into(),
+            );
+        }
+        return Ok(());
+    }
+    if owner
+        .as_deref()
+        .is_some_and(|oid| oid != prepared.source_revision)
+        || branch
+            .as_deref()
+            .is_some_and(|oid| oid != prepared.source_revision)
+    {
+        return Err("owned delivery refs moved; refusing to remove operator work".into());
+    }
+    if worktree.exists() {
+        if worktree.join(".git").is_file() {
+            let target_git = DeliveryGit::new(worktree, &git.home);
+            if git_common_dir(&target_git)? != git_common_dir(git)? {
+                return Err(
+                    "worktree is attached to a different repository; refusing rollback".into(),
+                );
+            }
+            let target_branch = target_git
+                .require(["symbolic-ref", "--quiet", "--short", "HEAD"], None)
+                .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))?;
+            let target_head = target_git
+                .require(["rev-parse", "--verify", "HEAD^{commit}"], None)
+                .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))?;
+            if target_branch.trim() != prepared.target.branch
+                || target_head.trim() != prepared.source_revision
+                || owner.as_deref() != Some(prepared.source_revision.as_str())
+            {
+                return Err("worktree ownership changed; refusing rollback".into());
+            }
+            if !index_matches_head(&target_git)? && !index_is_empty(&target_git)? {
+                return Err("delivered worktree index changed; refusing rollback".into());
+            }
+            let actual = scan_delivery_manifest(worktree)?;
+            let removable = actual.entries.is_empty()
+                || context == RollbackContext::CurrentAttempt
+                    && manifest_is_subset(&actual, derived_manifest);
+            if !removable {
+                return Err(
+                    "delivered worktree contains content recovery cannot prove belongs to the current attempt; refusing rollback"
+                        .into(),
+                );
+            }
+            git.require(
+                [
+                    OsStr::new("worktree"),
+                    OsStr::new("remove"),
+                    OsStr::new("--force"),
+                    OsStr::new("--"),
+                    OsStr::new(&prepared.target.worktree),
+                ],
+                None,
+            )?;
+        } else if std::fs::read_dir(worktree)
+            .map_err(|error| error.to_string())?
+            .next()
+            .is_none()
+            && owner.as_deref() == Some(prepared.source_revision.as_str())
+        {
+            std::fs::remove_dir(worktree).map_err(|error| error.to_string())?;
+        } else {
+            return Err("delivery path is not an owned linked worktree; refusing rollback".into());
+        }
+    }
+    let owner = git.ref_oid(&owner_ref(prepared)?)?;
+    let branch = git.ref_oid(&branch_ref(&prepared.target.branch))?;
+    let mut commands = String::from("start\n");
+    if let Some(oid) = branch {
+        commands.push_str(&format!(
+            "delete {} {}\n",
+            branch_ref(&prepared.target.branch),
+            oid
+        ));
+    }
+    if let Some(oid) = owner {
+        commands.push_str(&format!("delete {} {}\n", owner_ref(prepared)?, oid));
+    }
+    commands.push_str("prepare\ncommit\n");
+    git.require(["update-ref", "--stdin"], Some(commands.into_bytes()))?;
+    Ok(())
+}
+
+fn manifest_is_subset(actual: &Manifest, expected: &Manifest) -> bool {
+    actual.entries.iter().all(|entry| {
+        expected
+            .entries
+            .binary_search_by(|candidate| candidate.path.as_bytes().cmp(entry.path.as_bytes()))
+            .is_ok_and(|index| expected.entries[index] == *entry)
+    })
+}
+
+fn index_matches_head(git: &DeliveryGit) -> Result<bool, String> {
+    let output = git.run(
+        [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+        ],
+        None,
+    )?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(format!(
+        "checking delivered worktree index: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+fn index_is_empty(git: &DeliveryGit) -> Result<bool, String> {
+    Ok(git.require(["ls-files", "-z"], None)?.is_empty())
+}
+
+fn ignored_delivery_paths(git: &DeliveryGit, manifest: &Manifest) -> Result<Vec<String>, String> {
+    let mut input = Vec::new();
+    let mut paths = BTreeMap::new();
+    for entry in &manifest.entries {
+        let raw = decode_path(&entry.path);
+        input.extend_from_slice(&raw);
+        input.push(0);
+        paths.insert(raw, entry.path.clone());
+    }
+    let output = git.check_ignore(input)?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(format!(
+            "classifying ignored delivered paths: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut ignored = Vec::new();
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let path = paths.get(raw).ok_or_else(|| {
+            "git check-ignore returned a path outside the verified Snapshot".to_string()
+        })?;
+        ignored.push(path.clone());
+    }
+    ignored.sort();
+    ignored.dedup();
+    Ok(ignored)
+}
+
+fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {
+    let bytes = git.require(["rev-parse", "--git-common-dir"], None)?;
+    let value =
+        String::from_utf8(bytes).map_err(|_| "Git common directory is not UTF-8".to_string())?;
+    let path = PathBuf::from(value.trim());
+    let path = if path.is_absolute() {
+        path
+    } else {
+        git.directory.join(path)
+    };
+    std::fs::canonicalize(&path)
+        .map_err(|error| format!("opening Git common directory {}: {error}", path.display()))
+}
+
+fn delivered_receipt(
+    prepared: &DeliveryPrepared,
+    ignored_paths: Vec<String>,
+    undeclared_af_paths: layout::PathGroup,
+) -> DeliveryReceipt {
+    DeliveryReceipt {
+        schema: "af/task-delivery@1".into(),
+        delivery_id: prepared.delivery_id.clone(),
+        task_id: prepared.task_id.clone(),
+        result_id: prepared.result_id.clone(),
+        source_snapshot_id: prepared.source_snapshot_id.clone(),
+        derived_snapshot_id: prepared.derived_snapshot_id.clone(),
+        target: prepared.target.clone(),
+        outcome: DeliveryOutcome::Delivered,
+        ignored_paths,
+        undeclared_af_paths,
+        remote_actions: Vec::new(),
+    }
+}
+
+/// A delivery that did not happen reports no paths of either kind: nothing was placed anywhere
+/// for the operator to inspect.
+fn failed_receipt(prepared: &DeliveryPrepared, reason: &str) -> DeliveryReceipt {
+    DeliveryReceipt {
+        outcome: DeliveryOutcome::Failed {
+            reason: reason.to_string(),
+        },
+        ..delivered_receipt(prepared, Vec::new(), layout::PathGroup::default())
+    }
+}
+
+fn append_delivery_receipt(
+    store: &mut delivery_common::CommonDelivery,
+    cas: &Cas,
+    receipt: &DeliveryReceipt,
+    event_type: &str,
+) -> Result<(), String> {
+    let artifact = cas
+        .put_json(&serde_json::to_value(receipt).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    store.append(cas, &receipt.task_id, event_type, &artifact)
+}
+
+fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Result<(), String> {
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(receipt).map_err(|error| error.to_string())?
+        );
+    } else {
+        println!(
+            "task     {}\ndelivery {}\nbranch   {}\nworktree {}\nremote   none",
+            receipt.task_id, receipt.delivery_id, receipt.target.branch, receipt.target.worktree,
+        );
+        for path in &receipt.ignored_paths {
+            println!("ignored  {path}");
+        }
+        let undeclared = &receipt.undeclared_af_paths;
+        if !undeclared.is_empty() {
+            let count = undeclared.count();
+            let bytes = undeclared.bytes;
+            println!("undeclared {count} path(s) under .af/, {bytes} bytes");
+            for path in &undeclared.paths {
+                println!("  {path}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_task_list(
+    options: &InspectOptions,
+    tasks: Vec<serde_json::Value>,
+    store: Option<serde_json::Value>,
+) -> Result<(), String> {
+    if options.json {
+        let mut document = serde_json::json!({
+            "schema": "af/task-list@2",
+            "tasks": tasks,
+        });
+        if let Some(store) = store {
+            document["store"] = store;
+        }
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+    if tasks.is_empty() {
+        println!("no Tasks");
+    }
+    for task in tasks {
+        // A collected Task keeps only its retained summary: no delivery is shown for it.
+        let state = match task["collected"]["collected_unix_ms"].as_u64() {
+            Some(time) => format!(
+                "collected {}",
+                review_core::task::collection::collected_time(time)
+            ),
+            None => task
+                .pointer("/delivery/outcome/kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("not-delivered")
+                .to_owned(),
+        };
+        let sizes = match task.get("sizes") {
+            Some(sizes) => format!(
+                "  {} bytes exclusive, {} shared",
+                sizes["exclusive_bytes"], sizes["shared_bytes"]
+            ),
+            None => String::new(),
+        };
+        // Unknown usage is never shown as spend: `1200 tokens (+1 unknown)` (ADR-0143).
+        let unknown = match task["unknown_usage_attempts"].as_u64() {
+            Some(n) if n > 0 => format!(" (+{n} unknown)"),
+            _ => String::new(),
+        };
+        println!(
+            "{}  {:<10} {:>8} tokens{unknown}  {state}{sizes}",
+            task["task_id"].as_str().unwrap_or("-"),
+            task["outcome"].as_str().unwrap_or("incomplete"),
+            task["chargeable_tokens"].as_str().unwrap_or("-"),
+        );
+    }
+    if let Some(store) = store {
+        println!(
+            "Store: {} objects, {} bytes ({} bytes unreachable)",
+            store["objects"], store["bytes"], store["unreachable_bytes"]
+        );
+    }
+    Ok(())
+}
+
+fn scan_delivery_manifest(root: &Path) -> Result<Manifest, String> {
+    let mut entries = Vec::new();
+    scan_delivery_directory(root, root, &mut entries)?;
+    Manifest::new(entries).map_err(|error| error.to_string())
+}
+
+fn scan_delivery_directory(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<Entry>,
+) -> Result<(), String> {
+    for child in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let child = child.map_err(|error| error.to_string())?;
+        if directory == root && child.file_name() == OsStr::new(".git") {
+            continue;
+        }
+        let path = child.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            scan_delivery_directory(root, &path, entries)?;
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "delivered path escaped its worktree".to_string())?;
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err("delivered path has an unsafe component".into());
+        }
+        let raw_path = os_path_bytes(relative)?;
+        let encoded = encode_path(&raw_path);
+        let (kind, content, size) = if metadata.file_type().is_symlink() {
+            let bytes = read_link_bytes(&path)?;
+            let size = bytes.len() as u64;
+            (EntryKind::Symlink, digest_bytes(&bytes), size)
+        } else if metadata.is_file() {
+            let kind = if is_executable(&metadata) {
+                EntryKind::Executable
+            } else {
+                EntryKind::File
+            };
+            let mut file = File::open(&path).map_err(|error| error.to_string())?;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            let (content, size) =
+                review_store::canonical::blob_content_id_reader_with_buffer(&mut file, &mut buffer)
+                    .map_err(|error| error.to_string())?;
+            (kind, content, size)
+        } else {
+            return Err(format!(
+                "delivered Snapshot contains unsupported filesystem entry {}",
+                relative.display()
+            ));
+        };
+        entries.push(Entry {
+            path: encoded,
+            kind,
+            content,
+            size,
+        });
+    }
+    Ok(())
+}
+
+fn os_path_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(path.as_os_str().as_bytes().to_vec())
+}
+
+fn read_link_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(std::fs::read_link(path)
+        .map_err(|error| error.to_string())?
+        .as_os_str()
+        .as_bytes()
+        .to_vec())
+}
+
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {
+    match state {
+        Some(state) => resolve_filesystem_path(state),
+        None => super::task_execution::default_task_state(&xdg_state_root()?, repository),
+    }
+}
+
+fn put_manifest(cas: &Cas, manifest: &Manifest) -> Result<String, String> {
+    cas.put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())
+}

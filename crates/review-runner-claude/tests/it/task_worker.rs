@@ -1,0 +1,342 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
+use review_core::{Arg, Command};
+use review_runner::task::{WorkerAccess, WorkerContract, WorkerModelAdapter};
+use review_runner_claude::task::ClaudeTaskAdapter;
+use review_store::Cas;
+use std::os::unix::fs::PermissionsExt;
+use std::time::{Duration, Instant};
+
+/// A Task adapter for `program`, with the explicit model restriction every Task binding carries.
+fn task_adapter(program: &str) -> ClaudeTaskAdapter {
+    ClaudeTaskAdapter::new(&Command::new(
+        program,
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap()
+}
+
+#[test]
+fn native_task_adapter_declares_trusted_unsafe_credentials() {
+    assert_eq!(
+        task_adapter("claude").credential_mode(),
+        review_core::CredentialModeV1::TrustedUnsafe
+    );
+}
+
+#[test]
+fn native_task_adapter_requires_an_explicit_model() {
+    for args in [vec![], vec![Arg::literal("--effort"), Arg::literal("high")]] {
+        let error = ClaudeTaskAdapter::new(&Command::new("claude", args))
+            .err()
+            .expect("a Task adapter without --model is refused");
+        assert_eq!(error, "Claude Task Worker requires an explicit --model");
+    }
+}
+
+#[test]
+fn review_role_keeps_the_legacy_read_only_tool_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-claude");
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = task_adapter(program.to_str().unwrap());
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    for required in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
+        assert!(flags.contains(&required), "{flags:?}");
+    }
+    for (flag, expected) in [
+        ("--permission-mode", "dontAsk"),
+        ("--tools", "Read,Glob,Grep"),
+        ("--allowedTools", "Read,Glob,Grep"),
+    ] {
+        let index = flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(flags[index + 1], expected);
+    }
+    assert!(!flags.iter().any(|flag| {
+        flag.split(',')
+            .any(|tool| matches!(tool, "Edit" | "Write" | "Bash"))
+    }));
+}
+
+/// Whether `pid` still names a live process. A Linux zombie is dead and holds nothing.
+fn alive(pid: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    {
+        return false;
+    }
+    std::process::Command::new("/bin/sh")
+        .args(["-c", "kill -0 \"$1\" 2>/dev/null", "fixture", pid])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
+fn execute_checks_grants_bash_and_ends_shell_children_with_the_attempt() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-claude");
+    // The background sleep stands in for a shell command the model left running: it holds no
+    // pipe, so only the process-group kill on exit can end it.
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nsleep 30 </dev/null >/dev/null 2>&1 &\nprintf '%s' $! >child\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = task_adapter(program.to_str().unwrap());
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ExecuteChecks,
+        None,
+        &[],
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let child = std::fs::read_to_string(temp.path().join("child")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while alive(&child) {
+        assert!(
+            Instant::now() < deadline,
+            "a shell child outlived its execute-checks Attempt"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    for required in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
+        assert!(flags.contains(&required), "{flags:?}");
+    }
+    for (flag, expected) in [
+        ("--permission-mode", "dontAsk"),
+        ("--tools", "Read,Glob,Grep,Bash"),
+        ("--allowedTools", "Read,Glob,Grep,Bash"),
+    ] {
+        let index = flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(flags[index + 1], expected);
+    }
+    let tools: Vec<_> = flags.iter().flat_map(|flag| flag.split(',')).collect();
+    assert!(!tools.contains(&"Edit") && !tools.contains(&"Write"));
+}
+
+#[test]
+fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message() {
+    for timed_out in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas_path = temp.path().join("cas");
+        let cas = Cas::open(&cas_path).unwrap();
+        let output = serde_json::json!({"is_error":false,"result":"OK","usage":{"input_tokens":u64::MAX,"output_tokens":20}}).to_string();
+        let script = temp.path().join("provider");
+        let quoted = output.replace('\'', "'\\''");
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nif [ \"$1\" = --fixture-ready ]; then exit 0; fi\ncat >/dev/null\nprintf '%s' '{quoted}'\nprintf '%s' 'diagnostic' >&2\n{}\n",
+            if timed_out { "sleep 10" } else { "exit 0" }
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // macOS may delay the first execution of a newly written script before its first
+        // instruction. Prepare that executable without output; the measured provider invocation
+        // below still gets the original 500 ms and must retain all already reported usage.
+        let mut ready = std::process::Command::new(&script);
+        ready.arg("--fixture-ready").current_dir(temp.path());
+        assert!(
+            review_runner::run_supervised(&mut ready, None, Duration::from_secs(5))
+                .unwrap()
+                .status
+                .success()
+        );
+        if !timed_out {
+            // Deterministically refuse CAS writes without relying on effective-user permissions.
+            std::fs::remove_dir_all(&cas_path).unwrap();
+            std::fs::write(&cas_path, b"not a directory").unwrap();
+        }
+        let adapter = task_adapter(script.to_str().unwrap());
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            if timed_out {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_secs(5)
+            },
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert!(
+            returned.message.is_err(),
+            "a printed message cannot overcome transport failure"
+        );
+        assert!(
+            returned.usage.is_some(),
+            "timed_out={timed_out}; message={:?}; captured={:?}",
+            returned.message,
+            returned
+                .raw_artifact_ids
+                .iter()
+                .map(|id| cas.get(id))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            u128::from(u64::MAX) + 20
+        );
+        if timed_out {
+            let message = returned.message.as_ref().unwrap_err();
+            assert!(
+                message.contains("TimedOut { after_ms: 500 }"),
+                "the 500 ms wall ends the provider: {message}"
+            );
+            assert_eq!(returned.raw_artifact_ids.len(), 2);
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                output.as_bytes()
+            );
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[1]).unwrap(),
+                b"diagnostic"
+            );
+        } else {
+            assert!(returned.raw_artifact_ids.is_empty());
+        }
+    }
+}
+
+#[test]
+fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let workdir = temp.path().join("work");
+    std::fs::create_dir(&workdir).unwrap();
+    let contract = WorkerContract::capture(&cas, serde_json::json!({"type":"object"}),
+        std::collections::BTreeMap::from([("document".into(), serde_json::json!({"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}}))])).unwrap();
+    for (index, (message, failed, valid)) in [
+        (
+            r#"{"schema":"af.worker-reply/1","outputs":{"document":[{"text":"A release note"}]}}"#,
+            false,
+            true,
+        ),
+        (
+            r#"{"schema":"af.worker-reply/1","outputs":{"document":[{"text":42}]}}"#,
+            false,
+            false,
+        ),
+        ("The provider failed after spending tokens", true, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = serde_json::json!({"is_error": failed, "result": message, "usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":70,"cache_creation_input_tokens":1}}).to_string();
+        let script = temp.path().join(format!("provider-{index}"));
+        let quoted = output.replace('\'', "'\\''");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{quoted}'\nexit {}\n",
+                if failed { 7 } else { 0 }
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = task_adapter(script.to_str().unwrap());
+        let returned = adapter.invoke(
+            &cas,
+            &workdir,
+            b"{\"declared\":\"input\"}".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(
+            returned.usage.as_ref().unwrap().chargeable_tokens.get(),
+            106
+        );
+        assert_eq!(
+            cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+            output.as_bytes()
+        );
+        assert!(
+            returned.usage_observation.is_none(),
+            "valid usage retains the frozen path, including failed calls"
+        );
+        let admitted = returned
+            .message
+            .and_then(|bytes| contract.validate_reply(&bytes));
+        assert_eq!(admitted.is_ok(), valid);
+    }
+}
+
+#[test]
+fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
+    for (billing_invalid, outage) in [(true, false), (false, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas_path = temp.path().join("cas");
+        let cas = Cas::open(&cas_path).unwrap();
+        let mut usage = serde_json::json!({"input_tokens":11,"output_tokens":7});
+        usage[if billing_invalid {
+            "input_tokens"
+        } else {
+            "cache_read_input_tokens"
+        }] = serde_json::Value::Null;
+        let output = serde_json::json!({"is_error":false,"result":"OK","usage":usage}).to_string();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' 'usage fixture' >&2\n",
+                output.replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if outage {
+            std::fs::remove_dir_all(&cas_path).unwrap();
+            std::fs::write(&cas_path, b"outage").unwrap();
+        }
+        let adapter = task_adapter(script.to_str().unwrap());
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert!(returned.message.is_err());
+        let observation = returned.usage_observation.unwrap();
+        assert_eq!(observation.charge_complete, !billing_invalid);
+        assert_eq!(observation.reported_usage, returned.usage);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            if billing_invalid { 7 } else { 18 }
+        );
+        if outage {
+            assert!(returned.raw_artifact_ids.is_empty());
+        } else {
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                output.as_bytes()
+            );
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[1]).unwrap(),
+                b"usage fixture"
+            );
+        }
+    }
+}
