@@ -1,0 +1,21 @@
+{
+  "schema": "af.nightly-plan/1",
+  "status": "skipped",
+  "date": "2026-10-29",
+  "tag": "nightly-2026.10.29",
+  "version": "0.14.0-nightly.20261029",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "head_committed_unix": 1761700000,
+  "rejected": [
+    {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "check / check (ubuntu-latest) concluded failure; check / lint concluded failure"
+    }
+  ],
+  "previous_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "previous_tag": "nightly-2026.10.28",
+  "baseline_tag": "v0.13.0",
+  "baseline_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "cargo_version_on_main": "0.14.0-rc.3",
+  "skip_reason": "main has not moved since nightly-2026.10.28: its newest green commit is bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, the commit nightly-2026.10.28 built"
+}

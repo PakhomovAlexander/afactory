@@ -1,0 +1,111 @@
+Original production SHA-256: 789b73c22b099355e73621f32b2d4d6de796ee44c358252e86816d004f3f351b
+Final tests SHA-256: 63213114cfaa42cf3b6826824fb51468065ac93beadc4239b3a64e283211864a
+test_original_capture_publishes_distant_context (__main__.OriginalTruncation) ... 
+======================================================================
+FAIL: test_original_capture_publishes_distant_context (__main__.OriginalTruncation) (index=0)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/triage-604/red.py", line 35, in test_original_capture_publishes_distant_context
+    self.assertEqual(self.api.writes, [])
+AssertionError: Lists differ: [('labels', 432, ['bug', 'outside', 'triag[343 chars]one)] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+('labels', 432, ['bug', 'outside', 'triage/maybe-fixed'])
+
++ []
+- [('labels', 432, ['bug', 'outside', 'triage/maybe-fixed']),
+-  ('comment',
+-   432,
+-   'Possible completed fix; owner review required.\n'
+-   '\n'
+-   'changelog.d/distant-0.md:13\n'
+-   '- context - context - context - context - context - context - context - '
+-   'context - context - context - Status: #432 has been completed.\n'
+-   '\n'
+-   'triage-sweep '
+-   'evidence=f7dccd55ab79517e12988cef9524a4f4ba64b823bb95a6d5ce5366466fe69da2',
+-   None)]
+
+======================================================================
+FAIL: test_original_capture_publishes_distant_context (__main__.OriginalTruncation) (index=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/triage-604/red.py", line 35, in test_original_capture_publishes_distant_context
+    self.assertEqual(self.api.writes, [])
+AssertionError: Lists differ: [('labels', 432, ['bug', 'outside', 'triag[322 chars]one)] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+('labels', 432, ['bug', 'outside', 'triage/maybe-fixed'])
+
++ []
+- [('labels', 432, ['bug', 'outside', 'triage/maybe-fixed']),
+-  ('comment',
+-   432,
+-   'Possible completed fix; owner review required.\n'
+-   '\n'
+-   'changelog.d/distant-1.md:13\n'
+-   '- context - context - context - context - context - context - context - '
+-   'context - context - context - Fixed #432.\n'
+-   '\n'
+-   'triage-sweep '
+-   'evidence=f017442f1211207f2d4ea0b2f763cd1dcfe60fade777dcbc16cb9199c870d5be',
+-   None)]
+
+======================================================================
+FAIL: test_original_capture_publishes_distant_context (__main__.OriginalTruncation) (index=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/triage-604/red.py", line 35, in test_original_capture_publishes_distant_context
+    self.assertEqual(self.api.writes, [])
+AssertionError: Lists differ: [('labels', 432, ['bug', 'outside', 'triag[321 chars]one)] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+('labels', 432, ['bug', 'outside', 'triage/maybe-fixed'])
+
++ []
+- [('labels', 432, ['bug', 'outside', 'triage/maybe-fixed']),
+-  ('comment',
+-   432,
+-   'Possible completed fix; owner review required.\n'
+-   '\n'
+-   'changelog.d/distant-2.md:1\n'
+-   '- Fixed #432. - context - context - context - context - context - context - '
+-   'context - context - context - context\n'
+-   '\n'
+-   'triage-sweep '
+-   'evidence=1a0c7c1106c02565df7bb3f0ecfa3e9c54b64be9d51f6cbb8f7348dfb3d9ea5f',
+-   None)]
+
+======================================================================
+FAIL: test_original_capture_publishes_distant_context (__main__.OriginalTruncation) (index=3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/triage-604/red.py", line 35, in test_original_capture_publishes_distant_context
+    self.assertEqual(self.api.writes, [])
+AssertionError: Lists differ: [('labels', 432, ['bug', 'outside', 'triag[342 chars]one)] != []
+
+First list contains 2 additional elements.
+First extra element 0:
+('labels', 432, ['bug', 'outside', 'triage/maybe-fixed'])
+
++ []
+- [('labels', 432, ['bug', 'outside', 'triage/maybe-fixed']),
+-  ('comment',
+-   432,
+-   'Possible completed fix; owner review required.\n'
+-   '\n'
+-   'changelog.d/distant-3.md:1\n'
+-   '- Status: #432 has been completed. - context - context - context - context '
+-   '- context - context - context - context - context - context\n'
+-   '\n'
+-   'triage-sweep '
+-   'evidence=f0a0aa416aaa05d5ac1276dff58d5856bdf5e44c7c1b91198c2012920030e489',
+-   None)]
+
+----------------------------------------------------------------------
+Ran 1 test in 1.083s
+
+FAILED (failures=4)

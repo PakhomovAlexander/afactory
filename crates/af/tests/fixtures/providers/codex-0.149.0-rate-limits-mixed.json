@@ -1,0 +1,27 @@
+{
+  "id": 2,
+  "result": {
+    "rateLimitsByLimitId": {
+      "codex": {
+        "limitId": "codex",
+        "limitName": "codex",
+        "planType": "pro",
+        "primary": {
+          "usedPercent": 37,
+          "windowDurationMins": 10080,
+          "resetsAt": 1788154369
+        },
+        "secondary": {
+          "usedPercent": 101,
+          "windowDurationMins": 300
+        }
+      },
+      "future-bucket": {
+        "limitId": "future-bucket",
+        "primary": {
+          "windowDurationMins": 60
+        }
+      }
+    }
+  }
+}

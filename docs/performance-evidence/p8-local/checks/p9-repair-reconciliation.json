@@ -1,0 +1,108 @@
+{
+ "changed_paths": [
+  {
+   "finalized": null,
+   "path": "changelog.d/p9-receipt-validation-and-retained-evidence-repairs.md",
+   "repaired": "1144 90a4c0938eb45fbbbbf77f01f17ca128d5591c4cb326725e495d3c45f63934ff"
+  },
+  {
+   "finalized": "46226 8d55e98d6f6ad9f2da6507b5cc8170183532ea0c62a6b49b8804308ced9891ed",
+   "path": "crates/af/tests/it/perf_kernel_measure.rs",
+   "repaired": "53465 60626ea1daeee508f7239ce7f267dc9421c1075050c1d3ba8f675dd664448231"
+  },
+  {
+   "finalized": "12792 ba1edee0ea42855892aa18bcce6c9952d9170ef3402d1901c0e886b41fc1b1b0",
+   "path": "docs/adr/0172-bind-kernel-receipts-to-their-task-results-word-reports-by-what-was-admitted-and-retain-a-real-local-run.md",
+   "repaired": "13283 845b66323ceac5ba7e7848f1820c29d48b94a467e2d7a176424e3ced7bddddfe"
+  },
+  {
+   "finalized": null,
+   "path": "docs/adr/0173-validate-kernel-receipts-as-the-kernel-does-and-restore-the-retained-history.md",
+   "repaired": "7985 b9027b7285abea07af44d9b2feed0696a125f37054b91462215a083a69012593"
+  },
+  {
+   "finalized": "25384 ce032786205391d54513fab9530afb51ba6781dd92583afa06340f23007b3c73",
+   "path": "docs/adr/README.md",
+   "repaired": "25563 8a34bbde23137dbd9ac6e7c3908188ee7b28a46d142190acb9f1ec30c1ab4659"
+  },
+  {
+   "finalized": "5119 419f60dbe27ca9e5ec9f989fab7d25443ce65ca96dee664a3f7e50d775d2c216",
+   "path": "fixtures/performance/kernel-measure/README.md",
+   "repaired": "5389 f164e940fbb653238223569e0874741f1bd0837df7a61ec0b11682872426889b"
+  },
+  {
+   "finalized": "38581 aa4483e93f028d28a8e81f2c4d75d6c5f54aec8a98694cad4fe5b976bbf525f2",
+   "path": "fixtures/performance/kernel-measure/code-policy-measures.toml",
+   "repaired": "38581 60bbf2fcac19d56417cac8e6d1e66fccca3ae58862dee78eb15cd94f13590862"
+  },
+  {
+   "finalized": "86486 7da92c3ddf5c2ff333ecbf93e237caf8135c2c3976a51b3c844a3dd6449924c5",
+   "path": "fixtures/performance/kernel-measure/inventory.json",
+   "repaired": "88076 741f73fc1430362375c0fd6f18456090a3c5b6c3bf6a84996f226ddc2f4f3f09"
+  },
+  {
+   "finalized": "51627 4a6c093926c1fdad2e49a10df219fedee633a8f6924d939f9eab658d5b80498c",
+   "path": "fixtures/performance/schema/index.json",
+   "repaired": "53100 028807bdeaf1cba7cfe833fe1d8fcae119e7d5ec292d6c5554ed9de8e5e9af02"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-conclusion.json",
+   "repaired": "18965 35cc8dfbc163075b3c8eb4cf48de34f830b9c774555981b5d114bb2da2163278"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-operation.json",
+   "repaired": "18957 600baa030b4fbcb9e2e77a7a0c96065934ddce82d56bbcf55ef3da35f33ee518"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-producer.json",
+   "repaired": "18967 59d6dc2837e13a1d9a3f2a0d04ada89e5c2375ee7358fe4276655ce70dc4d5d5"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-empty-output.json",
+   "repaired": "19232 0c16b13f642c039244893e6a265409a5dc3a9fc86863e97a91d67e185fbc30ce"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-output-cardinality.json",
+   "repaired": "19067 023460958744bf83826aabc39701ea25883291c93fcab641c6b8243a307651b9"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-satisfied-incomplete.json",
+   "repaired": "18979 1fcd5775929b5299fa3b0a3a6ceb97bb9b50d6b550c235e329780884852dc67c"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-stream-part-bytes.json",
+   "repaired": "84414 d4eace1b9910b7e5538df8e02ff69dec15f32eff16fbbd2ae19218339eeb7656"
+  },
+  {
+   "finalized": "264549 ab80680db4c168048ef7fb2e5f57a7e696ecf7ab21bc7f74e042ab8402472fe0",
+   "path": "scripts/performance/perflab/contracts.py",
+   "repaired": "268333 a396d5424a83dc2b6ace36438ed016633e70672bc5e334a97aafff57c34a0226"
+  },
+  {
+   "finalized": "11465 e11f24d6296f24e2bccdba7cb484138a94b9a26465baaf858265025f6e4d2d4b",
+   "path": "scripts/performance/tests/receipts_fixtures.py",
+   "repaired": "14841 72e06e55c9ebad1ab48b26e9a36fa2e8fcaa0de846bae908f0e0a73f8e781728"
+  },
+  {
+   "finalized": null,
+   "path": "scripts/performance/tests/test_evidence_tools.py",
+   "repaired": "9870 1d29d46d1ba3da0c4260e62b29e4b7f047d7db65188b614450838b1a96c0dcc4"
+  },
+  {
+   "finalized": "42714 74269f298334cc752692080484299841826574fa8026fa2babb5fd5fa36b50bc",
+   "path": "scripts/performance/tests/test_kernelguard.py",
+   "repaired": "51705 89e3fd1703eb966f29a5684bbfcd5da8ea07a7148b81924f1d64edd24906ecda"
+  }
+ ],
+ "repaired_harness_digest": "sha256:69bddb0deca5051b56f9bf63a9ba12243c2b5b220fa322bb11b06a909903dd31",
+ "unchanged_files": 1896,
+ "unchanged_files_digest": "sha256:4d6a0857647b273e72bd58b9fcd18508ee442b36cbba36c74c3670c9d7f84837",
+ "what": "ADR-0173: each path the repair changed relative to the tree that measured-source.json reconciled, and the digest of every other file"
+}

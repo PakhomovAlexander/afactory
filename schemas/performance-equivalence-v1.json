@@ -1,0 +1,785 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-equivalence:1",
+  "title": "af.perf-equivalence/1",
+  "description": "An equivalent-adapter bridge's execution evidence (ADR-0184): the golden check of the calibrated and the bridged product sources and the post-merge A/A, each recomputed from a retained run of the bridged authority with its identities, adapters, probe binaries, observed groups, completeness and case outcomes, its reasons re-derived by the reader; owner approval of semantic equivalence stays separate.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-equivalence/1"
+    },
+    "equivalence_group": {
+      "$ref": "#/$defs/id"
+    },
+    "adapter_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relative_path"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "bridge_adapters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true
+    },
+    "calibrated_authority_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "bridged_authority_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "tier": {
+      "type": "string",
+      "enum": [
+        "quick",
+        "nightly",
+        "release"
+      ]
+    },
+    "environment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cohort_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "criticality": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "advisory"
+            ]
+          },
+          "pairs": {
+            "type": "integer",
+            "minimum": 12,
+            "maximum": 200
+          }
+        },
+        "required": [
+          "instance_id",
+          "criticality",
+          "pairs"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "calibrated_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "$ref": "#/$defs/id"
+          },
+          "cpu_model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "image": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "group_id",
+          "cpu_model",
+          "image"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actions_run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4611686018427387904
+        },
+        "lab_run_id": {
+          "$ref": "#/$defs/id"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "verdict_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "builds_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "full",
+            "partial_scope",
+            "bootstrap",
+            "calibration",
+            "diagnostic"
+          ]
+        },
+        "authority_mode": {
+          "type": "string",
+          "enum": [
+            "active",
+            "proposed",
+            "control"
+          ]
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "quick",
+            "nightly",
+            "release"
+          ]
+        },
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/id"
+        },
+        "environment_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recipe_id": {
+          "$ref": "#/$defs/id"
+        },
+        "recipe_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "instrument_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "fixture_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "adapters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "baseline_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "candidate_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          },
+          "required": [
+            "baseline",
+            "candidate",
+            "baseline_group",
+            "candidate_group"
+          ]
+        },
+        "probe_binaries": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            }
+          },
+          "required": [
+            "baseline",
+            "candidate"
+          ]
+        },
+        "builds_succeeded": {
+          "type": "boolean"
+        },
+        "cpu_groups": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "shards_complete": {
+          "type": "boolean"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "synthetic",
+            "mixed",
+            "none"
+          ]
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "incomplete"
+          ]
+        },
+        "cases": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "criticality": {
+                  "type": "string",
+                  "enum": [
+                    "critical",
+                    "advisory"
+                  ]
+                },
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 12,
+                  "maximum": 200
+                },
+                "classification": {
+                  "type": "string",
+                  "enum": [
+                    "regression",
+                    "improvement",
+                    "within_tolerance",
+                    "non_regression",
+                    "inconclusive",
+                    "candidate_failure",
+                    "baseline_failure",
+                    "environment_unstable",
+                    "missing_records",
+                    "budget_missed",
+                    "shard_not_complete"
+                  ]
+                },
+                "failures": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "missing_records": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "criticality",
+                "pairs",
+                "classification",
+                "failures",
+                "missing_records"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "actions_run_id",
+        "lab_run_id",
+        "plan_digest",
+        "verdict_sha256",
+        "builds_sha256",
+        "scope",
+        "authority_mode",
+        "tier",
+        "baseline_sha",
+        "candidate_sha",
+        "authority_sha",
+        "policy_digest",
+        "environment_id",
+        "environment_digest",
+        "recipe_id",
+        "recipe_digest",
+        "instrument_digest",
+        "fixture_digest",
+        "adapters",
+        "probe_binaries",
+        "builds_succeeded",
+        "cpu_groups",
+        "shards_complete",
+        "healthy",
+        "provenance",
+        "result",
+        "cases",
+        "reasons",
+        "verified"
+      ]
+    },
+    "post_merge_aa": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actions_run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4611686018427387904
+        },
+        "lab_run_id": {
+          "$ref": "#/$defs/id"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "verdict_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "builds_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "full",
+            "partial_scope",
+            "bootstrap",
+            "calibration",
+            "diagnostic"
+          ]
+        },
+        "authority_mode": {
+          "type": "string",
+          "enum": [
+            "active",
+            "proposed",
+            "control"
+          ]
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "quick",
+            "nightly",
+            "release"
+          ]
+        },
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/id"
+        },
+        "environment_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "recipe_id": {
+          "$ref": "#/$defs/id"
+        },
+        "recipe_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "instrument_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "fixture_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "adapters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "baseline_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "candidate_group": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          },
+          "required": [
+            "baseline",
+            "candidate",
+            "baseline_group",
+            "candidate_group"
+          ]
+        },
+        "probe_binaries": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/digest"
+                }
+              ]
+            }
+          },
+          "required": [
+            "baseline",
+            "candidate"
+          ]
+        },
+        "builds_succeeded": {
+          "type": "boolean"
+        },
+        "cpu_groups": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "shards_complete": {
+          "type": "boolean"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "synthetic",
+            "mixed",
+            "none"
+          ]
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "incomplete"
+          ]
+        },
+        "cases": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "criticality": {
+                  "type": "string",
+                  "enum": [
+                    "critical",
+                    "advisory"
+                  ]
+                },
+                "pairs": {
+                  "type": "integer",
+                  "minimum": 12,
+                  "maximum": 200
+                },
+                "classification": {
+                  "type": "string",
+                  "enum": [
+                    "regression",
+                    "improvement",
+                    "within_tolerance",
+                    "non_regression",
+                    "inconclusive",
+                    "candidate_failure",
+                    "baseline_failure",
+                    "environment_unstable",
+                    "missing_records",
+                    "budget_missed",
+                    "shard_not_complete"
+                  ]
+                },
+                "failures": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "missing_records": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "criticality",
+                "pairs",
+                "classification",
+                "failures",
+                "missing_records"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "actions_run_id",
+        "lab_run_id",
+        "plan_digest",
+        "verdict_sha256",
+        "builds_sha256",
+        "scope",
+        "authority_mode",
+        "tier",
+        "baseline_sha",
+        "candidate_sha",
+        "authority_sha",
+        "policy_digest",
+        "environment_id",
+        "environment_digest",
+        "recipe_id",
+        "recipe_digest",
+        "instrument_digest",
+        "fixture_digest",
+        "adapters",
+        "probe_binaries",
+        "builds_succeeded",
+        "cpu_groups",
+        "shards_complete",
+        "healthy",
+        "provenance",
+        "result",
+        "cases",
+        "reasons",
+        "verified"
+      ]
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "claim": {
+      "const": "execution evidence of the bridge's golden checks and post-merge A/A; owner approval of semantic equivalence is a separate prerequisite"
+    }
+  },
+  "required": [
+    "schema",
+    "equivalence_group",
+    "adapter_files",
+    "bridge_adapters",
+    "calibrated_authority_sha",
+    "bridged_authority_sha",
+    "policy_digest",
+    "tier",
+    "environment_id",
+    "recipe_id",
+    "cohort_cases",
+    "calibrated_groups",
+    "golden",
+    "post_merge_aa",
+    "verified",
+    "claim"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

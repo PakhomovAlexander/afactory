@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/worker-knowledge-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "sources",
+    "limits",
+    "private_notes",
+    "cross_task",
+    "retention",
+    "freshness"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-knowledge/1"
+    },
+    "sources": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "offset",
+          "bytes",
+          "dependencies"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^\\$\\{source\\}/(?!/)(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$)(?!\\s)(?!.*\\s$)[^\\\\${}\\u0000-\\u001F\\u007F]+$",
+            "maxLength": 4106
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 262144
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65536
+          },
+          "dependencies": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^(?!/)(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$)(?!\\s)(?!.*\\s$)[^\\u0000]+$"
+            }
+          }
+        }
+      },
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_bytes",
+        "context_bytes",
+        "retrieval_bytes",
+        "retrieval_items",
+        "source_bytes",
+        "notes_bytes"
+      ],
+      "properties": {
+        "manifest_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 262144
+        },
+        "context_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 262144
+        },
+        "retrieval_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "retrieval_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "source_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "notes_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    "private_notes": {
+      "enum": [
+        "disabled",
+        "same_slot"
+      ]
+    },
+    "cross_task": {
+      "enum": [
+        "disabled",
+        "source_facts"
+      ]
+    },
+    "retention": {
+      "enum": [
+        "task"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "mark",
+        "omit_stale"
+      ]
+    }
+  }
+}

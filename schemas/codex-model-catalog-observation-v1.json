@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:codex-model-catalog-observation:1",
+  "title": "Codex model catalog observation provenance@1",
+  "$comment": "Credential-free provenance for a captured token-free harness catalog projection. The coordinator writes this observation; it proves advertised IDs and efforts, never inference/account access. The original response bytes are in crates/af/tests/fixtures/provider-models/codex-provider-models-raw-20261107.json, identified by raw_response_sha256. Filter only its models array to gpt-6.1-sol and gpt-6.1-terra to reproduce the recorded projection, retaining selected objects, their order and every other field unchanged. Other raw model entries are observations, not pipeline selections.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "observed_at_utc",
+    "capture_command",
+    "raw_response_sha256",
+    "source",
+    "harness_version",
+    "freshness",
+    "scope",
+    "projection",
+    "recorded_projection_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.codex-model-catalog-observation/1"
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "capture_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "raw_response_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "source": {
+      "const": "codex app-server model/list"
+    },
+    "harness_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "fetched_at"
+      ],
+      "properties": {
+        "source": {
+          "const": "models_cache"
+        },
+        "fetched_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projection": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recorded_projection_sha256": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-kind:3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "version",
+    "kind",
+    "profile"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-kind/3"
+    },
+    "name": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "kind": {
+      "$ref": "urn:af:schema:task-contracts:4#/$defs/package"
+    },
+    "profile": {
+      "enum": [
+        "implementation",
+        "reviewed_implementation",
+        "repair_allowed_implementation",
+        "review",
+        "document",
+        "report",
+        "optimization_analysis",
+        "optimization_candidate",
+        "structured"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "const": "structured"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "not": {
+              "enum": [
+                "implement",
+                "review",
+                "document",
+                "report",
+                "optimize",
+                "verification"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

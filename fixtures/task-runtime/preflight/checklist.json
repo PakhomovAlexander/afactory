@@ -1,0 +1,21 @@
+{
+  "schema": "af-preflight-checklist/1",
+  "plan_id": "sha256:cfe2dfaf778d42db3ce15778056aed15445fd4520ec8b4ca348f7607fcabb67f",
+  "original_source_snapshot_id": "sha256:82bc854ad7fe8e8b70f795873d6342a3eef27de5295d4f9f8e050e5e351df775",
+  "criteria": [
+    {
+      "id": "pagination",
+      "requirement": "Preserve pagination bounds",
+      "obligation": "verified",
+      "check_name": "pagination",
+      "producer": {
+        "node": "root.nodes.check",
+        "port": "result"
+      },
+      "consumer": {
+        "node": "root.nodes.evaluate",
+        "port": "checks"
+      }
+    }
+  ]
+}

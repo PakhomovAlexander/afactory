@@ -1,0 +1,19 @@
+schema = "af.worker-knowledge/1"
+private_notes = "same_slot"
+cross_task = "disabled"
+retention = "task"
+freshness = "mark"
+
+[limits]
+manifest_bytes = 16384
+context_bytes = 32768
+retrieval_bytes = 4096
+retrieval_items = 4
+source_bytes = 65536
+notes_bytes = 4096
+
+[sources.guide]
+path = "${source}/guide.txt"
+offset = 0
+bytes = 1024
+dependencies = ["config.txt"]

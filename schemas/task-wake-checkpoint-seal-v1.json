@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-checkpoint-seal:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "tag"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-checkpoint-seal@1"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  }
+}

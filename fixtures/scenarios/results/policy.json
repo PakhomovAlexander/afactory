@@ -1,0 +1,11 @@
+{
+  "schema": "af/scenario-policy@5",
+  "adapters": {},
+  "task_plans": [],
+  "task_templates": [],
+  "performance_publications": {},
+  "decision_keys": {},
+  "file_roots": [
+    "/private/tmp/af-result-fixture-unused"
+  ]
+}

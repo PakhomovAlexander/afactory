@@ -1,0 +1,17 @@
+{
+  "schema": "af.nightly-publish/1",
+  "status": "skipped",
+  "date": "2026-10-30",
+  "tag": "nightly-2026.10.30",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "repository": "PakhomovAlexander/afactory",
+  "release": null,
+  "assets": [],
+  "telegram": null,
+  "telegram_reason": "not sent: [publish] configures no telegram_token_file and telegram_chat_id",
+  "pruned": [],
+  "prune_failures": [],
+  "foreign": [],
+  "amendments": 1,
+  "published_unix_ms": 1761796800000
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-history:2",
+  "title": "af/project-history@2",
+  "description": "`af project history --json` (ADR-0159): the Survey chain of the invoking checkout's Project, newest first. A Survey whose record is of a superseded version (`af/ProjectSurvey@1`, which another af release wrote) is listed by its ID and when it was recorded, `unreadable` saying why, and none of its event's fields this release cannot verify.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "surveys"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/project-history@2"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+    },
+    "surveys": {
+      "description": "Newest first.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "survey_id",
+              "recorded_unix_ms",
+              "head",
+              "cutoff_unix_s",
+              "completeness"
+            ],
+            "properties": {
+              "survey_id": {
+                "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
+              },
+              "recorded_unix_ms": {
+                "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+              },
+              "head": {
+                "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
+              },
+              "cutoff_unix_s": {
+                "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
+              },
+              "completeness": {
+                "$ref": "urn:af:schema:project-survey:2#/$defs/completeness"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "survey_id",
+              "recorded_unix_ms",
+              "unreadable"
+            ],
+            "properties": {
+              "survey_id": {
+                "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
+              },
+              "recorded_unix_ms": {
+                "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+              },
+              "unreadable": {
+                "description": "Why its record was not read: of a superseded version, refused by type (ADR-0145) and kept.",
+                "const": "superseded version"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

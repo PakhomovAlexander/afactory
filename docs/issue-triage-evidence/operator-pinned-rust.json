@@ -1,0 +1,25 @@
+{
+  "command": [
+    "/Users/apakhomov/.rustup/toolchains/1.88.0-aarch64-apple-darwin/bin/cargo",
+    "nextest",
+    "run",
+    "--workspace",
+    "--locked",
+    "--profile",
+    "ci",
+    "-E",
+    "test(/task_triage|shipped_schemas/)"
+  ],
+  "versions": {
+    "cargo": "cargo 1.88.0 (873a06493 2025-05-10)",
+    "rustc": "rustc 1.88.0 (6b00bc388 2025-06-23)"
+  },
+  "CARGO_TARGET_DIR": "/Users/apakhomov/bs/apkhmv-main/af/afactory-wt-triage-runner/target",
+  "exit_code": 0,
+  "started_unix": 1793707918.202216,
+  "elapsed_seconds": 15.370145082473755,
+  "source_manifest_sha256": "733aeafa75bb632a8c3847bd4ad5e5a74ab54386202c57e47fdfdbaec4f82798",
+  "source_snapshot": "sha256:38f56846e0898d3473e9f8a0b3cfe284ccf1d45fbcb6348787eca2bc8cd14fea",
+  "output_sha256": "9b5e1eed732b07b23e7cfdcb8a610450f5053a75195cb587018549560bfb20b3",
+  "output": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n Nextest run ID 34ea3c08-f08b-4179-9216-8fa96189f195 with nextest profile: ci\n    Starting 6 tests across 61 binaries (4009 tests skipped)\n        PASS [   0.380s] (1/6) af::bin/af shipped_schemas::tests::an_unshipped_id_names_the_versions_that_are_shipped\n        PASS [   0.380s] (2/6) af::bin/af shipped_schemas::tests::every_shipped_schema_describes_the_document_of_its_id\n        PASS [   0.018s] (3/6) af::bin/af shipped_schemas::tests::the_shipped_schemas_are_exactly_the_documents_af_help_json_lists\n        PASS [   0.019s] (4/6) af::bin/af shipped_schemas::tests::schema_listing_names_provider_status_v5_and_its_sdk_host_scope\n        PASS [   0.504s] (5/6) af::it task_triage::the_check_reads_the_triage_block_from_the_report_renderers_bytes\n        PASS [   4.865s] (6/6) af::it task_triage::the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_example_task\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n     Summary [   4.871s] 6 tests run: 6 passed, 4009 skipped\n"
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-wake-traversal:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "extraction_after",
+    "native_after"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-wake-traversal@1"
+    },
+    "extraction_after": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "native_after": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  }
+}
