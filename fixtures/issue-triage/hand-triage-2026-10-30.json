@@ -1,0 +1,56 @@
+{
+  "schema": "af.hand-triage/1",
+  "captured_main": "26d8a6da",
+  "verified_on": "2026-10-30",
+  "note": "Six issues the owner's session verified against main by reading the shipped code, CHANGELOG and ADRs; the three fixed ones were closed by hand with these evidence comments. The check script's fixtures: a triage of one of these issues must reach the recorded resolution state, and a claimed state must be backed by a reachable reference listed here.",
+  "issues": {
+    "196": {
+      "title": "af self optimize: relative source paths resolve from .af/, and an unreadable source is an anonymous 'unavailable' gap",
+      "state": "fixed_candidate",
+      "evidence": ["d0b49e57", "CHANGELOG.md: 0.14.0-rc.2 'af self optimize resolves a relative [[sources]].path ... from the repository root'"],
+      "addressed": ["relative [[sources]].path resolves from the repository root (crates/af/src/self_optimizer.rs resolve_source/source_path; tests a_relative_source_path_resolves_from_the_repository_root, a_relative_source_path_is_not_read_from_the_sources_file_directory)", "an unreadable source prints a warning naming the source id, the resolved path and the gap before the run (SourceError::warning)"],
+      "remaining": [],
+      "closed_by_owner": true
+    },
+    "357": {
+      "title": "CPU diagnostics fail cleanup when perf populates its build-ID cache",
+      "state": "fixed_candidate",
+      "evidence": ["PR #356 (closing reference 'Fixes #357', merged 2026-10-26)", "docs/adr/0224"],
+      "addressed": ["scripts/performance/perflab/perfcapture.py passes --no-buildid-cache on the probe-region and whole-command paths; the capability probe reuses record_argv", "tests scripts/performance/tests/test_diagnostics.py class PerfCache"],
+      "remaining": [],
+      "closed_by_owner": true
+    },
+    "436": {
+      "title": "Fast kernel gate: its check report is refused (second tests record); af task show then contradicts itself",
+      "state": "fixed_candidate",
+      "evidence": ["PR #438", "docs/adr/0258", "CHANGELOG.md: 0.14.0-rc.1 entry crediting #346"],
+      "addressed": ["crates/af-contracts/src/task/check_report.rs fold_tests folds one tests record per run; the 'second tests record' refusal is gone for the fast gate", "a refused report shows as refused in af task show --checks"],
+      "remaining": [],
+      "closed_by_owner": true
+    },
+    "425": {
+      "title": "Review JSON and first screens: Ledger production state, Task-stream refusal, one-screen views, starter boilerplate",
+      "state": "partial",
+      "evidence": ["PR #454 (merged 2026-10-29)", "PR #423 (merged 2026-10-28)"],
+      "addressed": ["3: default review-plan path list compacted, --long and JSON complete", "4: onboarding preview within one 80x24 screen, display rows counted", "5: starter boilerplate removed from the software starter"],
+      "remaining": ["1: af review ledger --json reports the latest Round's Ledger-production state and marks findings from the last gathered Ledger (versioned shape), with suppressed and gathered-empty Ledger tests", "2: the missing-Task-stream accounting refusal is applied before both renderers"],
+      "closed_by_owner": false
+    },
+    "393": {
+      "title": "Provider probe: classify a host denial from the whole stderr and in every app-server probe",
+      "state": "partial",
+      "evidence": ["PR #448 (merged 2026-10-29)"],
+      "addressed": ["3: errno values matched on word boundaries and spawn denial judged by the typed io::Error kind, so os error 11 and 111 no longer yield probe_denied"],
+      "remaining": ["1: classify a denial from typed evidence taken from the bounded raw stderr before the diagnostic line is chosen or redacted, with multi-line and redacted fixtures for af provider status and af provider detect", "2: carry a distinct denied outcome through every later app-server probe (usage, Task identity), reporting probe_denied with exit 8"],
+      "closed_by_owner": false
+    },
+    "284": {
+      "title": "Task gate: load-sensitive integration tests fail under concurrent gates (lost Attempts change inspection records)",
+      "state": "partial",
+      "evidence": ["PR #468, PR #469, PR #470 (quarantine, ADR-0268)", "PR #419 (fast Task gate, ADR-0251)"],
+      "addressed": ["the quarantine of ADR-0268 keeps known load-flaky families out of the verdict", "the fast gate (ADR-0251) shortens the window"],
+      "remaining": ["task_warm_checks and the stress proof still fail under concurrent gates at load 70-140 (not superseded by #466)", "the one-minute load average is not recorded in check receipts nor shown by af task show"],
+      "closed_by_owner": false
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-ledger:2",
+  "title": "af/review-ledger@2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "inspection",
+    "finding_set",
+    "reports"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/review-ledger@2"
+    },
+    "inspection": {
+      "$ref": "urn:af:schema:task-findings:2"
+    },
+    "finding_set": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "urn:review-kernel:schema:artifact-envelope:1"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "review.kernel/FindingSet@1"
+                },
+                "payload": {
+                  "$ref": "urn:review-kernel:schema:finding-set:1"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reports": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "allOf": [
+          {
+            "$ref": "urn:review-kernel:schema:artifact-envelope:1"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "review.kernel/FindingReport@1"
+              },
+              "payload": {
+                "$ref": "urn:review-kernel:schema:finding-report:1"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-roadmap-list:2",
+  "title": "scenario-roadmap-list v2",
+  "description": "Goal roadmap planning and complete-loop admission. Semantic validation also checks identity, dependency, immutable history and accounting rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "roadmaps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-roadmap-list@2"
+    },
+    "roadmaps": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:5#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Roadmap"
+      }
+    }
+  }
+}

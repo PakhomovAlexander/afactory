@@ -1,0 +1,545 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-roadmap-proposal:2",
+  "title": "scenario-roadmap-proposal v2",
+  "description": "Goal roadmap planning and complete-loop admission. Semantic validation also checks identity, dependency, immutable history and accounting rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "objective",
+    "horizon",
+    "max_tokens",
+    "goals",
+    "daily_tokens",
+    "rolling_tokens",
+    "rolling_window_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-roadmap-proposal@2"
+    },
+    "id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/name"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "[^\\s]"
+    },
+    "horizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_unix_ms",
+        "end_unix_ms"
+      ],
+      "properties": {
+        "start_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        },
+        "end_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8640000000000
+        }
+      }
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Goal"
+      },
+      "minItems": 1,
+      "maxItems": 256
+    },
+    "daily_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "rolling_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "rolling_window_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "$defs": {
+    "Reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "digest"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "source",
+            "research",
+            "candidate",
+            "experiment",
+            "verification",
+            "report"
+          ]
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "Goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "objective",
+        "partition",
+        "component",
+        "scope",
+        "workload",
+        "metric",
+        "acceptance",
+        "guardrails",
+        "priority",
+        "dependencies",
+        "conflicts",
+        "estimated_tokens",
+        "proposed_eligible",
+        "deferral_reason",
+        "remaining_work",
+        "sources",
+        "loop_tokens"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "[^\\s]"
+        },
+        "partition": {
+          "enum": [
+            "product_component",
+            "target_metric",
+            "optimization_goal"
+          ]
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "[^\\s]"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "[^\\s]"
+        },
+        "workload": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "[^\\s]"
+        },
+        "metric": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "direction",
+            "unit"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "[^\\s]"
+            },
+            "direction": {
+              "enum": [
+                "decrease",
+                "increase",
+                "maintain"
+              ]
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "[^\\s]"
+            }
+          }
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "[^\\s]"
+          },
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "guardrails": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "[^\\s]"
+          },
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/name"
+          },
+          "minItems": 0,
+          "maxItems": 255,
+          "uniqueItems": true
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/name"
+          },
+          "minItems": 0,
+          "maxItems": 255,
+          "uniqueItems": true
+        },
+        "estimated_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposed_eligible": {
+          "type": "boolean"
+        },
+        "deferral_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "[^\\s]"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remaining_work": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "[^\\s]"
+          },
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Reference"
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "loop_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "Proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "id",
+        "objective",
+        "horizon",
+        "max_tokens",
+        "goals",
+        "daily_tokens",
+        "rolling_tokens",
+        "rolling_window_ms"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-roadmap-proposal@2"
+        },
+        "id": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "[^\\s]"
+        },
+        "horizon": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_unix_ms",
+            "end_unix_ms"
+          ],
+          "properties": {
+            "start_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            },
+            "end_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8640000000000
+            }
+          }
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "goals": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Goal"
+          },
+          "minItems": 1,
+          "maxItems": 256
+        },
+        "daily_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "rolling_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "rolling_window_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "Revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "revision",
+        "parent",
+        "proposal"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-roadmap-revision@2"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposal": {
+          "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Proposal"
+        }
+      }
+    },
+    "Progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reason",
+        "captured_goal",
+        "reserved_tokens",
+        "actual_tokens",
+        "task_charges",
+        "task_receipts",
+        "artifacts",
+        "completed_work",
+        "claim"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "active",
+            "completed",
+            "deferred",
+            "blocked"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "pattern": "[^\\s]"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "captured_goal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "actual_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "task_receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Reference"
+          }
+        },
+        "completed_work": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "[^\\s]"
+          }
+        },
+        "task_charges": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/TaskCharge"
+          }
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:scenario:5#/$defs/Claim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Roadmap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "id",
+        "identity",
+        "revisions",
+        "progress"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af/scenario-roadmap@2"
+        },
+        "id": {
+          "$ref": "urn:af:schema:scenario:5#/$defs/name"
+        },
+        "identity": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "revisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Revision"
+          }
+        },
+        "progress": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:scenario:5#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:scenario-roadmap-proposal:2#/$defs/Progress"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,391 @@
+{
+  "schema": "af/scenario-bundle@5",
+  "root": "main",
+  "definitions": {
+    "main": {
+      "schema": "af/scenario@5",
+      "inputs": {},
+      "outputs": {
+        "publication": "action",
+        "review": "action",
+        "merged": "observation",
+        "followup": "action"
+      },
+      "steps": [
+        {
+          "id": "publication-owner",
+          "operation": {
+            "kind": "decision",
+            "owner": "owner"
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            }
+          },
+          "outputs": {
+            "result": "decision"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "publish",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "github",
+              "operation": "publish_pr",
+              "destination": "github:octo/project"
+            },
+            "requires_decision": true,
+            "required_condition": null
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            },
+            "body": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "{\"base\":\"main\",\"body\":\"Exact approved publication text\",\"head\":\"approved/change\",\"schema\":\"af/github-publish-pr@1\",\"title\":\"Approved change\"}"
+              }
+            },
+            "decision": {
+              "source": "step",
+              "step": "publication-owner",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "green",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "github",
+              "operation": "observe",
+              "destination": "github:octo/project"
+            },
+            "condition": "checks_passed"
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "review-owner",
+          "operation": {
+            "kind": "decision",
+            "owner": "owner"
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-notify:sha256:5d5e6371cd24cc7d9a8766a00ee76794b74f4daa7cbf530e903fe7bb4973e9ee"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            }
+          },
+          "outputs": {
+            "result": "decision"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "review",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "github",
+              "operation": "notify",
+              "destination": "github:octo/project"
+            },
+            "requires_decision": true,
+            "required_condition": null
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-notify:sha256:5d5e6371cd24cc7d9a8766a00ee76794b74f4daa7cbf530e903fe7bb4973e9ee"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            },
+            "body": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "{\"publication\":\"github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0\",\"reviewers\":[{\"id\":8,\"login\":\"owner\"}],\"schema\":\"af/github-notify@1\"}"
+              }
+            },
+            "decision": {
+              "source": "step",
+              "step": "review-owner",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "merged",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "github",
+              "operation": "observe",
+              "destination": "github:octo/project"
+            },
+            "condition": "merged"
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "followup-owner",
+          "operation": {
+            "kind": "decision",
+            "owner": "owner"
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-followup:sha256:c7cad1be618ce163bf826f0f73c06acb6fa89ebd505ad0dd7e1ef40a0fc14ac7"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            }
+          },
+          "outputs": {
+            "result": "decision"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "followup",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "github",
+              "operation": "followup",
+              "destination": "github:octo/project"
+            },
+            "requires_decision": true,
+            "required_condition": null
+          },
+          "inputs": {
+            "subject": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "github-followup:sha256:c7cad1be618ce163bf826f0f73c06acb6fa89ebd505ad0dd7e1ef40a0fc14ac7"
+              }
+            },
+            "revision": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "1111111111111111111111111111111111111111"
+              }
+            },
+            "body": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "{\"body\":\"Exact approved follow-up text\",\"publication\":\"github-pr:sha256:26a7c4ac94698a8f41a89b3f9e4a8f8cae9f464f411d6e4a26e39eb90bc9a2d0\",\"schema\":\"af/github-followup@1\",\"title\":\"Owner follow-up\"}"
+              }
+            },
+            "decision": {
+              "source": "step",
+              "step": "followup-owner",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        }
+      ],
+      "result": {
+        "publication": {
+          "source": "step",
+          "step": "publish",
+          "port": "result"
+        },
+        "review": {
+          "source": "step",
+          "step": "review",
+          "port": "result"
+        },
+        "merged": {
+          "source": "step",
+          "step": "merged",
+          "port": "result"
+        },
+        "followup": {
+          "source": "step",
+          "step": "followup",
+          "port": "result"
+        }
+      },
+      "completion": [
+        {
+          "source": "project",
+          "value": {
+            "source": "step",
+            "step": "merged",
+            "port": "result"
+          },
+          "projection": {
+            "kind": "observation_satisfied"
+          }
+        }
+      ],
+      "authority": {
+        "task_plans": [],
+        "grants": [
+          {
+            "adapter": "github",
+            "operation": "publish_pr",
+            "destination": "github:octo/project"
+          },
+          {
+            "adapter": "github",
+            "operation": "followup",
+            "destination": "github:octo/project"
+          },
+          {
+            "adapter": "github",
+            "operation": "notify",
+            "destination": "github:octo/project"
+          },
+          {
+            "adapter": "github",
+            "operation": "observe",
+            "destination": "github:octo/project"
+          }
+        ],
+        "decision_owners": [
+          "owner"
+        ],
+        "task_templates": []
+      },
+      "limits": {
+        "max_tokens": 0,
+        "max_wall_ms": 604800000,
+        "max_dispatches": 64
+      }
+    }
+  }
+}

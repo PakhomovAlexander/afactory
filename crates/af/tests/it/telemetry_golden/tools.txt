@@ -1,0 +1,5 @@
+task run task:sha256:8888888888888888888888888888888888888888888888888888888888888888  history prefix:1 — retained executions 1–1
+2 tool calls
+harness 009c22caf55d944d attempt golden-attempt-1 node root.nodes.review  stream complete
+  Read               2023-11-14T22:18:20.015Z +5.000 ms     5.000 ms     ok     succeeded  in 26 B  out 20 B
+  Grep               2023-11-14T22:18:20.015Z +5.000 ms     10.000 ms    error  failed     in 18 B  out 10 B

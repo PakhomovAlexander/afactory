@@ -1,0 +1,3 @@
+cargo-nextest 0.9.132
+release: 0.9.132
+host: aarch64-apple-darwin

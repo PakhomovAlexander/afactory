@@ -1,0 +1,77 @@
+# Validation only: no release builder, signing, publication, or remote ref writes.
+name: Release validation proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Release validation profile to prove on Linux and macOS
+        type: choice
+        required: true
+        options: [fast, full]
+  pull_request:
+    paths:
+      - '.github/workflows/release-validation-proof.yml'
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'release:fast') ||
+      contains(github.event.pull_request.labels.*.name, 'release:full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      test_plan: ${{ steps.proof.outputs.test_plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Bind the proof and simulate frozen release resolution locally
+        id: proof
+        env:
+          PROOF_PROFILE: ${{ inputs.profile }}
+        run: python3 scripts/release-validation-proof.py --profile "$PROOF_PROFILE" --output target/release-validation-proof
+      - name: Retain proof plan and local binding results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-validation-proof-${{ github.run_attempt }}
+          path: |
+            target/release-validation-proof/plan.json
+            target/release-validation-proof/local-binding-results.json
+            target/release-validation-proof/local-binding.log
+            target/release-validation-proof/summary.md
+          if-no-files-found: error
+
+  validate:
+    needs: proof
+    uses: ./.github/workflows/validate.yml
+    with:
+      release: true
+      test_plan: ${{ needs.proof.outputs.test_plan }}
+
+  result:
+    needs: [proof, validate]
+    if: >-
+      always() && (github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'release:fast') ||
+      contains(github.event.pull_request.labels.*.name, 'release:full'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require proof and both-platform validation
+        env:
+          PROOF_RESULT: ${{ needs.proof.result }}
+          VALIDATION_RESULT: ${{ needs.validate.result }}
+        run: |
+          test "$PROOF_RESULT" = success
+          test "$VALIDATION_RESULT" = success

@@ -1,0 +1,425 @@
+{
+  "schema": "af/scenario-bundle@5",
+  "root": "issue-fix",
+  "definitions": {
+    "issue-fix": {
+      "schema": "af/scenario@5",
+      "inputs": {
+        "file": "text",
+        "content": "text",
+        "subject": "text",
+        "revision": "text"
+      },
+      "outputs": {
+        "implementation": "task",
+        "cleanup": "action"
+      },
+      "steps": [
+        {
+          "id": "implement",
+          "operation": {
+            "kind": "task",
+            "target": {
+              "repo": "/absolute/project",
+              "state": "/absolute/task-state",
+              "task_id": "pagination-cli",
+              "plan_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "revision_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "max_tokens": 1000
+            }
+          },
+          "inputs": {},
+          "outputs": {
+            "result": "task"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "child",
+          "operation": {
+            "kind": "scenario",
+            "scenario": "owned-change"
+          },
+          "inputs": {
+            "implementation": {
+              "source": "step",
+              "step": "implement",
+              "port": "result"
+            },
+            "file": {
+              "source": "input",
+              "port": "file"
+            },
+            "content": {
+              "source": "input",
+              "port": "content"
+            }
+          },
+          "outputs": {
+            "owned": "owned_file",
+            "implementation": "task"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "checks",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "service",
+              "operation": "observe",
+              "destination": "fixture:repository"
+            },
+            "condition": "checks_passed"
+          },
+          "inputs": {
+            "subject": {
+              "source": "input",
+              "port": "subject"
+            },
+            "revision": {
+              "source": "input",
+              "port": "revision"
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "owner",
+          "operation": {
+            "kind": "decision",
+            "owner": "owner"
+          },
+          "inputs": {
+            "subject": {
+              "source": "input",
+              "port": "subject"
+            },
+            "revision": {
+              "source": "input",
+              "port": "revision"
+            }
+          },
+          "outputs": {
+            "result": "decision"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "publish",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "service",
+              "operation": "publish_pr",
+              "destination": "fixture:repository"
+            },
+            "requires_decision": true,
+            "required_condition": "checks_passed"
+          },
+          "inputs": {
+            "subject": {
+              "source": "input",
+              "port": "subject"
+            },
+            "revision": {
+              "source": "input",
+              "port": "revision"
+            },
+            "body": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "Review the recorded accepted Task candidate"
+              }
+            },
+            "decision": {
+              "source": "step",
+              "step": "owner",
+              "port": "result"
+            },
+            "evidence": {
+              "source": "step",
+              "step": "checks",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "merge",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "service",
+              "operation": "observe",
+              "destination": "fixture:repository"
+            },
+            "condition": "merged"
+          },
+          "inputs": {
+            "subject": {
+              "source": "input",
+              "port": "subject"
+            },
+            "revision": {
+              "source": "input",
+              "port": "revision"
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "cleanup",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "builtin",
+              "operation": "cleanup_owned_file",
+              "destination": "/absolute/owned-root"
+            },
+            "requires_decision": false,
+            "required_condition": null
+          },
+          "inputs": {
+            "owned": {
+              "source": "step",
+              "step": "child",
+              "port": "owned"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        }
+      ],
+      "result": {
+        "implementation": {
+          "source": "step",
+          "step": "child",
+          "port": "implementation"
+        },
+        "cleanup": {
+          "source": "step",
+          "step": "cleanup",
+          "port": "result"
+        }
+      },
+      "completion": [
+        {
+          "source": "equals",
+          "left": {
+            "source": "project",
+            "value": {
+              "source": "step",
+              "step": "implement",
+              "port": "result"
+            },
+            "projection": {
+              "kind": "task_conclusion"
+            }
+          },
+          "right": {
+            "source": "literal",
+            "value": {
+              "type": "text",
+              "value": "verified"
+            }
+          }
+        }
+      ],
+      "authority": {
+        "grants": [
+          {
+            "adapter": "builtin",
+            "operation": "write_owned_file",
+            "destination": "/absolute/owned-root"
+          },
+          {
+            "adapter": "builtin",
+            "operation": "cleanup_owned_file",
+            "destination": "/absolute/owned-root"
+          },
+          {
+            "adapter": "service",
+            "operation": "observe",
+            "destination": "fixture:repository"
+          },
+          {
+            "adapter": "service",
+            "operation": "publish_pr",
+            "destination": "fixture:repository"
+          }
+        ],
+        "decision_owners": [
+          "owner"
+        ],
+        "task_plans": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        "task_templates": []
+      },
+      "limits": {
+        "max_tokens": 2000,
+        "max_wall_ms": 604800000,
+        "max_dispatches": 64
+      },
+      "admission": null
+    },
+    "owned-change": {
+      "schema": "af/scenario@5",
+      "inputs": {
+        "implementation": "task",
+        "file": "text",
+        "content": "text"
+      },
+      "outputs": {
+        "owned": "owned_file",
+        "implementation": "task"
+      },
+      "steps": [
+        {
+          "id": "no-change",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "builtin",
+              "operation": "write_owned_file",
+              "destination": "/absolute/owned-root"
+            },
+            "requires_decision": false,
+            "required_condition": null
+          },
+          "inputs": {
+            "file": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "unused"
+              }
+            },
+            "content": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "unused"
+              }
+            }
+          },
+          "outputs": {
+            "result": "owned_file"
+          },
+          "when": {
+            "source": "literal",
+            "value": {
+              "type": "boolean",
+              "value": false
+            }
+          },
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "write",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "builtin",
+              "operation": "write_owned_file",
+              "destination": "/absolute/owned-root"
+            },
+            "requires_decision": false,
+            "required_condition": null
+          },
+          "inputs": {
+            "file": {
+              "source": "input",
+              "port": "file"
+            },
+            "content": {
+              "source": "input",
+              "port": "content"
+            }
+          },
+          "outputs": {
+            "result": "owned_file"
+          },
+          "when": null,
+          "max_attempts": 2,
+          "timeout_ms": 120000,
+          "on_timeout": "fail"
+        }
+      ],
+      "result": {
+        "owned": {
+          "source": "step",
+          "step": "write",
+          "port": "result"
+        },
+        "implementation": {
+          "source": "input",
+          "port": "implementation"
+        }
+      },
+      "completion": [
+        {
+          "source": "literal",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "authority": {
+        "grants": [
+          {
+            "adapter": "builtin",
+            "operation": "write_owned_file",
+            "destination": "/absolute/owned-root"
+          }
+        ],
+        "decision_owners": [],
+        "task_plans": [],
+        "task_templates": []
+      },
+      "limits": {
+        "max_tokens": 2000,
+        "max_wall_ms": 604800000,
+        "max_dispatches": 64
+      },
+      "admission": null
+    }
+  }
+}

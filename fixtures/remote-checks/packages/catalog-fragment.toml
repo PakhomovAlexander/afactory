@@ -1,0 +1,23 @@
+# Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
+# Each version is its local original's; the path is where the README installs it. Add each
+# entry to `.af/task-catalog.toml` beside the original, never in place of it.
+
+[packages."kernel/gate-bench-remote"]
+version = "1.0.1"
+digest = "sha256:b651610009e0ba2509896d7ecc1fae8765c7ce459d2f9cb443d46d6ae17e69d3"
+path = ".af/task-packages/kernel/gate-bench-remote"
+
+[packages."kernel/implementation-reviewed-remote"]
+version = "1.4.1"
+digest = "sha256:caaf578074fc4174d694b877031c75a619dbb7c24060ca8c835e38bb4bfd6b9f"
+path = ".af/task-packages/kernel/implementation-reviewed-remote"
+
+[packages."kernel/verification-reviewed-remote"]
+version = "1.2.1"
+digest = "sha256:8be249b37c65de40ad36b4bc90d76ccfd9938ecef700fea9b79f27470218daee"
+path = ".af/task-packages/kernel/verification-reviewed-remote"
+
+[packages."kernel/review-code-remote"]
+version = "1.1.1"
+digest = "sha256:16a144b7e7d96f02485439b2c19d31b4b971f8a8145cab2611e8f3d86d595f65"
+path = ".af/task-packages/kernel/review-code-remote"

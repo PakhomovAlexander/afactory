@@ -1,0 +1,1339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey:2",
+  "title": "af/ProjectSurvey@2",
+  "description": "One kernel-measured description of a Project at one head (ADR-0159), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; a complete one byte-identical for the same head, refs digest, policy digest, Surveyor version, git version, cutoff and previous_survey_id, and one that is not complete names where it stopped. Display strings are at most 256 bytes and marked `truncated` when cut; identity strings and paths are exact. No host path, Provider ID or author email.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "completeness",
+    "identity",
+    "tree",
+    "history",
+    "contributors",
+    "decisions",
+    "vocabulary",
+    "checks"
+  ],
+  "if": {
+    "properties": {
+      "completeness": {
+        "const": "complete"
+      }
+    }
+  },
+  "then": {
+    "not": {
+      "required": [
+        "stopped"
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "stopped"
+    ]
+  },
+  "properties": {
+    "schema": {
+      "const": "af/ProjectSurvey@2"
+    },
+    "completeness": {
+      "description": "The sections folded: unavailable only when every section is, partial when any is not complete.",
+      "$ref": "#/$defs/completeness"
+    },
+    "previous_survey_id": {
+      "description": "The Survey before this one in the same Project Store.",
+      "$ref": "#/$defs/digest"
+    },
+    "stopped": {
+      "description": "Where a Survey that is not complete stopped, so a replay of the record reproduces it; absent exactly when the Survey is complete.",
+      "$ref": "#/$defs/stop"
+    },
+    "identity": {
+      "description": "Which Project and head, under which policy and rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "project_id": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+        },
+        "repository_id": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/repository_id"
+        },
+        "name": {
+          "description": "`[project] name` of the head's `.af/af.toml`.",
+          "$ref": "urn:af:schema:project-registered:1#/$defs/name"
+        },
+        "min_af": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/min_af"
+        },
+        "af_pin": {
+          "description": "The af release the head's `.af/af.lock` pins.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9A-Za-z.+-]{1,64}$"
+            },
+            "digests": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[0-9A-Za-z._-]{1,64}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        "head": {
+          "$ref": "#/$defs/commit"
+        },
+        "refs_digest": {
+          "description": "`sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads refs/tags`): the refs of the survey key and of history's tags and branches.",
+          "$ref": "#/$defs/digest"
+        },
+        "tree_digest": {
+          "description": "The Tree Digest of the whole head tree: the committed capture's content digest, computed by the digest-only path (no blob written, fixed manifest and temporary ceilings), independent of exclude and every maximum.",
+          "$ref": "#/$defs/digest"
+        },
+        "tree_digest_reason": {
+          "description": "Why the Tree Digest is absent: the deadline passed first, a listing record is over 64 KiB, or a fixed ceiling of the digest-only path stopped it (16 MiB of manifest buffering, 256 MiB of temporary manifest data). Never the digest of a part.",
+          "enum": [
+            "deadline",
+            "max_record_bytes",
+            "manifest_bytes",
+            "temp_bytes"
+          ]
+        },
+        "cutoff_unix_s": {
+          "description": "The clock when the Survey started, in Unix seconds.",
+          "$ref": "#/$defs/decimal"
+        },
+        "policy_digest": {
+          "description": "`sha256:` + hex(SHA-256 of the canonical JSON of the effective [survey] policy).",
+          "$ref": "#/$defs/digest"
+        },
+        "surveyor_version": {
+          "description": "The Surveyor's measurement rules; bumped whenever one changes.",
+          "$ref": "#/$defs/decimal"
+        },
+        "git_version": {
+          "description": "The exact `git --version` stdout, trimmed.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]([^\\x00-\\x1f\\x7f-\\x9f]*[^\\s\\x00-\\x1f\\x7f-\\x9f])?$"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "project_id",
+              "repository_id",
+              "head",
+              "refs_digest",
+              "cutoff_unix_s",
+              "policy_digest",
+              "surveyor_version",
+              "git_version"
+            ],
+            "oneOf": [
+              {
+                "required": [
+                  "tree_digest"
+                ]
+              },
+              {
+                "required": [
+                  "tree_digest_reason"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "tree": {
+      "description": "The head tree after `[survey] exclude`, at most max_paths entries: files, bytes and lines.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "files": {
+          "$ref": "#/$defs/decimal"
+        },
+        "bytes": {
+          "$ref": "#/$defs/decimal"
+        },
+        "lines": {
+          "description": "Newline counts of text blobs at or under max_file_bytes.",
+          "$ref": "#/$defs/decimal"
+        },
+        "files_without_lines": {
+          "description": "Binary, over max_file_bytes, symlinks, submodules, or not read before the deadline.",
+          "$ref": "#/$defs/decimal"
+        },
+        "directories": {
+          "description": "By top-level directory; root-level files under `.`.",
+          "type": "object",
+          "propertyNames": {
+            "description": "`.` for root-level files, otherwise one top-level directory name.",
+            "type": "string",
+            "pattern": "^(\\.|[^/]+)$",
+            "not": {
+              "enum": [
+                "..",
+                ""
+              ]
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "files",
+              "lines",
+              "bytes"
+            ],
+            "properties": {
+              "files": {
+                "$ref": "#/$defs/decimal"
+              },
+              "lines": {
+                "$ref": "#/$defs/decimal"
+              },
+              "bytes": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "languages": {
+          "description": "By language; `other` for anything the map does not name.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/language"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "files",
+              "lines"
+            ],
+            "properties": {
+              "files": {
+                "$ref": "#/$defs/decimal"
+              },
+              "lines": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "tests": {
+          "description": "Files and lines the `[survey] tests` globs match, and the rest.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "lines",
+            "other_files",
+            "other_lines"
+          ],
+          "properties": {
+            "files": {
+              "$ref": "#/$defs/decimal"
+            },
+            "lines": {
+              "$ref": "#/$defs/decimal"
+            },
+            "other_files": {
+              "$ref": "#/$defs/decimal"
+            },
+            "other_lines": {
+              "$ref": "#/$defs/decimal"
+            }
+          }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "paths",
+                  "directories",
+                  "languages"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "files",
+              "bytes",
+              "lines",
+              "files_without_lines",
+              "directories",
+              "languages",
+              "tests"
+            ]
+          }
+        }
+      ]
+    },
+    "history": {
+      "description": "The commits reachable from the head in `git rev-list --date-order` order, newest first, up to max_commits; a merge counts as a commit and contributes no churn.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "reachable_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "commits": {
+          "description": "The commits reached.",
+          "$ref": "#/$defs/decimal"
+        },
+        "merges": {
+          "$ref": "#/$defs/decimal"
+        },
+        "windows": {
+          "description": "Commits whose committer time is after the cutoff minus the window and at or before the cutoff.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "30d",
+            "90d",
+            "365d"
+          ],
+          "properties": {
+            "30d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            },
+            "90d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            },
+            "365d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            }
+          }
+        },
+        "first_commit_unix_s": {
+          "$ref": "#/$defs/decimal"
+        },
+        "last_commit_unix_s": {
+          "$ref": "#/$defs/decimal"
+        },
+        "oldest_reached": {
+          "description": "The oldest commit reached, when the walk did not reach every reachable commit.",
+          "$ref": "#/$defs/commit"
+        },
+        "stopped_in": {
+          "description": "The commit whose log record stopped the walk unfolded: one over max_paths, a record over 64 KiB or a malformed record (one cut before its NUL included); the head when the walk stopped in its first record, which history then counts as zero commits.",
+          "$ref": "#/$defs/commit"
+        },
+        "stopped_record": {
+          "description": "The ordinal in the log of the record stopped_in names, 1 for the first, the head's: the record after the commits counted. Present exactly with stopped_in.",
+          "$ref": "#/$defs/ordinal"
+        },
+        "churn_90d": {
+          "description": "By top-level directory, over 90 days.",
+          "type": "object",
+          "propertyNames": {
+            "description": "`.` for root-level files, otherwise one top-level directory name.",
+            "type": "string",
+            "pattern": "^(\\.|[^/]+)$",
+            "not": {
+              "enum": [
+                "..",
+                ""
+              ]
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "commits",
+              "added",
+              "removed"
+            ],
+            "properties": {
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "added": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "hot_paths": {
+          "description": "The paths with the most commits in 90 days, most first, ties by path; `removed` when the head tree no longer holds one.",
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "commits"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "const": true
+              }
+            }
+          }
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "release"
+          ],
+          "properties": {
+            "count": {
+              "$ref": "#/$defs/decimal"
+            },
+            "release": {
+              "description": "The newest tags matching release_tags, by creator date.",
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "$ref": "#/$defs/name"
+              }
+            }
+          }
+        },
+        "local_branches": {
+          "$ref": "#/$defs/decimal"
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "churn_90d",
+                  "hot_paths",
+                  "tags"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "dependentRequired": {
+        "stopped_in": [
+          "stopped_record"
+        ],
+        "stopped_record": [
+          "stopped_in"
+        ]
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "reachable_commits",
+              "commits",
+              "merges",
+              "windows",
+              "first_commit_unix_s",
+              "last_commit_unix_s",
+              "churn_90d",
+              "hot_paths"
+            ]
+          }
+        },
+        {
+          "description": "A malformed log record, the first included, leaves history partial and names its commit; a walk that folded no commit names the one it stopped in.",
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "const": "malformed_record"
+                  }
+                }
+              },
+              {
+                "required": [
+                  "commits"
+                ],
+                "properties": {
+                  "commits": {
+                    "const": "0"
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "stopped_in"
+            ],
+            "properties": {
+              "completeness": {
+                "const": "partial"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "contributors": {
+      "description": "Who authored the commits reached, and how many were agent-assisted: each commit counts once in the partition and once for its author. Never an author email.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "identity": {
+          "enum": [
+            "name",
+            "email_hash"
+          ]
+        },
+        "identities": {
+          "$ref": "#/$defs/decimal"
+        },
+        "active_90d": {
+          "$ref": "#/$defs/decimal"
+        },
+        "human_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "agent_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "human_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "agent_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "top_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "by_identity": {
+          "description": "The identities ranked by commits, then lines added, both descending, then key, at most max_entries; grouped by `key`, never by the display name.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "commits",
+              "added",
+              "removed",
+              "first_unix_s",
+              "last_unix_s",
+              "active_90d"
+            ],
+            "properties": {
+              "key": {
+                "description": "Under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes; under `email_hash` those of the lowercased, trimmed email; under either, `h:` and the 16-hex hash of the lowercased, trimmed name for a name any whitespace-separated token of which is an email address.",
+                "type": "string",
+                "pattern": "^(h:)?[0-9a-f]{16}$"
+              },
+              "name": {
+                "description": "Under `name` only: the author name cut to 256 bytes, or the `h:` key of a name that carries an email address. Never an email.",
+                "anyOf": [
+                  {
+                    "pattern": "^h:[0-9a-f]{16}$"
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/text"
+                      },
+                      {
+                        "pattern": "^\\S(.*\\S)?$"
+                      },
+                      {
+                        "not": {
+                          "pattern": "\\S@\\S"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "added": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "$ref": "#/$defs/decimal"
+              },
+              "first_unix_s": {
+                "$ref": "#/$defs/decimal"
+              },
+              "last_unix_s": {
+                "$ref": "#/$defs/decimal"
+              },
+              "active_90d": {
+                "type": "boolean"
+              },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
+              }
+            }
+          }
+        },
+        "stopped_record": {
+          "description": "The ordinal in the log of the record that stopped the walk this section folds, as history's stopped_record names it: present exactly when a record stopped the walk.",
+          "$ref": "#/$defs/ordinal"
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "by_identity"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "identity",
+              "identities",
+              "active_90d",
+              "human_commits",
+              "agent_commits",
+              "human_share_bp",
+              "agent_share_bp",
+              "top_share_bp",
+              "by_identity"
+            ]
+          }
+        },
+        {
+          "description": "A malformed log record, the first included, leaves contributors partial with what the walk folded before it, zero counts when nothing.",
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "malformed_record"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "completeness": {
+                "const": "partial"
+              }
+            }
+          }
+        },
+        {
+          "description": "A log record that stopped the walk is named by its ordinal.",
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "enum": [
+                  "malformed_record",
+                  "max_record_bytes",
+                  "max_paths"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "stopped_record"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "identity": {
+                "const": "email_hash"
+              }
+            },
+            "required": [
+              "identity"
+            ]
+          },
+          "then": {
+            "properties": {
+              "by_identity": {
+                "items": {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "name"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "truncated"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "by_identity": {
+                "items": {
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "decisions": {
+      "description": "The files the `decisions` pattern matches whose name starts with four ASCII digits and a dash.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "count": {
+          "$ref": "#/$defs/decimal"
+        },
+        "by_status": {
+          "description": "Counts by status; `unknown` for a record whose status line names none or that has none, `unreadable` for one over max_file_bytes, not text or not UTF-8.",
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "accepted",
+              "proposed",
+              "superseded",
+              "deprecated",
+              "rejected",
+              "unknown",
+              "unreadable"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/decimal"
+          }
+        },
+        "records": {
+          "description": "Every record up to max_entries, by number, then path.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "number",
+              "path"
+            ],
+            "properties": {
+              "number": {
+                "description": "The four leading digits of the file name.",
+                "type": "string",
+                "pattern": "^[0-9]{4}$"
+              },
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "title": {
+                "$ref": "#/$defs/text"
+              },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
+              },
+              "status": {
+                "enum": [
+                  "accepted",
+                  "proposed",
+                  "superseded",
+                  "deprecated",
+                  "rejected",
+                  "unreadable"
+                ],
+                "description": "The first closed status on the first line that starts with `**Status:**` or `Status:`, or `unreadable` for a file over max_file_bytes, not text or not UTF-8; absent, counted `unknown`, without one."
+              },
+              "date": {
+                "type": "string",
+                "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+                "description": "The first YYYY-MM-DD on the status line, when it is a day of the calendar (month lengths and leap years: 2024-02-29 is one, 2025-02-29 and 2026-02-31 are not); absent, unknown, otherwise."
+              },
+              "amended": {
+                "description": "The status line says `amended`.",
+                "const": true
+              }
+            }
+          }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "records"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "count",
+              "by_status",
+              "records"
+            ]
+          }
+        }
+      ]
+    },
+    "vocabulary": {
+      "description": "The term names of the vocabulary file's bold-colon headings, never a definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "file": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "count": {
+          "$ref": "#/$defs/decimal",
+          "description": "The terms defined; absent with terms when the file is over max_file_bytes, not text or not UTF-8."
+        },
+        "terms": {
+          "description": "The first max_entries terms by name, each once.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "terms"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "file",
+              "present"
+            ],
+            "dependentRequired": {
+              "count": [
+                "terms"
+              ],
+              "terms": [
+                "count"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "checks": {
+      "description": "Declared checks, toolchain declarations and CI workflow files.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "declared": {
+          "description": "Names and programs only, never arguments; one per identity, `<source>:<name>`, by identity, then program.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "name",
+              "program"
+            ],
+            "properties": {
+              "source": {
+                "description": "`code-policy` for `.af/code-policy.toml`, or the basename of the `.af/pipelines/*.toml` file that declares the check.",
+                "anyOf": [
+                  {
+                    "const": "code-policy"
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^/\\s]([^/]*[^/\\s])?\\.toml$"
+                  }
+                ]
+              },
+              "name": {
+                "$ref": "#/$defs/text"
+              },
+              "program": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "pattern": "^[^/]"
+                  }
+                ]
+              },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
+              }
+            }
+          }
+        },
+        "toolchain": {
+          "description": "The toolchain declarations present at the root among rust-toolchain.toml, rust-toolchain, .tool-versions, .nvmrc, .node-version, .python-version, .ruby-version and .java-version, sorted, at most max_entries.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repo_path"
+          }
+        },
+        "ci_workflows": {
+          "description": "`.github/workflows/*.yml` and `*.yaml` files.",
+          "$ref": "#/$defs/decimal"
+        },
+        "unreadable": {
+          "description": "Declarations over max_file_bytes, not text or not UTF-8, sorted, at most max_entries.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repo_path"
+          }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "declared",
+                  "toolchain",
+                  "unreadable"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "declared",
+              "toolchain",
+              "ci_workflows"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "description": "A non-negative integer as canonical decimal text: every number of a Survey is one.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "ordinal": {
+      "description": "A position counted from 1, as canonical decimal text.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "basis_points": {
+      "description": "A share in basis points, rounded down.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,3}|10000)$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "commit": {
+      "description": "A commit ID: SHA-1 or SHA-256, lowercase hex.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "reason": {
+      "description": "The bound a section reached; manifest_bytes and temp_bytes are identity's alone, the fixed ceilings that stopped its Tree Digest, and malformed_record is history's and contributors' alone, a log record that does not parse.",
+      "enum": [
+        "max_wall_ms",
+        "max_commits",
+        "max_paths",
+        "max_entries",
+        "max_file_bytes",
+        "max_record_bytes",
+        "malformed_record",
+        "manifest_bytes",
+        "temp_bytes"
+      ]
+    },
+    "stop": {
+      "description": "The section the deadline cut first, else the first section that is not complete; its reason; how many of its items the Survey's clock charged (the one that found the deadline and the section's last check included); under history the commit the walk stopped in, else the oldest one it reached; under max_file_bytes the first declaration not read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "reason",
+        "item"
+      ],
+      "properties": {
+        "section": {
+          "enum": [
+            "identity",
+            "tree",
+            "history",
+            "contributors",
+            "decisions",
+            "vocabulary",
+            "checks"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "item": {
+          "$ref": "#/$defs/decimal"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        },
+        "path": {
+          "$ref": "#/$defs/repo_path"
+        }
+      }
+    },
+    "section_shape": {
+      "description": "A complete section carries no reason; a partial or unavailable one names the bound it reached.",
+      "if": {
+        "properties": {
+          "completeness": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "reason"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    "repo_path": {
+      "description": "A repository-relative path in its one encoded spelling, never a host path.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\s](.*[^\\s])?$"
+    },
+    "text": {
+      "description": "A display string: non-blank, at most 256 bytes (cut at a character boundary and marked `truncated` when longer), no control character. `@` is permitted: repository text is recorded as committed.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "allOf": [
+        {
+          "pattern": "\\S"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+        }
+      ]
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z0-9+#._-]{1,64}$"
+    },
+    "truncated": {
+      "description": "The display string beside it was cut to 256 bytes.",
+      "const": true
+    },
+    "name": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/text"
+        },
+        "truncated": {
+          "$ref": "#/$defs/truncated"
+        }
+      }
+    },
+    "seen": {
+      "description": "For each list the section cut at max_entries, or stopped at the deadline (or the tree's entries at max_paths, under `paths`), how many items it saw.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/decimal"
+      }
+    }
+  }
+}
