@@ -1,0 +1,520 @@
+{
+  "backlog": {
+    "closed_24h": 1,
+    "draft_pull_requests": 1,
+    "head_checks": {
+      "failure": 0,
+      "other": 0,
+      "pending": 1,
+      "skipped": 1,
+      "success": 1,
+      "total": 3
+    },
+    "labels": [
+      {
+        "count": 2,
+        "name": "bug"
+      },
+      {
+        "count": 1,
+        "name": "nightly"
+      }
+    ],
+    "open_issues": 2,
+    "open_pull_requests": 2,
+    "opened_24h": 1,
+    "pull_requests": [
+      {
+        "draft": false,
+        "mergeable_state": "clean",
+        "number": 44,
+        "title": "Compose the report"
+      },
+      {
+        "draft": true,
+        "mergeable_state": "draft",
+        "number": 45,
+        "title": "Draft: publish it"
+      }
+    ],
+    "pull_requests_partial": null,
+    "stale": [
+      {
+        "number": 7,
+        "title": "A <script> in a title",
+        "updated": "2026-09-02"
+      }
+    ],
+    "stale_issues": 1
+  },
+  "baseline": {
+    "commits_since": 4,
+    "published": "2026-10-20",
+    "pull_requests_since": 2,
+    "reasons": [],
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "tag": "v0.13.0"
+  },
+  "build": {
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_subject": "Compose the daily report (#44)",
+    "previous_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "previous_tag": "nightly-2026.10.28",
+    "skip_reason": null,
+    "status": "built",
+    "targets": [
+      {
+        "af_reason": null,
+        "af_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
+        "asset": "dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+        "bytes": 128,
+        "sha256": "sha256:837053df5c15f170a81fa7de8f076d43f09829bbcc0918f4de863817debf56c1",
+        "target": "x86_64-unknown-linux-musl"
+      },
+      {
+        "af_reason": null,
+        "af_sha256": "sha256:0058cd607260e681753c8ef5c1f113d92df3c06791090c844fa1419fe3d04ba1",
+        "asset": "dist/af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz",
+        "bytes": 127,
+        "sha256": "sha256:91f8b9a84ce72ac60c72c6ab0ef68afbc7ef8ab3d43876c89acbe63cae2485b9",
+        "target": "aarch64-unknown-linux-musl"
+      }
+    ],
+    "version": "0.14.0-nightly.20261029"
+  },
+  "completeness": {
+    "backlog": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "baseline": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "build": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "machine": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "performance": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "since_last_night": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "telemetry": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "trend": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    }
+  },
+  "composed_unix_ms": 1793286000000,
+  "date": "2026-10-29",
+  "headline": {
+    "label": "FAIL",
+    "text": "nightly-2026.10.29: FAIL (bootstrap scope, synthetic evidence)"
+  },
+  "host": {
+    "machine_id": "claw_vm_1"
+  },
+  "machine": {
+    "failed_units": {
+      "reason": null,
+      "value": 0
+    },
+    "free_bytes": {
+      "reason": null,
+      "value": 214748364800
+    },
+    "lock_held": {
+      "reason": null,
+      "value": false
+    }
+  },
+  "performance": {
+    "coverage": {
+      "expected_records": 124,
+      "matched_records": 124,
+      "missing_records": 0
+    },
+    "exit_code": 3,
+    "headline": "fail (exit 3; bootstrap scope, synthetic evidence); does not satisfy the required check: the aggregate result is not pass; only full scope can satisfy it; this run's scope is bootstrap; only an activated policy can; this plan's authority mode is control; only measured evidence can; this run's evidence is synthetic",
+    "instances": [
+      {
+        "baseline_median": {
+          "exact": "20",
+          "shown": "20.0"
+        },
+        "candidate_median": {
+          "exact": "20",
+          "shown": "20.0"
+        },
+        "classification": "within_tolerance",
+        "criticality": "advisory",
+        "instance_id": "synthetic_advisory",
+        "interval": {
+          "lower": {
+            "exact": "0",
+            "shown": "0"
+          },
+          "upper": {
+            "exact": "0",
+            "shown": "0"
+          }
+        },
+        "moved": false,
+        "outcome": "pass",
+        "relative_change": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "status": "within_tolerance",
+        "unit": "ms"
+      },
+      {
+        "baseline_median": {
+          "exact": "20",
+          "shown": "20.0"
+        },
+        "candidate_median": {
+          "exact": "30",
+          "shown": "30.0"
+        },
+        "classification": "regression",
+        "criticality": "critical",
+        "instance_id": "synthetic_fast",
+        "interval": {
+          "lower": {
+            "exact": "10",
+            "shown": "10.0"
+          },
+          "upper": {
+            "exact": "10",
+            "shown": "10.0"
+          }
+        },
+        "moved": true,
+        "outcome": "fail",
+        "relative_change": {
+          "exact": "50",
+          "shown": "49.9"
+        },
+        "status": "regression",
+        "unit": "ms"
+      },
+      {
+        "baseline_median": {
+          "exact": "20",
+          "shown": "20.0"
+        },
+        "candidate_median": {
+          "exact": "20",
+          "shown": "20.0"
+        },
+        "classification": "within_tolerance",
+        "criticality": "critical",
+        "instance_id": "synthetic_process__size_1",
+        "interval": {
+          "lower": {
+            "exact": "0",
+            "shown": "0"
+          },
+          "upper": {
+            "exact": "0",
+            "shown": "0"
+          }
+        },
+        "moved": false,
+        "outcome": "pass",
+        "relative_change": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "status": "within_tolerance",
+        "unit": "ms"
+      }
+    ],
+    "measured_candidate_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
+    "measured_is_shipped": true,
+    "measured_reason": null,
+    "plan_digest": "sha256:3e4fff5570255eb63e27c3524421e1f2af102f0da4a57495f037c52c77db523c",
+    "provenance": "synthetic",
+    "reasons": [
+      {
+        "code": "regression",
+        "detail": "synthetic_fast: regression",
+        "instance_id": "synthetic_fast"
+      }
+    ],
+    "request_id": "exp_58b7c8fad903747774c31d61de2f49585fb5e7da31fc6f55",
+    "result": "fail",
+    "run_id": "schema_fixture_run",
+    "satisfies_required_check": false,
+    "scope": "bootstrap",
+    "sentinel": {
+      "flags": [],
+      "healthy": 2,
+      "shards": 2
+    },
+    "shipped_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
+    "unchanged": 2,
+    "verdict_sha256": "sha256:6e22a02c3147b140bb412f97fc3b2620a92843e19bfbc83292274f800937f72d"
+  },
+  "repository": "owner/af",
+  "schema": "af.nightly-daily/1",
+  "since_last_night": {
+    "merged_pull_requests": [
+      {
+        "number": 41,
+        "title": "Measure the nightly"
+      }
+    ],
+    "previous_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "previous_tag": "nightly-2026.10.28",
+    "reasons": [],
+    "verdict_changes": [
+      {
+        "current": "regression",
+        "instance_id": "synthetic_fast",
+        "previous": "within_tolerance"
+      }
+    ]
+  },
+  "tag": "nightly-2026.10.29",
+  "telemetry": {
+    "figures": [
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-concurrent",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "20000/2001",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-concurrent",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-concurrent",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "20200/2021",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-concurrent",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-dense",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "20000/2001",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-dense",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-dense",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "20200/2021",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-dense",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "drain_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-dense drain",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "drain_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-dense drain",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-store",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "off",
+        "median_change_percent": {
+          "exact": "20000/2001",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-store",
+        "unit": "ms"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "0",
+          "shown": "0"
+        },
+        "metric": "peak_rss_bytes",
+        "state": "compared",
+        "subject": "telemetry-bench-store",
+        "unit": "bytes"
+      },
+      {
+        "experiment": "overhead",
+        "level": "spans",
+        "median_change_percent": {
+          "exact": "20200/2021",
+          "shown": "10.0"
+        },
+        "metric": "wall_ms",
+        "state": "compared",
+        "subject": "telemetry-bench-store",
+        "unit": "ms"
+      }
+    ],
+    "request_id": "exp_68827c0ab6874a4a5cc933555016ed1d18b320f390e1ce8a",
+    "result_id": "local_68827c0ab6874a4a5cc933555016ed1d18b320f390e1ce8a"
+  },
+  "trend": {
+    "instances": [
+      {
+        "instance_id": "synthetic_fast",
+        "points": [
+          {
+            "baseline_tag": "v0.12.0",
+            "candidate_median": {
+              "exact": "19",
+              "shown": "19.0"
+            },
+            "release": null,
+            "tag": "nightly-2026.10.28"
+          },
+          {
+            "baseline_tag": "v0.13.0",
+            "candidate_median": {
+              "exact": "30",
+              "shown": "30.0"
+            },
+            "release": "v0.13.0",
+            "tag": "nightly-2026.10.29"
+          }
+        ],
+        "unit": "ms"
+      },
+      {
+        "instance_id": "synthetic_process__size_1",
+        "points": [
+          {
+            "baseline_tag": "v0.12.0",
+            "candidate_median": {
+              "exact": "20",
+              "shown": "20.0"
+            },
+            "release": null,
+            "tag": "nightly-2026.10.28"
+          },
+          {
+            "baseline_tag": "v0.13.0",
+            "candidate_median": {
+              "exact": "20",
+              "shown": "20.0"
+            },
+            "release": "v0.13.0",
+            "tag": "nightly-2026.10.29"
+          }
+        ],
+        "unit": "ms"
+      }
+    ],
+    "nights": 14,
+    "refused": []
+  }
+}

@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-turns:1",
+  "title": "af/telemetry-turns@1",
+  "description": "`af telemetry turns RUN --json` (design §7.3, §10; ADR-0153): one row per model turn the run's harness streams showed, in start order (`--attempt ID`: one Attempt's, named in `attempt`). A Claude `assistant` message or a Codex turn is an `af.turn`, timed from the arrival of the line that began it to the arrival of the line that closed it, with its ordinal in its stream, its status (`ok`, `error`, `unset`, or `open` with no recorded end) and outcome, the harness's own per-turn usage as exact decimal strings (the `turn` series: never added into an Attempt's or a run's totals, which are the kernel's; a counter the harness did not report is absent), its stop reasons from a closed enumeration (`other` for any other), the bound model when the harness reported it as the model that answered, and the number and bytes of its text and thinking blocks and of its tool calls — never their words. Each row names the harness process it came from (`harness`: its `af.harness` span, segment, Attempt and node, its GenAI provider) and whether that process's stream can be analysed whole: `complete` when the observer dropped nothing (`dropped_chunks`), the tap saw no gap (`gaps`) and judged every frame, and it ended after Telemetry's release decision (`withheld` says whether that decision withheld the process's content); `incomplete` when one of those failed; `open` while the tap has not ended. Times are unix nanoseconds as decimal strings and microseconds; identifiers the harness supplied appear only as correlation ids (`corr`, the first 16 hex digits of SHA-256 over the segment id and the original). The run carries its history (`prefix:k` or `partial`, never complete) and the label of the executions the rows cover. Telemetry ids carry no authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "index",
+    "run",
+    "turns",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-turns@1"
+    },
+    "directory": {
+      "type": "string"
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_id",
+        "run_id",
+        "trace_id",
+        "history",
+        "missing_ordinals",
+        "retained"
+      ],
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "history": {
+          "type": "string",
+          "pattern": "^(prefix:(0|[1-9][0-9]*)|partial)$"
+        },
+        "missing_ordinals": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "retained": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "harness",
+          "span_id",
+          "ordinal",
+          "start_unix_ns",
+          "start_offset_us",
+          "status",
+          "finish_reasons",
+          "usage",
+          "text_blocks",
+          "text_bytes",
+          "thinking_blocks",
+          "thinking_bytes",
+          "tool_calls"
+        ],
+        "properties": {
+          "harness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "span_id",
+              "segment_id",
+              "analysis"
+            ],
+            "properties": {
+              "span_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "segment_id": {
+                "type": "string"
+              },
+              "analysis": {
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "open"
+                ]
+              },
+              "attempt_id": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "unknown"
+                ]
+              },
+              "dropped_chunks": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "gaps": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "withheld": {
+                "type": "boolean"
+              }
+            }
+          },
+          "span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "start_unix_ns": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "start_offset_us": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "unset",
+              "open"
+            ]
+          },
+          "finish_reasons": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "end_turn",
+                "max_tokens",
+                "stop_sequence",
+                "tool_use",
+                "pause_turn",
+                "refusal",
+                "model_context_window_exceeded",
+                "other"
+              ]
+            }
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [],
+            "properties": {
+              "input_tokens": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "output_tokens": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "cache_read_tokens": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "cache_write_tokens": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "reasoning_tokens": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              },
+              "observation": {
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "unknown"
+                ]
+              }
+            }
+          },
+          "text_blocks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "thinking_blocks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "thinking_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tool_calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "duration_us": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "incomplete"
+            ]
+          },
+          "corr": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "attempt": {
+      "type": "string"
+    }
+  }
+}

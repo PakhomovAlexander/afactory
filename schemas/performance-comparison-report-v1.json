@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-comparison-report:1",
+  "title": "af.perf-comparison-report/1",
+  "description": "Independent performance executor: comparison-report (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-comparison-report/1"
+    },
+    "comparison_id": {
+      "$ref": "#/$defs/id"
+    },
+    "comparison_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "journal_id": {
+      "$ref": "#/$defs/id"
+    },
+    "machine_id": {
+      "$ref": "#/$defs/id"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "control_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "baseline_sha",
+        "candidate_sha",
+        "control_sha",
+        "authority_sha"
+      ]
+    },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "main",
+            "pr",
+            "release",
+            "calibration"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind",
+        "key"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete",
+        "running"
+      ]
+    },
+    "verification": {
+      "type": "string",
+      "enum": [
+        "verified",
+        "refused",
+        "not_checked",
+        "not_terminal"
+      ]
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eligible": {
+          "const": false
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "required": [
+        "eligible",
+        "detail"
+      ]
+    },
+    "performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "core_verdict": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "pass",
+                "fail",
+                "incomplete"
+              ]
+            }
+          ]
+        },
+        "regressions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        },
+        "telemetry_verdict": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 32
+            }
+          ]
+        }
+      },
+      "required": [
+        "core_verdict",
+        "regressions",
+        "telemetry_verdict"
+      ]
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lane": {
+            "type": "string",
+            "enum": [
+              "core",
+              "telemetry",
+              "trace",
+              "cpu_profile"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "queued",
+              "running",
+              "complete",
+              "failed",
+              "unsupported",
+              "not_applicable"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "minItems": 0,
+            "maxItems": 16
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "required": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483648
+                  },
+                  "observed": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483648
+                  },
+                  "failed": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483648
+                  },
+                  "missing": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483648
+                  }
+                },
+                "required": [
+                  "required",
+                  "observed",
+                  "failed",
+                  "missing"
+                ]
+              }
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/relative_path"
+            },
+            "minItems": 0,
+            "maxItems": 64
+          }
+        },
+        "required": [
+          "lane",
+          "state",
+          "members",
+          "coverage",
+          "detail",
+          "links"
+        ]
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "$ref": "#/$defs/id"
+          },
+          "lane": {
+            "type": "string",
+            "enum": [
+              "core",
+              "telemetry",
+              "trace",
+              "cpu_profile"
+            ]
+          },
+          "work": {
+            "type": "string",
+            "enum": [
+              "core",
+              "telemetry",
+              "profile"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "claimed",
+              "complete",
+              "failed",
+              "interrupted",
+              "uncertain",
+              "submitted",
+              "expired",
+              "not_submitted"
+            ]
+          },
+          "state_detail": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "verification": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "refused",
+              "not_checked",
+              "not_terminal"
+            ]
+          },
+          "result_sha256": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "measurement_status": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 128
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "lane",
+          "work",
+          "key",
+          "state",
+          "state_detail",
+          "verification",
+          "result_sha256",
+          "measurement_status"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "diagnostic_selection": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lane": {
+            "type": "string",
+            "enum": [
+              "trace",
+              "cpu_profile"
+            ]
+          },
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "lane",
+          "instance_id",
+          "selected",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relative_path"
+      },
+      "minItems": 0,
+      "maxItems": 256
+    }
+  },
+  "required": [
+    "schema",
+    "comparison_id",
+    "comparison_digest",
+    "journal_id",
+    "machine_id",
+    "sources",
+    "submission",
+    "status",
+    "verification",
+    "calibration",
+    "performance",
+    "lanes",
+    "members",
+    "diagnostic_selection",
+    "reasons",
+    "links"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}
