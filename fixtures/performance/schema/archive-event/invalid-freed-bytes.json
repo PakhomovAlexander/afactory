@@ -1,0 +1,15 @@
+{
+  "schema": "af.perf-archive-event/1",
+  "sequence": 4,
+  "unix_ms": 1807776000000,
+  "event": {
+    "kind": "gc",
+    "removed": [
+      {
+        "sha256": "sha256:3c531655dcf67fc6adebaa1ba8ad4539c39df3a79c0052a8d292d3d3efec528a",
+        "size": 1580
+      }
+    ],
+    "freed_bytes": 1581
+  }
+}

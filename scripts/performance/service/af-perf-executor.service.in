@@ -1,0 +1,31 @@
+# Independent compute, not an Actions runner. Instances: core and telemetry.
+# Install trusted control first; see docs/performance-local-executor.md.
+[Unit]
+Description=AF independent performance executor (%i, one bounded experiment)
+After=af-perf-source-refresh.service
+
+[Service]
+Type=oneshot
+User=af-perf-exec
+Group=af-perf-readers
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor --config /etc/af-perf/executor.toml service --work %i
+TimeoutStartSec=8h
+TimeoutStopSec=120
+KillMode=control-group
+OOMPolicy=stop
+TasksMax=2048
+MemoryMax=16G
+CPUAccounting=yes
+MemoryAccounting=yes
+LimitNOFILE=4096
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+# MUST share host /tmp and host mount propagation with manual commands and Docker.
+# PrivateTmp or filesystem hardening that creates a private mount namespace splits the
+# lock or hides loop-mounted scratch from the Docker daemon. Use account/file permissions.
+PrivateTmp=no
+PrivateMounts=no
+ProtectSystem=no
+ProtectHome=no

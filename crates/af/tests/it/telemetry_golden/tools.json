@@ -1,0 +1,67 @@
+{
+  "schema": "af/telemetry-tools@1",
+  "directory": "<root>",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "6666666666666666666666666666666666666666666666666666666666666666",
+    "run_id": "task:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "trace_id": "<trace>",
+    "kind": "task",
+    "history": "prefix:1",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–1"
+  },
+  "tools": [
+    {
+      "harness": {
+        "span_id": "009c22caf55d944d",
+        "segment_id": "1700000300000-4245-1a2b3c4d",
+        "attempt_id": "golden-attempt-1",
+        "node_id": "root.nodes.review",
+        "provider": "anthropic",
+        "analysis": "complete",
+        "dropped_chunks": 0,
+        "gaps": 0,
+        "withheld": false
+      },
+      "span_id": "de47d6e828405748",
+      "turn_span_id": "5101a4df77820418",
+      "name": "Read",
+      "corr": "07b4b5637f982720",
+      "start_unix_ns": "1700000300015000000",
+      "start_offset_us": 5000,
+      "duration_us": 5000,
+      "status": "ok",
+      "outcome": "succeeded",
+      "input_bytes": 26,
+      "output_bytes": 20
+    },
+    {
+      "harness": {
+        "span_id": "009c22caf55d944d",
+        "segment_id": "1700000300000-4245-1a2b3c4d",
+        "attempt_id": "golden-attempt-1",
+        "node_id": "root.nodes.review",
+        "provider": "anthropic",
+        "analysis": "complete",
+        "dropped_chunks": 0,
+        "gaps": 0,
+        "withheld": false
+      },
+      "span_id": "3dcd0948601dff29",
+      "turn_span_id": "5101a4df77820418",
+      "name": "Grep",
+      "corr": "4a0f933c57f83569",
+      "start_unix_ns": "1700000300015000000",
+      "start_offset_us": 5000,
+      "duration_us": 10000,
+      "status": "error",
+      "outcome": "failed",
+      "input_bytes": 18,
+      "output_bytes": 10
+    }
+  ],
+  "unreadable": []
+}

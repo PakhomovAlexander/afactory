@@ -1,0 +1,31 @@
+{
+  "schema": "af.perf-release-claim/1",
+  "kind": "release",
+  "key": "sha256:bf4c993289c47a43882feba58eb997cab661d4cc125e1dadff4f687ec47747c4",
+  "identity": {
+    "repository": "owner/af",
+    "upstream_run_id": 7001,
+    "tag": "v0.13.0",
+    "sha": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  "upstream": {
+    "workflow_id": 61,
+    "workflow_path": ".github/workflows/release.yml",
+    "run_attempt": 2,
+    "published_in_attempt": 1
+  },
+  "release": {
+    "id": 501,
+    "prerelease": false,
+    "published_at": "2026-10-20T10:00:00Z"
+  },
+  "claimant": {
+    "repository": "owner/af",
+    "workflow_path": ".github/workflows/performance-release.yml",
+    "actions_run_id": 9100,
+    "actions_run_attempt": 1,
+    "lab_run_prefix": "gh9100_a1_"
+  },
+  "remeasure_of": null,
+  "claimed_unix_ms": 1792490400000
+}

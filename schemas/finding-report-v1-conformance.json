@@ -1,0 +1,108 @@
+{
+  "contract": "review.kernel/FindingReport@1",
+  "description": "Semantic cases shared by the JSON Schema and every permanent reader.",
+  "valid": [
+    {
+      "name": "u32 line boundary",
+      "payload": {
+        "title": "t",
+        "severity": "minor",
+        "locations": [{ "path": "src/a.rs", "line": 4294967295, "end_line": 4294967295 }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 1
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "whitespace-only title",
+      "payload": {
+        "title": " ", "severity": "minor", "locations": [],
+        "body": "body", "fix": "fix", "confidence": 0
+      }
+    },
+    {
+      "name": "whitespace-only body",
+      "payload": {
+        "title": "title", "severity": "minor", "locations": [],
+        "body": "\t", "fix": "fix", "confidence": 0
+      }
+    },
+    {
+      "name": "whitespace-only fix",
+      "payload": {
+        "title": "title", "severity": "minor", "locations": [],
+        "body": "body", "fix": "\n", "confidence": 0
+      }
+    },
+    {
+      "name": "absolute location",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "/src/a.rs" }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "whitespace-padded location",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": " src/a.rs " }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "line exceeds u32",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "src/a.rs", "line": 4294967296 }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "dot component",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "./src/a.rs" }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "empty occurrence key",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5,
+        "occurrence_key": ""
+      }
+    },
+    {
+      "name": "unversioned rule",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5,
+        "rule_id": "review.rules/path-check"
+      }
+    }
+  ]
+}

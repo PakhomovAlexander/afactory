@@ -1,0 +1,49 @@
+version = 1
+
+[af]
+version = "0.15.1-rc.1"
+
+[af.digests]
+aarch64-apple-darwin = "sha256:50b3f9e741aebaf475523566388a762fabb6af4e96ca4c39c3dcb9da5801275b"
+aarch64-unknown-linux-musl = "sha256:fdbceea0c9debad5f05c6655cd773aa8d8c8afb1862029c10da499d64526ff16"
+x86_64-unknown-linux-musl = "sha256:bb4bf79fbcb0861014f3ae0a4f3c1992a8abde335ed59efa736419d8ab93327e"
+
+[workers.bugs]
+version = "1.0.1"
+digest = "sha256:b806c91bfcc2498948e4e978255afe8e4c9feac87d57184df87963f5948506bd"
+
+[workers.bugs-xhigh]
+version = "1.0.1"
+digest = "sha256:5f9e19c10c74a5e654db6e10464b82c883f13c2671ce2ef65d00fa779efa7fe8"
+
+[workers.correctness]
+version = "1.2.1"
+digest = "sha256:efdd2101734696114cc9f7b78a5b9d1a7568743bec126a3c571c40e29f5c0c48"
+
+[workers.correctness-sol]
+version = "1.0.1"
+digest = "sha256:67f14e56a7f043894dd940af89cc42316797693f6d15da29bdda4c77c4e84e97"
+
+[workers.design-sol]
+version = "1.0.1"
+digest = "sha256:7faec5b6e3dc462db3e7b8491900996f826cc5ad3f769097ad891232b53885f4"
+
+[workers.performance]
+version = "1.1.1"
+digest = "sha256:2f6d74e9dc0af9a0a2f5d286e141c968eff899c1e0d3389d56a1e6c574c34f7b"
+
+[pipelines.design-review]
+version = "1.0.0"
+digest = "sha256:764fe4f6fb9aa464e694cf26d90fc342f1083dc9810ea42eb81f506d07df00cb"
+
+[pipelines.p1-review]
+version = "1.0.0"
+digest = "sha256:d5edb86cc98f409efcedb4fb327a9f2420dcd0d2c49bbc1872422d9014ac5405"
+
+[pipelines.review]
+version = "1.0.0"
+digest = "sha256:51e4c701e9cb23490efbebdeba353a99151949da4d7ad4ec36b657823f2517e4"
+
+[pipelines.review-pr2-whole-tree]
+version = "1.0.0"
+digest = "sha256:24b8daf40ae1a679657338c2306f3d01b07771fe4b43a1eb42c57f1b61be42fd"

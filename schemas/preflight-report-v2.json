@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:preflight-report:2",
+  "title": "Advisory preflight af-preflight-report/2",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "advisory_only",
+        "status",
+        "task_id",
+        "plan_id",
+        "revision_id",
+        "observed_at_unix_ms",
+        "lineage",
+        "budget",
+        "acceptance",
+        "criteria",
+        "issues",
+        "limitations"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af-preflight-report/2"
+        },
+        "advisory_only": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "needs_review",
+            "no_structural_conflicts"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "plan_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "revision_id": {
+          "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+        },
+        "observed_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lineage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expected_original_source_snapshot_id",
+            "source_snapshot_id",
+            "retained_candidate_snapshot_id",
+            "intended_diff",
+            "candidate_replay"
+          ],
+          "properties": {
+            "expected_original_source_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "source_snapshot_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "retained_candidate_snapshot_id": {
+              "anyOf": [
+                {
+                  "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "intended_diff": {
+              "enum": [
+                "not_verified",
+                "empty",
+                "nonempty_export"
+              ]
+            },
+            "candidate_replay": {
+              "const": "not_verified"
+            }
+          }
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "token_cap",
+            "charged_tokens",
+            "headroom_before_live_reservations",
+            "attempt_cap",
+            "begun_attempts",
+            "configured_verification_reserve",
+            "deadline_unix_ms",
+            "remaining_wall_ms",
+            "declared_allowances",
+            "owned_child_templates",
+            "token_scopes",
+            "experimental_slots"
+          ],
+          "properties": {
+            "token_cap": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "charged_tokens": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "headroom_before_live_reservations": {
+              "type": "string",
+              "pattern": "^(0|-?[1-9][0-9]*)$"
+            },
+            "attempt_cap": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "begun_attempts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "configured_verification_reserve": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tokens",
+                "attempts",
+                "wall_ms"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "attempts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "wall_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "deadline_unix_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "remaining_wall_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "declared_allowances": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "category",
+                  "operation",
+                  "tokens_per_attempt",
+                  "max_attempts",
+                  "wall_ms_per_attempt",
+                  "verification_attempts"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tokens_per_attempt": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "max_attempts": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "wall_ms_per_attempt": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "verification_attempts": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "owned_child_templates": {
+              "$ref": "urn:af:schema:compiled-task:6#/properties/owned_children"
+            },
+            "token_scopes": {
+              "$ref": "urn:af:schema:compiled-task:6#/properties/token_scopes"
+            },
+            "experimental_slots": {
+              "$ref": "urn:af:schema:compiled-task:6#/properties/experimental_slots"
+            }
+          }
+        },
+        "acceptance": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "requirement",
+              "obligation",
+              "producer",
+              "consumer",
+              "structural_status"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "requirement": {
+                "type": "string"
+              },
+              "obligation": {
+                "type": "string"
+              },
+              "producer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "port"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "string"
+                  }
+                }
+              },
+              "consumer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "port"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "string"
+                  }
+                }
+              },
+              "check_name": {
+                "type": "string"
+              },
+              "structural_status": {
+                "enum": [
+                  "connected",
+                  "needs_review"
+                ]
+              }
+            }
+          }
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status",
+              "code",
+              "detail"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "conflict",
+                  "unknown"
+                ]
+              },
+              "code": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "input_file_hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inspection",
+            "checklist"
+          ],
+          "properties": {
+            "inspection": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "checklist": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            },
+            "diff": {
+              "$ref": "urn:af:schema:task-contracts:4#/$defs/digest"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "advisory_only",
+        "status",
+        "error"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af-preflight-report/2"
+        },
+        "advisory_only": {
+          "const": true
+        },
+        "status": {
+          "const": "invalid_input"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "downloads_linked_and_matching": 7,
+  "downloads_listed": 7,
+  "failures": [],
+  "links_checked": 36,
+  "manifest_entries_checked": 23,
+  "manifest_failures": [],
+  "pages": [
+    "history.html",
+    "report.html",
+    "runs/p8_local_aa/report.html",
+    "runs/p8_local_aa_rerun/report.html"
+  ],
+  "previously_omitted": [
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/builds.json",
+      "present": true,
+      "sha256": "sha256:bbe5343939eccfac5c582144fc6c453228aed6b12fbc5a1d61ed75a3afaf001c"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/manifest.json",
+      "present": true,
+      "sha256": "sha256:0314279f9bdab34c1d20d6d3f380ee259accfc5d397b7224461fac24106ebad6"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/run.json",
+      "present": true,
+      "sha256": "sha256:282023950b432a853f0f10748f9b9798bfb795559b9a3f38779b6939f068aac0"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/shards/0/manifest.json",
+      "present": true,
+      "sha256": "sha256:8980742e3a9ae87c48e3e994f7e6506d0159879f65fe04ca3212196cc3f95215"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/shards/0/samples.jsonl",
+      "present": true,
+      "sha256": "sha256:cc0bd52f126092c0da8edb9295eb999b16a66fadc6ac6b97cca6db593f07797a"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/evidence/shards/0/shard.json",
+      "present": true,
+      "sha256": "sha256:00999e4b39803d9edc5f5196765b1dd8e0abd1cd35dbcaaf9014b29cbd9649a7"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/report.html",
+      "present": true,
+      "sha256": "sha256:6437ca85fad377a99309e606a620949fd2a685f22bd499ac004488027cb9e694"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/report.json",
+      "present": true,
+      "sha256": "sha256:7cb9161921b0fae3d67d9a4fdca050b3bb5424b4ac406afc78ed003f053daaaa"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/summary.md",
+      "present": true,
+      "sha256": "sha256:2a6f168c5e1e2fc830b97023009638e4505912c8f2624126ab311f1b36ff3fc5"
+    },
+    {
+      "matches": true,
+      "path": "history/runs/p8_local_aa/verdict.json",
+      "present": true,
+      "sha256": "sha256:ec1787ecceac6219de9e91e45fa326dd32ad506a23accc1dd32c838e653ade40"
+    }
+  ],
+  "scope": "the exported evidence directory, after export"
+}

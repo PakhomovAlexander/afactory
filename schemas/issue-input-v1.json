@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:issue-input:1",
+  "properties": {
+    "schema": {
+      "const": "af.issue-input/1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f\\u007f]+$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 131072,
+      "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f\\u007f]+$"
+    },
+    "acceptance": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        "not": {
+          "enum": [
+            "summary",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536,
+        "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f\\u007f]+$"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "key",
+    "revision",
+    "summary",
+    "description"
+  ]
+}

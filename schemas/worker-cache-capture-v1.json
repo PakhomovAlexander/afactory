@@ -1,0 +1,72 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "attempt_id",
+    "name",
+    "artifact_id",
+    "omission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-cache-capture/1"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]{26}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "artifact_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "omission": {
+      "enum": [
+        "command_failed",
+        "cleanup_unconfirmed",
+        "cancelled",
+        "deadline",
+        "capture_refused",
+        null
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:worker-cache-capture:1",
+  "oneOf": [
+    {
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "omission": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "properties": {
+        "artifact_id": {
+          "type": "null"
+        },
+        "omission": {
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

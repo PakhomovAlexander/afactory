@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:subject:1",
+  "title": "Subject@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "head_snapshot_id"],
+  "properties": {
+    "kind": { "enum": ["diff", "whole-tree"] },
+    "head_snapshot_id": { "$ref": "#/$defs/digest" },
+    "base_snapshot_id": { "$ref": "#/$defs/digest" },
+    "change_set_id": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "diff" } } },
+      "then": { "required": ["base_snapshot_id", "change_set_id"] },
+      "else": { "not": { "anyOf": [{ "required": ["base_snapshot_id"] }, { "required": ["change_set_id"] }] } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-schedule:2",
+  "title": "af.perf-schedule/2",
+  "description": "One Actions event's continuous schedule (ADR-0177, ADR-0180): the event resolved once to full SHAs with its pull request metadata, whether it is trusted and which executor it may use, advisory enforcement, each comparison planned from the trusted control (or why it is unavailable or refused), the shard matrix and concurrency every later job reads, and the confirmed release claim a release handoff measures.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-schedule/2"
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "maxLength": 201,
+          "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "repository",
+        "run_id",
+        "run_attempt",
+        "event",
+        "ref",
+        "sha"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "skipped"
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/id"
+        }
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "pull_request": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483648
+            },
+            "base_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "base_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "head_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "head_repository": {
+              "type": "string",
+              "maxLength": 201
+            },
+            "fork": {
+              "type": "boolean"
+            },
+            "merge_sha": {
+              "$ref": "#/$defs/git_sha"
+            }
+          },
+          "required": [
+            "number",
+            "base_ref",
+            "base_sha",
+            "head_sha",
+            "head_repository",
+            "fork",
+            "merge_sha"
+          ]
+        }
+      ]
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trusted": {
+          "type": "boolean"
+        },
+        "executor": {
+          "type": "string",
+          "enum": [
+            "ephemeral_hosted",
+            "dedicated"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "trusted",
+        "executor",
+        "detail"
+      ]
+    },
+    "enforcement": {
+      "const": "advisory"
+    },
+    "policy_changed": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "control_bootstrap",
+              "proposed_bootstrap_base",
+              "proposed_bootstrap_merge"
+            ]
+          },
+          "run_id": {
+            "$ref": "#/$defs/id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "unavailable",
+              "refused"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "request": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "trigger": {
+                "type": "string",
+                "enum": [
+                  "pr",
+                  "main_push",
+                  "nightly",
+                  "release",
+                  "manual"
+                ]
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "nightly",
+                  "release"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "partial_scope",
+                  "bootstrap",
+                  "calibration",
+                  "diagnostic"
+                ]
+              },
+              "base": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/git_sha"
+                  }
+                ]
+              },
+              "head": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "control": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/git_sha"
+                  }
+                ]
+              },
+              "authority": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/git_sha"
+                  }
+                ]
+              },
+              "cases": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "maxItems": 64,
+                "uniqueItems": true
+              },
+              "shards": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16
+                  }
+                ]
+              },
+              "pairs": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 12,
+                    "maximum": 200
+                  }
+                ]
+              },
+              "pr_number": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483648
+                  }
+                ]
+              },
+              "pr_base_sha": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/git_sha"
+                  }
+                ]
+              },
+              "pr_head_sha": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/git_sha"
+                  }
+                ]
+              },
+              "build_image": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 330,
+                    "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "trigger",
+              "tier",
+              "scope",
+              "base",
+              "head",
+              "control",
+              "authority",
+              "cases",
+              "shards",
+              "pairs",
+              "pr_number",
+              "pr_base_sha",
+              "pr_head_sha",
+              "build_image"
+            ]
+          },
+          "plan_digest": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "plan_sha256": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "required_check_eligible": {
+            "type": "boolean"
+          },
+          "harness_changed": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "shards": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16
+          },
+          "concurrent_jobs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "runner_label": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "run_id",
+          "status",
+          "reason",
+          "detail",
+          "request",
+          "plan_digest",
+          "plan_sha256",
+          "required_check_eligible",
+          "harness_changed",
+          "shards",
+          "concurrent_jobs",
+          "runner_label"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4
+    },
+    "matrix": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "$ref": "#/$defs/id"
+          },
+          "shard": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          }
+        },
+        "required": [
+          "run_id",
+          "shard"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 64
+    },
+    "concurrent_jobs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8
+    },
+    "retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 90
+    },
+    "release": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "release",
+                "remeasure"
+              ]
+            },
+            "key": {
+              "$ref": "#/$defs/digest"
+            },
+            "claim_artifact": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^af-release-(claim-[0-9a-f]{64}|remeasure-[0-9a-f]{64}-[1-9][0-9]{0,15})$"
+            },
+            "upstream_run_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            },
+            "tag": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-rc\\.(0|[1-9][0-9]{0,8}))?$"
+            },
+            "sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "remeasure_of": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "claim_artifact",
+            "upstream_run_id",
+            "tag",
+            "sha",
+            "remeasure_of"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "actions",
+    "status",
+    "reason",
+    "detail",
+    "pull_request",
+    "trust",
+    "enforcement",
+    "policy_changed",
+    "comparisons",
+    "matrix",
+    "concurrent_jobs",
+    "retention_days",
+    "release"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

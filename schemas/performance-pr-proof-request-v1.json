@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-pr-proof-request:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "verification",
+    "report",
+    "evidence",
+    "source_commit",
+    "source_content_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/performance-pr-proof-request@1"
+    },
+    "candidate": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+    },
+    "verification": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+    },
+    "report": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+    },
+    "evidence": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/Observation"
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_content_digest": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    }
+  },
+  "title": "performance-pr-proof-request v1"
+}
