@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:optimization-diagnostic:1","type":"object","additionalProperties":false,
+  "required":["schema","profile_id","selected_recipe_id","avoidable_cost","evidence","expected_comparable_workload"],
+  "properties":{"schema":{"const":"af.optimization-diagnostic/1"},"profile_id":{"$ref":"#/$defs/id"},"selected_recipe_id":{"$ref":"#/$defs/name"},"avoidable_cost":{"type":"string","minLength":1,"maxLength":16384},"evidence":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":4096}},"expected_comparable_workload":{"$ref":"#/$defs/u64"}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"name":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},"u64":{"type":"string","pattern":"^(0|[1-9][0-9]*)$"}}
+}

@@ -1,0 +1,432 @@
+{
+  "harness_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "instance": "canonical_validate_small__package_small_envelope",
+  "measure": "perf_canonical_validate_small",
+  "objective": "perf_canonical_validate_small_elapsed",
+  "schema": "af.perf-kernel-receipts/3",
+  "slowdown_ms": 1500,
+  "tasks": [
+    {
+      "exit_code": 0,
+      "outputs": {
+        "baseline": {
+          "artifact_id": "sha256:a6d617c083b6afef25fcbc7491ec37102f7de11dda6f97eb81f631ac10b5c05e",
+          "envelope": {
+            "artifact_id": "sha256:a6d617c083b6afef25fcbc7491ec37102f7de11dda6f97eb81f631ac10b5c05e",
+            "content_id": "sha256:f76d013511f69d455bddd664a1723048db4a29310810a6654dea0c738742cb21",
+            "input_artifacts": [
+              "sha256:38f32245092ce0780e990e2fc3fcfe30901e633fcf67845ea7352fc06300f4fb"
+            ],
+            "payload": {
+              "note": "a constructed schema fixture, not evidence",
+              "outcome": "passed",
+              "runs": [
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1510.51"
+                  },
+                  "started_unix_ms": 1792548869910,
+                  "stderr_id": "sha256:1e89f39ef91aa11303da505cd324241ed505281731d863733777fa322a442d1a",
+                  "stdout_id": "sha256:2b1aed3b0ee63a61f087b117c7a4b71fbdf214649752824a08da14840fa8142c"
+                },
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1510.52"
+                  },
+                  "started_unix_ms": 1792548869911,
+                  "stderr_id": "sha256:c8898659de1bc15645cd1d93b2fc899f82850bb8dad52255056ffae000bc3c45",
+                  "stdout_id": "sha256:351a77dbc0598122702ac1330c486376d3fa017070b190828f63b8ce89e6241b"
+                }
+              ]
+            },
+            "producer": {
+              "attempt_id": "0e2c5e0b06c54dd5344c5bd03d",
+              "kind": "attempt",
+              "node_id": "baseline",
+              "run_id": "task-improve"
+            },
+            "subject_snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112",
+            "type": "af/Measurement@1"
+          },
+          "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112",
+          "streams": [
+            {
+              "repetition": 1,
+              "stderr": {
+                "bytes": 77,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (improve baseline, repetition 1)\n",
+                "id": "sha256:1e89f39ef91aa11303da505cd324241ed505281731d863733777fa322a442d1a",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:c45eb61ed9c6ab1a6b21d8677ce5d5cdc2c3744d7ac5f77c087eba2dd7347e1c",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 87,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1510.51\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:2b1aed3b0ee63a61f087b117c7a4b71fbdf214649752824a08da14840fa8142c",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:02b50de43991fc9ae25e78ec730bec4d252d0976b2d7fb9b4dfda49de89363e6",
+                "tail": ""
+              }
+            },
+            {
+              "repetition": 2,
+              "stderr": {
+                "bytes": 77,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (improve baseline, repetition 2)\n",
+                "id": "sha256:c8898659de1bc15645cd1d93b2fc899f82850bb8dad52255056ffae000bc3c45",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:a23b96bc86f38062ad28e16348306dc01a4f7bee8ccb9dee199f9e474bcfc655",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 87,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1510.52\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:351a77dbc0598122702ac1330c486376d3fa017070b190828f63b8ce89e6241b",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:3678c89a25e8634f5af6bc2dfaf05ba782663901b5b4ae270960d6e97f9d19f4",
+                "tail": ""
+              }
+            }
+          ],
+          "type": "af/Measurement@1"
+        },
+        "candidate": {
+          "artifact_id": "sha256:9585bf0d43cceb5987c184398bd605692c9eb4f4c08488152dd2a708b4a5e378",
+          "envelope": {
+            "artifact_id": "sha256:9585bf0d43cceb5987c184398bd605692c9eb4f4c08488152dd2a708b4a5e378",
+            "content_id": "sha256:98cc0751e3e0e1228569023d0377aa934f8d2190928c2799125b0ff94333138d",
+            "input_artifacts": [
+              "sha256:38f32245092ce0780e990e2fc3fcfe30901e633fcf67845ea7352fc06300f4fb"
+            ],
+            "payload": {
+              "note": "a constructed schema fixture, not evidence",
+              "outcome": "passed",
+              "runs": [
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1.51"
+                  },
+                  "started_unix_ms": 1792548869910,
+                  "stderr_id": "sha256:c32f3582fc183b7fcc0678de90a4e543e7d2fb622f6cb4418cb11a0177f1dbb8",
+                  "stdout_id": "sha256:4ca534844eff12b610ea9877fe02eced8d4f2ceb5b0f5b7853ce716da15b6a41"
+                },
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1.52"
+                  },
+                  "started_unix_ms": 1792548869911,
+                  "stderr_id": "sha256:f4255fbd9e47622977093b08a5dbee67882ffdeb860dcc2450a401aadd2387bf",
+                  "stdout_id": "sha256:8fef88399a83abac633d854e7351817b6a7bc6d5cd0baecb579ad2b12af7578d"
+                }
+              ]
+            },
+            "producer": {
+              "attempt_id": "08bb9396f420faef742a6673b8",
+              "kind": "attempt",
+              "node_id": "candidate",
+              "run_id": "task-improve"
+            },
+            "subject_snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1",
+            "type": "af/Measurement@1"
+          },
+          "snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1",
+          "streams": [
+            {
+              "repetition": 1,
+              "stderr": {
+                "bytes": 78,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (improve candidate, repetition 1)\n",
+                "id": "sha256:c32f3582fc183b7fcc0678de90a4e543e7d2fb622f6cb4418cb11a0177f1dbb8",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:743c7fc45e21a00dab7e064f6f0720820769146e0627b7cfcd3419ddc9fe29eb",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 84,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1.51\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:4ca534844eff12b610ea9877fe02eced8d4f2ceb5b0f5b7853ce716da15b6a41",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:327ff3e33f4144087d50d7130ee8adfd747c820a37420bd1b089ddd3299d744c",
+                "tail": ""
+              }
+            },
+            {
+              "repetition": 2,
+              "stderr": {
+                "bytes": 78,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (improve candidate, repetition 2)\n",
+                "id": "sha256:f4255fbd9e47622977093b08a5dbee67882ffdeb860dcc2450a401aadd2387bf",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:25ab385477edf061f69efbc697151ebcb0e06acf05d01cc7ca97185d87e36886",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 84,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1.52\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:8fef88399a83abac633d854e7351817b6a7bc6d5cd0baecb579ad2b12af7578d",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:00b0f5b46b5c0f1faa966c7e8d1521b2e8401e3d3d9e4ceaf5bfa4d1af65dd84",
+                "tail": ""
+              }
+            }
+          ],
+          "type": "af/Measurement@1"
+        },
+        "comparison": {
+          "artifact_id": "sha256:3e98e7765a646e3eb43cd059df571b8ff2cedbe11ae50c8437436b97f317764c",
+          "envelope": {
+            "artifact_id": "sha256:3e98e7765a646e3eb43cd059df571b8ff2cedbe11ae50c8437436b97f317764c",
+            "content_id": "sha256:b4f9d3a61ff11908daf8f75ef791e84290301c5447ddd984bbf481a1827fed7b",
+            "input_artifacts": [
+              "sha256:a6d617c083b6afef25fcbc7491ec37102f7de11dda6f97eb81f631ac10b5c05e",
+              "sha256:9585bf0d43cceb5987c184398bd605692c9eb4f4c08488152dd2a708b4a5e378"
+            ],
+            "payload": {
+              "note": "a constructed schema fixture, not evidence",
+              "outcome": "improved"
+            },
+            "producer": {
+              "kind": "kernel_operation",
+              "node_id": "compare",
+              "operation_id": "measurement-comparison@1",
+              "run_id": "task-improve"
+            },
+            "subject_snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1",
+            "type": "af/MeasurementComparison@1"
+          },
+          "snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1",
+          "streams": [],
+          "type": "af/MeasurementComparison@1"
+        }
+      },
+      "result": {
+        "acceptance": "satisfied",
+        "domain_conclusion": "verified",
+        "evidence": [
+          "sha256:3e98e7765a646e3eb43cd059df571b8ff2cedbe11ae50c8437436b97f317764c",
+          "sha256:9585bf0d43cceb5987c184398bd605692c9eb4f4c08488152dd2a708b4a5e378",
+          "sha256:a6d617c083b6afef25fcbc7491ec37102f7de11dda6f97eb81f631ac10b5c05e",
+          "sha256:fa9f3237eeeb156d09d6ee32a6c45d3f67d597ed9c278afb641d0e0f6a98483b"
+        ],
+        "execution": "completed",
+        "missing_obligations": [],
+        "outputs": {
+          "baseline": {
+            "artifact_ids": [
+              "sha256:a6d617c083b6afef25fcbc7491ec37102f7de11dda6f97eb81f631ac10b5c05e"
+            ],
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+          },
+          "candidate": {
+            "artifact_ids": [
+              "sha256:9585bf0d43cceb5987c184398bd605692c9eb4f4c08488152dd2a708b4a5e378"
+            ],
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1"
+          },
+          "comparison": {
+            "artifact_ids": [
+              "sha256:3e98e7765a646e3eb43cd059df571b8ff2cedbe11ae50c8437436b97f317764c"
+            ],
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:5be1f6a4f4fd9d0b9f1b7a8bd42b2dbcf0f0b8c0a1f6b8f2c9e3d6a7b8c9d0e1"
+          },
+          "snapshot": {
+            "artifact_ids": [
+              "sha256:fa9f3237eeeb156d09d6ee32a6c45d3f67d597ed9c278afb641d0e0f6a98483b"
+            ],
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+          }
+        },
+        "task_revision_id": "sha256:233fb09355e12618e2dc99d57aa1171bc5225dd19b939f95267177b0b74fcda0"
+      },
+      "task_id": "improve"
+    },
+    {
+      "exit_code": 1,
+      "outputs": {
+        "baseline": {
+          "artifact_id": "sha256:08795fe53f1643e79246cc32a955f9a44a30af97750da299a1473885a2658a57",
+          "envelope": {
+            "artifact_id": "sha256:08795fe53f1643e79246cc32a955f9a44a30af97750da299a1473885a2658a57",
+            "content_id": "sha256:49d703b03c1b45d9bbae94ad357468bf84ab5bb67b9e193c913aaac650ecbfc9",
+            "input_artifacts": [
+              "sha256:fb2e5a3f7943d4a845d6161175dd024259789e18e3567709f96cc59eb3886b1f"
+            ],
+            "payload": {
+              "note": "a constructed schema fixture, not evidence",
+              "outcome": "passed",
+              "runs": [
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1510.51"
+                  },
+                  "started_unix_ms": 1792548869910,
+                  "stderr_id": "sha256:b9131c1961e4752952f29179471dc896fbfed7ad9c98fa222751a5b8a6ee9dc3",
+                  "stdout_id": "sha256:2b1aed3b0ee63a61f087b117c7a4b71fbdf214649752824a08da14840fa8142c"
+                },
+                {
+                  "cache": {
+                    "bytes": 0,
+                    "warm": true
+                  },
+                  "elapsed_ms": 1545,
+                  "exit_code": 0,
+                  "metrics": {
+                    "wall_ms": "1510.52"
+                  },
+                  "started_unix_ms": 1792548869911,
+                  "stderr_id": "sha256:fe52e70cb338d47ea725a5429ee646e8194e3174a762cb731a34fcd4e2034923",
+                  "stdout_id": "sha256:351a77dbc0598122702ac1330c486376d3fa017070b190828f63b8ce89e6241b"
+                }
+              ]
+            },
+            "producer": {
+              "attempt_id": "0f0b4143197099dc023a1ed014",
+              "kind": "attempt",
+              "node_id": "baseline",
+              "run_id": "task-tampered"
+            },
+            "subject_snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112",
+            "type": "af/Measurement@1"
+          },
+          "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112",
+          "streams": [
+            {
+              "repetition": 1,
+              "stderr": {
+                "bytes": 78,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (tampered baseline, repetition 1)\n",
+                "id": "sha256:b9131c1961e4752952f29179471dc896fbfed7ad9c98fa222751a5b8a6ee9dc3",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:9d3bfef11089484b84348b420da840c98fca912f1366665ad85f85d033589a71",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 87,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1510.51\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:2b1aed3b0ee63a61f087b117c7a4b71fbdf214649752824a08da14840fa8142c",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:02b50de43991fc9ae25e78ec730bec4d252d0976b2d7fb9b4dfda49de89363e6",
+                "tail": ""
+              }
+            },
+            {
+              "repetition": 2,
+              "stderr": {
+                "bytes": 78,
+                "encoding": "utf-8",
+                "head": "kernel-measure guard: protected files match (tampered baseline, repetition 2)\n",
+                "id": "sha256:fe52e70cb338d47ea725a5429ee646e8194e3174a762cb731a34fcd4e2034923",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:8e2a6d73db1a0ebdbf2e0a3582e5934068ff92a9f77f67b2f101713bf30b8baf",
+                "tail": ""
+              },
+              "stdout": {
+                "bytes": 87,
+                "encoding": "utf-8",
+                "head": "{\"metrics\":{\"wall_ms\":{\"unit\":\"ms\",\"value\":\"1510.52\"}},\"schema\":\"af.measure-report/1\"}\n",
+                "id": "sha256:351a77dbc0598122702ac1330c486376d3fa017070b190828f63b8ce89e6241b",
+                "omitted_bytes": 0,
+                "retained": "whole",
+                "sha256": "sha256:3678c89a25e8634f5af6bc2dfaf05ba782663901b5b4ae270960d6e97f9d19f4",
+                "tail": ""
+              }
+            }
+          ],
+          "type": "af/Measurement@1"
+        }
+      },
+      "result": {
+        "acceptance": "unsatisfied",
+        "domain_conclusion": "candidate_refused",
+        "evidence": [
+          "sha256:08795fe53f1643e79246cc32a955f9a44a30af97750da299a1473885a2658a57",
+          "sha256:6d445d98f714d8c164f0523911bbcaea1c94e4cdacc5b158eb230dd50f60cf22"
+        ],
+        "execution": "exhausted",
+        "missing_obligations": [
+          "verified"
+        ],
+        "outputs": {
+          "baseline": {
+            "artifact_ids": [
+              "sha256:08795fe53f1643e79246cc32a955f9a44a30af97750da299a1473885a2658a57"
+            ],
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+          },
+          "snapshot": {
+            "artifact_ids": [
+              "sha256:6d445d98f714d8c164f0523911bbcaea1c94e4cdacc5b158eb230dd50f60cf22"
+            ],
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "snapshot_id": "sha256:16a0eeb0791b6c92451fd284dd9f599e0a7dbe7f6ebea6e2d2d06c7f74aec112"
+          }
+        },
+        "task_revision_id": "sha256:dc6a4d0267e17ae211777bd4ae98cc0ce0d7024784adad7253cfff1838ba25ef"
+      },
+      "task_id": "tampered"
+    }
+  ]
+}

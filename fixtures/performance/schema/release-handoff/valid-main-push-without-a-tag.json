@@ -1,0 +1,29 @@
+{
+  "schema": "af.perf-release-handoff/1",
+  "stage": "handoff",
+  "mode": "release",
+  "actions": {
+    "repository": "owner/af",
+    "run_id": 9200,
+    "run_attempt": 1,
+    "event": "workflow_run",
+    "sha": "dddddddddddddddddddddddddddddddddddddddd"
+  },
+  "upstream": null,
+  "publication": null,
+  "release": null,
+  "identity": null,
+  "key": null,
+  "history": {
+    "state": "not_read",
+    "detail": "",
+    "claims": []
+  },
+  "status": "not_eligible",
+  "reason": "no_published_tag",
+  "detail": "the main push cccccccccccccccccccccccccccccccccccccccc has no release tag; only a published release is measured",
+  "claim_artifact": null,
+  "first_claim": null,
+  "results": [],
+  "enforcement": "advisory"
+}

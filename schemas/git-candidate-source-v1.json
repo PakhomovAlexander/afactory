@@ -1,0 +1,91 @@
+{
+  "$id": "urn:af:schema:git-candidate-source:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_snapshot": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "predecessor_snapshot": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "repository": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^/[^\\x00]+$",
+      "type": "string"
+    },
+    "repository_id": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "request_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af/git-candidate-source@1"
+    },
+    "source_commit": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "source_content_digest": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_snapshot": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "transport_commit": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "request_digest",
+    "repository_id",
+    "source_snapshot",
+    "candidate_snapshot",
+    "predecessor_snapshot",
+    "source_content_digest",
+    "source_commit",
+    "candidate_tree",
+    "transport_commit",
+    "repository"
+  ],
+  "title": "git-candidate-source v1",
+  "type": "object"
+}

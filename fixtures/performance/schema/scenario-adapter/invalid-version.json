@@ -1,0 +1,18 @@
+{
+  "schema": "refused-old-format/0",
+  "root": "/replace/spool",
+  "executor": "/replace/executor.toml",
+  "af": "/replace/af",
+  "af_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "task_repo": "/replace/repo",
+  "task_state": "/replace/tasks",
+  "destination": "native:claw",
+  "max_intents": 16,
+  "max_bytes": 17179869184,
+  "evidence_index": "/replace/index.json",
+  "evidence_index_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "evidence_root": "/replace/evidence",
+  "evidence_max_age_ms": 86400000,
+  "evidence_max_items": 32,
+  "evidence_max_bytes": 24576
+}

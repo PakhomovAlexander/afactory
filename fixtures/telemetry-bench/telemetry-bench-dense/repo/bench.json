@@ -1,0 +1,8 @@
+{
+  "fixture": "telemetry-bench-dense",
+  "harness": {
+    "mode": "dense",
+    "bytes": 52428800,
+    "line_bytes": 1024
+  }
+}

@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-activation:3",
+  "title": "af.perf-activation/3",
+  "description": "fixtures/performance/activation.toml as parsed TOML (ADR-0183, ADR-0184): the reviewed binding of an immutable authority SHA, policy digest, the cohort, parameter and readiness records by path and bytes, every original run, the calibrated environment, recipe and CPU groups, and the admission, a bridge with its execution evidence record.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-activation/3"
+    },
+    "authority_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "policy_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "cohort_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cohort_path": {
+      "type": "string",
+      "maxLength": 300,
+      "pattern": "^fixtures/performance/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120})?\\.(?:json|toml)$"
+    },
+    "cohort_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "calibration_path": {
+      "type": "string",
+      "maxLength": 300,
+      "pattern": "^fixtures/performance/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120})?\\.(?:json|toml)$"
+    },
+    "calibration_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "readiness_path": {
+      "type": "string",
+      "maxLength": 300,
+      "pattern": "^fixtures/performance/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120})?\\.(?:json|toml)$"
+    },
+    "readiness_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "cohort_actions_run_ids": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4611686018427387904
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true
+    },
+    "environment_id": {
+      "$ref": "#/$defs/id"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/id"
+    },
+    "calibrated_groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "admission": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "calibrated"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "equivalent_adapter"
+            },
+            "equivalence_group": {
+              "$ref": "#/$defs/id"
+            },
+            "adapter_files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/relative_path"
+              },
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "calibrated_activation_path": {
+              "type": "string",
+              "maxLength": 300,
+              "pattern": "^fixtures/performance/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120})?\\.(?:json|toml)$"
+            },
+            "calibrated_activation_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "equivalence_path": {
+              "type": "string",
+              "maxLength": 300,
+              "pattern": "^fixtures/performance/[A-Za-z0-9_.-]{1,120}(?:/[A-Za-z0-9_.-]{1,120})?\\.(?:json|toml)$"
+            },
+            "equivalence_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "rationale": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "equivalence_group",
+            "adapter_files",
+            "calibrated_activation_path",
+            "calibrated_activation_sha256",
+            "equivalence_path",
+            "equivalence_sha256",
+            "rationale"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "authority_sha",
+    "policy_digest",
+    "cohort_id",
+    "cohort_path",
+    "cohort_sha256",
+    "calibration_path",
+    "calibration_sha256",
+    "readiness_path",
+    "readiness_sha256",
+    "cohort_actions_run_ids",
+    "environment_id",
+    "recipe_id",
+    "calibrated_groups",
+    "admission"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

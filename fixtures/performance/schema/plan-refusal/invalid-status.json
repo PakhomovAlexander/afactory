@@ -1,0 +1,6 @@
+{
+  "schema": "af.perf-plan-refusal/1",
+  "status": "pending",
+  "reason": "no_active_authority",
+  "detail": "the control revision has no fixtures/performance/activation.toml"
+}

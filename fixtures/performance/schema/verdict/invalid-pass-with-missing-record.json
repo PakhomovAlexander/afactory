@@ -1,0 +1,211 @@
+{
+  "schema": "af.perf-verdict/2",
+  "run_id": "schema_fixture_run",
+  "plan_digest": "sha256:3acc9f4b48cf0410ba69e2f5274a8722eb342be9baaeb1a30f14820757c15dbf",
+  "scope": "bootstrap",
+  "provenance": "synthetic",
+  "inputs": {
+    "run_bundle": "sha256:188e0e511899827ca4d94654de8f16ff27171f02ad84ddd75ad2cf57ea6337ac",
+    "builds_sha256": "sha256:e06093d51a912c82edc284fa2a92e565bdeae677e31ef472339e1d268fb3ec3e",
+    "shard_bundles": [
+      {
+        "shard": 0,
+        "bundle": "sha256:00dacc4d49b31020df18e654950c9f0a327dc1a3a6edc8789cdb0d036c951449"
+      },
+      {
+        "shard": 1,
+        "bundle": "sha256:1addb8b4f5fb771ae4366da878b7387531baac382002c07893d12523cd188c36"
+      }
+    ]
+  },
+  "shards": [
+    {
+      "shard": 0,
+      "status": "complete",
+      "failure": null,
+      "expected_records": 76,
+      "matched_records": 75
+    },
+    {
+      "shard": 1,
+      "status": "complete",
+      "failure": null,
+      "expected_records": 48,
+      "matched_records": 48
+    }
+  ],
+  "algorithm": "paired_median_tolerance_v2",
+  "family_alpha": "1/20",
+  "family_size": 2,
+  "case_alpha": "1/40",
+  "health": [
+    {
+      "shard": 0,
+      "status": "healthy",
+      "flags": [],
+      "start_median": "10",
+      "end_median": "10",
+      "shift": "0",
+      "start_mad_ratio": "0",
+      "end_mad_ratio": "0"
+    },
+    {
+      "shard": 1,
+      "status": "healthy",
+      "flags": [],
+      "start_median": "10",
+      "end_median": "10",
+      "shift": "0",
+      "start_mad_ratio": "0",
+      "end_mad_ratio": "0"
+    }
+  ],
+  "cases": [
+    {
+      "instance_id": "synthetic_advisory",
+      "criticality": "advisory",
+      "exploratory": true,
+      "shard": 0,
+      "pairs": 12,
+      "rank": 3,
+      "alpha": "1/20",
+      "metric": {
+        "direction": "lower_is_better",
+        "key": "wall_ms",
+        "unit": "ms"
+      },
+      "tolerance": {
+        "relative": "0.05",
+        "absolute": "1"
+      },
+      "status": "within_tolerance",
+      "statistical_classification": "within_tolerance",
+      "outcome": "pass",
+      "interval": {
+        "lower": "0",
+        "upper": "0"
+      },
+      "baseline": {
+        "median": "20",
+        "p95": "20",
+        "max": "20"
+      },
+      "candidate": {
+        "median": "20",
+        "p95": "20",
+        "max": "20"
+      },
+      "change": {
+        "absolute": "0",
+        "percent": "0"
+      },
+      "missing_records": 0,
+      "failures": [],
+      "budgets": []
+    },
+    {
+      "instance_id": "synthetic_fast",
+      "criticality": "critical",
+      "exploratory": false,
+      "shard": 1,
+      "pairs": 12,
+      "rank": 2,
+      "alpha": "1/40",
+      "metric": {
+        "direction": "lower_is_better",
+        "key": "wall_ms",
+        "unit": "ms"
+      },
+      "tolerance": {
+        "relative": "0.05",
+        "absolute": "1"
+      },
+      "status": "regression",
+      "statistical_classification": "regression",
+      "outcome": "fail",
+      "interval": {
+        "lower": "10",
+        "upper": "10"
+      },
+      "baseline": {
+        "median": "20",
+        "p95": "20",
+        "max": "20"
+      },
+      "candidate": {
+        "median": "30",
+        "p95": "30",
+        "max": "30"
+      },
+      "change": {
+        "absolute": "10",
+        "percent": "50"
+      },
+      "missing_records": 0,
+      "failures": [],
+      "budgets": []
+    },
+    {
+      "instance_id": "synthetic_process__size_1",
+      "criticality": "critical",
+      "exploratory": false,
+      "shard": 0,
+      "pairs": 12,
+      "rank": 2,
+      "alpha": "1/40",
+      "metric": {
+        "direction": "lower_is_better",
+        "key": "wall_ms",
+        "unit": "ms"
+      },
+      "tolerance": {
+        "relative": "0.05",
+        "absolute": "1"
+      },
+      "status": "within_tolerance",
+      "statistical_classification": "within_tolerance",
+      "outcome": "pass",
+      "interval": {
+        "lower": "0",
+        "upper": "0"
+      },
+      "baseline": {
+        "median": "20",
+        "p95": "20",
+        "max": "20"
+      },
+      "candidate": {
+        "median": "20",
+        "p95": "20",
+        "max": "20"
+      },
+      "change": {
+        "absolute": "0",
+        "percent": "0"
+      },
+      "missing_records": 0,
+      "failures": [],
+      "budgets": [
+        {
+          "budget_id": "cli_discovery_under_50ms",
+          "state": "pending_calibration",
+          "applicable": false,
+          "limit": "50",
+          "result": "not_applicable",
+          "observed_max": "20"
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "result": "pass",
+    "exit_code": 0,
+    "satisfies_required_check": false,
+    "coverage": {
+      "expected_records": 124,
+      "matched_records": 123,
+      "missing_records": 1
+    },
+    "reasons": []
+  }
+}

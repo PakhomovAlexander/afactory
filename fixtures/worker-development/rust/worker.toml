@@ -1,0 +1,74 @@
+schema = "af.worker/1"
+name = "development/rust"
+version = "1.0.0"
+
+[signature]
+effects = ["read-source", "execute-checks", "write-source"]
+roles = ["implement"]
+worker_input_type = "af/ImplementationInput@1"
+worker_output_type = "af/ImplementationReport@1"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.report]
+artifact_type = "af/ImplementationReport@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.report.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.outputs.candidate]
+artifact_type = "af/CandidateTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.candidate.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+[signature.retains]
+report = ["source"]
+candidate = ["source"]
+
+[signature.attempt]
+tokens = 0
+wall_ms = 120000
+
+[runner]
+kind = "command"
+[runner.command]
+program = "@tool/sh"
+args = [{ value = "@package/harness.sh", provenance = "literal" }]
+
+[signature.contract.inputs.development_warm]
+artifact_type = "review.kernel/WarmSet@3"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.inputs.development_warm.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.cache_in]
+artifact_type = "review.kernel/BuildCache@2"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.inputs.cache_in.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.cache_out]
+artifact_type = "review.kernel/BuildCache@2"
+cardinality = "one"
+optional = true
+covers = []
+[signature.contract.outputs.cache_out.affinity]
+kind = "unbound"

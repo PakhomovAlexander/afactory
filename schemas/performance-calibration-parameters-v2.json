@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-calibration-parameters:2",
+  "title": "af.perf-calibration-parameters/2",
+  "description": "Sealed calibration inputs per case and CPU group: A0, e = max(r, a/A0), the power target and loop iterations, fixed before slowdown trials.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-calibration-parameters/2"
+    },
+    "cohort_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cohort_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "a0_member_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 20,
+      "maxItems": 20,
+      "uniqueItems": true
+    },
+    "preparation_member_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "preparation_iterations": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "cpu_group": {
+            "$ref": "#/$defs/id"
+          },
+          "relative": {
+            "$ref": "#/$defs/decimal"
+          },
+          "absolute": {
+            "$ref": "#/$defs/decimal"
+          },
+          "a0": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "a0_samples": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "a0_unavailable": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "efficiency": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "power_target": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "loop_ns_per_iteration": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "loop_samples": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "iterations": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "injection_2": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1099511627776
+                  },
+                  "injection_5": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1099511627776
+                  },
+                  "injection_10": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1099511627776
+                  },
+                  "power": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1099511627776
+                  }
+                },
+                "required": [
+                  "injection_2",
+                  "injection_5",
+                  "injection_10",
+                  "power"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "instance_id",
+          "cpu_group",
+          "relative",
+          "absolute",
+          "a0",
+          "a0_samples",
+          "a0_unavailable",
+          "efficiency",
+          "power_target",
+          "loop_ns_per_iteration",
+          "loop_samples",
+          "iterations"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 1024
+    }
+  },
+  "required": [
+    "schema",
+    "cohort_id",
+    "cohort_digest",
+    "a0_member_ids",
+    "preparation_member_ids",
+    "preparation_iterations",
+    "groups"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/optimization-execution-configuration-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "recipe_id", "original_package_id", "original_package_digest", "source_snapshot_id", "candidate_snapshot_id", "repin_id", "package", "package_digest", "instructions_id", "instructions"],
+  "properties": {
+    "schema": {"const": "af.optimization-execution-configuration/1"},
+    "recipe_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"},
+    "original_package_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "original_package_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_snapshot_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "candidate_snapshot_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "repin_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "package": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,127}(?:/[a-z0-9][a-z0-9_-]{0,127})+$"},
+    "package_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instructions_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "instructions": {"type": "string", "minLength": 1, "maxLength": 262144}
+  }
+}

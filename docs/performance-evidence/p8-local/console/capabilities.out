@@ -1,0 +1,82 @@
+{
+  "environments": {
+    "linux_x86_64_gnu_hosted": {
+      "reasons": [
+        "declares linux, this host is macos",
+        "declares x86_64, this host is aarch64",
+        "no container runtime: docker: [Errno 2] No such file or directory: 'docker'",
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+      ],
+      "status": "unavailable"
+    },
+    "linux_x86_64_musl_hosted": {
+      "reasons": [
+        "declares linux, this host is macos",
+        "declares x86_64, this host is aarch64",
+        "no container runtime: docker: [Errno 2] No such file or directory: 'docker'",
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+      ],
+      "status": "unavailable"
+    },
+    "macos_arm64_local": {
+      "reasons": [],
+      "status": "available"
+    }
+  },
+  "host": {
+    "arch": "aarch64",
+    "kernel": "27.0.0",
+    "platform": "macos",
+    "python": "3.9.6"
+  },
+  "linux_container": {
+    "capability": {
+      "reasons": [
+        "no container runtime: docker: [Errno 2] No such file or directory: 'docker'",
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+      ],
+      "status": "unavailable"
+    },
+    "scratch": {
+      "backend": "none",
+      "capability": {
+        "reasons": [
+          "no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+        ],
+        "status": "unavailable"
+      },
+      "capacity_bytes": null,
+      "enforcement": "not_verified",
+      "filesystem": null,
+      "fill": null,
+      "path": null
+    }
+  },
+  "schema": "af.perf-capabilities/2",
+  "tools": {
+    "docker_client": {
+      "identity": null,
+      "unavailable": "docker: [Errno 2] No such file or directory: 'docker'"
+    },
+    "docker_server": {
+      "identity": null,
+      "unavailable": "docker: [Errno 2] No such file or directory: 'docker'"
+    },
+    "git": {
+      "identity": "git version 2.54.0 (Apple Git-157)",
+      "unavailable": null
+    },
+    "rustc": {
+      "identity": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+      "unavailable": null
+    }
+  },
+  "trusted_local": {
+    "capability": {
+      "reasons": [],
+      "status": "available"
+    },
+    "same_user_isolation": "not_provided",
+    "scope": "discovery_and_nonspawning_library_cases"
+  }
+}

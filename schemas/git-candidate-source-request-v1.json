@@ -1,0 +1,47 @@
+{
+  "$id": "urn:af:schema:git-candidate-source-request:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_snapshot_id": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "predecessor_snapshot_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      ]
+    },
+    "receipt": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/TaskReceipt"
+    },
+    "schema": {
+      "const": "af/git-candidate-source-request@1"
+    },
+    "source_commit": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "receipt",
+    "source_commit",
+    "candidate_snapshot_id",
+    "predecessor_snapshot_id"
+  ],
+  "title": "git-candidate-source-request v1",
+  "type": "object"
+}

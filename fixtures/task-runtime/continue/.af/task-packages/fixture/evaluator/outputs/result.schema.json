@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["outcome","reason"],"properties":{"outcome":{"enum":["passed","failed","inconclusive"]},"reason":{"type":"string","minLength":1}}}

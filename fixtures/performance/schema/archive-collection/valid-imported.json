@@ -1,0 +1,15 @@
+{
+  "available_bytes": null,
+  "detail": "run fixture_run admitted with 8 members",
+  "ended_unix_ms": 1800000000000,
+  "needed_bytes": null,
+  "run_ended_unix_ms": 1760000000048,
+  "run_id": "fixture_run",
+  "schema": "af.perf-archive-collection/1",
+  "sequence": 1,
+  "source": {
+    "kind": "local"
+  },
+  "started_unix_ms": 1800000000000,
+  "status": "imported"
+}

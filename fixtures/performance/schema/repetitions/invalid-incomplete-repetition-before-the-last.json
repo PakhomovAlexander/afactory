@@ -1,0 +1,52 @@
+{
+  "schema": "af.perf-repetitions/1",
+  "instance_id": "cli_discovery__command_help",
+  "side": "baseline",
+  "attempt": 1,
+  "tool": "perf",
+  "binary_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "boundary": "perf_exec_to_exit",
+  "repetitions": [
+    {
+      "index": 1,
+      "completed": true,
+      "recording": {
+        "path": "captures/cli_discovery__command_help/baseline/1/rep-0001.data",
+        "bytes": 18321,
+        "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "observer": {
+        "path": "captures/cli_discovery__command_help/baseline/1/observer-0001-0a1b2c3d.json",
+        "bytes": 642,
+        "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "region_ns": 4210331
+    },
+    {
+      "index": 2,
+      "completed": false,
+      "recording": {
+        "path": "captures/cli_discovery__command_help/baseline/1/rep-0002.data",
+        "bytes": 18004,
+        "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "observer": {
+        "path": "captures/cli_discovery__command_help/baseline/1/observer-0002-4e5f6a7b.json",
+        "bytes": 642,
+        "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "region_ns": null
+    },
+    {
+      "index": 3,
+      "completed": false,
+      "recording": null,
+      "observer": {
+        "path": "captures/cli_discovery__command_help/baseline/1/observer-0003-8c9d0e1f.json",
+        "bytes": 611,
+        "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "region_ns": null
+    }
+  ]
+}

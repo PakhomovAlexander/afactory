@@ -1,0 +1,132 @@
+{
+  "backlog": {
+    "closed_24h": 1,
+    "draft_pull_requests": 1,
+    "head_checks": {
+      "failure": 0,
+      "other": 0,
+      "pending": 1,
+      "skipped": 1,
+      "success": 1,
+      "total": 3
+    },
+    "labels": [
+      {
+        "count": 2,
+        "name": "bug"
+      },
+      {
+        "count": 1,
+        "name": "nightly"
+      }
+    ],
+    "open_issues": 2,
+    "open_pull_requests": 2,
+    "opened_24h": 1,
+    "pull_requests": [
+      {
+        "draft": false,
+        "mergeable_state": "clean",
+        "number": 44,
+        "title": "Compose the report"
+      },
+      {
+        "draft": true,
+        "mergeable_state": "draft",
+        "number": 45,
+        "title": "Draft: publish it"
+      }
+    ],
+    "pull_requests_partial": null,
+    "stale": [
+      {
+        "number": 7,
+        "title": "A <script> in a title",
+        "updated": "2026-09-02"
+      }
+    ],
+    "stale_issues": 1
+  },
+  "baseline": {
+    "commits_since": 4,
+    "published": "2026-10-20",
+    "pull_requests_since": 2,
+    "reasons": [],
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "tag": "v0.13.0"
+  },
+  "build": {
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_subject": "Compose the daily report (#44)",
+    "previous_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "previous_tag": "nightly-2026.10.28",
+    "skip_reason": "main has not moved since nightly-2026.10.28: its newest green commit is bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, the commit nightly-2026.10.28 built",
+    "status": "skipped",
+    "targets": [],
+    "version": "0.14.0-nightly.20261029"
+  },
+  "completeness": {
+    "backlog": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "baseline": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "build": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "machine": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "performance": {
+      "available": false,
+      "reason": "no new commits reached main since nightly-2026.10.28: this night stands on nightly-2026.10.28 and measured nothing"
+    },
+    "since_last_night": {
+      "available": false,
+      "reason": "no new commits reached main since nightly-2026.10.28: this night stands on nightly-2026.10.28 and measured nothing"
+    },
+    "telemetry": {
+      "available": false,
+      "reason": "no new commits reached main since nightly-2026.10.28: this night stands on nightly-2026.10.28 and measured nothing"
+    },
+    "trend": {
+      "available": false,
+      "reason": "no new commits reached main since nightly-2026.10.28: this night stands on nightly-2026.10.28 and measured nothing"
+    }
+  },
+  "composed_unix_ms": 1793286000000,
+  "date": "2026-10-29",
+  "headline": {
+    "label": "UNAVAILABLE",
+    "text": "nightly-2026.10.29: UNAVAILABLE (no new commits reached main since nightly-2026.10.28: this night stands on nightly-2026.10.28 and measured nothing)"
+  },
+  "host": {
+    "machine_id": "claw_vm_1"
+  },
+  "machine": {
+    "failed_units": {
+      "reason": null,
+      "value": 0
+    },
+    "free_bytes": {
+      "reason": null,
+      "value": 214748364800
+    },
+    "lock_held": {
+      "reason": null,
+      "value": false
+    }
+  },
+  "performance": null,
+  "repository": "owner/af",
+  "schema": "af.nightly-daily/1",
+  "since_last_night": null,
+  "tag": "nightly-2026.10.29",
+  "telemetry": null,
+  "trend": null
+}

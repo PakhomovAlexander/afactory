@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pr-lines:4",
+  "title": "af/PrLines@4",
+  "description": "Exact additions and deletions partitioned independently at every level. Canonical regeneration enforces sums, unique names and order; rounded Markdown does not prove exact arithmetic.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "added",
+    "deleted",
+    "rows"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/PrLines@4"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/topLeaf"
+          },
+          {
+            "$ref": "#/$defs/crates"
+          }
+        ]
+      },
+      "minItems": 0
+    },
+    "added": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deleted": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "topLeaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "deleted",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]+/?$",
+          "not": {
+            "const": "crates/"
+          }
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "crates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "deleted",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "const": "crates/"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/file"
+              },
+              {
+                "$ref": "#/$defs/crate"
+              }
+            ]
+          },
+          "minItems": 1
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "deleted",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]+$"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "crate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "deleted",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[^/]+/$"
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/kind"
+          },
+          "minItems": 1
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "kind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "added",
+        "deleted",
+        "children"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "main/",
+            "tests/",
+            "other/"
+          ]
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "added": {
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "deleted": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+schema = "af.worker/1"
+name = "custom/triage-worker"
+version = "1.0.2"
+[signature]
+effects = []
+roles = ["triage"]
+evidence = {}
+retains = { triage = ["issue", "requirements"] }
+worker_input_type = "custom/StructuredInput@1"
+worker_output_type = "custom/IssueTriage@2"
+[signature.attempt]
+tokens = 40000
+wall_ms = 500000
+[runner]
+kind = "model"
+provider_kind = "codex"
+model = "gpt-6.1-sol"
+effort = "medium"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.issue]
+artifact_type = "custom/Issue@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.issue.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.triage]
+artifact_type = "custom/IssueTriage@2"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.triage.affinity]
+kind = "unbound"

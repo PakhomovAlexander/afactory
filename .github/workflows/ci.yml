@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validation:
+    uses: ./.github/workflows/validate.yml
+    # A release pull request runs the Linux and macOS legs the release itself runs, so a
+    # macOS-only failure stops it before its merge cuts the tag (v0.14.0-rc.2 was tagged and
+    # never published over one).
+    with:
+      release: ${{ startsWith(github.head_ref, 'release/') }}

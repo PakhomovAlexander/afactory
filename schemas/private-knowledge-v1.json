@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/private-knowledge-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "notes",
+    "head_delta"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.private-knowledge/1"
+    },
+    "notes": {
+      "$ref": "#/$defs/notes"
+    },
+    "head_delta": {
+      "$ref": "#/$defs/delta"
+    }
+  },
+  "$defs": {
+    "notes": {
+      "title": "WorkerNotes@1 payload",
+      "description": "One admitted Attempt's bounded inspection map for the next Attempt of the SAME node: paths inspected, a model of the change, open questions and per-path hints. Data, never a verdict or a disposition: every prior Finding still needs its explicit Report, Dispute or Drop. Carried as review.kernel/WorkerNotes@1 inside a Campaign and as af/WorkerNotes@1 on Task Worker ports; both spell this payload.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "attempt_id",
+        "head_snapshot_id",
+        "model_of_change"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/notes/$defs/id"
+        },
+        "head_snapshot_id": {
+          "$ref": "#/$defs/notes/$defs/digest"
+        },
+        "inspected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/notes/$defs/path"
+              },
+              "tree_entry_digest": {
+                "$ref": "#/$defs/notes/$defs/digest"
+              }
+            }
+          }
+        },
+        "model_of_change": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "note"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/notes/$defs/path"
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      "$defs": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-z]{26}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "delta": {
+      "title": "HeadDelta@1 payload",
+      "description": "The kernel-derived relation between two consecutive heads of one node: exact from and to Snapshot IDs, the diff policy identity, the complete head-to-head path set with rename truncation metadata, and one mark per path over the union of the Notes paths and both Subject views. NOT a Change Set: it names no Base, carries no Subject identity and no Report Scope, and exists for whole-tree Subjects too.",
+      "x-semantic-constraints": [
+        "changed_paths are strictly sorted and unique",
+        "marks are strictly sorted by path and unique",
+        "every changed path has a mark",
+        "renamed_from is present exactly on renamed marks and differs from the path"
+      ],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "from_snapshot_id",
+        "to_snapshot_id",
+        "diff_policy_version",
+        "changed_paths",
+        "marks"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from_snapshot_id": {
+          "$ref": "#/$defs/delta/$defs/digest"
+        },
+        "to_snapshot_id": {
+          "$ref": "#/$defs/delta/$defs/digest"
+        },
+        "diff_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rename_detection_truncated": {
+          "type": "boolean"
+        },
+        "changed_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/delta/$defs/path"
+          }
+        },
+        "marks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "mark"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/delta/$defs/path"
+              },
+              "mark": {
+                "enum": [
+                  "changed",
+                  "unchanged",
+                  "new",
+                  "reverted",
+                  "removed",
+                  "renamed"
+                ]
+              },
+              "renamed_from": {
+                "$ref": "#/$defs/delta/$defs/path"
+              }
+            }
+          }
+        }
+      },
+      "$defs": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "https://afactory.dev/schemas/worker-command-evidence-v1.json",
+  "required": [
+    "schema",
+    "attempt_id",
+    "context_id",
+    "source_snapshot_id",
+    "input_tree_digest",
+    "environment_id",
+    "binding_id",
+    "tool_probe_output_id",
+    "stdout_id",
+    "stderr_id",
+    "final_tree_digest",
+    "experiment",
+    "command",
+    "cwd",
+    "started_unix_ms",
+    "elapsed_ms",
+    "exit_code",
+    "failure",
+    "resources",
+    "returned_output_id",
+    "stdout_total_bytes",
+    "stderr_total_bytes",
+    "output_cap",
+    "redacted",
+    "omissions",
+    "input_manifest_id",
+    "final_manifest_id",
+    "purpose"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.worker-command-evidence/1"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]{26}$"
+    },
+    "context_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "input_tree_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "environment_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "binding_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tool_probe_output_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stdout_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stderr_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "final_tree_digest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "experiment": {
+      "type": "boolean"
+    },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "cwd": {
+      "const": "/work"
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": -2147483648,
+      "maximum": 2147483647
+    },
+    "failure": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resources": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user_ms",
+            "system_ms",
+            "max_rss_bytes"
+          ],
+          "properties": {
+            "user_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "system_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_rss_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      ]
+    },
+    "returned_output_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stdout_total_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "stderr_total_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "output_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "redacted": {
+      "type": "boolean"
+    },
+    "omissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "internal_commands_unobserved",
+          "internal_model_output_unobserved",
+          "resources_are_runtime_client_only",
+          "final_tree_unavailable"
+        ]
+      },
+      "minItems": 3,
+      "allOf": [
+        {
+          "contains": {
+            "const": "internal_commands_unobserved"
+          }
+        },
+        {
+          "contains": {
+            "const": "internal_model_output_unobserved"
+          }
+        },
+        {
+          "contains": {
+            "const": "resources_are_runtime_client_only"
+          }
+        }
+      ]
+    },
+    "input_manifest_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "final_manifest_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "purpose": {
+      "enum": [
+        "tool_probe",
+        "harness"
+      ]
+    }
+  }
+}
