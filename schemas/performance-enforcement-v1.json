@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-enforcement:1",
+  "title": "af.perf-enforcement/1",
+  "description": "Reviewed SDLC enforcement policy. Required mode accepts only an eligible full measured primary under an active, calibrated authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-enforcement/1"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "advisory",
+        "required"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "mode"
+  ]
+}

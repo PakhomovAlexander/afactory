@@ -1,0 +1,20 @@
+task run task:sha256:7777777777777777777777777777777777777777777777777777777777777777  store 555555555555  history prefix:2 — retained executions 1–2
+  execution 1 (1700000000000-4242-0a1b2c3d) 2023-11-14T22:13:20.003Z → 2023-11-14T22:13:20.021Z · wall 18.000 ms · sealed
+  execution 2 (1700000100000-4243-0b1c2d3e) 2023-11-14T22:15:00.003Z → 2023-11-14T22:15:00.021Z · wall 18.000 ms · sealed
+offset       total        self         status span
+0 µs         24.000 ms    5.000 ms     ok     af.command  process.exit_code=0
+3.000 ms     18.000 ms    6.000 ms     ok       af.run  af.execution.ordinal=1 af.run.kind=task af.task_id=golden af.epoch=1 af.outcome=finished af.usage.chargeable_tokens=1200
+4.000 ms     1.000 ms     1.000 ms     ok         af.authority.load  af.policy_rev=sha256:1111111111111111111111111111111111111111111111111111111111111111 af.pipeline=fixture/plain af.pipeline.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222
+6.000 ms     1.000 ms     1.000 ms     ok         af.plan  af.plan_digest=sha256:3333333333333333333333333333333333333333333333333333333333333333 af.pipeline=fixture/plain af.node_count=3
+8.000 ms     4.000 ms     2.000 ms     ok         af.node  af.node_id=root.nodes.implement af.node.kind=worker af.outcome=succeeded
+13.000 ms    5.000 ms     3.000 ms     ok         af.node  af.node_id=root.nodes.check af.node.kind=check af.outcome=succeeded
+19.000 ms    1.000 ms     1.000 ms     ok         af.node  af.node_id=root.nodes.accept af.node.kind=accept af.outcome=succeeded
+22.000 ms    1.000 ms     1.000 ms     ok       af.sweep  af.sweep.bytes_before=4096 af.sweep.bytes_after=4096 af.sweep.evicted=0
+100.000 s    24.000 ms    5.000 ms     ok     af.command  process.exit_code=0
+100.003 s    18.000 ms    6.000 ms     ok       af.run  af.execution.ordinal=2 af.run.kind=task af.task_id=golden af.epoch=2 af.outcome=finished af.usage.chargeable_tokens=1200
+100.004 s    1.000 ms     1.000 ms     ok         af.authority.load  af.policy_rev=sha256:1111111111111111111111111111111111111111111111111111111111111111 af.pipeline=fixture/plain af.pipeline.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222
+100.006 s    1.000 ms     1.000 ms     ok         af.plan  af.plan_digest=sha256:3333333333333333333333333333333333333333333333333333333333333333 af.pipeline=fixture/plain af.node_count=3
+100.008 s    4.000 ms     2.000 ms     ok         af.node  af.node_id=root.nodes.implement af.node.kind=worker af.outcome=succeeded
+100.013 s    5.000 ms     3.000 ms     ok         af.node  af.node_id=root.nodes.check af.node.kind=check af.outcome=succeeded
+100.019 s    1.000 ms     1.000 ms     ok         af.node  af.node_id=root.nodes.accept af.node.kind=accept af.outcome=succeeded
+100.022 s    1.000 ms     1.000 ms     ok       af.sweep  af.sweep.bytes_before=4096 af.sweep.bytes_after=4096 af.sweep.evicted=0

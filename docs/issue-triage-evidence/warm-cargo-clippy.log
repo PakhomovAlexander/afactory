@@ -1,0 +1,49 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+    Checking cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+    Checking equivalent v1.0.2
+   Compiling serde v1.0.229
+    Checking foldhash v0.2.0
+    Checking allocator-api2 v0.2.21
+    Checking memchr v2.8.3
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+    Checking itoa v1.0.18
+   Compiling autocfg v1.5.1
+    Checking typenum v1.20.1
+    Checking bitflags v2.13.1
+   Compiling cfg_aliases v0.2.2
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustco0XjJW"
+
+error: could not compile `unicode-ident` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcVcp4Fa"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustclRZeOn"
+
+error: could not compile `zmij` (build script) due to 1 previous error
+error: could not compile `quote` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustc5EXs5h"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcBJWdvI"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcYvAgHE"
+
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcJtxm2i"
+
+error: could not compile `serde_core` (build script) due to 1 previous error
+error: could not compile `serde` (build script) due to 1 previous error
+error: could not compile `cfg_aliases` (lib) due to 1 previous error
+error: could not compile `proc-macro2` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcPUqrdy"
+
+error: could not compile `libc` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustcF8bI3K"
+
+error: could not compile `serde_json` (build script) due to 1 previous error
+error: couldn't create a temp dir: Operation not permitted (os error 1) at path "/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/rustc4wih7g"
+
+error: could not compile `autocfg` (lib) due to 1 previous error

@@ -1,0 +1,36 @@
+# Step 3 of the nightly chain (ADR-0271, ADR-0273, docs/nightly.md#the-nightly-chain): compose
+# the night's report into a new directory below /var/lib/af-nightly/reports (<date>, or
+# <date>.<k> when one exists) from the night's record and the nightly executor's journal, which
+# this account owns. Only a composed report is published; a refused compose (no nightly.json, a
+# malformed configuration) ends the chain and is rerun by hand once its cause is fixed.
+#
+# It measures nothing, so it is hardened like the source refresh, except that /tmp stays the
+# host's (PrivateTmp=no): the report reads whether the machine lock /tmp/af-perf-machine.lock
+# is held, without taking it.
+[Unit]
+Description=AF nightly: compose tonight's report (step 3 of 4)
+Wants=network-online.target
+After=network-online.target
+OnSuccess=af-nightly-publish.service
+
+[Service]
+Type=oneshot
+User=af-perf-exec
+Group=af-perf-readers
+UMask=0027
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/report.py compose --config /etc/af-nightly/nightly.toml --night-of af-nightly-build.service --output-root /var/lib/af-nightly/reports
+# Above the GitHub reads' own bounds (at most 100 pull requests' mergeable states).
+TimeoutStartSec=1h
+TimeoutStopSec=120
+KillMode=control-group
+MemoryMax=4G
+TasksMax=64
+LimitNOFILE=1024
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+PrivateTmp=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/af-nightly/reports

@@ -1,0 +1,272 @@
+{
+  "schema": "af.perf-investigation-runtime-new/1 (informal, read by no code)",
+  "recorded": "2026-10-22",
+  "host": "macOS 27.0 arm64 development laptop (14 logical CPUs), shared with other work; load averages 92-205 during the repeats",
+  "build": "cargo build --locked --release -p review-pipeline --example perf-probe --features perf-trace, by the host's Homebrew cargo 1.94.0 rather than the repository's pinned 1.88.0 (a diagnostic build, not the verdict build)",
+  "source": "the source snapshot of the Task that recorded it (main 3bf55b26 as the Task's evidence names it); this package changed no product code",
+  "command": "python3 scripts/performance/cli.py probe --trusted-local --supervisor PERF_SUPERVISOR --binary PERF_PROBE --instance authority_runtime_new__package_PACKAGE --scratch SCRATCH --timeout 120 --trace-output TRACE",
+  "samples": [
+    {
+      "trace": "issue_255_medium",
+      "trace_sha256": "sha256:29d0f9ee30f65b52a000610367041ddae827f74cbaf43a4c662eafc3c878d225",
+      "sample": "passed",
+      "region_ms": 4939.9,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.3,
+          "duration_ms": 2047.8
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 2048.9,
+          "duration_ms": 1280.4
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 2049.0,
+          "duration_ms": 1044.3
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 3329.4,
+          "duration_ms": 1607.2
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 4936.6,
+          "duration_ms": 0.1
+        }
+      ],
+      "load_average_1m_after": null
+    },
+    {
+      "trace": "issue_255_medium-1",
+      "trace_sha256": "sha256:26923d9bf94dd4d546c6c7d2f50243cf1dc1faae64e0c1205ab25fa8574008d8",
+      "sample": "passed",
+      "region_ms": 2219.4,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.3,
+          "duration_ms": 908.4
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 909.4,
+          "duration_ms": 685.0
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 909.4,
+          "duration_ms": 502.2
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 1594.4,
+          "duration_ms": 622.1
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 2216.5,
+          "duration_ms": 0.2
+        }
+      ],
+      "load_average_1m_after": 204.87
+    },
+    {
+      "trace": "issue_255_medium-2",
+      "trace_sha256": "sha256:34a3253c84f93dd3926c47fe6a1231caeaddf2076bb51ce0ffc0f2537f15d7be",
+      "sample": "passed",
+      "region_ms": 1560.8,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.0,
+          "duration_ms": 537.8
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 539.2,
+          "duration_ms": 596.2
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 539.2,
+          "duration_ms": 372.8
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 1135.4,
+          "duration_ms": 425.2
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 1560.6,
+          "duration_ms": 0.1
+        }
+      ],
+      "load_average_1m_after": 138.59
+    },
+    {
+      "trace": "issue_255_medium-3",
+      "trace_sha256": "sha256:d06ac3136d6acc2a5c12e60664450badce1b941dac77b0fba83fbfd903adb05e",
+      "sample": "passed",
+      "region_ms": 4976.1,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.0,
+          "duration_ms": 1735.3
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 1738.7,
+          "duration_ms": 1814.0
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 1738.7,
+          "duration_ms": 1433.7
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 3552.7,
+          "duration_ms": 1423.2
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 4975.9,
+          "duration_ms": 0.1
+        }
+      ],
+      "load_average_1m_after": 91.9
+    },
+    {
+      "trace": "issue_255_large-1",
+      "trace_sha256": "sha256:e19adcee3cf49fa6d12ef4fb6ce4a24372b39463697c81f1a9de351109f11183",
+      "sample": "passed",
+      "region_ms": 6788.4,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.0,
+          "duration_ms": 2962.9
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 2963.4,
+          "duration_ms": 2286.9
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 2963.4,
+          "duration_ms": 1875.1
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 5250.3,
+          "duration_ms": 1537.9
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 6788.2,
+          "duration_ms": 0.1
+        }
+      ],
+      "load_average_1m_after": 154.66
+    },
+    {
+      "trace": "issue_255_large-2",
+      "trace_sha256": "sha256:bff6fa0e3261bbe8233e5c29c4faf2b49db779db544c1c84f68d87c98db8020a",
+      "sample": "passed",
+      "region_ms": 7167.1,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.0,
+          "duration_ms": 3311.0
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 3311.4,
+          "duration_ms": 1619.9
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 3311.4,
+          "duration_ms": 1119.5
+        },
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 4931.4,
+          "duration_ms": 2235.4
+        },
+        {
+          "phase": "cas_get_artifact",
+          "parent": "task_runtime_new",
+          "start_ms": 7166.8,
+          "duration_ms": 0.2
+        }
+      ],
+      "load_average_1m_after": 101.43
+    },
+    {
+      "trace": "issue_255_large-3",
+      "trace_sha256": "sha256:4048ed7ba10ed7fe14ec0c468cae38f3edb9dbac1aa58248e4639a9a108ec3ad",
+      "sample": "failed",
+      "region_ms": 14879.4,
+      "spans": [
+        {
+          "phase": "task_projection",
+          "parent": "task_runtime_new",
+          "start_ms": 0.0,
+          "duration_ms": 7895.7
+        },
+        {
+          "phase": "authority_plan_check",
+          "parent": "task_runtime_new",
+          "start_ms": 7896.3,
+          "duration_ms": 6983.1
+        },
+        {
+          "phase": "task_projection",
+          "parent": "authority_plan_check",
+          "start_ms": 7896.3,
+          "duration_ms": 6983.1
+        }
+      ],
+      "load_average_1m_after": 114.39
+    }
+  ],
+  "note": "Region-internal spans of task_runtime_new over 0.1 ms, each task_projection under its parent; durations as perf-trace recorded them. The raw traces are not retained; their SHA-256 identify them. large-3 failed its sample with lease_expired: on the loaded host its first two projections took 14.9 s, past the production lease the probe took, and the Store refused the next write as fenced, so its third projection never ran."
+}

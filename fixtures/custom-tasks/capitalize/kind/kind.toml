@@ -1,0 +1,5 @@
+schema = "af.task-kind/3"
+name = "custom/capitalize-kind"
+version = "1.0.1"
+kind = "capitalize"
+profile = "structured"

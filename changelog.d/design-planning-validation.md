@@ -1,0 +1,2 @@
+- Refuse missing or malformed original issue contracts before direct operator design planning.
+- Correct the default Pipeline label to advertise Terra high for both bugs and correctness.

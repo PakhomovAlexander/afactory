@@ -1,0 +1,41 @@
+{
+  "$id": "urn:af:schema:github-publish-pr:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "GitHub Scenario adapter v1. Semantic validation also binds exact identities, scope and durable state.",
+  "properties": {
+    "base": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+      "type": "string"
+    },
+    "body": {
+      "maxLength": 48000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "head": {
+      "maxLength": 65536,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$",
+      "type": "string"
+    },
+    "schema": {
+      "const": "af/github-publish-pr@1"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "head",
+    "base",
+    "title",
+    "body"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-nightly-config:1",
+  "title": "af.nightly-config/1",
+  "description": "The owner's nightly build configuration as parsed TOML (ADR-0265): the repository, the bare mirror and builds root, the pinned musl build image, the aarch64 user-mode runner, the nightly signing key pair, the check runs a green commit must carry and how far back the walk may go, the report's executor configuration and trend (ADR-0271), and, for publishing (ADR-0272), the write token, the optional Telegram bot and chat and how many nightly releases stay; for the systemd chain (ADR-0273), the root of the report directories and how long the measurement waits.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.nightly-config/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "mirror": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "builds_root": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "build_image": {
+      "type": "string",
+      "maxLength": 330,
+      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "qemu_aarch64": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "sign_key": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "public_key": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "required_checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "max_walk": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "github_token_file": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "reports_root": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "measure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deadline_minutes": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 600
+        },
+        "poll_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executor_config": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\\x00]*$"
+        },
+        "history_nights": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "headline_instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "executor_config",
+        "headline_instances"
+      ]
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "github_token_file": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\\x00]*$"
+        },
+        "telegram_token_file": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\\x00]*$"
+        },
+        "telegram_chat_id": {
+          "type": "string",
+          "maxLength": 33,
+          "pattern": "^(-?[1-9][0-9]{0,19}|@[A-Za-z][A-Za-z0-9_]{4,31})$"
+        },
+        "keep_nights": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 60
+        }
+      },
+      "required": [
+        "github_token_file"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "mirror",
+    "builds_root",
+    "build_image",
+    "qemu_aarch64",
+    "sign_key",
+    "public_key",
+    "required_checks"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

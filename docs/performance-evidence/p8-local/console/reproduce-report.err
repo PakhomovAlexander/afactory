@@ -1,0 +1,1 @@
+pass (exit 0; partial_scope scope, measured evidence); does not satisfy the required check: only full scope can satisfy it; this run's scope is partial_scope; only an activated policy can; this plan's authority mode is proposed

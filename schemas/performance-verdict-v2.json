@@ -1,0 +1,791 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-verdict:2",
+  "title": "af.perf-verdict/2",
+  "description": "The laboratory's verdict of one run under paired_median_tolerance_v2: exact rational intervals, per-case classification, health, budgets, each shard's terminal status and record coverage, and the aggregate result (pass 0, fail 3, incomplete 4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-verdict/2"
+    },
+    "run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "plan_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "full",
+        "partial_scope",
+        "bootstrap",
+        "calibration",
+        "diagnostic"
+      ]
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "measured",
+        "synthetic",
+        "mixed",
+        "none"
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_bundle": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "builds_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "shard_bundles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "shard": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 15
+              },
+              "bundle": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/digest"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "shard",
+              "bundle"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "run_bundle",
+        "builds_sha256",
+        "shard_bundles"
+      ]
+    },
+    "shards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "shard": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "failed",
+                  "interrupted"
+                ]
+              }
+            ]
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "detail": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "reason",
+                  "detail"
+                ]
+              }
+            ]
+          },
+          "expected_records": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "matched_records": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "shard",
+          "status",
+          "failure",
+          "expected_records",
+          "matched_records"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "algorithm": {
+      "const": "paired_median_tolerance_v2"
+    },
+    "family_alpha": {
+      "$ref": "#/$defs/rational"
+    },
+    "family_size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "case_alpha": {
+      "$ref": "#/$defs/rational"
+    },
+    "health": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "shard": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "unstable"
+            ]
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "minItems": 0,
+            "maxItems": 8
+          },
+          "start_median": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "end_median": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "shift": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "start_mad_ratio": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          },
+          "end_mad_ratio": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/rational"
+              }
+            ]
+          }
+        },
+        "required": [
+          "shard",
+          "status",
+          "flags",
+          "start_median",
+          "end_median",
+          "shift",
+          "start_mad_ratio",
+          "end_mad_ratio"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "$ref": "#/$defs/id"
+          },
+          "criticality": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "advisory"
+            ]
+          },
+          "exploratory": {
+            "type": "boolean"
+          },
+          "shard": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "pairs": {
+            "type": "integer",
+            "minimum": 12,
+            "maximum": 200
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "alpha": {
+            "$ref": "#/$defs/rational"
+          },
+          "metric": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/id"
+              },
+              "unit": {
+                "$ref": "#/$defs/unit"
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "lower_is_better",
+                  "higher_is_better"
+                ]
+              }
+            },
+            "required": [
+              "key",
+              "unit",
+              "direction"
+            ]
+          },
+          "tolerance": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "relative": {
+                "$ref": "#/$defs/decimal"
+              },
+              "absolute": {
+                "$ref": "#/$defs/decimal"
+              }
+            },
+            "required": [
+              "relative",
+              "absolute"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "regression",
+              "improvement",
+              "within_tolerance",
+              "non_regression",
+              "inconclusive",
+              "candidate_failure",
+              "baseline_failure",
+              "environment_unstable",
+              "missing_records",
+              "budget_missed",
+              "shard_not_complete"
+            ]
+          },
+          "statistical_classification": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "regression",
+                  "improvement",
+                  "within_tolerance",
+                  "non_regression",
+                  "inconclusive"
+                ]
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "incomplete"
+            ]
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "lower": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "upper": {
+                    "$ref": "#/$defs/rational"
+                  }
+                },
+                "required": [
+                  "lower",
+                  "upper"
+                ]
+              }
+            ]
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "median": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "p95": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "max": {
+                    "$ref": "#/$defs/rational"
+                  }
+                },
+                "required": [
+                  "median",
+                  "p95",
+                  "max"
+                ]
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "median": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "p95": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "max": {
+                    "$ref": "#/$defs/rational"
+                  }
+                },
+                "required": [
+                  "median",
+                  "p95",
+                  "max"
+                ]
+              }
+            ]
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "absolute": {
+                    "$ref": "#/$defs/rational"
+                  },
+                  "percent": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/rational"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "absolute",
+                  "percent"
+                ]
+              }
+            ]
+          },
+          "missing_records": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "baseline",
+                    "candidate"
+                  ]
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "warmup",
+                    "measured"
+                  ]
+                },
+                "pair": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 200
+                },
+                "position": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "oracle_mismatch",
+                    "timeout",
+                    "lease_expired",
+                    "nonzero_exit",
+                    "missing_required_metric",
+                    "lifecycle_violation",
+                    "launch_failure"
+                  ]
+                }
+              },
+              "required": [
+                "side",
+                "phase",
+                "pair",
+                "position",
+                "kind"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 1024
+          },
+          "budgets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "budget_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending_calibration",
+                    "enabled"
+                  ]
+                },
+                "applicable": {
+                  "type": "boolean"
+                },
+                "limit": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "met",
+                    "missed",
+                    "not_evaluated",
+                    "pending_calibration",
+                    "not_applicable"
+                  ]
+                },
+                "observed_max": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/rational"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "budget_id",
+                "state",
+                "applicable",
+                "limit",
+                "result",
+                "observed_max"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "instance_id",
+          "criticality",
+          "exploratory",
+          "shard",
+          "pairs",
+          "rank",
+          "alpha",
+          "metric",
+          "tolerance",
+          "status",
+          "statistical_classification",
+          "outcome",
+          "interval",
+          "baseline",
+          "candidate",
+          "change",
+          "missing_records",
+          "failures",
+          "budgets"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "incomplete"
+          ]
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "satisfies_required_check": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "expected_records": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "matched_records": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "missing_records": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "expected_records",
+            "matched_records",
+            "missing_records"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/id"
+              },
+              "shard": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 15
+                  }
+                ]
+              },
+              "instance_id": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/id"
+                  }
+                ]
+              },
+              "detail": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "code",
+              "shard",
+              "instance_id",
+              "detail"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        }
+      },
+      "required": [
+        "result",
+        "exit_code",
+        "satisfies_required_check",
+        "coverage",
+        "reasons"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "plan_digest",
+    "scope",
+    "provenance",
+    "inputs",
+    "shards",
+    "algorithm",
+    "family_alpha",
+    "family_size",
+    "case_alpha",
+    "health",
+    "cases",
+    "aggregate"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "ms",
+        "bytes",
+        "count",
+        "ratio"
+      ]
+    }
+  }
+}
