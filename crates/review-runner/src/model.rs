@@ -307,6 +307,14 @@ mod tests {
         note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result, stream_totals,
     };
 
+    #[test]
+    fn only_the_git_version_line_enters_model_metadata() {
+        assert_eq!(
+            super::model_git_version("git version 2.54.0\ncpu: arm64\nsizeof-long: 8\n"),
+            "git version 2.54.0"
+        );
+    }
+
     /// A Task slot's timeout names its own Worker, wherever the adapter wrapped the message;
     /// any other failure is left as it was.
     #[test]
@@ -933,6 +941,11 @@ impl ReviewerInputArtifact {
     }
 }
 
+/// The Change Set keeps the complete Git build identity; a reviewer needs only its version.
+fn model_git_version(version: &str) -> &str {
+    version.lines().next().unwrap_or("")
+}
+
 impl ReviewerInputs {
     fn rendered_refusal_history(&self) -> Result<Option<String>, String> {
         if self.refused_attempts.is_empty() {
@@ -1155,7 +1168,7 @@ impl ReviewerInputs {
                     "changed_paths": &change_set.changed_paths,
                     "renames": &change_set.renames,
                     "rename_detection_truncated": change_set.rename_detection_truncated,
-                    "git_version": &change_set.git_version,
+                    "git_version": model_git_version(&change_set.git_version),
                     "diff_policy_version": &change_set.diff_policy_version,
                     "canonical_patch_bytes": patch.len(),
                 });

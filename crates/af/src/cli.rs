@@ -806,9 +806,15 @@ af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
 # needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
 # needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD"
+af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     )]
-    Plan(RunArgs),
+    Plan {
+        #[command(flatten)]
+        args: RunArgs,
+        /// Include pipeline nodes and edges in the text plan
+        #[arg(long, help_heading = "Output")]
+        long: bool,
+    },
     /// Compose one Worker's exact input, token-free, without Campaign state
     #[command(
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
@@ -822,7 +828,8 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
     Render(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
     #[command(
-        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
+        long_about = "Read the current Campaign ledger. --json prints one af/review-ledger@1 document with Finding views and Demand views (schemas/review-ledger-v1.json). An empty ledger has empty arrays. --long expands each Finding in text output.",
+        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --json   # needs: Campaign pr-42\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
     )]
     Ledger {
         #[command(flatten)]
@@ -830,16 +837,23 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
         /// Full detail per finding
         #[arg(long, help_heading = "Output")]
         long: bool,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Show one ledger entry by key
     #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H…"
+        long_about = "Read one Finding by its ledger key. --json prints one af/review-show@1 document with the Finding, its attached reports and linked proposals (schemas/review-show-v1.json).",
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H… --json"
     )]
     Show {
         #[command(flatten)]
         selector: CampaignSelector,
-        /// Finding, demand, or proposal key
+        /// Finding key
         key: String,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Export a verified patch proposal, by id or by the finding it fixes
     #[command(
@@ -862,14 +876,18 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     },
     /// Render the Campaign report
     #[command(
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --format json   # needs: Campaign pr-42"
+        long_about = "Render the Campaign report. --json selects the existing af/review-report@4 document, the same as --format json. The two flags cannot be combined, even when --format names json.",
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42"
     )]
     Report {
         #[command(flatten)]
         selector: CampaignSelector,
         /// Output format
-        #[arg(long, value_enum, default_value_t = ReportFormatArg::Md, help_heading = "Output")]
-        format: ReportFormatArg,
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<ReportFormatArg>,
+        /// Shorthand for --format json; cannot be combined with --format
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// List Campaigns under the state root
     #[command(
@@ -1547,6 +1565,9 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
+    /// Include pipeline nodes and edges in the text preview
+    #[arg(long, help_heading = "Output")]
+    pub(crate) long: bool,
     /// Preview or add pinned model-driven Task authority (also includes review authority in a new repository)
     #[arg(long, help_heading = "Generate", conflicts_with = "refresh_lock")]
     pub(crate) tasks: bool,
