@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-probe-request:2",
+  "title": "af.perf-probe-request/2",
+  "description": "The native perf-probe's request: one declared case contract, its exact parameter assignment and repetitions, and an empty absolute scratch directory; at most 64 KiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-probe-request/2"
+    },
+    "case_id": {
+      "$ref": "#/$defs/id"
+    },
+    "instance_id": {
+      "$ref": "#/$defs/id"
+    },
+    "contract_id": {
+      "$ref": "#/$defs/id"
+    },
+    "parameters": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 4,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000000
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "scratch": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 1024,
+      "pattern": "^/"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 1024,
+          "pattern": "^/"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "case_id",
+    "instance_id",
+    "contract_id",
+    "parameters",
+    "repetitions",
+    "scratch",
+    "seed"
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

@@ -1,0 +1,871 @@
+{
+  "schema": "af.perf-local-readiness/999",
+  "cohort_id": "synthetic_local",
+  "cohort_digest": "sha256:bdee148ff8ae6ebad3766c71958576f2f1084f47e330afa20eebcee6ee818544",
+  "calibration_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+  "recomputed_calibration_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+  "history": {
+    "journal_id": "claw_originals_1",
+    "journal_digest": "sha256:6e6d8c1edd860e7f18d71470c5833659c40a6af06a4403588ae98f47b4e348de",
+    "requests": 0
+  },
+  "members": [
+    {
+      "member_id": "aa_01",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_02",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_03",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_04",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_05",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_06",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_07",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_08",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_09",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_10",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_11",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_12",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_13",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_14",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_15",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_16",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_17",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_18",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_19",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "aa_20",
+      "kind": "aa",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "prep_01",
+      "kind": "preparation",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "prep_02",
+      "kind": "preparation",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_01",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_02",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_03",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_04",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_05",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_06",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_07",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_08",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_09",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_10",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_01",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_02",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_03",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_04",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_05",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_06",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_07",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_08",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_09",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_10",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_01",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_02",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_03",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_04",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_05",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_06",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_07",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_08",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_09",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_10",
+      "kind": "injection",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_01",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_02",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_03",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_04",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_05",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_06",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_07",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_08",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_09",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    },
+    {
+      "member_id": "power_10",
+      "kind": "power",
+      "status": "missing",
+      "reasons": [
+        "no_dispatch"
+      ],
+      "provenance": null,
+      "cpu_groups": {},
+      "verdict_sha256": null,
+      "cases": {},
+      "qualifies": false
+    }
+  ],
+  "refused_evidence": [],
+  "tallies": {
+    "aa_members": 20,
+    "aa_within_tolerance": 0,
+    "power_members": 10,
+    "power_qualifying": 0,
+    "power_by_case": {
+      "synthetic_fast": {
+        "detections": 0,
+        "valid_injections": 0
+      },
+      "synthetic_process__size_1": {
+        "detections": 0,
+        "valid_injections": 0
+      }
+    },
+    "power_by_group": {
+      "unobserved": {
+        "members": 10,
+        "qualifying": 0
+      }
+    },
+    "injection": {
+      "injection_2": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 0
+      },
+      "injection_5": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 0
+      },
+      "injection_10": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 0
+      }
+    }
+  },
+  "groups": {
+    "local_cpu": {
+      "ready": false,
+      "unavailable": [
+        "synthetic_fast",
+        "synthetic_process__size_1"
+      ]
+    }
+  },
+  "ready": false,
+  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
+}

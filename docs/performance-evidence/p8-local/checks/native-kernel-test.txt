@@ -1,0 +1,8 @@
+command: AF_PERF_KERNEL_RECEIPTS=$WORK/../receipts cargo test --workspace --target-dir target --test it guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness
+source: the sandbox before sealing, at the first local run's state (protected harness sha256:9724a48bc34e3cca60fd413210c6d45d0b2d522ce883004a6eefe00fcac397fd), before report.py's unfinished-shard wording and its test were added
+toolchain: cargo and rustc 1.88.0, debug test profile, target/ of the sandbox
+exit: 0
+result: test perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness ... ok
+result: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 365 filtered out; finished in 761.22s
+receipts: kernel-receipts.json, the af.perf-kernel-receipts/3 document the test exported after checking it against schemas/performance-kernel-receipts-v3.json and contracts.read_file; 11 Tasks
+note: the mandatory gate runs this test again on the sealed source; this run is a pre-sealing observation, not the gate's result

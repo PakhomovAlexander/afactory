@@ -1,0 +1,412 @@
+{
+  "schema": "af/scenario-bundle@5",
+  "root": "documentation-update",
+  "definitions": {
+    "documentation-update": {
+      "schema": "af/scenario@5",
+      "inputs": {},
+      "outputs": {
+        "publication": "action",
+        "merged": "observation",
+        "cleanup": "action"
+      },
+      "steps": [
+        {
+          "id": "edit",
+          "operation": {
+            "kind": "task",
+            "target": {
+              "repo": "/private/project",
+              "state": "/private/tasks",
+              "task_id": "pagination-cli",
+              "plan_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "revision_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "max_tokens": 1000
+            }
+          },
+          "inputs": {},
+          "outputs": {
+            "result": "task"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "prepare",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "workspace",
+              "operation": "prepare_candidate_v1",
+              "destination": "github:octo/documentation"
+            },
+            "requires_decision": false,
+            "required_condition": null
+          },
+          "inputs": {
+            "candidate": {
+              "source": "step",
+              "step": "edit",
+              "port": "result"
+            },
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "edit",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "task_result_id"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "edit",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "task_output_snapshot",
+                "port": "snapshot"
+              }
+            },
+            "body": {
+              "source": "literal",
+              "value": {
+                "type": "text",
+                "value": "{\"schema\":\"af/git-workspace-content@1\",\"title\":\"Document pagination\",\"body\":\"Exact accepted documentation change.\"}"
+              }
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "approve",
+          "operation": {
+            "kind": "decision",
+            "owner": "owner"
+          },
+          "inputs": {
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_subject"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_revision"
+              }
+            }
+          },
+          "outputs": {
+            "result": "decision"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "publish",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "workspace",
+              "operation": "publish_pr",
+              "destination": "github:octo/documentation"
+            },
+            "requires_decision": true,
+            "required_condition": null
+          },
+          "inputs": {
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_subject"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_revision"
+              }
+            },
+            "body": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_publication"
+              }
+            },
+            "decision": {
+              "source": "step",
+              "step": "approve",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "checks",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "workspace",
+              "operation": "observe",
+              "destination": "github:octo/documentation"
+            },
+            "condition": "checks_passed"
+          },
+          "inputs": {
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_subject"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_revision"
+              }
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "merge",
+          "operation": {
+            "kind": "wait",
+            "grant": {
+              "adapter": "workspace",
+              "operation": "observe",
+              "destination": "github:octo/documentation"
+            },
+            "condition": "merged"
+          },
+          "inputs": {
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_subject"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_revision"
+              }
+            }
+          },
+          "outputs": {
+            "result": "observation"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        },
+        {
+          "id": "cleanup",
+          "operation": {
+            "kind": "action",
+            "grant": {
+              "adapter": "workspace",
+              "operation": "cleanup_workspace_v1",
+              "destination": "github:octo/documentation"
+            },
+            "requires_decision": false,
+            "required_condition": "merged"
+          },
+          "inputs": {
+            "subject": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_subject"
+              }
+            },
+            "revision": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_revision"
+              }
+            },
+            "body": {
+              "source": "project",
+              "value": {
+                "source": "step",
+                "step": "prepare",
+                "port": "result"
+              },
+              "projection": {
+                "kind": "workspace_receipt"
+              }
+            },
+            "prepared": {
+              "source": "step",
+              "step": "prepare",
+              "port": "result"
+            },
+            "evidence": {
+              "source": "step",
+              "step": "merge",
+              "port": "result"
+            }
+          },
+          "outputs": {
+            "result": "action"
+          },
+          "when": null,
+          "max_attempts": 1,
+          "timeout_ms": 24000,
+          "on_timeout": "fail"
+        }
+      ],
+      "result": {
+        "publication": {
+          "source": "step",
+          "step": "publish",
+          "port": "result"
+        },
+        "merged": {
+          "source": "step",
+          "step": "merge",
+          "port": "result"
+        },
+        "cleanup": {
+          "source": "step",
+          "step": "cleanup",
+          "port": "result"
+        }
+      },
+      "completion": [
+        {
+          "source": "project",
+          "value": {
+            "source": "step",
+            "step": "merge",
+            "port": "result"
+          },
+          "projection": {
+            "kind": "observation_satisfied"
+          }
+        }
+      ],
+      "authority": {
+        "task_plans": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        ],
+        "task_templates": [],
+        "decision_owners": [
+          "owner"
+        ],
+        "grants": [
+          {
+            "adapter": "workspace",
+            "operation": "prepare_candidate_v1",
+            "destination": "github:octo/documentation"
+          },
+          {
+            "adapter": "workspace",
+            "operation": "publish_pr",
+            "destination": "github:octo/documentation"
+          },
+          {
+            "adapter": "workspace",
+            "operation": "observe",
+            "destination": "github:octo/documentation"
+          },
+          {
+            "adapter": "workspace",
+            "operation": "cleanup_workspace_v1",
+            "destination": "github:octo/documentation"
+          }
+        ]
+      },
+      "limits": {
+        "max_tokens": 1000,
+        "max_wall_ms": 86400000,
+        "max_dispatches": 16
+      },
+      "admission": null
+    }
+  }
+}

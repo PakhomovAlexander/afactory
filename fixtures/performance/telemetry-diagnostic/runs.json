@@ -1,0 +1,60 @@
+{
+  "schema": "af/telemetry-runs@1",
+  "directory": "/scratch/sample/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "runs": [
+    {
+      "store_id": "06a451a38d60a1d1d0b4cfdfb36ae77460b5c5770c3e91774229c6398aee76c9",
+      "run_id": "task:sha256:adf065c4523c766823d902ab6414bef5aaaf18029a2646346bf0816ee987f773",
+      "trace_id": "8d8e6ddcaa29d1168ebe747604eacc52",
+      "kind": "task",
+      "task_id": "perf-check-true",
+      "executions": {
+        "retained": 1,
+        "sealed": [
+          1
+        ],
+        "open": [],
+        "list": [
+          {
+            "execution_id": "1792675940832-85555-e2869ee3",
+            "span_id": "010d3191b3f09a44",
+            "ordinal": 1,
+            "store_sequence_at_start": "5",
+            "start_unix_ns": "1792675940989433417",
+            "end_unix_ns": "1792675941401328750",
+            "open": false,
+            "wall_us": 411895,
+            "segment": "sealed",
+            "outcome": "finished"
+          }
+        ]
+      },
+      "first_start_unix_ns": "1792675940989433417",
+      "last_end_unix_ns": "1792675941401328750",
+      "active_us": 411895,
+      "execution_us": 411895,
+      "elapsed_us": 411895,
+      "open": false,
+      "outcome": "finished",
+      "tokens": {},
+      "charge": "0",
+      "attempts": 1,
+      "failures": 1,
+      "coverage": "complete",
+      "history": "prefix:1",
+      "missing_ordinals": [],
+      "retained": "retained executions 1–1",
+      "totals_cover": [
+        {
+          "execution_id": "1792675940832-85555-e2869ee3",
+          "ordinal": 1,
+          "open": false
+        }
+      ]
+    }
+  ],
+  "unreadable": []
+}

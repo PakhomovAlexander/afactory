@@ -1,0 +1,138 @@
+{
+ "changed_paths": [
+  {
+   "finalized": null,
+   "path": "changelog.d/p10-strict-task-result-set-order-repair.md",
+   "repaired": "986 c7f0fab3da90d229b168bdb877bc33673e1c6a08eade7909e979e1737555978d"
+  },
+  {
+   "finalized": null,
+   "path": "changelog.d/p9-receipt-validation-and-retained-evidence-repairs.md",
+   "repaired": "1144 90a4c0938eb45fbbbbf77f01f17ca128d5591c4cb326725e495d3c45f63934ff"
+  },
+  {
+   "finalized": "46226 8d55e98d6f6ad9f2da6507b5cc8170183532ea0c62a6b49b8804308ced9891ed",
+   "path": "crates/af/tests/it/perf_kernel_measure.rs",
+   "repaired": "59849 5985fe48a90fd35143d9b9aceef1eab6f14ae821a69d1120badb7ac3780d05e2"
+  },
+  {
+   "finalized": "12792 ba1edee0ea42855892aa18bcce6c9952d9170ef3402d1901c0e886b41fc1b1b0",
+   "path": "docs/adr/0172-bind-kernel-receipts-to-their-task-results-word-reports-by-what-was-admitted-and-retain-a-real-local-run.md",
+   "repaired": "13283 845b66323ceac5ba7e7848f1820c29d48b94a467e2d7a176424e3ced7bddddfe"
+  },
+  {
+   "finalized": null,
+   "path": "docs/adr/0173-validate-kernel-receipts-as-the-kernel-does-and-restore-the-retained-history.md",
+   "repaired": "7985 b9027b7285abea07af44d9b2feed0696a125f37054b91462215a083a69012593"
+  },
+  {
+   "finalized": null,
+   "path": "docs/adr/0174-read-a-task-result-s-sets-in-the-kernel-s-order-and-reconcile-a-second-repair-through-the-first.md",
+   "repaired": "5821 2943223b3ccba1a7bf387be634f804ba5389e2d1a2b0cb4376ab04fc64462582"
+  },
+  {
+   "finalized": "25384 ce032786205391d54513fab9530afb51ba6781dd92583afa06340f23007b3c73",
+   "path": "docs/adr/README.md",
+   "repaired": "25780 f40c6df83a590cda0d3d1687f4004044a07b6d7935904d5943b266e9ed2006c1"
+  },
+  {
+   "finalized": "5119 419f60dbe27ca9e5ec9f989fab7d25443ce65ca96dee664a3f7e50d775d2c216",
+   "path": "fixtures/performance/kernel-measure/README.md",
+   "repaired": "5662 1d7aced2113fb4140d70ff9edc9a3fc9d6dbe7f2f10b767b9a843a6c1ea025ab"
+  },
+  {
+   "finalized": "38581 aa4483e93f028d28a8e81f2c4d75d6c5f54aec8a98694cad4fe5b976bbf525f2",
+   "path": "fixtures/performance/kernel-measure/code-policy-measures.toml",
+   "repaired": "38581 7d268347f8ee51003ddee36a533933d848dc7d3845415cc12c410f0720063a4d"
+  },
+  {
+   "finalized": "86486 7da92c3ddf5c2ff333ecbf93e237caf8135c2c3976a51b3c844a3dd6449924c5",
+   "path": "fixtures/performance/kernel-measure/inventory.json",
+   "repaired": "88913 53b2a6301aa98d91e3ec84e49846b28e711ac6dd51b02834a411a4de9fec39d0"
+  },
+  {
+   "finalized": "51627 4a6c093926c1fdad2e49a10df219fedee633a8f6924d939f9eab658d5b80498c",
+   "path": "fixtures/performance/schema/index.json",
+   "repaired": "54002 60ab8255b25b5e3cd46df00b16ff5b180dd7f6d4c564540163937a748ff76866"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-conclusion.json",
+   "repaired": "18965 35cc8dfbc163075b3c8eb4cf48de34f830b9c774555981b5d114bb2da2163278"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-operation.json",
+   "repaired": "18957 600baa030b4fbcb9e2e77a7a0c96065934ddce82d56bbcf55ef3da35f33ee518"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-blank-producer.json",
+   "repaired": "18967 59d6dc2837e13a1d9a3f2a0d04ada89e5c2375ee7358fe4276655ce70dc4d5d5"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-duplicate-evidence.json",
+   "repaired": "19063 f58d08d36047b4df448371a53d0eaec8d782096b4e69b46d343e8c9bf0d08745"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-duplicate-missing-obligations.json",
+   "repaired": "19000 a65c5934485206aa0376604853f6c255d1e5e17f17e2dc52f646ae30da755dd8"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-empty-output.json",
+   "repaired": "19232 0c16b13f642c039244893e6a265409a5dc3a9fc86863e97a91d67e185fbc30ce"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-output-cardinality.json",
+   "repaired": "19067 023460958744bf83826aabc39701ea25883291c93fcab641c6b8243a307651b9"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-satisfied-incomplete.json",
+   "repaired": "18979 1fcd5775929b5299fa3b0a3a6ceb97bb9b50d6b550c235e329780884852dc67c"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-stream-part-bytes.json",
+   "repaired": "84414 d4eace1b9910b7e5538df8e02ff69dec15f32eff16fbbd2ae19218339eeb7656"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-unsorted-evidence.json",
+   "repaired": "18978 91a50352b74ab59bb66311e13199e3c3954be64e4bf780f383b53d2ce56ea960"
+  },
+  {
+   "finalized": null,
+   "path": "fixtures/performance/schema/kernel-receipts/invalid-unsorted-missing-obligations.json",
+   "repaired": "19000 ec2c12f317b828172269e6bdeebffd8e8281e370b046d611052f21679220006c"
+  },
+  {
+   "finalized": "264549 ab80680db4c168048ef7fb2e5f57a7e696ecf7ab21bc7f74e042ab8402472fe0",
+   "path": "scripts/performance/perflab/contracts.py",
+   "repaired": "268964 93f4a35264af03a63629196512b0a973cba1a65b3575cf2cca4499585d04feb9"
+  },
+  {
+   "finalized": "11465 e11f24d6296f24e2bccdba7cb484138a94b9a26465baaf858265025f6e4d2d4b",
+   "path": "scripts/performance/tests/receipts_fixtures.py",
+   "repaired": "15961 ce8c8759afce065c76a205e39d80dbb946b42f46783719616b542ff0c4eda43c"
+  },
+  {
+   "finalized": null,
+   "path": "scripts/performance/tests/test_evidence_tools.py",
+   "repaired": "13455 f21b225c553609e6b68baaaf68cb5694c1cc40357c6b5d060510a86b9d50bd35"
+  },
+  {
+   "finalized": "42714 74269f298334cc752692080484299841826574fa8026fa2babb5fd5fa36b50bc",
+   "path": "scripts/performance/tests/test_kernelguard.py",
+   "repaired": "55114 d5a86bdc5f28b9b003fd5fc76aff1a4b638623a6fcb64226712da6e11cf3f05e"
+  }
+ ],
+ "repaired_harness_digest": "sha256:f8c1578cbbdf2b1f12bdd5d49dba6410c911887f4963fa64da760c2bc9c416ac",
+ "unchanged_files": 1896,
+ "unchanged_files_digest": "sha256:4d6a0857647b273e72bd58b9fcd18508ee442b36cbba36c74c3670c9d7f84837",
+ "what": "ADR-0174: each path the repairs changed relative to the tree that measured-source.json reconciled, and the digest of every other file"
+}

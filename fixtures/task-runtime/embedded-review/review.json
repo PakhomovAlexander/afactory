@@ -1,0 +1,21 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "standalone-cli",
+  "kind": "review",
+  "goal": "Review current pagination",
+  "pipeline": {
+    "name": "fixture/review",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "limits": {
+    "tokens": 1000,
+    "max_attempts": 4,
+    "wall_ms": 60000,
+    "verification": {
+      "tokens": 200,
+      "attempts": 3,
+      "wall_ms": 15000
+    }
+  }
+}

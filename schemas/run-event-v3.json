@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:run-event:3",
+  "title": "review.kernel/RunEvent@3 envelope",
+  "description": "The source of truth. One kernel sequencer allocates a monotonic per-run sequence while many reviewers execute concurrently. Events are never edited: a correction is a new compensating event. Large values live in content-addressed artifacts referenced by digest, never inline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "run_id",
+    "sequence",
+    "type",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "#/$defs/id"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "description": "Monotonic per-run sequence allocated by the single sequencer. Dense and gapless: a gap means loss, not reordering.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "type": {
+      "description": "Closed event type and semantic-version vocabulary. New event kinds and payload versions are explicit additive contract changes.",
+      "type": "string",
+      "enum": [
+        "TaskTransition@6",
+        "TaskExecutionStarted@1",
+        "TaskGateRetried@1",
+        "TaskProviderEvent@1",
+        "CheckCompleted@1",
+        "ChangeAttested@1",
+        "DemandRecorded@1",
+        "DemandWaived@1",
+        "EvidenceAdded@1",
+        "EvidenceReuseAdmitted@1",
+        "EvidenceSatisfied@1",
+        "FindingReported@1",
+        "FindingResolutionChallenged@1",
+        "FindingResolutionRecorded@1",
+        "FindingResolved@1",
+        "FindingsGrouped@1",
+        "FindingsUngrouped@1",
+        "FixVerified@1",
+        "GenerationAdvanced@1",
+        "PolicyTimeAdvanced@1",
+        "SourceCaptured@1",
+        "ProjectRegistered@1",
+        "WorkspaceRegistered@1",
+        "WorkspaceRemoved@1",
+        "WorkspaceDelivered@1",
+        "SurveyRecorded@1",
+        "SurveyFailed@1",
+        "SurveyCollected@1"
+      ]
+    },
+    "occurred_at": {
+      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority \u2014 `sequence` is. Replay must never depend on this field.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "causation_id": {
+      "description": "The event this one was caused by. Absent for a run's first event.",
+      "$ref": "#/$defs/id"
+    },
+    "correlation_id": {
+      "description": "Subject this event is about across its lifetime, e.g. a Finding ID.",
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "payload": {
+      "description": "Type-specific body. Must satisfy the I-JSON numeric domain: finite binary64, integers only within the interoperable safe range, no negative zero.",
+      "type": "object"
+    },
+    "schema": {
+      "const": "review.kernel/RunEvent@3"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskTransition@6"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-transition:6"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskExecutionStarted@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-execution-started:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskGateRetried@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-gate-retried:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskProviderEvent@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-provider-event:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "ShardSetRecorded@1",
+              "SemanticClosureChecked@1"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/recorded_set"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectRegistered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-registered:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceRegistered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-registered:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceRemoved@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-removed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceDelivered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-delivered:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyRecorded@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-recorded:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyFailed@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-failed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyCollected@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-collected:1"
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "type": {
+            "const": "TaskReviewResultSelected@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "description": "Monotonic sortable identifier (ULID-style), lowercase.",
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "recorded_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "record_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "record_id": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

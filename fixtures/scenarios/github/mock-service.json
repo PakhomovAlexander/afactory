@@ -1,0 +1,65 @@
+{
+  "repository": "octo/project",
+  "repository_id": 17,
+  "actor": {
+    "id": 7,
+    "login": "machine-bot"
+  },
+  "revision": "1111111111111111111111111111111111111111",
+  "head": "approved/change",
+  "reviewers": [
+    {
+      "id": 8,
+      "login": "owner",
+      "node_id": "U_8",
+      "type": "User"
+    }
+  ],
+  "protection": {
+    "lock_branch": {
+      "enabled": true
+    },
+    "enforce_admins": {
+      "enabled": true
+    },
+    "allow_deletions": {
+      "enabled": false
+    },
+    "allow_force_pushes": {
+      "enabled": false
+    },
+    "allow_fork_syncing": {
+      "enabled": false
+    }
+  },
+  "prs": {},
+  "issues": {},
+  "effects": [],
+  "statuses": [],
+  "checks": [
+    {
+      "id": 31,
+      "name": "CI",
+      "app": {
+        "id": 4
+      },
+      "head_sha": "1111111111111111111111111111111111111111",
+      "check_suite": {
+        "id": 21
+      },
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "suites": [
+    {
+      "id": 21,
+      "app": {
+        "id": 4
+      },
+      "head_sha": "1111111111111111111111111111111111111111",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}

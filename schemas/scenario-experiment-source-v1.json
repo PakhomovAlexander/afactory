@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:scenario-experiment-source:1",
+  "title": "scenario-experiment-source v1",
+  "required": [
+    "schema",
+    "request_digest",
+    "baseline_snapshot_id",
+    "candidate_snapshot_id",
+    "baseline_content_digest",
+    "candidate_content_digest",
+    "baseline_origin_id",
+    "candidate_origin_id",
+    "repository_id",
+    "baseline_sha",
+    "candidate_sha",
+    "repository"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-experiment-source@1"
+    },
+    "request_digest": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "baseline_snapshot_id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "candidate_snapshot_id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "baseline_content_digest": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "candidate_content_digest": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "baseline_origin_id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "candidate_origin_id": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/digest"
+    },
+    "repository_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "baseline_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]+$"
+    }
+  }
+}

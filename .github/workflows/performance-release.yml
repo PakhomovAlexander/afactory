@@ -1,0 +1,120 @@
+# Release performance handoff (ADR-0180). Every completed run of this repository's Release
+# workflow is checked here, read-only: the run must be the repository's own
+# .github/workflows/release.yml, a push to main that tagged its commit or a pushed release tag,
+# whose published non-draft release names the run's exact SHA and whose `sign and publish` job
+# succeeded in some attempt (a later failed pin retry does not matter). Its identity, the
+# upstream run ID, tag and SHA without the attempt, is claimed once, as an artifact written
+# before any sample; only the first valid claim is measured, and a later run of the same
+# identity links that claim's result or reports it incomplete. An explicit dispatch with
+# remeasure_of measures again under its own claim and keeps the parent claim.
+#
+# The handoff job is one of the laboratory's two jobs with a token (the other is the activation
+# verifier of performance-activation.yml, ADR-0184): this run's own github.token,
+# read-only (contents and Actions), given to its two API steps alone. It downloads no upstream
+# artifact and runs nothing an upstream run produced; it never receives a publishing
+# credential. The measurement is the Performance workflow, called with contents: read and no
+# token, which builds the published tag from Git. Release performance is advisory: nothing
+# here gates or changes publication, a ruleset or branch protection.
+name: Performance release
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_run:
+        description: "The upstream Release workflow run ID to measure again"
+        required: true
+        type: string
+      remeasure_of:
+        description: "The parent claim's key, sha256:..., which stays as it is"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-release-${{ github.event.workflow_run.id || github.event.inputs.release_run }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  handoff:
+    name: release handoff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      measure: ${{ steps.confirm.outputs.measure }}
+      claim_artifact: ${{ steps.handoff.outputs.claim_artifact }}
+    steps:
+      - name: Refuse anything but the default branch's reviewed workflow
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -eu
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "the release handoff runs only from refs/heads/main, not $REF" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the upstream release and read its claim history
+        id: handoff
+        env:
+          AF_PERF_RELEASE_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUTS: ${{ toJSON(github.event.inputs) }}
+        run: |
+          python3 scripts/performance/cli.py ci-release-handoff --repo . \
+            --event-name "$EVENT_NAME" --event "$GITHUB_EVENT_PATH" --inputs "$INPUTS" \
+            --sha "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/handoff" \
+            --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Write the immutable claim before any sample
+        if: steps.handoff.outputs.claim == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.handoff.outputs.claim_artifact }}
+          path: ${{ runner.temp }}/handoff/claim/
+          retention-days: 90
+          if-no-files-found: error
+      - name: Confirm the first valid claim
+        id: confirm
+        if: steps.handoff.outputs.claim == 'true'
+        env:
+          AF_PERF_RELEASE_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/performance/cli.py ci-release-confirm --handoff "$RUNNER_TEMP/handoff" \
+            --repository "$GITHUB_REPOSITORY" \
+            --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain the handoff decision, failed or not
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-release-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/handoff/handoff.json
+            ${{ runner.temp }}/handoff/confirm.json
+          retention-days: 90
+          if-no-files-found: ignore
+
+  measure:
+    name: measure the release
+    needs: handoff
+    if: needs.handoff.outputs.measure == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/performance.yml
+    with:
+      release_claim: ${{ needs.handoff.outputs.claim_artifact }}

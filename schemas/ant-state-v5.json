@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:ant-state:5",
+  "title": "ant-state v5",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "pin",
+    "state",
+    "changes",
+    "next_day",
+    "last_tick_unix_ms",
+    "occurrences"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ant-state@5"
+    },
+    "pin": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/AntPin"
+    },
+    "state": {
+      "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          {
+            "$ref": "urn:af:schema:scenario:5#/$defs/Enabled"
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "minItems": 1
+    },
+    "next_day": {
+      "type": "integer"
+    },
+    "last_tick_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "occurrences": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:5#/$defs/Occurrence"
+      }
+    }
+  }
+}

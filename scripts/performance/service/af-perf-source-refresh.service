@@ -1,0 +1,22 @@
+# Controller-only source polling. The compute account cannot read this account's credentials.
+[Unit]
+Description=Refresh AF performance source objects (no execution)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=af-perf-source
+Group=af-perf-readers
+UMask=0027
+EnvironmentFile=/etc/af-perf/source-token.env
+ExecStart=/usr/bin/git -c core.hooksPath=/dev/null -C /var/lib/af-perf-executor/source.git fetch --prune --quiet origin +refs/heads/main:refs/heads/main +refs/tags/*:refs/tags/*
+TimeoutStartSec=5min
+KillMode=control-group
+MemoryMax=1G
+TasksMax=64
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/af-perf-executor/source.git

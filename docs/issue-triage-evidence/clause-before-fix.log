@@ -1,0 +1,40 @@
+Original production SHA-256: f52e8ae4fb7e206c1e6c94668abc54555b248bc727c49b1d1b850992dc9ba363
+Current tests SHA-256: df7e49944b83bf1949f869440c4da4bac09173493fe4ee5327e32f7c56ab8775
+test_captured_questions_disavowals_and_reported_status_have_zero_sweep_effects (clause_tests.CompleteClauses) ... FAIL
+test_captured_bulleted_status_completion_publishes_once (clause_tests.CompleteClauses) ... FAIL
+
+======================================================================
+FAIL: test_captured_questions_disavowals_and_reported_status_have_zero_sweep_effects (clause_tests.CompleteClauses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-45985-KQiOGB/tree/scripts/test-backlog-triage.py", line 389, in test_captured_questions_disavowals_and_reported_status_have_zero_sweep_effects
+    self.assertEqual(positive, [])
+AssertionError: Lists differ: [{'citation': 'changelog.d/nonasserted.md:[575 chars]85'}] != []
+
+First list contains 3 additional elements.
+First extra element 0:
+{'citation': 'changelog.d/nonasserted.md:1\nFixed #432?', 'path': 'changelog.d/nonasserted.md', 'line': 1, 'text_sha256': 'bc198d0b62632ffbe0689b09c19f1cccf5d34d2f31f45964f5d1e784588af4b0'}
+
+Diff is 710 characters long. Set self.maxDiff to None to see it.
+
+======================================================================
+FAIL: test_captured_bulleted_status_completion_publishes_once (clause_tests.CompleteClauses)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-45985-KQiOGB/tree/scripts/test-backlog-triage.py", line 429, in test_captured_bulleted_status_completion_publishes_once
+    self.assert_captured_status_published_once(1)
+  File "/private/var/folders/f9/yd4dw2z57px3y_30m61l4r_c0000gn/T/af-sandbox-45985-KQiOGB/tree/scripts/test-backlog-triage.py", line 413, in assert_captured_status_published_once
+    self.assertEqual([w[0] for w in writes], ['labels', 'comment'])
+AssertionError: Lists differ: [] != ['labels', 'comment']
+
+Second list contains 2 additional elements.
+First extra element 0:
+'labels'
+
+- []
++ ['labels', 'comment']
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.438s
+
+FAILED (failures=2)
