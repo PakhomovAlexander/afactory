@@ -69,20 +69,36 @@ fn write_value(value: &Value, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
             out.push(b']');
         }
         Value::Object(fields) => {
-            // RFC 8785 orders members by their UTF-16 code units, which is NOT byte order for
-            // anything outside the BMP. Sorting by `str` would silently disagree on such keys.
-            let mut keys: Vec<&String> = fields.keys().collect();
-            keys.sort_by(|a, b| utf16_cmp(a, b));
-            out.push(b'{');
-            for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    out.push(b',');
+            // Check the actual iterator order: serde_json may preserve insertion order.
+            // The same total order as the fallback sort admits ASCII and Unicode keys alike,
+            // including empty/singleton objects, without allocating keys or looking up values.
+            if fields.keys().is_sorted_by(|a, b| utf16_cmp(a, b).is_le()) {
+                out.push(b'{');
+                for (index, (key, value)) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push(b',');
+                    }
+                    write_string(key, out);
+                    out.push(b':');
+                    write_value(value, out)?;
                 }
-                write_string(key, out);
-                out.push(b':');
-                write_value(&fields[key], out)?;
+                out.push(b'}');
+            } else {
+                // RFC 8785 orders members by their UTF-16 code units, which is NOT byte order for
+                // anything outside the BMP. Sorting by `str` would silently disagree on such keys.
+                let mut keys: Vec<&String> = fields.keys().collect();
+                keys.sort_by(|a, b| utf16_cmp(a, b));
+                out.push(b'{');
+                for (index, key) in keys.into_iter().enumerate() {
+                    if index > 0 {
+                        out.push(b',');
+                    }
+                    write_string(key, out);
+                    out.push(b':');
+                    write_value(&fields[key], out)?;
+                }
+                out.push(b'}');
             }
-            out.push(b'}');
         }
     }
     Ok(())
@@ -275,6 +291,63 @@ mod tests {
             String::from_utf8(canonicalize(&value).unwrap()).unwrap(),
             r#"{"a":{"c":true,"d":[1,2]},"b":1}"#
         );
+    }
+
+    #[test]
+    fn ascii_member_orders_keep_exact_bytes_and_content_identity() {
+        // Include an empty object, a Unicode singleton, prefixes and escaped keys/values.
+        let expected =
+            r#"{"":null,"\n":"quote\"slash\\","a":{},"aa":{"𐀀":"é"},"z":[true,false,0]}"#;
+        for input in [
+            expected,
+            r#"{"z":[true,false,0],"aa":{"𐀀":"é"},"a":{},"\n":"quote\"slash\\","":null}"#,
+            r#"{"":null,"\n":"quote\"slash\\","a":{},"z":[true,false,0],"aa":{"𐀀":"é"}}"#,
+        ] {
+            let value: Value = serde_json::from_str(input).unwrap();
+            assert_eq!(canonicalize(&value).unwrap(), expected.as_bytes());
+            assert_eq!(
+                content_id(&value).unwrap(),
+                "sha256:79e8c2b7d3f4787842fafc9faff83ed6fee8815d1ba0fc3ce0a4b6038d334751"
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_member_orders_keep_exact_utf16_bytes() {
+        let entries = [
+            ("é", 1),
+            ("\u{10000}", 2),
+            ("\u{1d400}", 3),
+            ("\u{e000}", 4),
+            ("\u{ff3a}", 5),
+        ];
+        let expected = "{\"é\":1,\"\u{10000}\":2,\"\u{1d400}\":3,\"\u{e000}\":4,\"\u{ff3a}\":5}";
+        // Canonical, reversed, and UTF-8/scalar order (which differs across the BMP boundary).
+        for order in [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [0, 3, 4, 1, 2]] {
+            let mut fields = serde_json::Map::new();
+            for index in order {
+                let (key, value) = entries[index];
+                fields.insert(key.into(), Value::from(value));
+            }
+            assert_eq!(
+                canonicalize(&Value::Object(fields)).unwrap(),
+                expected.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn number_refusal_follows_canonical_member_order() {
+        let unrepresentable: Value = serde_json::from_str("1e21").unwrap();
+        let expected = canonicalize(&unrepresentable).unwrap_err();
+        for value in [
+            json!({ "a": { "x": 1e21 }, "z": 1e-7 }),
+            json!({ "z": 1e-7, "a": { "x": 1e21 } }),
+            json!({ "\u{10000}": 1e21, "\u{e000}": 1e-7 }),
+            json!({ "\u{e000}": 1e-7, "\u{10000}": 1e21 }),
+        ] {
+            assert_eq!(canonicalize(&value).unwrap_err(), expected);
+        }
     }
 
     #[test]
