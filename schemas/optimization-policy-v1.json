@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-policy:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project_id", "strategy", "max_sessions", "max_raw_bytes", "max_record_bytes", "max_normalized_bytes"],
+  "properties": {
+    "schema": {"const": "af.optimization-policy/1"},
+    "project_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "strategy": {"enum": ["light", "heavy"]},
+    "max_sessions": {"type": "integer", "minimum": 1, "maximum": 200},
+    "max_raw_bytes": {"$ref": "#/$defs/decimal"},
+    "max_record_bytes": {"$ref": "#/$defs/decimal"},
+    "max_normalized_bytes": {"$ref": "#/$defs/decimal"}
+  },
+  "$defs": {"decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20}}
+}
