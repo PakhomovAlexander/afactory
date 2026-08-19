@@ -136,7 +136,7 @@ fn a_later_execution_does_not_erase_an_earlier_one() {
     );
 
     // The gate runs, fails, someone fixes it, the gate runs again — the shape of round 3 in the
-    // frozen load-runner bundle, where the gate ran five times.
+    // frozen bundle whose gate ran five times.
     runner
         .run_all(&[failing], &mut store, "run", "gate.attempt-1")
         .unwrap();

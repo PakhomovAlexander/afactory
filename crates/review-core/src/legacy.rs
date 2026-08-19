@@ -4,7 +4,8 @@
 //! `.agents/skills/self-review-heavy/scripts/findings.schema.json`. The acceptance corpus for
 //! [`FindingReport`] is a set of frozen real review bundles under
 //! `tools/review-kernel/fixtures/legacy/` — private review data, so the corpus ships only in
-//! the hub it was captured in; the tests that read it skip with a notice when it is absent.
+//! the hub it was captured in, so the tests that read it are `#[ignore]`d rather than skipped
+//! at runtime — cargo shows `ignored`, where a runtime skip would print `ok`.
 //! The bar it set stands: a contract that cannot ingest real reviewer output unchanged is the
 //! wrong contract.
 //!
@@ -12,7 +13,8 @@
 //! against the corpus before being imposed:
 //!
 //! - `fix` was nullable and is now required. A claim with no proposed remedy is one a triager
-//!   cannot act on. No real reviewer ever omitted it — 63 of 63 carry one.
+//!   cannot act on. No real reviewer omitted it: every finding in the proving corpus
+//!   carried one, so requiring it lost nothing.
 //! - `file` was a required string, with the harness substituting the literal path
 //!   `(change-wide)` when a reviewer left it empty. That sentinel shares a namespace with real
 //!   paths, so it is dropped in favour of an empty location list.

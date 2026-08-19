@@ -5,7 +5,7 @@
 //! protect.
 //!
 //! Two corpora prove it. The frozen bundles under `fixtures/legacy/` are real review data, so
-//! they ship only in the hub that captured them and their test skips with a notice when absent.
+//! they ship only in the hub that captured them, and their test is `#[ignore]`d when absent.
 //! The ledgers under `fixtures/synthetic/` were written by the same `ledger.sh` against
 //! constructed cases, carry nothing private, and ship with every checkout — so the importer is
 //! never merely reported as `ok` without having run.
@@ -46,17 +46,15 @@ fn ledgers() -> Vec<(String, String)> {
     out
 }
 
-/// True when no frozen corpus is present. Private data; a checkout without it skips these
-/// tests loudly instead of passing on nothing.
-fn corpus_absent(ledgers: &[(String, String)]) -> bool {
-    if ledgers.is_empty() {
-        eprintln!(
-            "skipped: no frozen legacy corpus under fixtures/legacy/ — private review data, \
-             present only in the hub that captured it (see fixtures/legacy/README.md)"
-        );
-        return true;
-    }
-    false
+/// `#[ignore]` rather than a runtime skip, for the reason spelled out in
+/// `review-core/tests/legacy_corpus.rs`: a runtime skip reports `ok` and cargo hides the
+/// notice, so the absence of a corpus would look exactly like coverage.
+fn require_corpus(ledgers: &[(String, String)]) {
+    assert!(
+        !ledgers.is_empty(),
+        "no frozen legacy corpus under fixtures/legacy/ — this test was run explicitly, so its \
+         corpus must be present (see fixtures/legacy/README.md)"
+    );
 }
 
 /// Every `ledger.jsonl` under `fixtures/synthetic/`, produced by running the real harness.
@@ -161,11 +159,10 @@ fn the_synthetic_ledgers_import() {
 }
 
 #[test]
+#[ignore = "requires a private legacy corpus; see fixtures/legacy/README.md"]
 fn the_whole_frozen_corpus_imports() {
     let all = ledgers();
-    if corpus_absent(&all) {
-        return;
-    }
+    require_corpus(&all);
     for (name, jsonl) in all {
         round_trips(&name, &jsonl);
     }

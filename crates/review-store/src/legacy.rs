@@ -31,7 +31,7 @@ pub const CHANGE_WIDE: &str = "(change-wide)";
 ///
 /// ASCII lowercasing on purpose: the original is `tr '[:upper:]' '[:lower:]'`, which does not
 /// touch non-ASCII. Unicode lowercasing here would silently disagree with every fingerprint the
-/// harness has ever produced — including the 121 in the frozen corpus.
+/// harness has ever produced — including every row of every frozen corpus.
 pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     let file = if file.trim().is_empty() {
         CHANGE_WIDE

@@ -30,17 +30,17 @@ fn corpus_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// True when at least one frozen bundle is present. The corpus is private data; a checkout
-/// without it skips these tests loudly instead of passing on nothing.
-fn corpus_absent(outputs: &[(String, String)]) -> bool {
-    if outputs.is_empty() {
-        eprintln!(
-            "skipped: no frozen legacy corpus under fixtures/legacy/ — private review data, \
-             present only in the hub that captured it (see fixtures/legacy/README.md)"
-        );
-        return true;
-    }
-    false
+/// The corpus is private data, so these tests are `#[ignore]`d rather than skipped at runtime:
+/// a runtime skip reports `ok`, and `cargo test` hides the notice explaining why, so a checkout
+/// with no corpus would show a green acceptance suite that asserted nothing. `ignored` is
+/// visible in cargo's own output. A hub that has a corpus runs them with
+/// `make review-kernel-test-corpus`, and there their absence is a failure, not a skip.
+fn require_corpus(outputs: &[(String, String)]) {
+    assert!(
+        !outputs.is_empty(),
+        "no frozen legacy corpus under fixtures/legacy/ — this test was run explicitly, so its \
+         corpus must be present (see fixtures/legacy/README.md)"
+    );
 }
 
 fn schema_path(name: &str) -> PathBuf {
@@ -112,11 +112,10 @@ fn stage_outputs() -> Vec<(String, String)> {
 /// Every stage output parses under `deny_unknown_fields`, so an unmodelled field fails here
 /// rather than being silently dropped on the way into the kernel.
 #[test]
+#[ignore = "requires a private legacy corpus; see fixtures/legacy/README.md"]
 fn every_stage_output_parses() {
     let outputs = stage_outputs();
-    if corpus_absent(&outputs) {
-        return;
-    }
+    require_corpus(&outputs);
     for (name, text) in outputs {
         let stage: LegacyStageOutput =
             serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -127,11 +126,10 @@ fn every_stage_output_parses() {
 }
 
 #[test]
+#[ignore = "requires a private legacy corpus; see fixtures/legacy/README.md"]
 fn every_finding_converts_and_keeps_its_fix() {
     let outputs = stage_outputs();
-    if corpus_absent(&outputs) {
-        return;
-    }
+    require_corpus(&outputs);
     let mut reports: Vec<FindingReport> = Vec::new();
     for (name, text) in outputs {
         let stage: LegacyStageOutput = serde_json::from_str(&text).unwrap();
@@ -159,6 +157,7 @@ fn every_finding_converts_and_keeps_its_fix() {
 }
 
 #[test]
+#[ignore = "requires a private legacy corpus; see fixtures/legacy/README.md"]
 fn every_converted_report_validates_against_the_schema() {
     let schema: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(schema_path("finding-report-v1.json")).unwrap(),
@@ -168,9 +167,7 @@ fn every_converted_report_validates_against_the_schema() {
         jsonschema::validator_for(&schema).expect("finding-report-v1.json is not a valid schema");
 
     let outputs = stage_outputs();
-    if corpus_absent(&outputs) {
-        return;
-    }
+    require_corpus(&outputs);
     for (name, text) in outputs {
         let stage: LegacyStageOutput = serde_json::from_str(&text).unwrap();
         for (index, report) in stage.into_reports().unwrap().into_iter().enumerate() {
@@ -209,11 +206,15 @@ fn the_contract_holds_on_real_harness_input() {
     let validator =
         jsonschema::validator_for(&schema).expect("finding-report-v1.json is not a valid schema");
 
+    // Two independent refusals, counted apart: the parser rejects a value outside the
+    // contract's enums, and the importer rejects a finding the contract cannot express. One
+    // counter would let either regress to zero while the other kept the total positive.
     let mut converted = 0;
-    let mut refused = 0;
+    let mut refused_by_parser = 0;
+    let mut refused_by_importer = 0;
     for (name, text) in synthetic_stage_outputs() {
         let Ok(stage) = serde_json::from_str::<LegacyStageOutput>(&text) else {
-            refused += 1;
+            refused_by_parser += 1;
             continue;
         };
         let legacy_fixes: Vec<String> = stage
@@ -222,7 +223,7 @@ fn the_contract_holds_on_real_harness_input() {
             .map(|f| f.fix.clone().unwrap_or_default())
             .collect();
         let Ok(reports) = stage.into_reports() else {
-            refused += 1;
+            refused_by_importer += 1;
             continue;
         };
 
@@ -248,5 +249,12 @@ fn the_contract_holds_on_real_harness_input() {
         converted > 0,
         "nothing converted — the happy path is unproven"
     );
-    assert!(refused > 0, "nothing was refused — strictness is unproven");
+    assert!(
+        refused_by_parser > 0,
+        "no stage output was refused by the parser — enum strictness is unproven"
+    );
+    assert!(
+        refused_by_importer > 0,
+        "no stage output was refused by the importer — contract strictness is unproven"
+    );
 }
