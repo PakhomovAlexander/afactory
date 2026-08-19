@@ -1,0 +1,26 @@
+[package]
+name = "review-pipeline"
+description = "Composition: the typed graph driving real capture, sandboxes, checks, reviewers and the ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-attempt = { path = "../review-attempt" }
+review-check = { path = "../review-check" }
+review-core = { path = "../review-core" }
+review-graph = { path = "../review-graph" }
+review-runner = { path = "../review-runner" }
+review-sandbox = { path = "../review-sandbox" }
+review-source-git = { path = "../review-source-git" }
+review-store = { path = "../review-store" }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+
+[dev-dependencies]
+review-config = { path = "../review-config" }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

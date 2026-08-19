@@ -1,0 +1,19 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1.json
+exit=0
+--- stdout
+new=1 dup=0 reopened=0 escalated=0 open=1
+--- stderr
+
+### ledger.sh converged . --clean-rounds 1 --max-rounds 3 --gate major
+exit=0
+--- stdout
+round=1 open_blocking(>=major)=0 new(>=major)_in_last_1_rounds=0
+CONVERGED
+--- stderr
+

@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/f.rs", "line": null, "title": "Config parser accepts a negative timeout", "body": "r1: cosmetic", "fix": "minimal change at src/f.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

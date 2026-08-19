@@ -1,0 +1,1 @@
+{"fp":"d38e3a4f40f8","round":1,"last_seen_round":1,"source":"deep-r1","status":"open","severity":"major","file":"src/a.rs","line":null,"title":"Retry loop can spin forever","body":"deep: no backoff, no cap","confidence":0.9}

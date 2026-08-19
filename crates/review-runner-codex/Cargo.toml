@@ -1,0 +1,24 @@
+[package]
+name = "review-runner-codex"
+description = "The Codex reviewer adapter: a digest-pinned package driving `codex exec` behind the reviewer contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-core = { path = "../review-core" }
+review-runner = { path = "../review-runner" }
+review-store = { path = "../review-store" }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+tempfile = "3.27.0"
+
+[dev-dependencies]
+# Tests build real locked packages; the library itself never touches the config layer.
+review-config = { path = "../review-config" }
+review-sandbox = { path = "../review-sandbox" }
+review-source-git = { path = "../review-source-git" }
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "reviewctl"
+description = "The Review Kernel's CLI: run a pipeline definition against a repository"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-config = { path = "../review-config" }
+review-graph = { path = "../review-graph" }
+review-pipeline = { path = "../review-pipeline" }
+review-runner = { path = "../review-runner" }
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
+review-source-git = { path = "../review-source-git" }
+review-store = { path = "../review-store" }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

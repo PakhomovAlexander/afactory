@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/h.rs", "line": null, "title": "Cache invalidation misses the tombstone", "body": "r1 evidence", "fix": "minimal change at src/h.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

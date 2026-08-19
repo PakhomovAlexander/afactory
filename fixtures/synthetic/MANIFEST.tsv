@@ -1,0 +1,17 @@
+case	harness	final_round	ledger_entries	statuses	last_exit
+check-failure-is-recorded	checks.sh	-	-	-	1
+check-vacuous-run-is-not-a-pass	checks.sh	-	-	-	1
+check-with-no-command-fails-the-run	checks.sh	-	-	-	1
+contested-escalation	ledger.sh	2	1	contested=1	1
+duplicate-later-round	ledger.sh	2	1	open=1	0
+duplicate-same-round	ledger.sh	1	1	open=1	0
+empty-title-skipped-batch-survives	ledger.sh	1	2	open=2	0
+escalation	ledger.sh	2	1	open=1	0
+fix-needs-a-clean-round	ledger.sh	2	1	fixed=1	0
+malformed-severity-rejected	ledger.sh	1	0	-	2
+max-rounds-exhausted	ledger.sh	3	1	open=1	3
+rejected-re-report-higher-severity	ledger.sh	2	1	rejected=1	0
+rejected-re-report-same-severity	ledger.sh	2	1	rejected=1	0
+reopen-after-fix	ledger.sh	2	1	open=1	0
+sub-gate-minor-never-blocks	ledger.sh	1	1	open=1	0
+wontfix-re-report	ledger.sh	2	1	wontfix=1	0

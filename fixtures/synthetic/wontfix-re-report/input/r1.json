@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/g.rs", "line": null, "title": "Legacy codec has no length check", "body": "r1 evidence", "fix": "minimal change at src/g.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

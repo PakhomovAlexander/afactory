@@ -1,0 +1,1 @@
+{"fp":"4d45511bcf03","round":2,"last_seen_round":2,"source":"cross-r2","status":"open","severity":"blocker","file":"src/c.rs","line":null,"title":"Token is logged on auth failure","body":"r2: the log ships to a third party","confidence":0.9,"note":"escalated: re-reported as blocker by cross-r2 in round 2"}

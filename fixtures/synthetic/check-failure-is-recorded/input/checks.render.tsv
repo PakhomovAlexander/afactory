@@ -1,0 +1,2 @@
+ok-check	true
+bad-check	echo "boom" >&2; exit 7

@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/e.rs", "line": null, "title": "Mutex is held across await", "body": "r2: same claim, same rank", "fix": "minimal change at src/e.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

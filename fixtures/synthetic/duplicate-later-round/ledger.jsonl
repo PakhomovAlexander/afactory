@@ -1,0 +1,1 @@
+{"fp":"1a27a7f441bd","round":1,"last_seen_round":2,"source":"deep-r1","status":"open","severity":"major","file":"src/b.rs","line":null,"title":"Unbounded allocation on parse","body":"r1 evidence","confidence":0.9}

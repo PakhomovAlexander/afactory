@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "critical", "file": "src/l.rs", "line": null, "title": "Out-of-enum severity", "body": "should not be ingested", "fix": "minimal change at src/l.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

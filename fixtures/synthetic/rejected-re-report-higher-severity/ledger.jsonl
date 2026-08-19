@@ -1,0 +1,1 @@
+{"fp":"e56169bdd872","round":2,"last_seen_round":2,"source":"cross-r2","status":"rejected","severity":"blocker","file":"src/f.rs","line":null,"title":"Config parser accepts a negative timeout","body":"r2: it disables the deadline entirely","confidence":0.9,"note":"rejected at major: clamped downstream"}

@@ -1,0 +1,1 @@
+{"fp":"c6d277fbabfc","round":2,"last_seen_round":2,"source":"deep-r2","status":"open","severity":"major","file":"src/d.rs","line":null,"title":"Off-by-one truncates the last row","body":"r2: the fix only moved the boundary","confidence":0.9,"note":"reopened: re-reported by deep-r2 in round 2"}

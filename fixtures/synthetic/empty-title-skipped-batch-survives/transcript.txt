@@ -1,0 +1,13 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1.json
+exit=0
+--- stdout
+new=2 dup=0 reopened=0 escalated=0 open=2
+--- stderr
+ledger.sh: add: skipping finding with empty title (source=deep-r1, file='src/m.rs')
+

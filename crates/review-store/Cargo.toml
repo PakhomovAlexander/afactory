@@ -1,0 +1,26 @@
+[package]
+name = "review-store"
+description = "Review Kernel event store: canonical hashing, content-addressed artifacts, the append-only run log, and the rebuildable Findings Ledger projection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-core = { path = "../review-core" }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.10.9"
+
+# fsync(2) without unsafe in this crate: nix wraps the libc call behind a safe API. The CAS
+# must match the log's durability grade (plain fsync), not exceed it — see cas.rs.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", default-features = false, features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

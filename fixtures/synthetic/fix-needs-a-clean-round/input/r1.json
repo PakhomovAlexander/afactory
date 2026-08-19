@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/i.rs", "line": null, "title": "Writer drops the last batch on shutdown", "body": "r1 evidence", "fix": "minimal change at src/i.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

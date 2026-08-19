@@ -1,0 +1,26 @@
+[package]
+name = "review-runner"
+description = "Reviewer adapters and the canonical gather barrier: concurrency without nondeterminism"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-core = { path = "../review-core" }
+review-store = { path = "../review-store" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+
+# killpg without unsafe in this crate: nix wraps the libc call behind a safe API. Unix-only,
+# like the process-group supervision it serves.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.26.1", default-features = false }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

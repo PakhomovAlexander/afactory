@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:artifact-envelope:1",
+  "title": "Artifact envelope",
+  "description": "Every kernel artifact record. content_id hashes the canonical payload bytes; artifact_id hashes the envelope (type, content_id, producer, inputs, subject) under a different domain separator, so identical content stored once still carries distinct provenance records. Payload shape is selected by `type`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "artifact_id", "content_id", "producer", "input_artifacts", "payload"],
+  "properties": {
+    "type": {
+      "description": "Contract type URI and semantic version, e.g. review.kernel/FindingReport@1.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9.]*/[A-Za-z][A-Za-z0-9]*@[1-9][0-9]*$"
+    },
+    "artifact_id": { "$ref": "#/$defs/digest" },
+    "content_id": { "$ref": "#/$defs/digest" },
+    "producer": { "$ref": "#/$defs/producer" },
+    "input_artifacts": {
+      "description": "Exact artifact IDs consumed to produce this record. No ambient inputs.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "subject_snapshot_id": {
+      "description": "The snapshot this artifact is a statement about. Absent only for artifacts that precede a snapshot.",
+      "$ref": "#/$defs/digest"
+    },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "description": "Monotonic sortable identifier (ULID-style), lowercase.",
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "producer": {
+      "description": "Tagged union. Reviewer and other executed output is `attempt` and carries its unique Attempt ID. Deterministic kernel-derived output is `kernel_operation` with a stable operation_id, so re-executing the same canonical operation reproduces the same artifact_id.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "run_id", "node_id", "attempt_id"],
+          "properties": {
+            "kind": { "const": "attempt" },
+            "run_id": { "$ref": "#/$defs/id" },
+            "node_id": { "type": "string", "minLength": 1 },
+            "attempt_id": { "$ref": "#/$defs/id" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "run_id", "operation_id"],
+          "properties": {
+            "kind": { "const": "kernel_operation" },
+            "run_id": { "$ref": "#/$defs/id" },
+            "node_id": { "type": "string", "minLength": 1 },
+            "operation_id": {
+              "description": "Stable canonical operation identity, e.g. a reduction_batch_id or integration_batch_id.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

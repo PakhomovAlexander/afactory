@@ -1,0 +1,2 @@
+{"fp":"8fa3994775e6","round":1,"last_seen_round":1,"source":"deep-r1","status":"open","severity":"major","file":"(change-wide)","line":null,"title":"Whole-change concern: no rollback path","body":"no file — change-wide","confidence":0.9}
+{"fp":"f349f73aeb33","round":1,"last_seen_round":1,"source":"deep-r1","status":"open","severity":"minor","file":"src/m.rs","line":null,"title":"Real finding","body":"must survive its bad sibling","confidence":0.9}

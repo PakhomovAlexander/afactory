@@ -1,0 +1,1 @@
+{"fp":"d090348956f6","round":1,"last_seen_round":2,"source":"deep-r1","status":"rejected","severity":"major","file":"src/e.rs","line":null,"title":"Mutex is held across await","body":"r1 evidence","confidence":0.9,"note":"not a defect: the executor is single-threaded here"}

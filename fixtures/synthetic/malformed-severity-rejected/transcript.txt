@@ -1,0 +1,12 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1-bad.json
+exit=2
+--- stdout
+--- stderr
+ledger.sh: add: input/r1-bad.json violates the findings schema (severity must be blocker|major|minor; file/title/body required)
+

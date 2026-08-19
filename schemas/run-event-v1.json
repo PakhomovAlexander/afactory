@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:run-event:1",
+  "title": "RunEvent@1 envelope",
+  "description": "The source of truth. One kernel sequencer allocates a monotonic per-run sequence while many reviewers execute concurrently. Events are never edited: a correction is a new compensating event. Large values live in content-addressed artifacts referenced by digest, never inline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "run_id", "sequence", "type", "occurred_at", "payload"],
+  "properties": {
+    "event_id": { "$ref": "#/$defs/id" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "sequence": {
+      "description": "Monotonic per-run sequence allocated by the single sequencer. Dense and gapless: a gap means loss, not reordering.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "type": {
+      "description": "Event type and semantic version, e.g. FindingReported@1. The vocabulary is closed by design — it is fixed in the phase that defines each event's payload, alongside the event store. Until then this is shape-checked, not enumerated, so the schema cannot lie about being complete.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9]*@[1-9][0-9]*$"
+    },
+    "occurred_at": {
+      "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority — `sequence` is. Replay must never depend on this field.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "node_id": { "type": "string", "minLength": 1 },
+    "attempt_id": { "$ref": "#/$defs/id" },
+    "causation_id": {
+      "description": "The event this one was caused by. Absent for a run's first event.",
+      "$ref": "#/$defs/id"
+    },
+    "correlation_id": {
+      "description": "Subject this event is about across its lifetime, e.g. a Finding ID.",
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "payload": {
+      "description": "Type-specific body. Must satisfy the I-JSON numeric domain: finite binary64, integers only within the interoperable safe range, no negative zero.",
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "id": {
+      "description": "Monotonic sortable identifier (ULID-style), lowercase.",
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    }
+  }
+}

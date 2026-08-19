@@ -1,0 +1,11 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/m.rs", "line": null, "title": "   ", "body": "empty title — must be skipped", "fix": "minimal change at src/m.rs", "confidence": 0.9},
+    {"severity": "major", "file": "", "line": null, "title": "Whole-change concern: no rollback path", "body": "no file — change-wide", "fix": "minimal change at ", "confidence": 0.9},
+    {"severity": "minor", "file": "src/m.rs", "line": null, "title": "Real finding", "body": "must survive its bad sibling", "fix": "minimal change at src/m.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

@@ -1,0 +1,44 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1.json
+exit=0
+--- stdout
+new=1 dup=0 reopened=0 escalated=0 open=1
+--- stderr
+
+### ledger.sh resolve . 3f09115e70ac fixed --note flush on drop
+exit=0
+--- stdout
+3f09115e70ac → fixed
+--- stderr
+
+### ledger.sh converged . --clean-rounds 1 --max-rounds 3 --gate major
+exit=1
+--- stdout
+round=1 open_blocking(>=major)=0 new(>=major)_in_last_1_rounds=1
+NOT CONVERGED
+--- stderr
+
+### ledger.sh bump .
+exit=0
+--- stdout
+2
+--- stderr
+
+### ledger.sh add . --source deep-r2 input/r2-empty.json
+exit=0
+--- stdout
+new=0 dup=0 reopened=0 escalated=0 open=0
+--- stderr
+
+### ledger.sh converged . --clean-rounds 1 --max-rounds 3 --gate major
+exit=0
+--- stdout
+round=2 open_blocking(>=major)=0 new(>=major)_in_last_1_rounds=0
+CONVERGED
+--- stderr
+

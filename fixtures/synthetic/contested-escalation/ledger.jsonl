@@ -1,0 +1,1 @@
+{"fp":"700070346fec","round":2,"last_seen_round":2,"source":"cross-r2","status":"contested","severity":"blocker","file":"src/h.rs","line":null,"title":"Cache invalidation misses the tombstone","body":"r2: stale reads are user-visible","confidence":0.9,"note":"escalated: re-reported as blocker by cross-r2 in round 2"}

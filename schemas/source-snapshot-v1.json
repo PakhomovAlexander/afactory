@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:source-snapshot:1",
+  "title": "SourceSnapshot@1 payload",
+  "description": "Immutable identification of source CONTENT, never a branch. The snapshot's own identity is the envelope content_id; branch and PR labels are metadata on a ReviewTarget and carry no authority. Capture and materialization run offline through sanitized plumbing, so configuration cannot change content identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository_id", "vcs", "capture", "content_digest"],
+  "properties": {
+    "repository_id": {
+      "description": "Stable identity of the repository this content came from, independent of clone path or remote URL.",
+      "type": "string",
+      "minLength": 1
+    },
+    "vcs": {
+      "description": "Backing version-control system. The first adapter is Git-only; core contracts carry no branch commands or PR-provider types.",
+      "enum": ["git"]
+    },
+    "capture": { "$ref": "#/$defs/capture" },
+    "content_digest": {
+      "description": "Digest over the canonical ordered manifest of included content. Two captures of identical content agree here regardless of host or repository configuration.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "parent_snapshot_id": {
+      "description": "Present when this snapshot was DERIVED, e.g. S1 produced by integrating a validated patch into S0. An accepted patch never mutates its base.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_revision": {
+      "description": "Upstream revision this content corresponds to (a Git commit ID), when one exists. Absent for a synthetic worktree capture. Metadata for humans and provenance — not identity.",
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_manifest": {
+      "description": "Content object holding the ordered path/mode/identity/digest manifest. Kept out of the event stream by reference.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "submodules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/submodule" }
+    }
+  },
+  "$defs": {
+    "capture": {
+      "description": "How the content was admitted. A best-effort copy is deliberately NOT a capture kind: it may serve as untrusted diagnostic input, but it can never create a target eligible for convergence or automatic integration.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tree_id"],
+          "properties": {
+            "kind": { "const": "committed" },
+            "tree_id": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tree_id", "boundary"],
+          "properties": {
+            "kind": { "const": "synthetic_worktree" },
+            "tree_id": { "type": "string", "minLength": 1 },
+            "boundary": {
+              "description": "Which atomic read boundary admitted the dirty tree. `revalidated` means monitoring started before the first read and two complete manifests plus the index digest matched with no intervening or overflowed change event.",
+              "enum": ["filesystem_snapshot", "revalidated"]
+            },
+            "attempts": {
+              "description": "Capture attempts consumed before admission. Bounded; exhausting the bound fails closed rather than admitting a torn tree.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tree_id", "parent_snapshot_id", "integration_batch_id"],
+          "properties": {
+            "kind": { "const": "derived" },
+            "tree_id": { "type": "string", "minLength": 1 },
+            "parent_snapshot_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "integration_batch_id": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "submodule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "revision"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "included": {
+          "description": "Whether the submodule's content is part of this snapshot. Implicit recursion is disabled during capture, so this is always an explicit policy outcome.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

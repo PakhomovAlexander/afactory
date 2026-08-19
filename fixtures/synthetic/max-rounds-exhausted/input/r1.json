@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "blocker", "file": "src/j.rs", "line": null, "title": "Replica can serve reads before catching up", "body": "r1 evidence", "fix": "minimal change at src/j.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

@@ -1,0 +1,7 @@
+### checks.sh --file input/checks.render.tsv --out .
+exit=1
+--- stdout
+checks: 0/0 passed
+--- stderr
+checks.sh: no checks executed — empty or comment-only TSV; a vacuous run is not a pass
+

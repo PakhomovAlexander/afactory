@@ -1,0 +1,11 @@
+[package]
+name = "review-graph"
+description = "The typed pipeline graph: named ports, deterministic planning, and gating that suppresses dispatch structurally"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

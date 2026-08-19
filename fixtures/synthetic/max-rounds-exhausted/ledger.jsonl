@@ -1,0 +1,1 @@
+{"fp":"9bf33c2e85d1","round":1,"last_seen_round":1,"source":"deep-r1","status":"open","severity":"blocker","file":"src/j.rs","line":null,"title":"Replica can serve reads before catching up","body":"r1 evidence","confidence":0.9}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:check-result:1",
+  "title": "CheckResult@1 payload",
+  "description": "One execution of one check, recorded per attempt. The shell harness wrote a single checks.tsv and truncated it at the start of every run, so 'the checks were green' only ever described the last execution and every earlier one was erased in place. Here each execution is its own immutable artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "status", "args"],
+  "properties": {
+    "name": {
+      "description": "The check's identity within its pipeline.",
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "description": "`not_run` is the load-bearing one: a check that could not execute — missing program, unreachable host, a selector matching nothing — is NOT a pass, and must be representable as its own outcome rather than collapsing into failure or, worse, into silence.",
+      "enum": ["passed", "failed", "not_run"]
+    },
+    "exit_code": {
+      "description": "Absent exactly when the check never ran.",
+      "type": "integer",
+      "minimum": -256,
+      "maximum": 256
+    },
+    "reason": {
+      "description": "Why a `not_run` check could not execute. Required for that status; a check that did not run without a stated reason is indistinguishable from one nobody defined.",
+      "type": "string",
+      "minLength": 1
+    },
+    "program": {
+      "description": "The executable, always a trusted literal from project configuration and never derived from anything under review. Absent only when the check named no program at all — a malformed definition has nothing to record here, and an empty string would claim it did.",
+      "type": "string",
+      "minLength": 1
+    },
+    "args": {
+      "description": "The rendered argument vector, each slot carrying its provenance. Kept in the record so a reviewer of the review can see exactly what ran, including which values came from untrusted input.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/arg" }
+    },
+    "stdout": { "$ref": "#/$defs/digest" },
+    "stderr": { "$ref": "#/$defs/digest" },
+    "required": {
+      "description": "Whether the gate blocks on this check. A required check that is `failed` or `not_run` fails the gate.",
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "arg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "provenance"],
+      "properties": {
+        "value": { "type": "string" },
+        "provenance": {
+          "description": "`literal` comes from trusted configuration and may be an option. `untrusted` is derived from the change under review — a path from the diff, a selector from a reviewer — and can never occupy an option position, whatever it looks like.",
+          "enum": ["literal", "untrusted"]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "not_run" } }, "required": ["status"] },
+      "then": { "required": ["reason"], "not": { "required": ["exit_code"] } },
+      "else": { "required": ["exit_code", "program"] }
+    }
+  ]
+}

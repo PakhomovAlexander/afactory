@@ -1,0 +1,31 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1.json
+exit=0
+--- stdout
+new=1 dup=0 reopened=0 escalated=0 open=1
+--- stderr
+
+### ledger.sh resolve . d090348956f6 rejected --note not a defect: the executor is single-threaded here
+exit=0
+--- stdout
+d090348956f6 → rejected
+--- stderr
+
+### ledger.sh bump .
+exit=0
+--- stdout
+2
+--- stderr
+
+### ledger.sh add . --source cross-r2 input/r2.json
+exit=0
+--- stdout
+new=0 dup=1 reopened=0 escalated=0 open=0
+--- stderr
+ledger.sh: add: re-report of rejected finding d090348956f6 by cross-r2 — re-triage manually if the rejection no longer holds: Mutex is held across await
+

@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "blocker", "file": "src/c.rs", "line": null, "title": "Token is logged on auth failure", "body": "r2: the log ships to a third party", "fix": "minimal change at src/c.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

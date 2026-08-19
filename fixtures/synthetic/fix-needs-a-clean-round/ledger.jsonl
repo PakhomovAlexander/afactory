@@ -1,0 +1,1 @@
+{"fp":"3f09115e70ac","round":1,"last_seen_round":1,"source":"deep-r1","status":"fixed","severity":"major","file":"src/i.rs","line":null,"title":"Writer drops the last batch on shutdown","body":"r1 evidence","confidence":0.9,"note":"flush on drop"}

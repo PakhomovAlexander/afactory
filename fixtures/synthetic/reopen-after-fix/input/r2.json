@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/d.rs", "line": null, "title": "Off-by-one truncates the last row", "body": "r2: the fix only moved the boundary", "fix": "minimal change at src/d.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

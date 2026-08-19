@@ -1,0 +1,38 @@
+### ledger.sh init .
+exit=0
+--- stdout
+ledger initialized at ./ledger.jsonl (round 1)
+--- stderr
+
+### ledger.sh add . --source deep-r1 input/r1.json
+exit=0
+--- stdout
+new=1 dup=0 reopened=0 escalated=0 open=1
+--- stderr
+
+### ledger.sh resolve . 700070346fec contested --note author disputes: claims the tombstone is written first
+exit=0
+--- stdout
+700070346fec → contested
+--- stderr
+
+### ledger.sh bump .
+exit=0
+--- stdout
+2
+--- stderr
+
+### ledger.sh add . --source cross-r2 input/r2.json
+exit=0
+--- stdout
+escalated 700070346fec (major → blocker): Cache invalidation misses the tombstone
+new=0 dup=0 reopened=0 escalated=1 open=0
+--- stderr
+
+### ledger.sh converged . --clean-rounds 1 --max-rounds 3 --gate major
+exit=1
+--- stdout
+round=2 open_blocking(>=major)=1 new(>=major)_in_last_1_rounds=1
+NOT CONVERGED
+--- stderr
+

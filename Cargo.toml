@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/review-core", "crates/review-store", "crates/review-source-git", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/reviewctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:finding-report:1",
+  "title": "FindingReport@1 payload",
+  "description": "One immutable claim by one reviewer attempt about one subject snapshot. Reports are never merged or edited: the projection may ATTACH a report to a Finding, but attachment groups claims for adjudication and does not collapse their verification obligations. The reporting reviewer, node, attempt and subject snapshot live in the artifact envelope, not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "severity", "locations", "body", "fix", "confidence"],
+  "properties": {
+    "title": {
+      "description": "Stable one-line claim. A dedupe hint only — never proof of claim identity.",
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "description": "Reported rank. Monotone under re-report: a later report may raise it, never lower it.",
+      "enum": ["blocker", "major", "minor"]
+    },
+    "locations": {
+      "description": "Where the claim applies. Empty means change-wide; the legacy harness spelled that as the literal path '(change-wide)', which this contract does not carry into a path field.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/location" }
+    },
+    "body": {
+      "description": "The argument: what is wrong and why, with enough detail to reproduce or refute.",
+      "type": "string",
+      "minLength": 1
+    },
+    "fix": {
+      "description": "The reviewer's proposed remedy. Required — the legacy findings schema also required it, and the legacy ledger then stored it nowhere, which is the field a triager most wants. A patch, if any, is a separate PatchProposal@1.",
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence": {
+      "description": "Reviewer's own confidence. Evidence, not authority: it can never grant auto-apply or resolve a finding.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "failure_trace": {
+      "description": "Verbatim reproduction output, if the claim was reproduced. Large traces belong in a content object referenced from the envelope.",
+      "type": "string"
+    },
+    "rule_id": {
+      "description": "Globally namespaced, versioned rule identity, e.g. review.rules.perf/quadratic-scan@2.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9.]*/[a-z0-9][a-z0-9-]*@[1-9][0-9]*$"
+    },
+    "occurrence_key": {
+      "description": "Stable semantic occurrence key defined by the rule. ONLY an exact occurrence-key match may auto-attach a report to an existing Finding; rule plus location, titles, traces and fuzzy fingerprints yield a candidate requiring policy or an adjudicator.",
+      "type": "string",
+      "minLength": 1
+    },
+    "relations": {
+      "description": "Explicit relations to Findings already present in this attempt's input FindingSet, or to Report IDs from the same selected attempt.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/relation" }
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "description": "Repository-relative path inside the subject snapshot.",
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "description": "1-indexed line. Absent when the claim is about the file as a whole.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "target"],
+      "properties": {
+        "kind": { "enum": ["corroborates", "disputes"] },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": { "enum": ["finding", "report"] },
+            "id": { "type": "string", "minLength": 1 }
+          }
+        },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

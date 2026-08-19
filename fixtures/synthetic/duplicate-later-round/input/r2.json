@@ -1,0 +1,9 @@
+{
+  "verdict": "request-changes",
+  "summary": "synthetic fixture input",
+  "findings": [
+    {"severity": "major", "file": "src/b.rs", "line": null, "title": "Unbounded allocation on parse", "body": "r2 evidence, same rank", "fix": "minimal change at src/b.rs", "confidence": 0.9}
+  ],
+  "benchmark_demands": [],
+  "disputes": []
+}

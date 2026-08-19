@@ -1,0 +1,1 @@
+{"fp":"ae5e7f9d2eac","round":1,"last_seen_round":2,"source":"deep-r1","status":"wontfix","severity":"major","file":"src/g.rs","line":null,"title":"Legacy codec has no length check","body":"r1 evidence","confidence":0.9,"note":"codec is deleted in the next release"}

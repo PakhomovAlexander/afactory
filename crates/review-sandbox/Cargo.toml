@@ -1,0 +1,22 @@
+[package]
+name = "review-sandbox"
+description = "Sandbox providers: materialized trees, sealed mutation capture, and an isolation level a pipeline can refuse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+review-source-git = { path = "../review-source-git" }
+review-store = { path = "../review-store" }
+# Copy-on-write clone (clonefile on macOS, FICLONE on Linux) with a plain-copy fallback, so a
+# snapshot is materialized once per run and each sandbox is a cheap COW clone of it.
+reflink-copy = "0.1.19"
+tempfile = "3.27.0"
+
+[dev-dependencies]
+review-check = { path = "../review-check" }
+
+[lints]
+workspace = true
