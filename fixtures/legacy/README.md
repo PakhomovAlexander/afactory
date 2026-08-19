@@ -35,8 +35,8 @@ directory name.
 
 ## Capturing a corpus in your hub
 
-Read the layout above first: the tests want `findings-<stage>.json` and `ledger.jsonl`, and
-**nothing in this repository writes either of them.**
+Read the layout above first. The tests want `findings-<stage>.json` and `ledger.jsonl`, and
+**nothing in this repository writes that pair.** One half has no producer left at all:
 
 - `bundle.sh` captures the *change under review* — `diff.patch`, `files.txt`, `stats.txt`,
   `commits.txt`, `meta.env`, `untracked.txt`, and the test-selection lists. Useful context to
@@ -58,8 +58,10 @@ To freeze one:
 
 1. Copy the bundle directory in verbatim, never edited. A fixture that has been "fixed"
    proves nothing.
-2. Make sure it carries `findings-<stage>.json` and/or `ledger.jsonl` — a directory with
-   neither is silently not picked up.
+2. Check what it carries. A directory with neither file is silently not picked up. The two
+   tests read the two files independently, so between all the bundles here the directory
+   needs **at least one of each**: with no `findings-<stage>.json` anywhere, the contract
+   test in step 4 fails, and with no `ledger.jsonl` anywhere, the importer test fails.
 3. Record integrity: regenerate `SHA256SUMS`, and verify with `shasum -c SHA256SUMS` from
    this directory.
 4. Run `make review-kernel-test-corpus`, which fails rather than skips if the corpus is not

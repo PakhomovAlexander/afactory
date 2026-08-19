@@ -62,9 +62,9 @@ EOF
 }
 finding() {  # finding <severity> <file> <title> <body> [fix]
   # `fix` is REQUIRED by findings.schema.json. ledger.sh's own validation checks only
-  # severity/file/title/body, so it accepts a finding without one — but a reviewer never
-  # emits that (63 of 63 in the frozen corpus carry a fix), and a fixture that violates the
-  # schema it claims to exercise is not representative input.
+  # severity/file/title/body, so it accepts a finding without one — but every finding in
+  # every corpus this was proved against carried one, and a fixture that violates the schema
+  # it claims to exercise is not representative input.
   printf '    {"severity": "%s", "file": "%s", "line": null, "title": "%s", "body": "%s", "fix": "%s", "confidence": 0.9}' \
     "$1" "$2" "$3" "$4" "${5:-minimal change at $2}"
 }
