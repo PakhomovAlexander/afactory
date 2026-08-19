@@ -76,13 +76,25 @@ the schema claim a completeness it does not have.
 
 ## Acceptance
 
-`tests/legacy_corpus.rs` runs the contracts against real reviewer output: every stage output
-frozen under `fixtures/legacy/` must parse under `deny_unknown_fields`, convert to
-`FindingReport@1`, validate against the schema, and satisfy the I-JSON numeric domain. A contract
-that cannot ingest real output unchanged is the wrong contract. (The corpus it was proved
-against — 19 stage outputs carrying 63 findings from three real review rounds — is private
-review data and stays in the hub that captured it; with no corpus present the tests skip with
-a notice.)
+`tests/legacy_corpus.rs` runs the contracts against real reviewer output. A contract that cannot
+ingest real output unchanged is the wrong contract, and two corpora prove it from different
+sides:
+
+- **`fixtures/legacy/`** — frozen bundles of real reviewer output. Every stage output must parse
+  under `deny_unknown_fields`, convert to `FindingReport@1`, validate against the schema, and
+  satisfy the I-JSON numeric domain. This is private review data and stays in the hub that
+  captured it; with none present those tests skip with a notice.
+- **`fixtures/synthetic/*/input/`** — the stage outputs the real harness actually consumed,
+  including the ones it was built to refuse. These ship with every checkout, so
+  `the_contract_holds_on_real_harness_input` always runs: each output either converts whole,
+  every finding keeping its `fix`, or is refused with a typed error — never a panic, never a
+  half-converted batch. It asserts that both branches occurred, because a corpus that only
+  converts proves nothing about strictness and one that only refuses proves nothing about the
+  happy path.
+
+The second exists because the first cannot ship. A skipped test reports `ok`, and `cargo test`
+hides the notice that says why — so a checkout with no private corpus would have shown a green
+acceptance suite that ran nothing.
 
 The importer is stricter than the legacy schema in two places, each checked against the corpus
 before being imposed:
@@ -123,8 +135,13 @@ printed: every `new= dup= reopened= escalated= open=` tally, every `converged` v
 exit code and both counters, and the final ledger row by row. Cases are discovered from the
 directory, so a new one is covered without touching the test.
 
-`tests/legacy_ledgers.rs` imports every frozen ledger under `fixtures/legacy/` and round-trips
-every row's decisions (121 findings in the corpus it was proved against). `tests/crash_replay.rs` kills the process at each boundary: the projection after
+`tests/legacy_ledgers.rs` imports every frozen ledger under `fixtures/legacy/` and every ledger
+under `fixtures/synthetic/`, written by the same `ledger.sh` and carrying nothing private, so
+the importer is exercised in every checkout.
+It round-trips every row's decisions — and pins the documented loss in both directions: a note
+rides on a resolution, and the importer emits one only for a row that is not `open`, so an open
+row's note is deliberately absent. The frozen bundles are uniformly terminal and only ever
+exercise the first branch; the synthetic ledgers exercise both. `tests/crash_replay.rs` kills the process at each boundary: the projection after
 reopening equals the projection before, a crash between publishing an artifact and appending its
 event leaves collectible garbage rather than a dangling reference, and a refused append does not
 consume a sequence.

@@ -124,8 +124,7 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
     let plan = pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
     assert!(report.complete(), "{:?}", report.outcomes);
-    let out = seen.lock().unwrap().clone();
-    out
+    seen.lock().unwrap().clone()
 }
 
 #[test]

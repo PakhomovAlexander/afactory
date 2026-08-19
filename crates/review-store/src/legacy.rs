@@ -405,8 +405,12 @@ pub fn severity_str(severity: Severity) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Vectors taken from real ledgers, not computed by hand: the first two from a run traced
-    /// through the actual scripts, the third from the frozen load-runner corpus.
+    /// Vectors traced through the actual scripts, not computed by hand — a digest this file
+    /// produced for itself would agree with itself and prove nothing.
+    ///
+    /// Only generic vectors live here. The broad check runs against every row of every ledger
+    /// under `fixtures/synthetic/`, which the real `ledger.sh` wrote and which carries nothing
+    /// private: `tests/legacy_ledgers.rs::the_synthetic_fingerprints_match_the_shell`.
     #[test]
     fn fingerprints_match_the_shell_implementation() {
         assert_eq!(
@@ -416,13 +420,6 @@ mod tests {
         assert_eq!(
             legacy_fingerprint("", "No rollback path for the migration"),
             "a724be9f6afa"
-        );
-        assert_eq!(
-            legacy_fingerprint(
-                "docs/workstreams/hosted-api-load-testing.md",
-                "The first network-capable milestone ships custom targets before the mandatory host and budget guards."
-            ),
-            "708f31cdadc7"
         );
     }
 

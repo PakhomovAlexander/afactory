@@ -1,9 +1,16 @@
 //! Acceptance: the contract must ingest real reviewer output unchanged.
 //!
-//! The corpus is whatever frozen review bundles `fixtures/legacy/` holds — real stage outputs
-//! produced by real reviewers. If `FindingReport@1` cannot express them, the schema is wrong,
-//! not the payloads. The corpus is private review data and ships only in the hub that captured
-//! it; with no bundles present these tests skip with a notice rather than passing vacuously.
+//! Two corpora, because they prove different halves of the same claim.
+//!
+//! `fixtures/legacy/` holds frozen bundles of real reviewer output. If `FindingReport@1`
+//! cannot express them unchanged, the schema is wrong, not the payloads. That corpus is
+//! private review data and ships only in the hub that captured it, so those tests skip with
+//! a notice when it is absent.
+//!
+//! `fixtures/synthetic/` ships with every checkout, and its `input/*.json` are the stage
+//! outputs the real harness actually consumed — including the ones it was built to refuse.
+//! Those tests always run, so a checkout without a private corpus still proves the contract
+//! on real harness input rather than reporting `ok` for tests that asserted nothing.
 
 use std::path::PathBuf;
 
@@ -40,6 +47,40 @@ fn schema_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../schemas")
         .join(name)
+}
+
+/// The synthetic cases' stage inputs: real harness input, public, always present. Every case
+/// directory holds `input/r<N>.json`, one stage output per round.
+fn synthetic_stage_outputs() -> Vec<(String, String)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/synthetic");
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(root)
+        .expect("the synthetic corpus ships with every checkout")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.join("input").is_dir())
+        .collect();
+    cases.sort();
+
+    let mut out = Vec::new();
+    for case in cases {
+        let name = case.file_name().unwrap().to_string_lossy().into_owned();
+        let mut files: Vec<PathBuf> = std::fs::read_dir(case.join("input"))
+            .expect("a case with an input/ directory")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
+        files.sort();
+        for path in files {
+            let label = format!("{name}/{}", path.file_name().unwrap().to_string_lossy());
+            out.push((label, std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "the synthetic corpus carries no stage inputs"
+    );
+    out
 }
 
 fn stage_outputs() -> Vec<(String, String)> {
@@ -147,4 +188,65 @@ fn every_converted_report_validates_against_the_schema() {
             json::admit(&value).unwrap_or_else(|e| panic!("{name} finding {index}: {e}"));
         }
     }
+}
+
+/// The contract, exercised on real harness input in every checkout — including the checkouts
+/// that will never hold a private corpus.
+///
+/// Each synthetic stage output either converts whole, every finding keeping its `fix` and
+/// validating against `FindingReport@1`, or is refused. Refusal is a typed error, never a
+/// panic and never a half-converted batch: the importer is all-or-nothing per stage.
+///
+/// Both counters are asserted, because a one-sided result is vacuous in the other direction.
+/// A corpus that only converts proves nothing about strictness; one that only refuses proves
+/// nothing about the happy path.
+#[test]
+fn the_contract_holds_on_real_harness_input() {
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(schema_path("finding-report-v1.json")).unwrap(),
+    )
+    .unwrap();
+    let validator =
+        jsonschema::validator_for(&schema).expect("finding-report-v1.json is not a valid schema");
+
+    let mut converted = 0;
+    let mut refused = 0;
+    for (name, text) in synthetic_stage_outputs() {
+        let Ok(stage) = serde_json::from_str::<LegacyStageOutput>(&text) else {
+            refused += 1;
+            continue;
+        };
+        let legacy_fixes: Vec<String> = stage
+            .findings
+            .iter()
+            .map(|f| f.fix.clone().unwrap_or_default())
+            .collect();
+        let Ok(reports) = stage.into_reports() else {
+            refused += 1;
+            continue;
+        };
+
+        assert_eq!(reports.len(), legacy_fixes.len(), "{name}: all-or-nothing");
+        for (report, fix) in reports.iter().zip(&legacy_fixes) {
+            assert_eq!(&report.fix, fix, "{name}: fix must survive the import");
+            assert!(
+                !report.title.trim().is_empty(),
+                "{name}: empty title admitted"
+            );
+            assert!(
+                !report.body.trim().is_empty(),
+                "{name}: empty body admitted"
+            );
+            let value = serde_json::to_value(report).unwrap();
+            assert!(validator.is_valid(&value), "{name}: fails FindingReport@1");
+            json::admit(&value).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        converted += 1;
+    }
+
+    assert!(
+        converted > 0,
+        "nothing converted — the happy path is unproven"
+    );
+    assert!(refused > 0, "nothing was refused — strictness is unproven");
 }

@@ -10,6 +10,28 @@ private project data that must not travel with a public template. The tests that
 this directory skip with a notice when it is empty; they run for real only in a hub that
 has captured its own corpus.
 
+That skip is not a coverage hole, because it is not the only coverage. The same contracts
+are asserted in every checkout against `../synthetic/`, whose `input/*.json` and
+`ledger.jsonl` are real output of the real harness and carry nothing private. What a
+private corpus adds on top is acceptance against *reviewer* output — real models writing
+real findings about real code — which no generated fixture can stand in for.
+
+## The layout the tests look for
+
+Nothing generates this layout any more — the v1 orchestration that wrote per-stage findings
+files is retired — so a bundle is assembled by hand, and the tests look for exactly this:
+
+```text
+fixtures/legacy/<bundle-name>/
+  findings-<stage>.json     one reviewer stage's output, the shape findings.schema.json
+                            describes; read by crates/review-core/tests/legacy_corpus.rs
+  ledger.jsonl              the run's final ledger, one row per line; read by
+    (or ledger/ledger.jsonl)  crates/review-store/tests/legacy_ledgers.rs
+```
+
+A bundle missing both files is simply not picked up. Neither test infers anything from the
+directory name.
+
 ## Capturing a corpus in your hub
 
 1. Run `/self-review-heavy` (or the legacy scripts) on a substantial change.

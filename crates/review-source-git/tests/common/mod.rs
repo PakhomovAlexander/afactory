@@ -1,3 +1,7 @@
+// Each integration-test binary compiles this module separately, so a helper used only by the
+// other binary reads as dead here. Both are used; see capture.rs and hostile_git_config.rs.
+#![allow(dead_code)]
+
 //! Fixture repositories.
 //!
 //! Built with ordinary git (the thing under test is *capture*, not construction), but with an
