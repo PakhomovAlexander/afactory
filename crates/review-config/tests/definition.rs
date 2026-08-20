@@ -8,7 +8,7 @@ use review_core::SubjectKind;
 use review_graph::PlanError;
 
 const MINIMAL: &str = r#"
-version = 1
+version = 2
 
 [subject]
 kind = "whole-tree"
@@ -152,10 +152,10 @@ fn graph_validation_applies_to_definitions_too() {
 
 #[test]
 fn a_future_version_is_refused_rather_than_guessed_at() {
-    let future = MINIMAL.replace("version = 1", "version = 2");
+    let future = MINIMAL.replace("version = 2", "version = 3");
     assert!(matches!(
         Definition::from_toml(&future).unwrap().load(),
-        Err(ConfigError::UnknownVersion(2))
+        Err(ConfigError::UnknownVersion(3))
     ));
 }
 
@@ -164,6 +164,15 @@ fn a_definition_round_trips() {
     let parsed = Definition::from_toml(MINIMAL).unwrap();
     let reserialized = toml::to_string(&parsed).unwrap();
     assert_eq!(Definition::from_toml(&reserialized).unwrap(), parsed);
+}
+
+#[test]
+fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
+    let legacy = MINIMAL
+        .replace("version = 2", "version = 1")
+        .replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
+    let loaded = Definition::from_toml(&legacy).unwrap().load().unwrap();
+    assert_eq!(loaded.subject.kind, SubjectKind::WholeTree);
 }
 
 /// This repository's own pipeline must load — through its own lockfile and registry, which
@@ -232,7 +241,7 @@ fn the_checked_in_pipeline_loads() {
 /// errors, not discovered as a run that mysteriously does nothing.
 #[test]
 fn an_impossible_budget_is_refused_at_load() {
-    let capped = |budgets: &str| MINIMAL.replace("version = 1", &format!("version = 1\n{budgets}"));
+    let capped = |budgets: &str| MINIMAL.replace("version = 2", &format!("version = 2\n{budgets}"));
 
     let inverted = capped("[budgets]\nunit = \"tokens\"\nattempt = 500\nrun = 100");
     let error = Definition::from_toml(&inverted)
@@ -255,8 +264,8 @@ fn an_impossible_budget_is_refused_at_load() {
 #[test]
 fn an_unknown_budget_unit_is_refused() {
     let text = MINIMAL.replace(
-        "version = 1",
-        "version = 1\n[budgets]\nunit = \"dollars\"\nattempt = 1\nrun = 2",
+        "version = 2",
+        "version = 2\n[budgets]\nunit = \"dollars\"\nattempt = 1\nrun = 2",
     );
     assert!(Definition::from_toml(&text).is_err());
 }

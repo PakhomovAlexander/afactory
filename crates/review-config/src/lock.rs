@@ -22,7 +22,7 @@
 //! Versions are exact (`major.minor.patch`, digits only). `latest`, ranges, and wildcards are
 //! refused at parse time so a floating pin cannot even be *written*, let alone resolved.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,14 @@ pub enum LockError {
     Symlink {
         name: String,
         path: PathBuf,
+    },
+    UnsupportedFileType {
+        name: String,
+        path: PathBuf,
+    },
+    UnsupportedSubject {
+        name: String,
+        subject: review_core::SubjectKind,
     },
     MissingManifest {
         name: String,
@@ -138,6 +146,14 @@ impl std::fmt::Display for LockError {
                 "reviewer `{name}` contains a symlink at {}; a package is regular files only",
                 path.display()
             ),
+            LockError::UnsupportedFileType { name, path } => write!(
+                f,
+                "reviewer `{name}` contains a non-regular file at {}; a package is regular files only",
+                path.display()
+            ),
+            LockError::UnsupportedSubject { name, subject } => {
+                write!(f, "reviewer `{name}` does not accept `{subject}` subjects")
+            }
             LockError::MissingManifest { name, root } => write!(
                 f,
                 "reviewer `{name}` at {} has no reviewer.toml",
@@ -156,8 +172,15 @@ impl std::error::Error for LockError {}
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
+    /// Packages predating Subject capabilities reviewed whole trees. Preserving that exact
+    /// capability keeps them readable without letting them silently claim diff support.
+    #[serde(default = "legacy_subjects")]
     pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
+}
+
+fn legacy_subjects() -> Vec<review_core::SubjectKind> {
+    vec![review_core::SubjectKind::WholeTree]
 }
 
 /// One pinned reviewer.
@@ -251,6 +274,12 @@ fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockErr
             if kind.is_dir() {
                 pending.push(path);
             } else {
+                if !kind.is_file() {
+                    return Err(LockError::UnsupportedFileType {
+                        name: name.to_string(),
+                        path,
+                    });
+                }
                 let relative = path
                     .strip_prefix(root)
                     .expect("walked paths live under the root")
@@ -327,7 +356,11 @@ impl Lockfile {
 
     /// Resolve one locked reviewer: locate, verify the digest, then read the manifest from the
     /// verified bytes.
-    pub fn resolve(&self, name: &str, registry: &Registry) -> Result<ResolvedReviewer, LockError> {
+    fn resolve_package(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<(ResolvedReviewer, Vec<review_core::SubjectKind>), LockError> {
         let pin = self
             .reviewers
             .get(name)
@@ -362,15 +395,37 @@ impl Lockfile {
             });
         }
 
-        Ok(ResolvedReviewer::new(
+        let subjects = manifest.subjects;
+        let reviewer = ResolvedReviewer::new(
             name,
             manifest.version,
             found,
             root,
-            manifest.subjects,
             manifest.runner.build(),
             files,
-        ))
+        );
+        Ok((reviewer, subjects))
+    }
+
+    pub fn resolve(&self, name: &str, registry: &Registry) -> Result<ResolvedReviewer, LockError> {
+        self.resolve_package(name, registry)
+            .map(|(reviewer, _)| reviewer)
+    }
+
+    pub fn resolve_for_subject(
+        &self,
+        name: &str,
+        registry: &Registry,
+        subject: review_core::SubjectKind,
+    ) -> Result<ResolvedReviewer, LockError> {
+        let (reviewer, subjects) = self.resolve_package(name, registry)?;
+        if !subjects.contains(&subject) {
+            return Err(LockError::UnsupportedSubject {
+                name: name.to_string(),
+                subject,
+            });
+        }
+        Ok(reviewer)
     }
 
     /// Compute the pin for a package as it stands — what lock generation records.
@@ -412,7 +467,19 @@ impl Lockfile {
             })?;
         let text = std::str::from_utf8(bytes)
             .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
-        toml::from_str(text)
-            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))
+        let manifest: PackageManifest = toml::from_str(text)
+            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
+        if manifest.subjects.is_empty() {
+            return Err(LockError::Parse(format!(
+                "reviewer.toml for `{name}` accepts no Subject kind"
+            )));
+        }
+        let unique: BTreeSet<_> = manifest.subjects.iter().collect();
+        if unique.len() != manifest.subjects.len() {
+            return Err(LockError::Parse(format!(
+                "reviewer.toml for `{name}` contains duplicate Subject kinds"
+            )));
+        }
+        Ok(manifest)
     }
 }

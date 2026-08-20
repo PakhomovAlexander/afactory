@@ -556,6 +556,13 @@ fn run(options: &Options) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .load_with(&lockfile, &registry)
         .map_err(|e| e.to_string())?;
+    if loaded.subject.kind == review_core::SubjectKind::Diff {
+        return Err(
+            "this kernel refuses to execute a `diff` Subject until its pinned Base and Change \
+             Set are available; use `whole-tree` or complete M2.2-M2.4"
+                .to_string(),
+        );
+    }
 
     // Capture HEAD. Committed content only: a run reviews an immutable snapshot, and if the
     // change you want reviewed is not committed, that is the message rather than a workaround.

@@ -30,7 +30,7 @@ pub use model::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use review_core::{Command, LegacyStageOutput, SubjectKind};
+use review_core::{Command, LegacyStageOutput};
 
 /// A reviewer package after resolution: located, digest-verified, manifest-checked — carrying
 /// the verified bytes themselves. It lives here, at the adapter boundary, so a provider
@@ -42,7 +42,6 @@ pub struct ResolvedReviewer {
     pub version: String,
     pub digest: String,
     pub root: PathBuf,
-    pub subjects: Vec<SubjectKind>,
     pub runner: Command,
     files: BTreeMap<String, Vec<u8>>,
 }
@@ -55,7 +54,6 @@ impl ResolvedReviewer {
         version: impl Into<String>,
         digest: impl Into<String>,
         root: impl Into<PathBuf>,
-        subjects: Vec<SubjectKind>,
         runner: Command,
         files: BTreeMap<String, Vec<u8>>,
     ) -> ResolvedReviewer {
@@ -64,7 +62,6 @@ impl ResolvedReviewer {
             version: version.into(),
             digest: digest.into(),
             root: root.into(),
-            subjects,
             runner,
             files,
         }

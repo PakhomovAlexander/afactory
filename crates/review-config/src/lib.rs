@@ -307,7 +307,8 @@ pub struct SubjectSpec {
 #[serde(deny_unknown_fields)]
 pub struct Definition {
     pub version: u32,
-    pub subject: SubjectSpec,
+    #[serde(default)]
+    pub subject: Option<SubjectSpec>,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
     pub nodes: Vec<NodeSpec>,
@@ -361,9 +362,24 @@ impl Definition {
         self,
         resolver: Option<(&lock::Lockfile, &lock::Registry)>,
     ) -> Result<Loaded, ConfigError> {
-        if self.version != 1 {
-            return Err(ConfigError::UnknownVersion(self.version));
-        }
+        let subject = match (self.version, self.subject) {
+            (1, None) => SubjectSpec {
+                kind: review_core::SubjectKind::WholeTree,
+            },
+            (1, Some(_)) => {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
+                        .to_string(),
+                ));
+            }
+            (2, Some(subject)) => subject,
+            (2, None) => {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 2 requires `[subject]`".to_string(),
+                ));
+            }
+            (version, _) => return Err(ConfigError::UnknownVersion(version)),
+        };
         if let Some(budgets) = &self.budgets {
             if budgets.attempt == 0 || budgets.run == 0 {
                 return Err(ConfigError::Binding(
@@ -407,6 +423,13 @@ impl Definition {
                     )));
                 }
                 (NodeKindSpec::Reviewer, Some(command), None) => {
+                    if subject.kind == review_core::SubjectKind::Diff {
+                        return Err(ConfigError::Binding(format!(
+                            "reviewer node `{}` uses an inline runner, which has no package \
+                             manifest declaring `diff` Subject support",
+                            spec.id
+                        )));
+                    }
                     reviewers.insert(spec.id.clone(), command.build());
                 }
                 (NodeKindSpec::Reviewer, None, Some(package)) => {
@@ -418,15 +441,8 @@ impl Definition {
                         )));
                     };
                     let resolved = lockfile
-                        .resolve(package, registry)
+                        .resolve_for_subject(package, registry, subject.kind)
                         .map_err(ConfigError::Lock)?;
-                    if !resolved.subjects.contains(&self.subject.kind) {
-                        return Err(ConfigError::Binding(format!(
-                            "reviewer node `{}` binds package `{package}`, which does not accept \
-                             `{}` subjects",
-                            spec.id, self.subject.kind
-                        )));
-                    }
                     reviewers.insert(spec.id.clone(), resolved.runner.clone());
                     packages.insert(spec.id.clone(), resolved);
                 }
@@ -469,7 +485,7 @@ impl Definition {
             .collect();
 
         Ok(Loaded {
-            subject: self.subject,
+            subject,
             plan,
             checks,
             reviewers,

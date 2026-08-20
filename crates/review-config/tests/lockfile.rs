@@ -44,13 +44,6 @@ fn a_locked_reviewer_resolves_and_carries_its_runner() {
 
     assert_eq!(resolved.name, "architecture");
     assert_eq!(resolved.version, "1.2.0");
-    assert_eq!(
-        resolved.subjects,
-        vec![
-            review_core::SubjectKind::Diff,
-            review_core::SubjectKind::WholeTree
-        ]
-    );
     assert!(resolved.digest.starts_with("sha256:"));
     assert_eq!(resolved.runner.program, "codex");
     assert_eq!(
@@ -321,4 +314,38 @@ fn a_locked_reviewer_missing_from_every_registry_names_what_it_searched() {
             .to_string()
             .contains(&dir.path().display().to_string())
     );
+}
+
+#[test]
+fn a_manifest_accepting_no_subject_cannot_be_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    std::fs::write(
+        dir.path().join("architecture/reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.2.0\"\nsubjects = []\n\n\
+         [runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    let registry = Registry::new([dir.path()]);
+
+    let error = Lockfile::pin("architecture", &registry).unwrap_err();
+    assert!(
+        error.to_string().contains("accepts no Subject kind"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_regular_package_entry_is_refused_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let socket = dir.path().join("architecture/provider.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let registry = Registry::new([dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::UnsupportedFileType { .. }
+    ));
 }
