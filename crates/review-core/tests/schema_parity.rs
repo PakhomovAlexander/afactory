@@ -306,13 +306,23 @@ fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
         causation_id: None,
         correlation_id: None,
         artifact_refs: vec![],
-        payload: json!({ "verdict": "Fail(NotConverged)" }),
+        payload: json!({
+            "outcomes": [{"node":"review", "status":"completed", "detail":{}}],
+            "blocked_gates": [],
+            "verdict": "Fail(NotConverged)",
+            "spent_tokens": null
+        }),
     };
     assert_eq!(
         review_core::run_report_closes_round(&event).unwrap(),
         Some(true)
     );
-    event.payload = json!({ "verdict": "Incomplete { missing: [] }" });
+    event.payload = json!({
+        "outcomes": [{"node":"review", "status":"failed", "detail":"crashed"}],
+        "blocked_gates": [],
+        "verdict": "Incomplete { missing: [(\"review\", \"crashed\")] }",
+        "spent_tokens": 7
+    });
     assert_eq!(
         review_core::run_report_closes_round(&event).unwrap(),
         Some(false)
@@ -375,6 +385,53 @@ fn node_invocation_and_output_receipt_roundtrip() {
     assert_eq!(
         serde_json::from_value::<NodeOutputReceiptPayloadV1>(value).unwrap(),
         receipt
+    );
+
+    let invalid_port = json!({
+        "node": "reviewer",
+        "inputs": [{
+            "port": "subject",
+            "type": "review.kernel/SourceSnapshot@1",
+            "cardinality": "one",
+            "optional": false,
+            "snapshot_affinity": "same_subject",
+            "artifact_ids": ["not-a-digest", "not-a-digest"]
+        }]
+    });
+    assert!(
+        review_core::event::validate_event_payload(EventType::NodeInvocationV1, &invalid_port)
+            .is_err()
+    );
+    let invalid_receipt = json!({"node":"reviewer", "outputs":invalid_port["inputs"]});
+    assert!(
+        review_core::event::validate_event_payload(
+            EventType::NodeOutputReceiptV1,
+            &invalid_receipt
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn event_validation_rejects_semantically_malformed_run_reports() {
+    let contradictory_legacy = json!({
+        "outcomes": [{"node":"reviewer", "status":"failed", "detail":"crashed"}],
+        "blocked_gates": [],
+        "verdict": "Pass",
+        "spent_tokens": null
+    });
+    assert!(
+        review_core::event::validate_event_payload(EventType::RunReportV1, &contradictory_legacy)
+            .is_err()
+    );
+
+    let empty_reason = json!({
+        "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"x"}}],
+        "blocked_gates": [],
+        "verdict": {"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}
+    });
+    assert!(
+        review_core::event::validate_event_payload(EventType::RunReportV2, &empty_reason).is_err()
     );
 }
 

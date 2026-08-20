@@ -351,12 +351,12 @@ gate = "major"
     let mut kernel =
         Kernel::from_loaded(&cas, &mut store, "run", snapshot.manifest.clone(), &loaded)
             .unwrap()
-            .with_checks(loaded.checks);
-    for (node, command) in loaded.reviewers {
-        kernel = kernel.with_reviewer(node, command);
+            .with_checks(loaded.checks().to_vec());
+    for (node, command) in loaded.reviewers() {
+        kernel = kernel.with_reviewer(node.clone(), command.clone());
     }
 
-    let report = Scheduler::new(&loaded.plan).run(&kernel);
+    let report = loaded.run(&kernel).unwrap();
     assert!(report.complete(), "{:?}", report.outcomes);
 
     let ledger = kernel.ledger();
@@ -364,7 +364,7 @@ gate = "major"
     assert_eq!(ledger.findings()[0].title, "Unbounded loop never yields");
 
     // And the convergence policy came from the file too.
-    let convergence = kernel.convergence(loaded.convergence);
+    let convergence = kernel.convergence(*loaded.convergence());
     assert_eq!(convergence.verdict, Verdict::NotConverged);
     assert_eq!(convergence.open_blocking, 1);
 }

@@ -50,14 +50,17 @@ to = { node = "ledger", port = "reports" }
 fn a_definition_loads_into_a_plan_with_bindings() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
 
-    assert_eq!(loaded.plan.order, vec!["gate", "architecture", "ledger"]);
-    assert_eq!(loaded.checks.len(), 1);
-    assert!(loaded.checks[0].required, "checks are required by default");
-    assert_eq!(loaded.reviewers.len(), 1);
-    assert!(loaded.reviewers.contains_key("architecture"));
-    assert_eq!(loaded.convergence.max_rounds, 3);
-    assert_eq!(loaded.convergence.gate, review_core::Severity::Major);
-    assert_eq!(loaded.subject.kind, SubjectKind::WholeTree);
+    assert_eq!(loaded.plan_order(), ["gate", "architecture", "ledger"]);
+    assert_eq!(loaded.checks().len(), 1);
+    assert!(
+        loaded.checks()[0].required,
+        "checks are required by default"
+    );
+    assert_eq!(loaded.reviewers().len(), 1);
+    assert!(loaded.reviewers().contains_key("architecture"));
+    assert_eq!(loaded.convergence().max_rounds, 3);
+    assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
 }
 
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.
@@ -65,7 +68,7 @@ fn a_definition_loads_into_a_plan_with_bindings() {
 #[test]
 fn an_untrusted_argument_must_say_so() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
-    let command = &loaded.reviewers["architecture"];
+    let command = &loaded.reviewers()["architecture"];
     assert!(
         command
             .args
@@ -84,7 +87,7 @@ fn an_untrusted_argument_must_say_so() {
         .unwrap();
     // Loading succeeds — the refusal happens at execution, where the value is known to be an
     // option position. The definition is allowed to *describe* an untrusted slot.
-    assert!(loaded.reviewers["architecture"].resolve().is_err());
+    assert!(loaded.reviewers()["architecture"].resolve().is_err());
 }
 
 #[test]
@@ -172,7 +175,7 @@ fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
         .replace("version = 2", "version = 1")
         .replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
     let loaded = Definition::from_toml(&legacy).unwrap().load().unwrap();
-    assert_eq!(loaded.subject.kind, SubjectKind::WholeTree);
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
 }
 
 #[test]
@@ -249,12 +252,15 @@ fn the_checked_in_pipeline_loads() {
 
     // A gate with nothing to run admits everything, and a review with no reviewer reports
     // nothing while looking like it ran.
-    assert!(!loaded.checks.is_empty(), "the gate has no checks");
-    assert!(!loaded.reviewers.is_empty(), "the pipeline has no reviewer");
+    assert!(!loaded.checks().is_empty(), "the gate has no checks");
+    assert!(
+        !loaded.reviewers().is_empty(),
+        "the pipeline has no reviewer"
+    );
 
-    for (node, command) in &loaded.reviewers {
+    for (node, command) in loaded.reviewers() {
         let package = loaded
-            .packages
+            .packages()
             .get(node)
             .unwrap_or_else(|| panic!("reviewer `{node}` did not come from a package"));
         assert!(
@@ -266,24 +272,20 @@ fn the_checked_in_pipeline_loads() {
             "reviewer `{node}` has no runner program"
         );
         assert!(
-            !loaded.plan.gates_for(node).is_empty(),
+            loaded.node_is_gated(node),
             "reviewer `{node}` is ungated — it would run against a tree that failed its checks"
         );
         // Prior findings must arrive through a wired port. A reviewer wired to nothing would
         // review an empty input with full confidence.
         assert!(
-            loaded
-                .plan
-                .dependencies_of(node)
-                .iter()
-                .any(|e| e.to.name == "prior_findings"),
+            loaded.node_receives_port(node, "prior_findings"),
             "reviewer `{node}` receives no prior findings"
         );
     }
 
     // Every node the plan orders is a node the definition declares, and the order is a
     // function of the pipeline alone.
-    assert!(!loaded.plan.order.is_empty());
+    assert!(!loaded.plan_order().is_empty());
 }
 
 #[test]
@@ -302,7 +304,7 @@ fn the_template_repository_self_review_pipeline_loads_when_present() {
         .load_with(&lockfile, &registry)
         .map_err(|error| error.to_string())
         .unwrap();
-    assert_eq!(loaded.packages.len(), 4);
+    assert_eq!(loaded.packages().len(), 4);
 }
 
 /// Budgets validate at load: caps that could never admit a dispatch are refused as config
@@ -488,20 +490,18 @@ to = { node = "architecture", port = "gate" }"#,
 
     let loaded = Definition::from_toml(&text).unwrap().load().unwrap();
     assert!(
-        loaded.plan.order.contains(&"generation".to_string()),
+        loaded.plan_order().contains(&"generation".to_string()),
         "generation node is planned: {:?}",
-        loaded.plan.order
+        loaded.plan_order()
     );
     assert!(
         loaded
-            .plan
-            .order
+            .plan_order()
             .iter()
             .position(|n| n == "generation")
             .unwrap()
             < loaded
-                .plan
-                .order
+                .plan_order()
                 .iter()
                 .position(|n| n == "architecture")
                 .unwrap(),

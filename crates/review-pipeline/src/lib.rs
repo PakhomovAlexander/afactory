@@ -150,6 +150,7 @@ pub struct Kernel<'a> {
     /// The immutable subject. Every node is materialized from this, so they all inspect the
     /// same content by construction rather than by discipline.
     snapshot: Manifest,
+    subject: review_core::SubjectKind,
     checks: Vec<CheckDefinition>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     attempts: Mutex<AttemptLedger>,
@@ -184,12 +185,14 @@ impl<'a> Kernel<'a> {
         store: &'a mut EventStore,
         run_id: impl Into<String>,
         snapshot: Manifest,
+        subject: review_core::SubjectKind,
     ) -> Kernel<'a> {
         Kernel {
             cas,
             store: Mutex::new(store),
             run_id: run_id.into(),
             snapshot,
+            subject,
             checks: Vec::new(),
             reviewers: BTreeMap::new(),
             attempts: Mutex::new(AttemptLedger::default()),
@@ -215,7 +218,9 @@ impl<'a> Kernel<'a> {
         subject: review_core::SubjectKind,
     ) -> Result<Kernel<'a>, String> {
         match subject {
-            review_core::SubjectKind::WholeTree => Ok(Kernel::new(cas, store, run_id, snapshot)),
+            review_core::SubjectKind::WholeTree => {
+                Ok(Kernel::new(cas, store, run_id, snapshot, subject))
+            }
             review_core::SubjectKind::Diff => Err(
                 "review-pipeline cannot execute a `diff` Subject until its pinned Base and Change Set are available"
                     .to_string(),
@@ -231,7 +236,7 @@ impl<'a> Kernel<'a> {
         snapshot: Manifest,
         loaded: &review_config::Loaded,
     ) -> Result<Kernel<'a>, String> {
-        Kernel::for_subject(cas, store, run_id, snapshot, loaded.subject.kind)
+        Kernel::for_subject(cas, store, run_id, snapshot, loaded.subject_kind())
     }
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
@@ -1081,5 +1086,11 @@ impl Dispatch for Kernel<'_> {
             .get(node_id)
             .map(GateDecision::passed)
             .unwrap_or(false)
+    }
+}
+
+impl review_config::SubjectDispatch for Kernel<'_> {
+    fn subject_kind(&self) -> review_core::SubjectKind {
+        self.subject
     }
 }

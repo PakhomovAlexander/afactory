@@ -136,7 +136,7 @@ prerequisites.
 - **Agent work on the hub happens in a worktree** (`make worktree NAME=<task>`), not on the
   owner's live checkout. Root `AGENTS.md` has the rule.
 - **Editing a reviewer package requires re-locking**, or the digest check fails at load:
-  `cargo run -p review-config --example lock -- ../../.review/reviewers architecture performance
-  > ../../.review/review.lock`.
+  `make -C template review-kernel-lock` from this repository, or `make review-kernel-lock` from
+  a generated hub.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.

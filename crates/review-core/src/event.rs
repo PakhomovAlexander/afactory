@@ -266,16 +266,35 @@ impl RunReportPayloadV2 {
                     outcome.node
                 ));
             }
-            if let RunNodeOutcomeV2::Completed { output_artifacts } = &outcome.outcome {
-                let unique: std::collections::BTreeSet<&str> =
-                    output_artifacts.iter().map(String::as_str).collect();
-                if unique.len() != output_artifacts.len() {
-                    return Err(format!(
-                        "completed node `{}` contains duplicate output artifacts",
-                        outcome.node
-                    ));
+            match &outcome.outcome {
+                RunNodeOutcomeV2::Completed { output_artifacts } => {
+                    let unique: std::collections::BTreeSet<&str> =
+                        output_artifacts.iter().map(String::as_str).collect();
+                    if unique.len() != output_artifacts.len() {
+                        return Err(format!(
+                            "completed node `{}` contains duplicate output artifacts",
+                            outcome.node
+                        ));
+                    }
+                    if let Some(artifact) = output_artifacts.iter().find(|id| !is_digest(id)) {
+                        return Err(format!(
+                            "completed node `{}` contains invalid artifact id `{artifact}`",
+                            outcome.node
+                        ));
+                    }
                 }
+                RunNodeOutcomeV2::Failed { error } if error.trim().is_empty() => {
+                    return Err(format!("failed node `{}` has an empty error", outcome.node));
+                }
+                _ => {}
             }
+        }
+        if let Some(gate) = self
+            .blocked_gates
+            .iter()
+            .find(|gate| gate.trim().is_empty())
+        {
+            return Err(format!("a run report contains empty blocked gate `{gate}`"));
         }
         let blocked: std::collections::BTreeSet<&str> =
             self.blocked_gates.iter().map(String::as_str).collect();
@@ -297,7 +316,7 @@ impl RunReportPayloadV2 {
                 }
             })
             .collect();
-        match &self.verdict {
+        let verdict_validation: Result<(), String> = match &self.verdict {
             RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => {
                 Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
             }
@@ -305,6 +324,18 @@ impl RunReportPayloadV2 {
                 Err("a passing report cannot contain blocked gates".into())
             }
             RunVerdictV2::Incomplete { missing_nodes } => {
+                if missing_nodes.is_empty() {
+                    return Err("an incomplete report must name at least one missing node".into());
+                }
+                if let Some(missing) = missing_nodes
+                    .iter()
+                    .find(|missing| missing.reason.trim().is_empty())
+                {
+                    return Err(format!(
+                        "missing node `{}` has an empty reason",
+                        missing.node
+                    ));
+                }
                 let missing: std::collections::BTreeSet<&str> = missing_nodes
                     .iter()
                     .map(|missing| missing.node.as_str())
@@ -321,6 +352,90 @@ impl RunReportPayloadV2 {
                 Ok(())
             }
             _ => Ok(()),
+        };
+        verdict_validation?;
+        if self.spent_tokens.unwrap_or(0) > 9_007_199_254_740_991 {
+            return Err("spent_tokens exceeds the JSON safe-integer bound".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRunReportV1 {
+    outcomes: Vec<LegacyRunNodeV1>,
+    blocked_gates: Vec<String>,
+    verdict: String,
+    spent_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRunNodeV1 {
+    node: String,
+    status: String,
+    detail: serde_json::Value,
+}
+
+impl LegacyRunReportV1 {
+    fn validate(&self) -> Result<bool, String> {
+        if self.outcomes.is_empty() {
+            return Err("a frozen RunReport@1 must contain at least one node outcome".into());
+        }
+        let mut nodes = std::collections::BTreeSet::new();
+        let mut unresolved = 0_usize;
+        for outcome in &self.outcomes {
+            if outcome.node.trim().is_empty() || !nodes.insert(outcome.node.as_str()) {
+                return Err("a frozen RunReport@1 contains an empty or duplicate node".into());
+            }
+            match outcome.status.as_str() {
+                "completed" if outcome.detail.is_object() => {}
+                "failed" if outcome.detail.as_str().is_some_and(|text| !text.is_empty()) => {
+                    unresolved += 1;
+                }
+                "suppressed"
+                    if matches!(
+                        outcome.detail.as_str(),
+                        Some("GateBlocked" | "UpstreamMissing")
+                    ) =>
+                {
+                    unresolved += 1;
+                }
+                status => {
+                    return Err(format!(
+                        "invalid frozen RunReport@1 outcome `{status}` for node `{}`",
+                        outcome.node
+                    ));
+                }
+            }
+        }
+        let blocked: std::collections::BTreeSet<&str> =
+            self.blocked_gates.iter().map(String::as_str).collect();
+        if blocked.len() != self.blocked_gates.len()
+            || blocked
+                .iter()
+                .any(|gate| gate.is_empty() || !nodes.contains(gate))
+        {
+            return Err("a frozen RunReport@1 contains an invalid blocked gate".into());
+        }
+        if self.spent_tokens.unwrap_or(0) > 9_007_199_254_740_991 {
+            return Err("frozen RunReport@1 spent_tokens exceeds the safe-integer bound".into());
+        }
+        match self.verdict.as_str() {
+            "Pass" if unresolved == 0 && blocked.is_empty() => Ok(true),
+            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved == 0 => Ok(true),
+            verdict
+                if verdict.starts_with("Incomplete { missing: [")
+                    && verdict.ends_with("] }")
+                    && verdict != "Incomplete { missing: [] }"
+                    && unresolved > 0 =>
+            {
+                Ok(false)
+            }
+            verdict => Err(format!(
+                "frozen RunReport@1 verdict `{verdict}` contradicts its outcomes"
+            )),
         }
     }
 }
@@ -334,14 +449,26 @@ pub fn validate_event_payload(
 ) -> Result<(), String> {
     match event_type {
         EventType::NodeInvocationV1 => {
-            serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
-                .map(|_| ())
+            let invocation = serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
+                .map_err(|error| format!("NodeInvocation@1: {error}"))?;
+            invocation
+                .validate()
                 .map_err(|error| format!("NodeInvocation@1: {error}"))
         }
         EventType::NodeOutputReceiptV1 => {
-            serde_json::from_value::<NodeOutputReceiptPayloadV1>(payload.clone())
-                .map(|_| ())
+            let receipt = serde_json::from_value::<NodeOutputReceiptPayloadV1>(payload.clone())
+                .map_err(|error| format!("NodeOutputReceipt@1: {error}"))?;
+            receipt
+                .validate()
                 .map_err(|error| format!("NodeOutputReceipt@1: {error}"))
+        }
+        EventType::RunReportV1 => {
+            let report = serde_json::from_value::<LegacyRunReportV1>(payload.clone())
+                .map_err(|error| format!("RunReport@1: {error}"))?;
+            report
+                .validate()
+                .map(|_| ())
+                .map_err(|error| format!("RunReport@1: {error}"))
         }
         EventType::RunReportV2 => {
             let report = serde_json::from_value::<RunReportPayloadV2>(payload.clone())
@@ -401,6 +528,104 @@ pub struct NodeOutputReceiptPayloadV1 {
     pub outputs: Vec<PortArtifactsV1>,
 }
 
+fn is_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+fn is_artifact_type(value: &str) -> bool {
+    let Some((namespace, versioned_name)) = value.split_once('/') else {
+        return false;
+    };
+    let Some((name, version)) = versioned_name.rsplit_once('@') else {
+        return false;
+    };
+    let namespace_ok = namespace.bytes().enumerate().all(|(index, byte)| {
+        byte.is_ascii_lowercase() || (index > 0 && (byte.is_ascii_digit() || byte == b'.'))
+    });
+    let name_ok = name
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit()));
+    let version_ok = version
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| byte.is_ascii_digit() && (index > 0 || byte != b'0'));
+    !namespace.is_empty()
+        && !name.is_empty()
+        && !version.is_empty()
+        && namespace_ok
+        && name_ok
+        && version_ok
+}
+
+fn validate_ports(node: &str, ports: &[PortArtifactsV1]) -> Result<(), String> {
+    if node.trim().is_empty() {
+        return Err("node id is empty".into());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for port in ports {
+        if port.port.trim().is_empty() || !names.insert(port.port.as_str()) {
+            return Err("port names must be non-empty and unique".into());
+        }
+        if !is_artifact_type(&port.artifact_type) {
+            return Err(format!("port `{}` has an invalid artifact type", port.port));
+        }
+        let ids: std::collections::BTreeSet<&str> =
+            port.artifact_ids.iter().map(String::as_str).collect();
+        if ids.len() != port.artifact_ids.len() || ids.iter().any(|id| !is_digest(id)) {
+            return Err(format!(
+                "port `{}` has invalid or duplicate artifacts",
+                port.port
+            ));
+        }
+        if port.cardinality == PortCardinality::One && port.artifact_ids.len() > 1 {
+            return Err(format!(
+                "one-valued port `{}` has multiple artifacts",
+                port.port
+            ));
+        }
+        if !port.optional && port.artifact_ids.is_empty() {
+            return Err(format!("required port `{}` has no artifact", port.port));
+        }
+        if port.snapshot_affinity == SnapshotAffinity::SameSubject
+            && port.subject_snapshot_id.is_none()
+        {
+            return Err(format!(
+                "same-subject port `{}` has no subject snapshot",
+                port.port
+            ));
+        }
+        if port
+            .subject_snapshot_id
+            .as_deref()
+            .is_some_and(|id| !is_digest(id))
+        {
+            return Err(format!(
+                "port `{}` has an invalid subject snapshot",
+                port.port
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl NodeInvocationPayloadV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_ports(&self.node, &self.inputs)
+    }
+}
+
+impl NodeOutputReceiptPayloadV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_ports(&self.node, &self.outputs)
+    }
+}
+
 /// Decode whether a report event closed a campaign round.
 ///
 /// The `RunReport@1` arm is permanent: append-only logs may contain it forever. Its debug-string
@@ -409,23 +634,11 @@ pub struct NodeOutputReceiptPayloadV1 {
 pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_json::Error> {
     match event.event_type {
         EventType::RunReportV1 => {
-            #[derive(Deserialize)]
-            struct LegacyRunReport {
-                verdict: String,
-            }
-            let report: LegacyRunReport = serde_json::from_value(event.payload.clone())?;
-            match report.verdict.as_str() {
-                "Pass" | "Fail(NotConverged)" | "Fail(Exhausted)" => Ok(Some(true)),
-                verdict
-                    if verdict.starts_with("Incomplete { missing: [")
-                        && verdict.ends_with("] }") =>
-                {
-                    Ok(Some(false))
-                }
-                verdict => Err(<serde_json::Error as serde::de::Error>::custom(format!(
-                    "invalid frozen RunReport@1 verdict `{verdict}`"
-                ))),
-            }
+            let report: LegacyRunReportV1 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map(Some)
+                .map_err(<serde_json::Error as serde::de::Error>::custom)
         }
         EventType::RunReportV2 => {
             let report: RunReportPayloadV2 = serde_json::from_value(event.payload.clone())?;

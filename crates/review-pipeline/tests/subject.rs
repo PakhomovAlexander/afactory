@@ -43,4 +43,24 @@ package = "tester"
     let result = Kernel::from_loaded(&cas, &mut store, "run", Manifest::new(vec![]), &loaded);
 
     assert!(matches!(result, Err(error) if error.contains("pinned Base and Change Set")));
+
+    let whole_tree = Definition::from_toml(
+        r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+runner = { program = "/bin/true" }
+"#,
+    )
+    .unwrap()
+    .load()
+    .unwrap();
+    let kernel =
+        Kernel::from_loaded(&cas, &mut store, "run", Manifest::new(vec![]), &whole_tree).unwrap();
+
+    let error = loaded.run(&kernel).unwrap_err();
+    assert!(error.to_string().contains("declares `diff`"), "{error}");
 }

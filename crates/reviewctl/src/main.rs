@@ -25,7 +25,7 @@ use review_config::lock::{Lockfile, Registry};
 use review_core::{
     EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, run_report_closes_round,
 };
-use review_graph::{NodeOutcome, Scheduler};
+use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict, run_verdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::{Capture, Repo};
@@ -556,7 +556,7 @@ fn run(options: &Options) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .load_with(&lockfile, &registry)
         .map_err(|e| e.to_string())?;
-    if loaded.subject.kind == review_core::SubjectKind::Diff {
+    if loaded.subject_kind() == review_core::SubjectKind::Diff {
         return Err(
             "this kernel refuses to execute a `diff` Subject until its pinned Base and Change \
              Set are available; use `whole-tree` or complete M2.2-M2.4"
@@ -688,11 +688,11 @@ fn run(options: &Options) -> Result<(), String> {
         snapshot.manifest.clone(),
         &loaded,
     )?
-    .with_checks(loaded.checks);
+    .with_checks(loaded.checks().to_vec());
     if let Some(artifact) = prior_artifact {
         kernel = kernel.with_prior_findings(artifact);
     }
-    if let Some(budgets) = loaded.budgets {
+    if let Some(budgets) = loaded.budgets() {
         println!(
             "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
             budgets.attempt, budgets.run
@@ -700,8 +700,8 @@ fn run(options: &Options) -> Result<(), String> {
         kernel = kernel.with_budgets(budgets.attempt, budgets.run);
     }
     let mut bound: BTreeMap<String, String> = BTreeMap::new();
-    for (node, command) in &loaded.reviewers {
-        let adapter: Box<dyn ReviewerAdapter> = match loaded.packages.get(node) {
+    for (node, command) in loaded.reviewers() {
+        let adapter: Box<dyn ReviewerAdapter> = match loaded.packages().get(node) {
             Some(package) => {
                 let program = std::path::Path::new(&command.program)
                     .file_name()
@@ -754,7 +754,7 @@ fn run(options: &Options) -> Result<(), String> {
 
     // Run, and say what happened to every node — a suppressed node in silence would read as
     // "nothing to report".
-    let report = Scheduler::new(&loaded.plan).run(&kernel);
+    let report = loaded.run(&kernel).map_err(|error| error.to_string())?;
     println!();
     for (node, outcome) in &report.outcomes {
         match outcome {
@@ -783,7 +783,7 @@ fn run(options: &Options) -> Result<(), String> {
         println!("spent    {spent} tokens");
     }
 
-    let convergence = kernel.convergence(loaded.convergence);
+    let convergence = kernel.convergence(*loaded.convergence());
     let verdict = run_verdict(&report, &convergence);
     kernel.publish_report(&report, &verdict)?;
     println!("verdict  {verdict:?}");

@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 use review_check::CheckDefinition;
 use review_core::{Arg, Command, Provenance};
 use review_graph::{
-    Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
-    SnapshotAffinity,
+    Dispatch, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
+    RunReport, Scheduler, SnapshotAffinity,
 };
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
@@ -322,15 +322,73 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
-    pub subject: SubjectSpec,
-    pub plan: Planned,
-    pub checks: Vec<CheckDefinition>,
-    pub reviewers: BTreeMap<String, Command>,
+    subject: SubjectSpec,
+    plan: Planned,
+    checks: Vec<CheckDefinition>,
+    reviewers: BTreeMap<String, Command>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
-    pub packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
-    pub convergence: ConvergencePolicy,
-    pub budgets: Option<BudgetSpec>,
+    packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
+    convergence: ConvergencePolicy,
+    budgets: Option<BudgetSpec>,
+}
+
+/// A dispatcher that declares the Subject semantics it actually executes.
+pub trait SubjectDispatch: Dispatch + Sync {
+    fn subject_kind(&self) -> review_core::SubjectKind;
+}
+
+impl Loaded {
+    pub fn subject_kind(&self) -> review_core::SubjectKind {
+        self.subject.kind
+    }
+
+    pub fn checks(&self) -> &[CheckDefinition] {
+        &self.checks
+    }
+
+    pub fn reviewers(&self) -> &BTreeMap<String, Command> {
+        &self.reviewers
+    }
+
+    pub fn packages(&self) -> &BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> {
+        &self.packages
+    }
+
+    pub fn convergence(&self) -> &ConvergencePolicy {
+        &self.convergence
+    }
+
+    pub fn budgets(&self) -> Option<&BudgetSpec> {
+        self.budgets.as_ref()
+    }
+
+    pub fn plan_order(&self) -> &[String] {
+        &self.plan.order
+    }
+
+    pub fn node_is_gated(&self, node: &str) -> bool {
+        !self.plan.gates_for(node).is_empty()
+    }
+
+    pub fn node_receives_port(&self, node: &str, port: &str) -> bool {
+        self.plan
+            .dependencies_of(node)
+            .iter()
+            .any(|edge| edge.to.name == port)
+    }
+
+    /// Schedule only through a dispatcher whose execution semantics match this definition.
+    pub fn run(&self, dispatcher: &impl SubjectDispatch) -> Result<RunReport, ConfigError> {
+        if dispatcher.subject_kind() != self.subject.kind {
+            return Err(ConfigError::Binding(format!(
+                "pipeline declares `{}` but its dispatcher executes `{}`",
+                self.subject.kind,
+                dispatcher.subject_kind()
+            )));
+        }
+        Ok(Scheduler::new(&self.plan).run(dispatcher))
+    }
 }
 
 impl Definition {
