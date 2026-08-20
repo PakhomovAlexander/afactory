@@ -342,11 +342,6 @@ impl RunReportPayloadV2 {
             } if !unresolved.is_empty() => {
                 Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
             }
-            RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::Exhausted,
-            } if unresolved.is_empty() => {
-                Err("an exhausted report must name failed or suppressed work".into())
-            }
             RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
                 Err("a passing report cannot contain blocked gates".into())
             }
