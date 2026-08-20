@@ -403,7 +403,7 @@ impl LegacyRunReportV1 {
             return Err("a frozen RunReport@1 must contain at least one node outcome".into());
         }
         let mut nodes = std::collections::BTreeSet::new();
-        let mut unresolved = 0_usize;
+        let mut unresolved = Vec::new();
         for outcome in &self.outcomes {
             if outcome.node.trim().is_empty() || !nodes.insert(outcome.node.as_str()) {
                 return Err("a frozen RunReport@1 contains an empty or duplicate node".into());
@@ -411,7 +411,10 @@ impl LegacyRunReportV1 {
             match outcome.status.as_str() {
                 "completed" if outcome.detail.is_object() => {}
                 "failed" if outcome.detail.as_str().is_some_and(|text| !text.is_empty()) => {
-                    unresolved += 1;
+                    unresolved.push((
+                        outcome.node.clone(),
+                        outcome.detail.as_str().unwrap_or_default().to_string(),
+                    ));
                 }
                 "suppressed"
                     if matches!(
@@ -419,7 +422,10 @@ impl LegacyRunReportV1 {
                         Some("GateBlocked" | "UpstreamMissing")
                     ) =>
                 {
-                    unresolved += 1;
+                    unresolved.push((
+                        outcome.node.clone(),
+                        outcome.detail.as_str().unwrap_or_default().to_string(),
+                    ));
                 }
                 status => {
                     return Err(format!(
@@ -442,16 +448,9 @@ impl LegacyRunReportV1 {
             return Err("frozen RunReport@1 spent_tokens exceeds the safe-integer bound".into());
         }
         match self.verdict.as_str() {
-            "Pass" if unresolved == 0 && blocked.is_empty() => Ok(true),
-            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved == 0 => Ok(true),
-            verdict
-                if verdict.starts_with("Incomplete { missing: [")
-                    && verdict.ends_with("] }")
-                    && verdict != "Incomplete { missing: [] }"
-                    && unresolved > 0 =>
-            {
-                Ok(false)
-            }
+            "Pass" if unresolved.is_empty() && blocked.is_empty() => Ok(true),
+            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved.is_empty() => Ok(true),
+            verdict if verdict == format!("Incomplete {{ missing: {unresolved:?} }}") => Ok(false),
             verdict => Err(format!(
                 "frozen RunReport@1 verdict `{verdict}` contradicts its outcomes"
             )),

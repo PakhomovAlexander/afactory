@@ -100,6 +100,12 @@ impl BudgetLedger {
         self
     }
 
+    /// Seed committed spend reconstructed from durable attempt lifecycle events.
+    pub fn with_committed(mut self, scope: Scope, committed: u64) -> Self {
+        self.accounts.entry(scope).or_default().committed = committed;
+        self
+    }
+
     /// Reserve against every scope an attempt belongs to.
     ///
     /// All or nothing: if any scope refuses, nothing is reserved anywhere. A partial reservation

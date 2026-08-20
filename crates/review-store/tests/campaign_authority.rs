@@ -1,5 +1,6 @@
 use review_core::{
     CampaignOpenedPayloadV1, EventType, RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunVerdictV2,
 };
 use review_store::{Cas, EventStore, NewEvent};
 
@@ -177,4 +178,42 @@ fn a_superseded_epoch_cannot_publish_late_output() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("active Round epoch"), "{error}");
+}
+
+#[test]
+fn a_terminal_report_requires_matching_output_receipts() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "report");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let output = cas.put(b"unreceipted output").unwrap();
+    let report = RunReportPayloadV2 {
+        outcomes: vec![RunNodeReportV2 {
+            node: "reviewer".into(),
+            outcome: RunNodeOutcomeV2::Completed {
+                output_artifacts: vec![output],
+            },
+        }],
+        blocked_gates: vec![],
+        verdict: RunVerdictV2::Pass,
+        spent_tokens: None,
+    };
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::RunReportV2,
+                serde_json::to_value(report).unwrap(),
+            )
+            .caused_by(round.event_id),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("without a durable receipt"),
+        "{error}"
+    );
 }

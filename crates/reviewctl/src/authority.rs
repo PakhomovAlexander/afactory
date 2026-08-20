@@ -496,6 +496,12 @@ fn prepare_round(
     run_id: &str,
     campaign: &OpenCampaign,
 ) -> Result<RoundInput, String> {
+    let authority_snapshot: SourceSnapshot = serde_json::from_value(
+        cas.get_json(&campaign.manifest.authority_snapshot_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let repository_id = authority_snapshot.repository_id;
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
     for event in &events {
@@ -521,7 +527,9 @@ fn prepare_round(
     let existing = starts.last().cloned();
 
     let round = match (existing, options.restart_round) {
-        (Some((event, payload)), false) => load_round(cas, event.event_id.clone(), payload)?,
+        (Some((event, payload)), false) => {
+            load_round(cas, event.event_id.clone(), payload, &repository_id)?
+        }
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
@@ -563,36 +571,47 @@ fn capture_round(
     round: u32,
     superseded: Option<(&review_core::RunEvent, &RoundStartedPayloadV1)>,
 ) -> Result<RoundInput, String> {
-    let dispatched_attempts: Vec<(String, String)> = if let Some((old_event, _)) = superseded {
+    let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
+        superseded
+    {
         let events = store.replay(run_id).map_err(|error| error.to_string())?;
         if events.iter().any(|event| {
-            event.sequence > old_event.sequence
-                && matches!(
-                    event.event_type,
-                    EventType::FindingReportedV1 | EventType::FindingResolvedV1
-                )
+            event.sequence > old_event.sequence && event.event_type == EventType::FindingReportedV1
         }) {
             return Err(
                 "cannot supersede an incomplete Round after it published finding state; start a new Campaign"
                     .into(),
             );
         }
-        events
+        let mut live = BTreeMap::new();
+        for event in events
             .into_iter()
-            .filter(|event| {
-                event.event_type == EventType::AttemptDispatchedV1
-                    && event.causation_id.as_deref() == Some(old_event.event_id.as_str())
-            })
-            .map(|event| {
-                Ok((
-                    event.node_id.ok_or("AttemptDispatched@1 has no node ID")?,
-                    event
-                        .attempt_id
-                        .ok_or("AttemptDispatched@1 has no attempt ID")?,
-                ))
-            })
-            .collect::<Result<BTreeSet<_>, String>>()?
-            .into_iter()
+            .filter(|event| event.causation_id.as_deref() == Some(old_event.event_id.as_str()))
+        {
+            let Some(attempt) = event.attempt_id.clone() else {
+                continue;
+            };
+            match event.event_type {
+                EventType::AttemptDispatchedV1 => {
+                    live.insert(
+                        attempt,
+                        (
+                            event.node_id.ok_or("AttemptDispatched@1 has no node ID")?,
+                            event.payload["reserved"].as_u64(),
+                        ),
+                    );
+                }
+                EventType::AttemptAdmittedV1
+                | EventType::AttemptFailedV1
+                | EventType::AttemptFencedV1
+                | EventType::AttemptReleasedV1 => {
+                    live.remove(&attempt);
+                }
+                _ => {}
+            }
+        }
+        live.into_iter()
+            .map(|(attempt, (node, charged))| (node, attempt, charged))
             .collect()
     } else {
         Vec::new()
@@ -600,6 +619,16 @@ fn capture_round(
     let snapshot = Capture::new(repo, cas)
         .committed("HEAD")
         .map_err(|error| format!("capturing HEAD: {error}"))?;
+    let authority_snapshot: SourceSnapshot = serde_json::from_value(
+        cas.get_json(&campaign.manifest.authority_snapshot_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if snapshot.repository_id != authority_snapshot.repository_id {
+        return Err(
+            "candidate HEAD belongs to a different repository than the Campaign authority".into(),
+        );
+    }
     let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, repo, cas)?;
     store
         .append(
@@ -626,18 +655,7 @@ fn capture_round(
         .map_err(|error| error.to_string())?;
 
     let (prior_findings, demands) = if let Some((_, old)) = superseded {
-        let findings = cas
-            .get_json(&old.prior_finding_set_id)
-            .map_err(|error| error.to_string())?["prior_findings"]
-            .clone();
-        let current = serde_json::Value::Array(prior_rows(store, cas, run_id)?);
-        if current != findings {
-            return Err(
-                "cannot supersede an incomplete Round after selected output changed the Ledger; \
-                 start a new Campaign rather than carrying output across Subjects"
-                    .into(),
-            );
-        }
+        let findings = serde_json::Value::Array(prior_rows(store, cas, run_id)?);
         let demands = cas
             .get_json(&old.prior_demand_set_id)
             .map_err(|error| error.to_string())?["demands"]
@@ -699,18 +717,22 @@ fn capture_round(
                 payload.prior_demand_set_id.clone(),
             ]),
         ];
-        batch.extend(dispatched_attempts.into_iter().map(|(node, attempt)| {
-            NewEvent::new(
-                EventType::AttemptFencedV1,
-                serde_json::json!({
-                    "reason": "Round input superseded",
-                    "charged": null,
+        batch.extend(
+            dispatched_attempts
+                .into_iter()
+                .map(|(node, attempt, charged)| {
+                    NewEvent::new(
+                        EventType::AttemptFencedV1,
+                        serde_json::json!({
+                            "reason": "Round input superseded",
+                            "charged": charged,
+                        }),
+                    )
+                    .node(node)
+                    .attempt(attempt)
+                    .caused_by(old_event.event_id.clone())
                 }),
-            )
-            .node(node)
-            .attempt(attempt)
-            .caused_by(old_event.event_id.clone())
-        }));
+        );
         batch.push(
             NewEvent::new(
                 EventType::RoundStartedV1,
@@ -767,6 +789,7 @@ fn load_round(
     cas: &Cas,
     event_id: String,
     payload: RoundStartedPayloadV1,
+    repository_id: &str,
 ) -> Result<RoundInput, String> {
     payload.validate()?;
     let subject: SubjectV1 = serde_json::from_value(
@@ -780,6 +803,9 @@ fn load_round(
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    if snapshot.repository_id != repository_id {
+        return Err("captured Round Subject belongs to a different repository".into());
+    }
     let manifest_id = snapshot
         .artifact_manifest
         .ok_or("captured head Snapshot has no artifact manifest")?;

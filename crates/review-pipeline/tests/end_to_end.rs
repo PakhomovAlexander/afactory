@@ -350,7 +350,7 @@ gate = "major"
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-    let authority = support::test_round_authority(&cas, &mut store, "run");
+    let authority = support::test_round_authority(&cas, &mut store, "run", &snapshot.manifest);
     let mut kernel = Kernel::from_loaded(
         &cas,
         &mut store,

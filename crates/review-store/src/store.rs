@@ -162,7 +162,11 @@ impl EventStore {
                  PRIMARY KEY (run_id, sequence)
              );
              CREATE INDEX IF NOT EXISTS events_by_correlation
-                 ON events (run_id, correlation_id);",
+                 ON events (run_id, correlation_id);
+             CREATE INDEX IF NOT EXISTS events_by_type_sequence
+                 ON events (run_id, type, sequence DESC);
+             CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
+                 ON events (run_id, causation_id, type, sequence);",
         )?;
         Ok(Self { conn })
     }
@@ -437,7 +441,7 @@ fn validate_campaign_transition(
                     "SELECT COUNT(*) FROM events
                      WHERE run_id = ?1 AND sequence > (
                          SELECT sequence FROM events WHERE event_id = ?2
-                     ) AND type IN ('FindingReported@1', 'FindingResolved@1')",
+                     ) AND type = 'FindingReported@1'",
                     params![run_id, active_id],
                     |row| row.get(0),
                 )?;
@@ -519,6 +523,9 @@ fn validate_campaign_transition(
                             return Err(StoreError::Conflict(
                                 "the active Round epoch already has a terminal conclusion".into(),
                             ));
+                        }
+                        if event_type == EventType::RunReportV2 {
+                            validate_report_receipts(tx, run_id, active_id, &event.payload)?;
                         }
                         terminal = true;
                     }
@@ -605,6 +612,72 @@ fn round_has_terminal_report(
         }
     }
     Ok(false)
+}
+
+fn validate_report_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    payload: &Value,
+) -> Result<(), StoreError> {
+    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+    let mut receipts = std::collections::BTreeMap::new();
+    let mut statement = tx.prepare(
+        "SELECT node_id, payload FROM events
+         WHERE run_id = ?1 AND causation_id = ?2 AND type = 'NodeOutputReceipt@1'
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![run_id, round_event_id], |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (node, raw) = row?;
+        let receipt: review_core::NodeOutputReceiptPayloadV1 = serde_json::from_str(&raw)?;
+        let node =
+            node.ok_or_else(|| StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into()))?;
+        if node != receipt.node || receipts.insert(node, receipt).is_some() {
+            return Err(StoreError::Conflict(
+                "RunReport@2 has ambiguous durable output receipts".into(),
+            ));
+        }
+    }
+    for outcome in report.outcomes {
+        if let review_core::RunNodeOutcomeV2::Completed {
+            mut output_artifacts,
+        } = outcome.outcome
+        {
+            output_artifacts.sort();
+            let receipt = receipts.remove(&outcome.node).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "RunReport@2 completed node '{}' without a durable receipt",
+                    outcome.node
+                ))
+            })?;
+            let mut durable: Vec<String> = receipt
+                .outputs
+                .into_iter()
+                .flat_map(|port| port.artifact_ids)
+                .collect();
+            durable.sort();
+            if durable != output_artifacts {
+                return Err(StoreError::Conflict(format!(
+                    "RunReport@2 contradicts the receipt for node '{}'",
+                    outcome.node
+                )));
+            }
+        } else if receipts.contains_key(&outcome.node) {
+            return Err(StoreError::Conflict(format!(
+                "RunReport@2 suppresses or fails node '{}' after it published a receipt",
+                outcome.node
+            )));
+        }
+    }
+    if !receipts.is_empty() {
+        return Err(StoreError::Conflict(
+            "RunReport@2 omits nodes with durable output receipts".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn report_closes(event_type: EventType, payload: &Value) -> Result<bool, StoreError> {

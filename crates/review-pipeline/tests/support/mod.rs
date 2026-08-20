@@ -1,23 +1,44 @@
 use review_config::Definition;
 use review_core::{CampaignOpenedPayloadV1, EventType, RoundStartedPayloadV1, SubjectV1};
 use review_pipeline::{Kernel, RoundAuthority};
-use review_source_git::Manifest;
+use review_source_git::{Manifest, Snapshot};
 use review_store::{Cas, EventStore, NewEvent};
 
 #[allow(dead_code)]
-pub fn test_round_authority(cas: &Cas, store: &mut EventStore, run_id: &str) -> RoundAuthority {
-    test_round_authority_with_prior(cas, store, run_id, None)
+pub fn test_round_authority(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+) -> RoundAuthority {
+    test_round_authority_with_prior(cas, store, run_id, snapshot, None)
 }
 
 fn test_round_authority_with_prior(
     cas: &Cas,
     store: &mut EventStore,
     run_id: &str,
+    snapshot: &Manifest,
     prior_finding_set_id: Option<String>,
 ) -> RoundAuthority {
     let authority_snapshot_id = cas.put(b"test authority snapshot").unwrap();
     let campaign_manifest_id = cas.put(b"test campaign manifest").unwrap();
-    let head_snapshot_id = cas.put(b"test head snapshot").unwrap();
+    let head_manifest_id = cas
+        .put_json(&serde_json::to_value(snapshot).unwrap())
+        .unwrap();
+    let head_snapshot_id = cas
+        .put_json(
+            &Snapshot {
+                manifest: snapshot.clone(),
+                content_digest: snapshot.content_digest(),
+                repository_id: "test/repository".into(),
+                source_revision: Some("test".into()),
+                dirty: false,
+                attempts: 1,
+            }
+            .to_payload("test-tree", Some(&head_manifest_id)),
+        )
+        .unwrap();
     let subject_id = cas
         .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head_snapshot_id)).unwrap())
         .unwrap();
@@ -111,6 +132,7 @@ runner = { program = "/bin/true" }
     .unwrap();
 
     let run_id = run_id.into();
-    let authority = test_round_authority_with_prior(cas, store, &run_id, prior_finding_set_id);
+    let authority =
+        test_round_authority_with_prior(cas, store, &run_id, &snapshot, prior_finding_set_id);
     Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
 }

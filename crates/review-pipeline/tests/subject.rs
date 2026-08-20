@@ -42,12 +42,13 @@ package = "tester"
     .load_with(&lockfile, &registry)
     .unwrap();
 
-    let authority = support::test_round_authority(&cas, &mut store, "run");
+    let manifest = Manifest::new(vec![]);
+    let authority = support::test_round_authority(&cas, &mut store, "run", &manifest);
     let result = Kernel::from_loaded(
         &cas,
         &mut store,
         "run",
-        Manifest::new(vec![]),
+        manifest.clone(),
         &loaded,
         authority.clone(),
     );
@@ -68,15 +69,8 @@ runner = { program = "/bin/true" }
     .unwrap()
     .load()
     .unwrap();
-    let kernel = Kernel::from_loaded(
-        &cas,
-        &mut store,
-        "run",
-        Manifest::new(vec![]),
-        &whole_tree,
-        authority,
-    )
-    .unwrap();
+    let kernel =
+        Kernel::from_loaded(&cas, &mut store, "run", manifest, &whole_tree, authority).unwrap();
 
     let error = loaded.run(&kernel).unwrap_err();
     assert!(error.to_string().contains("declares `diff`"), "{error}");
