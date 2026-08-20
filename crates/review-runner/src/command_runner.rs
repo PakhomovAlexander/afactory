@@ -8,6 +8,7 @@
 use review_core::Command;
 use review_core::LegacyStageOutput;
 use review_store::Cas;
+use std::io::Write;
 use std::process::Stdio;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +79,23 @@ impl<'a> CommandRunner<'a> {
         &self,
         command: &Command,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
+        self.invoke_raw_inner(command, None)
+    }
+
+    /// Invoke a command reviewer with the exact serialized `ReviewerInputs` document on stdin.
+    pub fn invoke_raw_with_input(
+        &self,
+        command: &Command,
+        input: &[u8],
+    ) -> Result<(LegacyStageOutput, String), RunnerError> {
+        self.invoke_raw_inner(command, Some(input))
+    }
+
+    fn invoke_raw_inner(
+        &self,
+        command: &Command,
+        input: Option<&[u8]>,
+    ) -> Result<(LegacyStageOutput, String), RunnerError> {
         let argv = command
             .resolve()
             .map_err(|e| RunnerError::Refused(e.to_string()))?;
@@ -88,13 +106,34 @@ impl<'a> CommandRunner<'a> {
         cmd.env_clear();
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("LC_ALL", "C");
-        cmd.stdin(Stdio::null());
+        cmd.stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
+        let output = if let Some(input) = input {
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
+            if let Some(mut stdin) = child.stdin.take()
+                && let Err(error) = stdin.write_all(input)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunnerError::Unavailable(format!(
+                    "delivering reviewer inputs: {error}"
+                )));
+            }
+            child
+                .wait_with_output()
+                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?
+        } else {
+            cmd.output()
+                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

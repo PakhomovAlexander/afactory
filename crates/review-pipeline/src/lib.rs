@@ -104,10 +104,11 @@ struct PreparedReviewerAttempt {
 ///
 /// `Incomplete` exists because a partial review must never pass on the strength of the part
 /// that ran: a run where any node failed or was suppressed — a blocked gate, a refused budget
-/// reservation, a crashed reviewer — reports *which* nodes never contributed and cannot pass
+/// reservation or a crashed reviewer reports *which* nodes never contributed and cannot pass
 /// the gate, whatever the ledger's findings would have said. This is the owner's exhaustion
 /// policy (2026-08-18): finish in-flight work, dispatch nothing new, and fail closed at the
-/// verdict rather than by discarding paid work.
+/// verdict rather than by discarding paid work. Budget exhaustion is the terminal
+/// `Fail(Exhausted)` exception: it closes the Round while naming the work that could not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunVerdict {
     Pass,
@@ -280,6 +281,11 @@ fn replay_execution(
             EventType::NodeInvocationV1 if active_epoch => {
                 let invocation: NodeInvocationPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                if event.node_id.as_deref() != Some(invocation.node.as_str()) {
+                    return Err(
+                        "durable node invocation metadata disagrees with its payload".into(),
+                    );
+                }
                 if replayed
                     .invocations
                     .insert(invocation.node.clone(), invocation.clone())

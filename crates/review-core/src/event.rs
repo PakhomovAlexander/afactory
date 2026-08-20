@@ -336,8 +336,16 @@ impl RunReportPayloadV2 {
             })
             .collect();
         let verdict_validation: Result<(), String> = match &self.verdict {
-            RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => {
+            RunVerdictV2::Pass
+            | RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::NotConverged,
+            } if !unresolved.is_empty() => {
                 Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
+            }
+            RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::Exhausted,
+            } if unresolved.is_empty() => {
+                Err("an exhausted report must name failed or suppressed work".into())
             }
             RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
                 Err("a passing report cannot contain blocked gates".into())
@@ -728,17 +736,47 @@ fn validate_finding_reported(payload: &serde_json::Value) -> Result<(), String> 
     if key.trim().is_empty() {
         return Err("FindingReported@1 has an empty key".into());
     }
+    let source = object
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .filter(|source| !source.is_empty())
+        .ok_or("FindingReported@1 has no source")?;
+    let _ = source;
     if let Some(report_id) = object.get("report_id").and_then(serde_json::Value::as_str) {
-        if !crate::is_digest(report_id)
-            || object
-                .get("source")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(str::is_empty)
-        {
+        if !crate::is_digest(report_id) {
             return Err("FindingReported@1 has invalid live report provenance".into());
         }
-    } else if object.get("imported").and_then(serde_json::Value::as_bool) != Some(true) {
-        return Err("FindingReported@1 is neither a live report nor a legacy import".into());
+    } else {
+        if object.get("imported").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err("FindingReported@1 is neither a live report nor a legacy import".into());
+        }
+        if !matches!(
+            object.get("severity").and_then(serde_json::Value::as_str),
+            Some("minor" | "major" | "blocker")
+        ) || object
+            .get("file")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+            || object
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || object
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || object
+                .get("line")
+                .is_some_and(|line| !line.is_null() && line.as_i64().is_none_or(|line| line <= 0))
+            || object.get("confidence").is_some_and(|confidence| {
+                !confidence.is_null()
+                    && confidence
+                        .as_f64()
+                        .is_none_or(|confidence| !(0.0..=1.0).contains(&confidence))
+            })
+        {
+            return Err("FindingReported@1 has an invalid legacy projection".into());
+        }
     }
     Ok(())
 }
@@ -760,6 +798,9 @@ fn validate_finding_resolved(payload: &serde_json::Value) -> Result<(), String> 
             .and_then(serde_json::Value::as_u64)
             .is_none_or(|round| round == 0)
         || !valid_status
+        || object
+            .get("note")
+            .is_some_and(|note| !note.is_null() && note.as_str().is_none())
     {
         return Err("FindingResolved@1 has invalid identity, round, or status".into());
     }

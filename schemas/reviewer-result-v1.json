@@ -5,7 +5,7 @@
   "description": "What one reviewer attempt returned. Its reports are FindingReport@1 payloads carried inside the result — the kernel assigns them identity when it admits them, which is why a reviewer cannot name a Finding it has not been given.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "reports"],
+  "required": ["verdict", "summary", "reports", "benchmark_demands", "disputes"],
   "properties": {
     "verdict": {
       "description": "The reviewer's overall judgement. Evidence for a human, never authority: it does not gate, resolve, or converge anything on its own.",

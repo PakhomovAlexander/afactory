@@ -77,6 +77,7 @@ pub struct NewEvent {
     pub correlation_id: Option<String>,
     pub artifact_refs: Vec<String>,
     pub payload: Value,
+    legacy_import: bool,
 }
 
 impl NewEvent {
@@ -92,6 +93,7 @@ impl NewEvent {
             correlation_id: None,
             artifact_refs: Vec::new(),
             payload,
+            legacy_import: false,
         }
     }
 
@@ -122,6 +124,11 @@ impl NewEvent {
 
     pub fn referencing(mut self, artifact_refs: Vec<String>) -> Self {
         self.artifact_refs = artifact_refs;
+        self
+    }
+
+    pub(crate) fn legacy_import(mut self) -> Self {
+        self.legacy_import = true;
         self
     }
 }
@@ -187,6 +194,19 @@ impl EventStore {
             .into_iter()
             .next()
             .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
+    }
+
+    /// Append through the frozen pre-campaign compatibility path.
+    ///
+    /// New campaign code must use [`append`](Self::append); this explicit entry point exists for
+    /// import/parity tooling whose historical events predate CampaignOpened@1.
+    pub fn append_legacy(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        event: NewEvent,
+    ) -> Result<RunEvent, StoreError> {
+        self.append(run_id, cas, event.legacy_import())
     }
 
     /// Atomically append an ordered event batch.
@@ -411,7 +431,7 @@ struct AuthorityNode {
     kind: String,
     #[serde(default)]
     inputs: Vec<AuthorityPort>,
-    #[serde(default)]
+    #[serde(default = "default_authority_outputs")]
     outputs: Vec<AuthorityPort>,
     #[serde(default)]
     gated_by: Option<String>,
@@ -435,6 +455,7 @@ struct AuthorityPortDetails {
     #[serde(rename = "type")]
     artifact_type: String,
     cardinality: String,
+    #[serde(default)]
     optional: bool,
     snapshot_affinity: String,
 }
@@ -478,13 +499,18 @@ impl AuthorityPort {
 
 struct AuthorityPlan {
     nodes: std::collections::BTreeMap<String, AuthorityNode>,
+    budgeted: bool,
+}
+
+fn default_authority_outputs() -> Vec<AuthorityPort> {
+    vec![AuthorityPort::Name("out".into())]
 }
 
 fn load_authority_plan(
     tx: &rusqlite::Transaction<'_>,
     cas: &Cas,
     run_id: &str,
-) -> Result<Option<AuthorityPlan>, StoreError> {
+) -> Result<AuthorityPlan, StoreError> {
     let raw: String = tx.query_row(
         "SELECT payload FROM events
          WHERE run_id = ?1 AND type = 'CampaignOpened@1'
@@ -493,19 +519,29 @@ fn load_authority_plan(
         |row| row.get(0),
     )?;
     let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_str(&raw)?;
-    load_authority_plan_id(cas, &opened.campaign_manifest_id)
+    load_authority_plan_id(
+        cas,
+        &opened.campaign_manifest_id,
+        &opened.authority_snapshot_id,
+    )
 }
 
 fn load_authority_plan_id(
     cas: &Cas,
     manifest_id: &str,
-) -> Result<Option<AuthorityPlan>, StoreError> {
-    let Ok(manifest) = cas.get_json(manifest_id) else {
-        // Permanent reader compatibility for pre-CampaignManifest imported and test logs.
-        return Ok(None);
-    };
+    authority_snapshot_id: &str,
+) -> Result<AuthorityPlan, StoreError> {
+    let manifest = cas
+        .get_json(manifest_id)
+        .map_err(|error| StoreError::Conflict(format!("unreadable CampaignManifest: {error}")))?;
     let manifest: review_core::CampaignManifestV1 = serde_json::from_value(manifest)?;
     manifest.validate().map_err(StoreError::Conflict)?;
+    if manifest.authority_snapshot_id != authority_snapshot_id {
+        return Err(StoreError::Conflict(
+            "CampaignManifest authority does not match CampaignOpened@1".into(),
+        ));
+    }
+    let budgeted = manifest.budgets.is_some();
     let pipeline = cas
         .get(&manifest.pipeline.artifact_id)
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -529,7 +565,7 @@ fn load_authority_plan_id(
     if nodes.is_empty() {
         return Err(StoreError::Conflict("pinned pipeline has no nodes".into()));
     }
-    Ok(Some(AuthorityPlan { nodes }))
+    Ok(AuthorityPlan { nodes, budgeted })
 }
 
 fn validate_plan_ports(
@@ -685,17 +721,16 @@ fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
         "benchmark_demands",
         "disputes",
     ];
-    if object.keys().any(|key| !allowed.contains(&key.as_str()))
-        || !matches!(
-            value["verdict"].as_str(),
-            Some("approve" | "request-changes" | "block")
-        )
-        || value["reports"]
-            .as_array()
-            .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
-        || value
-            .get("summary")
-            .is_some_and(|summary| !summary.is_null() && summary.as_str().is_none())
+    exact_keys(object, &allowed, "ReviewerResult@1")?;
+    if !matches!(
+        value["verdict"].as_str(),
+        Some("approve" | "request-changes" | "block")
+    ) || value["reports"]
+        .as_array()
+        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
+        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
+        || value["benchmark_demands"].as_array().is_none()
+        || value["disputes"].as_array().is_none()
     {
         return Err(StoreError::Conflict(
             "ReviewerResult@1 violates its top-level payload contract".into(),
@@ -803,7 +838,7 @@ fn validate_campaign_transition(
     )?;
     let mut opened = campaign_opened > 0;
     let mut authority_plan = if opened {
-        load_authority_plan(tx, cas, run_id)?
+        Some(load_authority_plan(tx, cas, run_id)?)
     } else {
         None
     };
@@ -813,6 +848,7 @@ fn validate_campaign_transition(
         None => false,
     };
     let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
+    let mut pending_fences = std::collections::BTreeSet::new();
     let mut batch_dispatches = std::collections::BTreeMap::new();
     let mut batch_latest_dispatch = std::collections::BTreeMap::new();
     let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
@@ -820,6 +856,7 @@ fn validate_campaign_transition(
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
+    let mut batch_findings = std::collections::BTreeSet::new();
 
     for (offset, event) in events.iter().enumerate() {
         let sequence = first_sequence
@@ -838,7 +875,19 @@ fn validate_campaign_transition(
                 opened = true;
                 let payload: review_core::CampaignOpenedPayloadV1 =
                     serde_json::from_value(event.payload.clone())?;
-                authority_plan = load_authority_plan_id(cas, &payload.campaign_manifest_id)?;
+                if !event.artifact_refs.contains(&payload.campaign_manifest_id)
+                    || !event.artifact_refs.contains(&payload.authority_snapshot_id)
+                {
+                    return Err(StoreError::Conflict(
+                        "CampaignOpened@1 does not publish its manifest and authority snapshot"
+                            .into(),
+                    ));
+                }
+                authority_plan = Some(load_authority_plan_id(
+                    cas,
+                    &payload.campaign_manifest_id,
+                    &payload.authority_snapshot_id,
+                )?);
             }
             EventType::RoundInputSupersededV1 => {
                 let payload: review_core::RoundInputSupersededPayloadV1 =
@@ -872,6 +921,22 @@ fn validate_campaign_transition(
                         "cannot supersede a Round after it published finding state".into(),
                     ));
                 }
+                let mut statement = tx.prepare(
+                    "SELECT dispatch.attempt_id FROM events AS dispatch
+                     WHERE dispatch.run_id = ?1 AND dispatch.causation_id = ?2
+                       AND dispatch.type = 'AttemptDispatched@1'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM events AS terminal
+                           WHERE terminal.run_id = dispatch.run_id
+                             AND terminal.causation_id = dispatch.causation_id
+                             AND terminal.attempt_id = dispatch.attempt_id
+                             AND terminal.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
+                                                   'AttemptFenced@1', 'AttemptReleased@1')
+                       )",
+                )?;
+                pending_fences = statement
+                    .query_map(params![run_id, active_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<_, _>>()?;
                 pending_supersession = Some(payload);
             }
             EventType::RoundStartedV1 => {
@@ -898,6 +963,12 @@ fn validate_campaign_transition(
                             "replacement RoundStarted@1 disagrees with its supersession".into(),
                         ));
                     }
+                    if !pending_fences.is_empty() {
+                        return Err(StoreError::Conflict(format!(
+                            "replacement RoundStarted@1 leaves {} outstanding attempts unfenced",
+                            pending_fences.len()
+                        )));
+                    }
                 } else if let Some((_, prior)) = &active {
                     if !terminal
                         || prior.round.checked_add(1) != Some(payload.round)
@@ -918,12 +989,27 @@ fn validate_campaign_transition(
             }
             event_type if round_runtime_event(event_type) => {
                 if active.is_none() {
-                    if requires_campaign_round(event_type) {
-                        return Err(StoreError::Conflict(format!(
-                            "{event_type} requires an active Round"
-                        )));
+                    if event.legacy_import
+                        && matches!(
+                            event_type,
+                            EventType::CheckCompletedV1
+                                | EventType::FindingReportedV1
+                                | EventType::GenerationAdvancedV1
+                        )
+                    {
+                        if event_type == EventType::FindingReportedV1 {
+                            let key = event.payload["key"].as_str().ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "legacy FindingReported@1 has no finding key".into(),
+                                )
+                            })?;
+                            batch_findings.insert(key.to_string());
+                        }
+                        continue;
                     }
-                    continue;
+                    return Err(StoreError::Conflict(format!(
+                        "{event_type} requires an active Round"
+                    )));
                 }
                 if event_type == EventType::RunReportV1 {
                     return Err(StoreError::Conflict(
@@ -964,6 +1050,11 @@ fn validate_campaign_transition(
                             })?;
                             let invocation: review_core::NodeInvocationPayloadV1 =
                                 serde_json::from_value(event.payload.clone())?;
+                            if invocation.node != node {
+                                return Err(StoreError::Conflict(
+                                    "NodeInvocation@1 metadata disagrees with its payload".into(),
+                                ));
+                            }
                             if let Some(plan) = plan {
                                 let expected = plan.nodes.get(node).ok_or_else(|| {
                                     StoreError::Conflict(format!(
@@ -997,6 +1088,14 @@ fn validate_campaign_transition(
                             let attempt = event.attempt_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("AttemptDispatched@1 has no attempt ID".into())
                             })?;
+                            let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if plan.is_some_and(|plan| plan.budgeted) && dispatch.reserved.is_none()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "budgeted AttemptDispatched@1 has no reservation".into(),
+                                ));
+                            }
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
                                  WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3",
@@ -1077,6 +1176,44 @@ fn validate_campaign_transition(
                             if !quarantined {
                                 batch_terminals.insert(attempt.to_string(), event_type);
                             }
+                            if plan.is_some_and(|plan| plan.budgeted) {
+                                let settled = match event_type {
+                                    EventType::AttemptFailedV1 => {
+                                        serde_json::from_value::<
+                                            review_core::event::AttemptFailedPayloadV1,
+                                        >(
+                                            event.payload.clone()
+                                        )?
+                                        .charged
+                                    }
+                                    EventType::AttemptFencedV1 => {
+                                        serde_json::from_value::<
+                                            review_core::event::AttemptFencedPayloadV1,
+                                        >(
+                                            event.payload.clone()
+                                        )?
+                                        .charged
+                                    }
+                                    EventType::AttemptReleasedV1 => {
+                                        serde_json::from_value::<
+                                            review_core::event::AttemptReleasedPayloadV1,
+                                        >(
+                                            event.payload.clone()
+                                        )?
+                                        .released
+                                    }
+                                    EventType::AttemptAdmittedV1 => Some(0),
+                                    _ => unreachable!(),
+                                };
+                                if settled.is_none() {
+                                    return Err(StoreError::Conflict(format!(
+                                        "budgeted {event_type} has no settled accounting"
+                                    )));
+                                }
+                            }
+                            if event_type == EventType::AttemptFencedV1 {
+                                pending_fences.remove(attempt);
+                            }
                             if let Some(admitted) = admitted {
                                 if admitted.selection == "selected" {
                                     let latest: Option<String> = tx
@@ -1129,6 +1266,12 @@ fn validate_campaign_transition(
                             })?;
                             let receipt: review_core::NodeOutputReceiptPayloadV1 =
                                 serde_json::from_value(event.payload.clone())?;
+                            if receipt.node != node {
+                                return Err(StoreError::Conflict(
+                                    "NodeOutputReceipt@1 metadata disagrees with its payload"
+                                        .into(),
+                                ));
+                            }
                             if let Some(plan) = plan {
                                 let expected = plan.nodes.get(node).ok_or_else(|| {
                                     StoreError::Conflict(format!(
@@ -1218,6 +1361,36 @@ fn validate_campaign_transition(
                                 }
                             }
                         }
+                        EventType::FindingReportedV1 => {
+                            let key = event.payload["key"].as_str().ok_or_else(|| {
+                                StoreError::Conflict("FindingReported@1 has no finding key".into())
+                            })?;
+                            if event.correlation_id.as_deref() != Some(key) {
+                                return Err(StoreError::Conflict(
+                                    "FindingReported@1 correlation disagrees with its key".into(),
+                                ));
+                            }
+                            match event.payload.get("report_id").and_then(Value::as_str) {
+                                Some(report_id)
+                                    if event.artifact_refs.as_slice() == [report_id] => {}
+                                Some(_) => {
+                                    return Err(StoreError::Conflict(
+                                        "FindingReported@1 report ID disagrees with its artifact reference"
+                                            .into(),
+                                    ));
+                                }
+                                None if event.payload.get("imported").and_then(Value::as_bool)
+                                    == Some(true)
+                                    && event.artifact_refs.is_empty() => {}
+                                None => {
+                                    return Err(StoreError::Conflict(
+                                        "FindingReported@1 has no authoritative report artifact"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                            batch_findings.insert(key.to_string());
+                        }
                         _ => {}
                     }
                     if matches!(event_type, EventType::RunReportV1 | EventType::RunReportV2)
@@ -1239,6 +1412,25 @@ fn validate_campaign_transition(
                 }
             }
             EventType::FindingResolvedV1 => {
+                let key = event.payload["key"].as_str().ok_or_else(|| {
+                    StoreError::Conflict("FindingResolved@1 has no finding key".into())
+                })?;
+                if event.correlation_id.as_deref() != Some(key) {
+                    return Err(StoreError::Conflict(
+                        "FindingResolved@1 correlation disagrees with its key".into(),
+                    ));
+                }
+                let existing: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM events
+                     WHERE run_id = ?1 AND type = 'FindingReported@1' AND correlation_id = ?2",
+                    params![run_id, key],
+                    |row| row.get(0),
+                )?;
+                if existing == 0 && !batch_findings.contains(key) {
+                    return Err(StoreError::Conflict(format!(
+                        "FindingResolved@1 names unknown finding key '{key}'"
+                    )));
+                }
                 if let (Some(causation), Some((active_id, _))) =
                     (event.causation_id.as_deref(), &active)
                     && causation != active_id
@@ -1272,22 +1464,6 @@ fn round_runtime_event(event_type: EventType) -> bool {
             | EventType::FindingReportedV1
             | EventType::GateDecisionV1
             | EventType::GenerationAdvancedV1
-            | EventType::NodeInvocationV1
-            | EventType::NodeOutputReceiptV1
-            | EventType::RunReportV1
-            | EventType::RunReportV2
-    )
-}
-
-fn requires_campaign_round(event_type: EventType) -> bool {
-    matches!(
-        event_type,
-        EventType::AttemptAdmittedV1
-            | EventType::AttemptDispatchedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1
-            | EventType::GateDecisionV1
             | EventType::NodeInvocationV1
             | EventType::NodeOutputReceiptV1
             | EventType::RunReportV1

@@ -263,7 +263,7 @@ pub struct ReviewerReturn {
 /// What one reviewer attempt is given beyond its sandbox: labelled data artifacts the kernel
 /// resolved for it. Data, never authority — an adapter renders these under an explicit label
 /// so the model weighs them as claims to re-examine, not as instructions to obey.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ReviewerInputs {
     /// The campaign's findings from earlier rounds, as one JSON document.
     pub prior_findings: Option<serde_json::Value>,
@@ -341,10 +341,17 @@ impl ReviewerAdapter for Command {
         &self,
         cas: &Cas,
         sandbox_root: &Path,
-        _inputs: &ReviewerInputs,
+        inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
         let runner = crate::CommandRunner::new(cas, sandbox_root);
-        let (output, raw_artifact) = runner.invoke_raw(self)?;
+        let (output, raw_artifact) =
+            if inputs.prior_findings.is_none() && inputs.artifacts.is_empty() {
+                runner.invoke_raw(self)?
+            } else {
+                let encoded = serde_json::to_vec(inputs)
+                    .map_err(|error| RunnerError::Refused(error.to_string()))?;
+                runner.invoke_raw_with_input(self, &encoded)?
+            };
         Ok(ReviewerReturn {
             output,
             cost_tokens: 0,

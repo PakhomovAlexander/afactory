@@ -19,6 +19,75 @@ use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, ConvergencePolicy, EventStore};
 
+const BUDGET_PIPELINE: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+
+[[nodes]]
+id = "r-alpha"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+
+[[nodes]]
+id = "r-beta"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+
+[[nodes]]
+id = "r-gamma"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["r-alpha", "r-beta", "r-gamma"]
+outputs = ["reports"]
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r-alpha", port = "gate" }
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r-beta", port = "gate" }
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "r-gamma", port = "gate" }
+[[edges]]
+from = { node = "r-alpha", port = "result" }
+to = { node = "gather", port = "r-alpha" }
+[[edges]]
+from = { node = "r-beta", port = "result" }
+to = { node = "gather", port = "r-beta" }
+[[edges]]
+from = { node = "r-gamma", port = "result" }
+to = { node = "gather", port = "r-gamma" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -171,12 +240,19 @@ fn run_fixture() -> Run {
 #[test]
 fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
     let mut run = run_fixture();
-    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
-        .with_checks(passing_check())
-        .with_budgets(100_000, 250_000)
-        .with_adapter("r-alpha", Box::new(Costed { cost: 90_000 }))
-        .with_adapter("r-beta", Box::new(Costed { cost: 90_000 }))
-        .with_adapter("r-gamma", Box::new(Costed { cost: 90_000 }));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 250_000)
+    .with_adapter("r-alpha", Box::new(Costed { cost: 90_000 }))
+    .with_adapter("r-beta", Box::new(Costed { cost: 90_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 90_000 }));
 
     let plan = three_reviewer_pipeline().plan().unwrap();
     // Sequential on purpose: these tests pin the budget ledger's per-attempt accounting,
@@ -230,18 +306,25 @@ fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
 #[test]
 fn a_timeout_is_fenced_charged_and_retried() {
     let mut run = run_fixture();
-    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
-        .with_checks(passing_check())
-        .with_budgets(100_000, 2_000_000)
-        .with_adapter(
-            "r-alpha",
-            Box::new(FlakyOnce {
-                calls: AtomicU32::new(0),
-                cost: 40_000,
-            }),
-        )
-        .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
-        .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(FlakyOnce {
+            calls: AtomicU32::new(0),
+            cost: 40_000,
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
 
     let plan = three_reviewer_pipeline().plan().unwrap();
     // Sequential on purpose: these tests pin the budget ledger's per-attempt accounting,
@@ -289,12 +372,19 @@ fn repeated_timeouts_exhaust_rather_than_loop() {
     }
 
     let mut run = run_fixture();
-    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
-        .with_checks(passing_check())
-        .with_budgets(100_000, 200_000)
-        .with_adapter("r-alpha", Box::new(AlwaysHangs))
-        .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
-        .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 200_000)
+    .with_adapter("r-alpha", Box::new(AlwaysHangs))
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
 
     let plan = three_reviewer_pipeline().plan().unwrap();
     // Sequential on purpose: these tests pin the budget ledger's per-attempt accounting,
@@ -332,12 +422,19 @@ fn an_unavailable_reviewer_releases_its_reservation() {
     // gamma's only if alpha's 100k was *released*. A leaked reservation would refuse beta
     // outright (100k held + 100k asked > 170k).
     let mut run = run_fixture();
-    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
-        .with_checks(passing_check())
-        .with_budgets(100_000, 170_000)
-        .with_adapter("r-alpha", Box::new(Missing))
-        .with_adapter("r-beta", Box::new(Costed { cost: 60_000 }))
-        .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 170_000)
+    .with_adapter("r-alpha", Box::new(Missing))
+    .with_adapter("r-beta", Box::new(Costed { cost: 60_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
 
     let plan = three_reviewer_pipeline().plan().unwrap();
     // Sequential on purpose: these tests pin the budget ledger's per-attempt accounting,

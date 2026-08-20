@@ -15,6 +15,41 @@ use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, EventStore};
 
+const PRIOR_PIPELINE: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = ["prior_findings"]
+outputs = ["result"]
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["reviewer"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "gather", port = "reviewer" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -117,12 +152,13 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
 
     let prior = prior.map(|doc| cas.put_json(&serde_json::from_str(doc).unwrap()).unwrap());
     let seen = Arc::new(Mutex::new(None));
-    let kernel = support::whole_tree_kernel_with_prior(
+    let kernel = support::whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest.clone(),
         prior,
+        PRIOR_PIPELINE,
     )
     .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
     let plan = pipeline().plan().unwrap();

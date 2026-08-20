@@ -1,4 +1,3 @@
-use review_config::Definition;
 use review_core::EventType;
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore, NewEvent};
@@ -11,7 +10,18 @@ fn a_receipt_without_an_admitted_reviewer_attempt_cannot_skip_execution() {
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let manifest = Manifest::new(vec![]);
-    let authority = support::test_round_authority(&cas, &mut store, "run", &manifest);
+    let definition = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+outputs = ["result"]
+runner = { program = "/bin/true" }
+"#;
+    let _authority =
+        support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, definition);
     let round = store
         .replay("run")
         .unwrap()
@@ -42,7 +52,7 @@ fn a_receipt_without_an_admitted_reviewer_attempt_cannot_skip_execution() {
             },
         }))
         .unwrap();
-    store
+    let error = store
         .append(
             "run",
             &cas,
@@ -64,26 +74,6 @@ fn a_receipt_without_an_admitted_reviewer_attempt_cannot_skip_execution() {
             .caused_by(round.event_id)
             .referencing(vec![forged]),
         )
-        .unwrap();
-    let loaded = Definition::from_toml(
-        r#"
-version = 2
-[subject]
-kind = "whole-tree"
-[[nodes]]
-id = "reviewer"
-kind = "reviewer"
-runner = { program = "/bin/true" }
-"#,
-    )
-    .unwrap()
-    .load()
-    .unwrap();
-    let kernel =
-        review_pipeline::Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
-            .unwrap();
-
-    let report = loaded.run(&kernel).unwrap();
-    assert!(!report.complete());
-    assert!(format!("{:?}", report.outcome("reviewer")).contains("selected admitted attempt"));
+        .unwrap_err();
+    assert!(error.to_string().contains("attempt ID"), "{error}");
 }

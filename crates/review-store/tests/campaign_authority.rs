@@ -161,6 +161,134 @@ fn a_round_requires_a_durable_campaign() {
 }
 
 #[test]
+fn a_campaign_requires_a_readable_manifest() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let authority = cas.put(b"authority").unwrap();
+    let manifest = cas.put(b"not a CampaignManifest").unwrap();
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::CampaignOpenedV1,
+                serde_json::to_value(CampaignOpenedPayloadV1 {
+                    campaign_manifest_id: manifest.clone(),
+                    authority_snapshot_id: authority.clone(),
+                })
+                .unwrap(),
+            )
+            .referencing(vec![authority, manifest]),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("unreadable CampaignManifest"));
+    assert!(store.replay("run").unwrap().is_empty());
+}
+
+#[test]
+fn runtime_events_require_an_active_round() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::GenerationAdvancedV1,
+                serde_json::json!({"round": 1}),
+            ),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("requires an active Round"));
+    assert!(store.replay("run").unwrap().is_empty());
+}
+
+#[test]
+fn node_metadata_must_match_its_payload() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "metadata");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::json!({"node": "invented", "inputs": []}),
+            )
+            .node("reviewer")
+            .caused_by(round.event_id),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("metadata disagrees"));
+}
+
+#[test]
+fn supersession_requires_every_outstanding_attempt_to_be_fenced() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let old = authority(&cas, "old-unfenced");
+    let old_round = opened_round(&mut store, &cas, "run", &old);
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(EventType::AttemptDispatchedV1, serde_json::json!({}))
+                .node("reviewer")
+                .attempt("c".repeat(26))
+                .caused_by(&old_round.event_id),
+        )
+        .unwrap();
+
+    let replacement = authority(&cas, "replacement-unfenced");
+    let superseded = RoundInputSupersededPayloadV1 {
+        round: 1,
+        old_epoch: 1,
+        new_epoch: 2,
+        campaign_manifest_id: old.manifest.clone(),
+        old_subject_id: old.subject.clone(),
+        replacement_subject_id: replacement.subject.clone(),
+    };
+    let mut replacement_payload = round_payload(&replacement, 2);
+    replacement_payload.campaign_manifest_id = old.manifest.clone();
+    let mut replacement_refs = round_refs(&replacement);
+    replacement_refs.push(old.manifest.clone());
+
+    let error = store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                NewEvent::new(
+                    EventType::RoundInputSupersededV1,
+                    serde_json::to_value(superseded).unwrap(),
+                )
+                .caused_by(&old_round.event_id),
+                NewEvent::new(
+                    EventType::RoundStartedV1,
+                    serde_json::to_value(replacement_payload).unwrap(),
+                )
+                .caused_by(&old_round.event_id)
+                .referencing(replacement_refs),
+            ],
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("outstanding attempts unfenced"));
+}
+
+#[test]
 fn a_superseded_epoch_cannot_publish_late_output() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
@@ -310,7 +438,9 @@ fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
     let ids = authority(&cas, "typed-receipt");
     let round = opened_round(&mut store, &cas, "run", &ids);
     let attempt = "b".repeat(26);
-    let malformed_result = cas.put_json(&serde_json::json!({})).unwrap();
+    let malformed_result = cas
+        .put_json(&serde_json::json!({"verdict": "approve", "reports": []}))
+        .unwrap();
     let provenance = cas.put(b"test provenance").unwrap();
 
     store

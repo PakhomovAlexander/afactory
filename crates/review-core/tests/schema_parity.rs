@@ -421,8 +421,8 @@ fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
     event.payload = serde_json::to_value(RunReportPayloadV2 {
         outcomes: vec![RunNodeReportV2 {
             node: "review".into(),
-            outcome: RunNodeOutcomeV2::Completed {
-                output_artifacts: vec![],
+            outcome: RunNodeOutcomeV2::Failed {
+                error: "run budget exhausted".into(),
             },
         }],
         blocked_gates: vec![],

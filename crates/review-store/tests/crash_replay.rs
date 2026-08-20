@@ -114,7 +114,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
         }))
         .unwrap();
     store
-        .append(
+        .append_legacy(
             "run",
             &cas,
             NewEvent::new(

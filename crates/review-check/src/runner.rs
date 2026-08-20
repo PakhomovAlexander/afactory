@@ -238,7 +238,7 @@ impl<'a> CheckRunner<'a> {
         let mut results = Vec::with_capacity(definitions.len());
         for definition in definitions {
             let result = self.run(definition);
-            store.append(run_id, self.cas, check_event(&result, node_id))?;
+            store.append_legacy(run_id, self.cas, check_event(&result, node_id))?;
             results.push(result);
         }
         Ok(results)

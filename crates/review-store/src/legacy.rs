@@ -125,9 +125,10 @@ impl<'a> Ingest<'a> {
     }
 
     fn bind_round(&self, event: NewEvent) -> NewEvent {
-        self.round_event_id
-            .as_ref()
-            .map_or(event.clone(), |round| event.caused_by(round))
+        match &self.round_event_id {
+            Some(round) => event.caused_by(round),
+            None => event.legacy_import(),
+        }
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -351,17 +352,24 @@ impl<'a> Ingest<'a> {
         status: Status,
         note: Option<&str>,
     ) -> Result<(), StoreError> {
+        if self.ledger.get(key).is_none() {
+            return Err(StoreError::Conflict(format!(
+                "cannot resolve unknown finding key '{key}'"
+            )));
+        }
         let payload = json!({
             "key": key,
             "status": status.as_str(),
             "note": note,
             "round": self.ledger.round,
         });
-        let event = self.store.append(
-            &self.run_id,
-            self.cas,
-            NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string()),
-        )?;
+        let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+        let event = if self.round_event_id.is_none() {
+            event.legacy_import()
+        } else {
+            event
+        };
+        let event = self.store.append(&self.run_id, self.cas, event)?;
         self.ledger.apply_event(&event, self.cas)?;
         Ok(())
     }
@@ -452,7 +460,9 @@ pub fn import_ledger_jsonl(
             "confidence": row.confidence,
             "imported": true,
         });
-        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+            .correlating(row.fp.clone())
+            .legacy_import();
         apply_candidate(&mut projected, &event, cas)?;
         events.push(event);
 
@@ -471,7 +481,9 @@ pub fn import_ledger_jsonl(
                 "confidence": row.confidence,
                 "imported": true,
             });
-            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+                .correlating(row.fp.clone())
+                .legacy_import();
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -484,7 +496,9 @@ pub fn import_ledger_jsonl(
                 "round": row.last_seen_round,
                 "imported": true,
             });
-            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
+                .correlating(row.fp.clone())
+                .legacy_import();
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -492,7 +506,8 @@ pub fn import_ledger_jsonl(
     }
 
     if max_round > 1 {
-        let event = NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round }));
+        let event =
+            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round })).legacy_import();
         apply_candidate(&mut projected, &event, cas)?;
         events.push(event);
     }
