@@ -91,8 +91,8 @@ fn a_success_envelope_yields_the_answer_and_uncached_cost() {
     let returned = adapter.invoke(&cas, &sandbox, &Default::default()).unwrap();
     assert_eq!(
         returned.cost_tokens,
-        1804 + 5233,
-        "cache reads are not spend"
+        1804 + 42_000 + 5233,
+        "cache reads are excluded but cache creation is chargeable"
     );
     assert_eq!(returned.output.findings.len(), 1);
     assert_eq!(returned.output.findings[0].title, "Unbounded loop");

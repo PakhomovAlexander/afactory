@@ -224,12 +224,15 @@ impl Ledger {
     ) -> Result<(), crate::store::StoreError> {
         match event_type {
             EVENT_GENERATION_ADVANCED => {
-                if let Some(round) = payload.get("round").and_then(Value::as_u64) {
-                    self.round = round as u32;
-                }
+                let round = payload
+                    .get("round")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| malformed("GenerationAdvanced@1", "missing integer `round`"))?;
+                self.round = u32::try_from(round)
+                    .map_err(|_| malformed("GenerationAdvanced@1", "`round` exceeds u32"))?;
             }
             EVENT_FINDING_REPORTED => self.apply_report(payload, artifact_refs, cas)?,
-            EVENT_FINDING_RESOLVED => self.apply_resolution(payload),
+            EVENT_FINDING_RESOLVED => self.apply_resolution(payload)?,
             _ => {}
         }
         Ok(())
@@ -241,11 +244,18 @@ impl Ledger {
         artifact_refs: &[String],
         cas: &Cas,
     ) -> Result<(), crate::store::StoreError> {
-        let key = payload["key"].as_str().unwrap_or_default().to_string();
-        let round = payload["round"].as_u64().unwrap_or(1) as u32;
-        let source = payload["source"].as_str().unwrap_or_default().to_string();
-        let (report_id, report) = match artifact_refs.first() {
-            Some(report_id) => {
+        let key = required_string(payload, "FindingReported@1", "key")?;
+        let source = required_string(payload, "FindingReported@1", "source")?;
+        let round = required_round(payload, "FindingReported@1")?;
+        let imported = payload.get("imported").and_then(Value::as_bool) == Some(true);
+        let (report_id, report) = match (artifact_refs, imported) {
+            ([report_id], false) => {
+                if payload.get("report_id").and_then(Value::as_str) != Some(report_id) {
+                    return Err(malformed(
+                        "FindingReported@1",
+                        "payload `report_id` does not match its sole artifact reference",
+                    ));
+                }
                 let value = cas.get_json(report_id).map_err(|error| {
                     crate::store::StoreError::Artifact(format!(
                         "FindingReported@1 references {report_id}: {error}"
@@ -256,10 +266,19 @@ impl Ledger {
                     ReportProjection::from_artifact(report_id, &value)?,
                 )
             }
-            None => (
-                String::new(),
-                ReportProjection::from_legacy_payload(payload),
-            ),
+            ([], true) => (String::new(), ReportProjection::from_legacy_payload(payload)?),
+            ([], false) => {
+                return Err(malformed(
+                    "FindingReported@1",
+                    "artifact-less reports require `imported: true`",
+                ));
+            }
+            _ => {
+                return Err(malformed(
+                    "FindingReported@1",
+                    "expected exactly one report artifact, or none for an explicit import",
+                ));
+            }
         };
         let severity = report.severity;
 
@@ -345,20 +364,28 @@ impl Ledger {
         Ok(())
     }
 
-    fn apply_resolution(&mut self, payload: &Value) {
-        let key = payload["key"].as_str().unwrap_or_default();
-        let Some(status) = payload["status"].as_str().and_then(Status::parse) else {
-            return;
+    fn apply_resolution(&mut self, payload: &Value) -> Result<(), crate::store::StoreError> {
+        let key = required_string(payload, "FindingResolved@1", "key")?;
+        let status_name = required_string(payload, "FindingResolved@1", "status")?;
+        let status = Status::parse(&status_name).ok_or_else(|| {
+            malformed("FindingResolved@1", &format!("invalid status `{status_name}`"))
+        })?;
+        let round = required_round(payload, "FindingResolved@1")?;
+        let note = match payload.get("note") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(note)) => Some(note.clone()),
+            Some(_) => return Err(malformed("FindingResolved@1", "`note` must be a string or null")),
         };
-        let round = payload["round"].as_u64().unwrap_or(self.round as u64) as u32;
-        if let Some(finding) = self.findings.get_mut(key) {
-            finding.status = status;
-            finding.history.push(Transition {
-                round,
-                kind: TransitionKind::Resolved(status),
-                note: payload["note"].as_str().map(str::to_string),
-            });
-        }
+        let finding = self.findings.get_mut(&key).ok_or_else(|| {
+            malformed("FindingResolved@1", &format!("unknown finding key `{key}`"))
+        })?;
+        finding.status = status;
+        finding.history.push(Transition {
+            round,
+            kind: TransitionKind::Resolved(status),
+            note,
+        });
+        Ok(())
     }
 
     /// Findings in first-reported order, which is the order the shell ledger's file had.
@@ -458,20 +485,49 @@ impl ReportProjection {
         })
     }
 
-    fn from_legacy_payload(payload: &Value) -> Self {
-        Self {
-            severity: payload["severity"]
-                .as_str()
-                .and_then(parse_severity)
-                .unwrap_or(Severity::Minor),
-            file: payload["file"].as_str().unwrap_or_default().to_string(),
+    fn from_legacy_payload(payload: &Value) -> Result<Self, crate::store::StoreError> {
+        let severity_name = required_string(payload, "imported FindingReported@1", "severity")?;
+        let severity = parse_severity(&severity_name).ok_or_else(|| {
+            malformed(
+                "imported FindingReported@1",
+                &format!("invalid severity `{severity_name}`"),
+            )
+        })?;
+        Ok(Self {
+            severity,
+            file: required_string(payload, "imported FindingReported@1", "file")?,
             line: payload["line"].as_i64(),
-            title: payload["title"].as_str().unwrap_or_default().to_string(),
-            body: payload["body"].as_str().unwrap_or_default().to_string(),
+            title: required_string(payload, "imported FindingReported@1", "title")?,
+            body: required_string(payload, "imported FindingReported@1", "body")?,
             fix: None,
             confidence: payload["confidence"].as_f64(),
-        }
+        })
     }
+}
+
+fn malformed(event: &str, detail: &str) -> crate::store::StoreError {
+    crate::store::StoreError::Conflict(format!("malformed {event}: {detail}"))
+}
+
+fn required_string(
+    payload: &Value,
+    event: &str,
+    field: &str,
+) -> Result<String, crate::store::StoreError> {
+    let value = payload
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| malformed(event, &format!("missing non-empty string `{field}`")))?;
+    Ok(value.to_string())
+}
+
+fn required_round(payload: &Value, event: &str) -> Result<u32, crate::store::StoreError> {
+    let round = payload
+        .get("round")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| malformed(event, "missing integer `round`"))?;
+    u32::try_from(round).map_err(|_| malformed(event, "`round` exceeds u32"))
 }
 
 fn adopt(finding: &mut Finding, report: &ReportProjection, source: &str) {

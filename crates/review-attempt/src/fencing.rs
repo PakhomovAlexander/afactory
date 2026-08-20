@@ -111,6 +111,14 @@ impl AttemptLedger {
         }
     }
 
+    /// Record spend for an attempt that produced no receipt, such as a timeout or malformed
+    /// provider response. Fencing and accounting are independent facts.
+    pub fn charge(&mut self, attempt: &AttemptId, amount: u64) {
+        if let Some(attempt) = self.attempts.get_mut(attempt) {
+            attempt.charged = amount;
+        }
+    }
+
     /// Admit a receipt.
     ///
     /// The single decision that matters: was this attempt still current? A fenced attempt's

@@ -147,6 +147,9 @@ impl Cas {
     /// Store a JSON payload in its canonical form. The digest is then the payload's identity,
     /// independent of how the producer happened to order its fields.
     pub fn put_json(&self, value: &Value) -> Result<String, CasError> {
+        review_core::json::admit(value).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
         let bytes = canonical::canonicalize(value)?;
         self.put(&bytes)
     }

@@ -15,8 +15,8 @@
 //! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
 //! is redacted from everything stored.
 //!
-//! **Token mapping, recorded:** cost is `usage.input_tokens + usage.output_tokens` as the CLI
-//! reports them — cache reads and writes excluded. An agentic reviewer re-reads its context
+//! **Token mapping, recorded:** cost is uncached input plus cache creation plus output as the CLI
+//! reports them — cache reads excluded. An agentic reviewer re-reads its context
 //! through the cache on every turn; counting those would spend the whole attempt cap on
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
@@ -209,7 +209,9 @@ impl Envelope {
                 .get("result")
                 .and_then(|r| r.as_str())
                 .map(str::to_string),
-            cost_tokens: count("input_tokens") + count("output_tokens"),
+            cost_tokens: count("input_tokens")
+                + count("cache_creation_input_tokens")
+                + count("output_tokens"),
         }
     }
 }

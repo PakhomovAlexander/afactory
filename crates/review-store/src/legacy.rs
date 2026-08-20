@@ -152,14 +152,20 @@ impl<'a> Ingest<'a> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
 
+        // Live reviewer output is all-or-nothing. A blocking verdict whose only finding is
+        // malformed must fail closed, not degrade into an empty ledger that can converge.
+        for (index, finding) in stage.findings.iter().enumerate() {
+            finding
+                .clone()
+                .into_report(index)
+                .map_err(|reason| {
+                    StoreError::Conflict(format!(
+                        "{source} finding {index} violates FindingReport@1: {reason}"
+                    ))
+                })?;
+        }
+
         for finding in &stage.findings {
-            // The v1 contract governs what is admitted. A finding that fails it is skipped with
-            // its reason on stderr — the same shape as the harness's empty-title skip, and it
-            // keeps a null fix or a bogus confidence out of the ledger and `reviewctl ledger`.
-            if let Err(reason) = finding.clone().into_report(0) {
-                eprintln!("add: skipping {source} finding ({reason})");
-                continue;
-            }
             let key = legacy_fingerprint(&finding.file, &finding.title);
 
             // The report is an immutable artifact; the event references it. Even a duplicate

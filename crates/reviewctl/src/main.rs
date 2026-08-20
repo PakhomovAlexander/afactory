@@ -465,16 +465,12 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join("; ");
             println!("  - Reports: {evidence}");
-            for transition in finding
-                .history
-                .iter()
-                .filter(|transition| transition.note.is_some())
-            {
+            for transition in &finding.history {
                 println!(
                     "  - Resolution/history, round {}: {:?} - {}",
                     transition.round,
                     transition.kind,
-                    markdown_line(transition.note.as_deref().unwrap_or_default())
+                    markdown_line(transition.note.as_deref().unwrap_or("(no note)"))
                 );
             }
         }
@@ -568,7 +564,9 @@ fn run(options: &Options) -> Result<(), String> {
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    let repo = Repo::open(&options.repo, &home);
+    let git_home = state.join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|e| e.to_string())?;
+    let repo = Repo::open(&options.repo, &git_home);
     let snapshot = Capture::new(&repo, &cas)
         .committed("HEAD")
         .map_err(|e| format!("capturing HEAD: {e}"))?;
@@ -673,7 +671,7 @@ fn run(options: &Options) -> Result<(), String> {
     // command runs as itself.
     let auth = (
         std::env::var("CLAUDE_CONFIG_DIR").ok(),
-        std::env::var("USER").map_err(|e| format!("USER: {e}"))?,
+        std::env::var("USER").ok(),
         home.clone(),
     );
     let mut kernel = Kernel::new(&cas, &mut store, &run_id, snapshot.manifest.clone())
@@ -698,6 +696,9 @@ fn run(options: &Options) -> Result<(), String> {
                     .unwrap_or_default();
                 match program.as_str() {
                     "claude" => {
+                        let user = auth.1.clone().ok_or_else(|| {
+                            format!("node `{node}`: Claude subscription auth requires USER")
+                        })?;
                         let mut adapter = review_runner_claude::ClaudeAdapter::from_package(
                             package,
                             options.timeout,
@@ -705,7 +706,7 @@ fn run(options: &Options) -> Result<(), String> {
                         .map_err(|e| format!("{node}: {e}"))?
                         .with_auth(
                             auth.0.clone(),
-                            auth.1.clone(),
+                            user,
                             auth.2.clone(),
                         );
                         if let Some(focus) = &options.focus {

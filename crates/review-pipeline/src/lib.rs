@@ -498,7 +498,13 @@ impl<'a> Kernel<'a> {
                             &[Scope::Node(node_id.to_string()), Scope::Run],
                             budgets.attempt_cap,
                         )
-                        .map_err(|e| format!("never dispatched: {e}"))?,
+                        .map_err(|e| {
+                            if timeouts.is_empty() {
+                                format!("never dispatched: {e}")
+                            } else {
+                                format!("{}; retry refused: {e}", timeouts.join("; "))
+                            }
+                        })?,
                 ),
                 None => None,
             };
@@ -608,6 +614,12 @@ impl<'a> Kernel<'a> {
                     // fenced attempt charges", and the one that keeps a hang from being a
                     // free retry.
                     self.attempts.lock().expect("attempt ledger").fence(node_id);
+                    if let Some(reservation) = &reservation {
+                        self.attempts
+                            .lock()
+                            .expect("attempt ledger")
+                            .charge(&attempt, reservation.amount);
+                    }
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
@@ -663,6 +675,12 @@ impl<'a> Kernel<'a> {
                             .lock()
                             .expect("budget ledger")
                             .charge(reservation, reservation.amount);
+                    }
+                    if let Some(reservation) = &reservation {
+                        self.attempts
+                            .lock()
+                            .expect("attempt ledger")
+                            .charge(&attempt, reservation.amount);
                     }
                     self.buffer_reviewer_event(
                         node_id,

@@ -178,6 +178,8 @@ impl EventStore {
         cas: &Cas,
         event: NewEvent,
     ) -> Result<RunEvent, StoreError> {
+        review_core::json::admit(&event.payload)
+            .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
         for digest in &event.artifact_refs {
             if !cas.contains(digest) {
                 return Err(StoreError::DanglingArtifact {

@@ -306,11 +306,23 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
     match event.event_type {
         EventType::RunReportV1 => {
             #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
             struct LegacyRunReport {
                 verdict: String,
             }
             let report: LegacyRunReport = serde_json::from_value(event.payload.clone())?;
-            Ok(Some(!report.verdict.starts_with("Incomplete")))
+            match report.verdict.as_str() {
+                "Pass" | "Fail(NotConverged)" | "Fail(Exhausted)" => Ok(Some(true)),
+                verdict
+                    if verdict.starts_with("Incomplete { missing: [")
+                        && verdict.ends_with("] }") =>
+                {
+                    Ok(Some(false))
+                }
+                verdict => Err(<serde_json::Error as serde::de::Error>::custom(format!(
+                    "invalid frozen RunReport@1 verdict `{verdict}`"
+                ))),
+            }
         }
         EventType::RunReportV2 => {
             let report: RunReportPayloadV2 = serde_json::from_value(event.payload.clone())?;
