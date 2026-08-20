@@ -40,7 +40,9 @@ use review_core::{
     SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
-use review_runner::{MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputs, RunnerError};
+use review_runner::{
+    MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError,
+};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
@@ -235,6 +237,7 @@ struct ReplayedExecution {
     selected_reviewers: BTreeMap<String, SelectedReviewer>,
     gates: BTreeMap<String, GateDecision>,
     attempt_counts: BTreeMap<String, u64>,
+    outstanding_attempts: Vec<(String, String, u64)>,
     committed_tokens: u64,
 }
 
@@ -331,13 +334,13 @@ fn replay_execution(
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 let node = event.node_id.ok_or("AttemptDispatched@1 has no node ID")?;
                 if active_epoch {
-                    *replayed.attempt_counts.entry(node).or_default() += 1;
+                    *replayed.attempt_counts.entry(node.clone()).or_default() += 1;
                 }
                 let attempt = event
                     .attempt_id
                     .ok_or("AttemptDispatched@1 has no attempt ID")?;
                 if reservations
-                    .insert(attempt, payload.reserved.unwrap_or(0))
+                    .insert(attempt, (node, payload.reserved.unwrap_or(0), active_epoch))
                     .is_some()
                 {
                     return Err("attempt has duplicate durable dispatch events".into());
@@ -431,11 +434,16 @@ fn replay_execution(
             _ => {}
         }
     }
-    for reserved in reservations.into_values() {
+    for (attempt, (node, reserved, active_epoch)) in reservations {
         replayed.committed_tokens = replayed
             .committed_tokens
             .checked_add(reserved)
             .ok_or("replayed token charge overflow")?;
+        if active_epoch {
+            replayed
+                .outstanding_attempts
+                .push((node, attempt, reserved));
+        }
     }
     for (node, receipt) in &replayed.outputs {
         let Some(attempt) = &receipt.attempt_id else {
@@ -480,6 +488,12 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
             NodeOutcome::Suppressed { reason } => Some((id.clone(), format!("{reason:?}"))),
         })
         .collect();
+    if missing
+        .iter()
+        .any(|(_, reason)| reason.contains("run budget exhausted"))
+    {
+        return RunVerdict::Fail(Verdict::Exhausted);
+    }
     if !missing.is_empty() {
         return RunVerdict::Incomplete { missing };
     }
@@ -556,6 +570,31 @@ impl<'a> Kernel<'a> {
             return Err("executed manifest does not match the Round Subject Snapshot".into());
         }
         let replayed = replay_execution(store, cas, &run_id, &authority)?;
+        if !replayed.outstanding_attempts.is_empty() {
+            let events: Vec<NewEvent> = replayed
+                .outstanding_attempts
+                .iter()
+                .map(|(node, attempt, charged)| {
+                    let mut event = NewEvent::new(
+                        EventType::AttemptFencedV1,
+                        serde_json::to_value(AttemptFencedPayloadV1 {
+                            reason: "process ended before attempt publication".into(),
+                            charged: Some(*charged),
+                        })
+                        .expect("typed attempt fence"),
+                    )
+                    .node(node)
+                    .attempt(attempt)
+                    .caused_by(authority.round_event_id.clone())
+                    .correlating(authority.subject_id.clone());
+                    event.artifact_refs.extend(authority.artifact_refs());
+                    event
+                })
+                .collect();
+            store
+                .append_batch(&run_id, cas, &events)
+                .map_err(|error| error.to_string())?;
+        }
         let attempts =
             AttemptLedger::scoped(&authority.round_event_id, replayed.attempt_counts.clone());
         let prior_findings = Some(authority.prior_finding_set_id.clone());
@@ -1028,7 +1067,7 @@ impl<'a> Kernel<'a> {
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
             let result = runner.run(check);
-            self.append(check_event(&result, node_id))?;
+            self.buffer_reviewer_event(node_id, check_event(&result, node_id));
             results.push(result);
         }
 
@@ -1049,14 +1088,15 @@ impl<'a> Kernel<'a> {
             .cas
             .put_json(&serde_json::to_value(&decision).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        self.append(
+        self.buffer_reviewer_event(
+            node_id,
             NewEvent::new(
                 EventType::GateDecisionV1,
                 serde_json::to_value(&decision).map_err(|e| e.to_string())?,
             )
             .node(node_id)
             .referencing(vec![artifact.clone()]),
-        )?;
+        );
         self.gates
             .lock()
             .expect("gates")
@@ -1087,6 +1127,26 @@ impl<'a> Kernel<'a> {
             .and_then(|artifacts| artifacts.first())
             .cloned();
         let mut inputs = ReviewerInputs::default();
+        for (port, artifacts) in node_inputs {
+            if port == PRIOR_FINDINGS_PORT {
+                continue;
+            }
+            let mut resolved = Vec::with_capacity(artifacts.len());
+            for artifact in artifacts {
+                let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
+                if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+                    return Err(format!(
+                        "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
+                    ));
+                }
+                let value = serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
+                resolved.push(ReviewerInputArtifact {
+                    artifact_id: artifact.clone(),
+                    value,
+                });
+            }
+            inputs.artifacts.insert(port.clone(), resolved);
+        }
         if let Some(artifact) = &prior_findings_artifact {
             let encoded = match self.cas.get(artifact) {
                 Ok(encoded) => encoded,
@@ -1512,6 +1572,26 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
         .remove("findings")
         .ok_or("reviewer result has no findings field")?;
     object.insert("reports".into(), reports);
+    if let Some(disputes) = object
+        .get_mut("disputes")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for dispute in disputes {
+            let dispute = dispute
+                .as_object_mut()
+                .ok_or("reviewer result has a non-object dispute")?;
+            let claim_id = dispute
+                .remove("fp")
+                .ok_or("reviewer dispute has no claim ID")?;
+            dispute.insert("claim_id".into(), claim_id);
+            if !matches!(
+                dispute.get("position").and_then(serde_json::Value::as_str),
+                Some("confirm" | "refute")
+            ) {
+                return Err("reviewer dispute has an invalid position".into());
+            }
+        }
+    }
     Ok(serde_json::Value::Object(object))
 }
 
@@ -1694,23 +1774,19 @@ impl Dispatch for Kernel<'_> {
             })?;
             event = event.attempt(&selected.attempt_id);
         }
-        if node.kind == NodeKind::Reviewer {
-            // The scheduler publishes outputs as soon as this returns. Commit the attempt
-            // lifecycle and receipt together before that publication point; retaining buffered
-            // events until gather permits consumers to be selected from an unsealed output.
-            let mut pending = self.reviewer_events.lock().expect("reviewer events");
-            let mut events: Vec<NewEvent> = pending
-                .iter()
-                .filter(|((id, _), _)| id == &node.id)
-                .map(|(_, event)| event.clone())
-                .collect();
-            events.push(event);
-            self.append_batch(&events)?;
-            pending.retain(|((id, _), _)| id != &node.id);
-            Ok(())
-        } else {
-            self.append(event)
-        }
+        // The scheduler publishes outputs as soon as this returns. Commit any node lifecycle
+        // facts and its receipt together before that publication point. Reviewers contribute
+        // attempt admission; gates contribute check results and the gate decision.
+        let mut pending = self.reviewer_events.lock().expect("reviewer events");
+        let mut events: Vec<NewEvent> = pending
+            .iter()
+            .filter(|((id, _), _)| id == &node.id)
+            .map(|(_, event)| event.clone())
+            .collect();
+        events.push(event);
+        self.append_batch(&events)?;
+        pending.retain(|((id, _), _)| id != &node.id);
+        Ok(())
     }
 
     fn gate_passed(&self, node_id: &str, _outputs: &ArtifactMap) -> bool {

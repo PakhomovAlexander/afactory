@@ -13,6 +13,7 @@ fn oversized_prior_findings_fail_closed_without_silent_truncation() {
     });
     let rendered = ReviewerInputs {
         prior_findings: Some(prior),
+        ..ReviewerInputs::default()
     }
     .render();
 

@@ -285,6 +285,7 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
                 "title": "Unbounded loop",
             }],
         })),
+        ..review_runner::ReviewerInputs::default()
     };
     let _ = adapter.invoke(&cas, &sandbox, &inputs);
 

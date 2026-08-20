@@ -450,12 +450,27 @@ impl LegacyRunReportV1 {
         match self.verdict.as_str() {
             "Pass" if unresolved.is_empty() && blocked.is_empty() => Ok(true),
             "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved.is_empty() => Ok(true),
-            verdict if verdict == format!("Incomplete {{ missing: {unresolved:?} }}") => Ok(false),
+            verdict if verdict == frozen_incomplete_verdict(&unresolved) => Ok(false),
             verdict => Err(format!(
                 "frozen RunReport@1 verdict `{verdict}` contradicts its outcomes"
             )),
         }
     }
+}
+
+fn frozen_incomplete_verdict(missing: &[(String, String)]) -> String {
+    let entries = missing
+        .iter()
+        .map(|(node, reason)| {
+            format!(
+                "({}, {})",
+                serde_json::to_string(node).expect("String is JSON"),
+                serde_json::to_string(reason).expect("String is JSON")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Incomplete {{ missing: [{entries}] }}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -495,6 +510,51 @@ pub struct AttemptFencedPayloadV1 {
 pub struct AttemptReleasedPayloadV1 {
     pub error: String,
     pub released: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CheckStatusV1 {
+    Passed,
+    Failed,
+    NotRun,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckCompletedPayloadV1 {
+    name: String,
+    status: CheckStatusV1,
+    exit_code: Option<i32>,
+    reason: Option<String>,
+    program: Option<String>,
+    args: Vec<crate::Arg>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+enum GateOutcomeV1 {
+    Passed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateDecisionPayloadV1 {
+    outcome: GateOutcomeV1,
+    blocking: Vec<String>,
+    reasons: Vec<String>,
+    executed: usize,
+    required: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerationAdvancedPayloadV1 {
+    round: u32,
 }
 
 /// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
@@ -558,6 +618,44 @@ pub fn validate_event_payload(
             }
             Ok(())
         }
+        EventType::CheckCompletedV1 => {
+            let value: CheckCompletedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("CheckCompleted@1: {error}"))?;
+            if value.name.trim().is_empty()
+                || value
+                    .stdout
+                    .as_deref()
+                    .into_iter()
+                    .chain(value.stderr.as_deref())
+                    .any(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("CheckCompleted@1 has invalid identity or artifacts".into());
+            }
+            Ok(())
+        }
+        EventType::GateDecisionV1 => {
+            let value: GateDecisionPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("GateDecision@1: {error}"))?;
+            if value.required > value.executed
+                || value.blocking.iter().any(|name| name.trim().is_empty())
+                || value.reasons.iter().any(|reason| reason.trim().is_empty())
+                || (value.outcome == GateOutcomeV1::Passed
+                    && (!value.blocking.is_empty() || !value.reasons.is_empty()))
+            {
+                return Err("GateDecision@1 is internally inconsistent".into());
+            }
+            Ok(())
+        }
+        EventType::FindingReportedV1 => validate_finding_reported(payload),
+        EventType::FindingResolvedV1 => validate_finding_resolved(payload),
+        EventType::GenerationAdvancedV1 => {
+            let value: GenerationAdvancedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("GenerationAdvanced@1: {error}"))?;
+            if value.round == 0 {
+                return Err("GenerationAdvanced@1 has a zero round".into());
+            }
+            Ok(())
+        }
         EventType::CampaignOpenedV1 => {
             let opened = serde_json::from_value::<crate::CampaignOpenedPayloadV1>(payload.clone())
                 .map_err(|error| format!("CampaignOpened@1: {error}"))?;
@@ -609,8 +707,63 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("RunReport@2: {error}"))
         }
-        _ => Ok(()),
+        EventType::SourceCapturedV1 => Ok(()),
     }
+}
+
+fn validate_finding_reported(payload: &serde_json::Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or("FindingReported@1 payload is not an object")?;
+    let round = object
+        .get("round")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|round| *round > 0)
+        .ok_or("FindingReported@1 has an invalid round")?;
+    let _ = round;
+    let key = object
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("FindingReported@1 has no key")?;
+    if key.trim().is_empty() {
+        return Err("FindingReported@1 has an empty key".into());
+    }
+    if let Some(report_id) = object.get("report_id").and_then(serde_json::Value::as_str) {
+        if !crate::is_digest(report_id)
+            || object
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err("FindingReported@1 has invalid live report provenance".into());
+        }
+    } else if object.get("imported").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("FindingReported@1 is neither a live report nor a legacy import".into());
+    }
+    Ok(())
+}
+
+fn validate_finding_resolved(payload: &serde_json::Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or("FindingResolved@1 payload is not an object")?;
+    let valid_status = matches!(
+        object.get("status").and_then(serde_json::Value::as_str),
+        Some("open" | "fixed" | "rejected" | "wontfix" | "contested")
+    );
+    if object
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+        || object
+            .get("round")
+            .and_then(serde_json::Value::as_u64)
+            .is_none_or(|round| round == 0)
+        || !valid_status
+    {
+        return Err("FindingResolved@1 has invalid identity, round, or status".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

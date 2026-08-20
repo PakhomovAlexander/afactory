@@ -243,7 +243,7 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-        validate_campaign_transition(&tx, run_id, events, first)?;
+        validate_campaign_transition(&tx, cas, run_id, events, first)?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)
@@ -384,8 +384,414 @@ impl EventStore {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityDefinition {
+    nodes: Vec<AuthorityNode>,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    subject: Option<toml::Value>,
+    #[serde(default)]
+    checks: Vec<toml::Value>,
+    #[serde(default)]
+    edges: Vec<toml::Value>,
+    #[serde(default)]
+    budgets: Option<toml::Value>,
+    #[serde(default)]
+    convergence: Option<toml::Value>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityNode {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    inputs: Vec<AuthorityPort>,
+    #[serde(default)]
+    outputs: Vec<AuthorityPort>,
+    #[serde(default)]
+    gated_by: Option<String>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    runner: Option<toml::Value>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum AuthorityPort {
+    Name(String),
+    Detailed(AuthorityPortDetails),
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityPortDetails {
+    name: String,
+    #[serde(rename = "type")]
+    artifact_type: String,
+    cardinality: String,
+    optional: bool,
+    snapshot_affinity: String,
+}
+
+impl AuthorityPort {
+    fn name(&self) -> &str {
+        match self {
+            Self::Name(name) => name,
+            Self::Detailed(port) => &port.name,
+        }
+    }
+
+    fn artifact_type(&self) -> &str {
+        match self {
+            Self::Name(_) => "review.kernel/Opaque@1",
+            Self::Detailed(port) => &port.artifact_type,
+        }
+    }
+
+    fn cardinality(&self) -> &str {
+        match self {
+            Self::Name(_) => "one",
+            Self::Detailed(port) => &port.cardinality,
+        }
+    }
+
+    fn optional(&self) -> bool {
+        match self {
+            Self::Name(_) => false,
+            Self::Detailed(port) => port.optional,
+        }
+    }
+
+    fn snapshot_affinity(&self) -> &str {
+        match self {
+            Self::Name(_) => "any",
+            Self::Detailed(port) => &port.snapshot_affinity,
+        }
+    }
+}
+
+struct AuthorityPlan {
+    nodes: std::collections::BTreeMap<String, AuthorityNode>,
+}
+
+fn load_authority_plan(
+    tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
+    run_id: &str,
+) -> Result<Option<AuthorityPlan>, StoreError> {
+    let raw: String = tx.query_row(
+        "SELECT payload FROM events
+         WHERE run_id = ?1 AND type = 'CampaignOpened@1'
+         ORDER BY sequence LIMIT 1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_str(&raw)?;
+    load_authority_plan_id(cas, &opened.campaign_manifest_id)
+}
+
+fn load_authority_plan_id(
+    cas: &Cas,
+    manifest_id: &str,
+) -> Result<Option<AuthorityPlan>, StoreError> {
+    let Ok(manifest) = cas.get_json(manifest_id) else {
+        // Permanent reader compatibility for pre-CampaignManifest imported and test logs.
+        return Ok(None);
+    };
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(manifest)?;
+    manifest.validate().map_err(StoreError::Conflict)?;
+    let pipeline = cas
+        .get(&manifest.pipeline.artifact_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let pipeline = std::str::from_utf8(&pipeline)
+        .map_err(|error| StoreError::Conflict(format!("pinned pipeline is not UTF-8: {error}")))?;
+    let definition: AuthorityDefinition = toml::from_str(pipeline)
+        .map_err(|error| StoreError::Conflict(format!("pinned pipeline is invalid: {error}")))?;
+    if definition.version == 0 {
+        return Err(StoreError::Conflict(
+            "pinned pipeline has no supported version".into(),
+        ));
+    }
+    let mut nodes = std::collections::BTreeMap::new();
+    for node in definition.nodes {
+        if node.id.trim().is_empty() || nodes.insert(node.id.clone(), node).is_some() {
+            return Err(StoreError::Conflict(
+                "pinned pipeline has empty or duplicate node IDs".into(),
+            ));
+        }
+    }
+    if nodes.is_empty() {
+        return Err(StoreError::Conflict("pinned pipeline has no nodes".into()));
+    }
+    Ok(Some(AuthorityPlan { nodes }))
+}
+
+fn validate_plan_ports(
+    cas: &Cas,
+    expected: &[AuthorityPort],
+    actual: &[review_core::PortArtifactsV1],
+    subject_snapshot_id: &str,
+) -> Result<(), StoreError> {
+    if expected.len() != actual.len() {
+        return Err(StoreError::Conflict(
+            "durable port map does not cover the pinned node contract".into(),
+        ));
+    }
+    let actual: std::collections::BTreeMap<&str, &review_core::PortArtifactsV1> = actual
+        .iter()
+        .map(|port| (port.port.as_str(), port))
+        .collect();
+    for expected in expected {
+        let port = actual.get(expected.name()).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "durable port map omits pinned port '{}'",
+                expected.name()
+            ))
+        })?;
+        let cardinality = match port.cardinality {
+            review_core::PortCardinality::One => "one",
+            review_core::PortCardinality::Many => "many",
+        };
+        let affinity = match port.snapshot_affinity {
+            review_core::SnapshotAffinity::SameSubject => "same_subject",
+            review_core::SnapshotAffinity::Unbound => "unbound",
+            review_core::SnapshotAffinity::Any => "any",
+        };
+        if port.artifact_type != expected.artifact_type()
+            || cardinality != expected.cardinality()
+            || port.optional != expected.optional()
+            || affinity != expected.snapshot_affinity()
+        {
+            return Err(StoreError::Conflict(format!(
+                "durable port '{}' contradicts the pinned contract",
+                expected.name()
+            )));
+        }
+        if affinity == "same_subject"
+            && port.subject_snapshot_id.as_deref() != Some(subject_snapshot_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "durable port '{}' is bound to the wrong Subject snapshot",
+                expected.name()
+            )));
+        }
+        for artifact in &port.artifact_ids {
+            validate_artifact_payload(cas, &port.artifact_type, artifact)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_artifact_payload(
+    cas: &Cas,
+    artifact_type: &str,
+    artifact_id: &str,
+) -> Result<(), StoreError> {
+    if artifact_type == "review.kernel/Opaque@1" {
+        cas.get(artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        return Ok(());
+    }
+    let value = cas
+        .get_json(artifact_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let object = value.as_object().ok_or_else(|| {
+        StoreError::Conflict(format!("{artifact_type} artifact is not a JSON object"))
+    })?;
+    match artifact_type {
+        "review.kernel/GateDecision@1" => {
+            exact_keys(
+                object,
+                &["outcome", "blocking", "reasons", "executed", "required"],
+                artifact_type,
+            )?;
+            if !matches!(value["outcome"].as_str(), Some("Passed" | "Blocked"))
+                || !string_array(&value["blocking"])
+                || !string_array(&value["reasons"])
+                || value["executed"].as_u64().is_none()
+                || value["required"].as_u64().is_none()
+            {
+                return Err(StoreError::Conflict(
+                    "GateDecision@1 artifact violates its payload contract".into(),
+                ));
+            }
+        }
+        "review.kernel/PriorFindings@1" => {
+            exact_keys(
+                object,
+                &["subject_id", "round", "prior_findings"],
+                artifact_type,
+            )?;
+            if value["subject_id"].as_str().is_none()
+                || value["round"].as_u64().is_none()
+                || value["prior_findings"].as_array().is_none()
+            {
+                return Err(StoreError::Conflict(
+                    "PriorFindings@1 artifact violates its payload contract".into(),
+                ));
+            }
+        }
+        "review.kernel/ReviewerResult@1" => validate_reviewer_result(&value)?,
+        "review.kernel/ReportSet@1" => {
+            if object.is_empty()
+                || object.values().any(|ids| {
+                    ids.as_array().is_none_or(|ids| {
+                        ids.is_empty()
+                            || ids
+                                .iter()
+                                .any(|id| id.as_str().is_none_or(|id| !is_digest(id)))
+                    })
+                })
+            {
+                return Err(StoreError::Conflict(
+                    "ReportSet@1 artifact violates its payload contract".into(),
+                ));
+            }
+        }
+        "review.kernel/FindingSet@1" => {
+            exact_keys(object, &["round", "sources", "findings"], artifact_type)?;
+            if value["round"].as_u64().is_none()
+                || !string_array(&value["sources"])
+                || value["findings"].as_u64().is_none()
+            {
+                return Err(StoreError::Conflict(
+                    "FindingSet@1 artifact violates its payload contract".into(),
+                ));
+            }
+        }
+        _ => {
+            return Err(StoreError::Conflict(format!(
+                "no payload validator is registered for {artifact_type}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| StoreError::Conflict("ReviewerResult@1 is not an object".into()))?;
+    let allowed = [
+        "verdict",
+        "summary",
+        "reports",
+        "benchmark_demands",
+        "disputes",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str()))
+        || !matches!(
+            value["verdict"].as_str(),
+            Some("approve" | "request-changes" | "block")
+        )
+        || value["reports"]
+            .as_array()
+            .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
+        || value
+            .get("summary")
+            .is_some_and(|summary| !summary.is_null() && summary.as_str().is_none())
+    {
+        return Err(StoreError::Conflict(
+            "ReviewerResult@1 violates its top-level payload contract".into(),
+        ));
+    }
+    for demand in value
+        .get("benchmark_demands")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let demand = demand.as_object().ok_or_else(|| {
+            StoreError::Conflict("ReviewerResult@1 has a malformed benchmark demand".into())
+        })?;
+        exact_keys(
+            demand,
+            &["claim", "why", "suggested_method"],
+            "benchmark demand",
+        )?;
+        if demand
+            .values()
+            .any(|field| field.as_str().is_none_or(str::is_empty))
+        {
+            return Err(StoreError::Conflict(
+                "ReviewerResult@1 has an empty benchmark demand".into(),
+            ));
+        }
+    }
+    for dispute in value
+        .get("disputes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let dispute = dispute.as_object().ok_or_else(|| {
+            StoreError::Conflict("ReviewerResult@1 has a malformed dispute".into())
+        })?;
+        exact_keys(dispute, &["claim_id", "position", "reason"], "dispute")?;
+        if dispute["claim_id"].as_str().is_none_or(str::is_empty)
+            || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
+            || dispute["reason"].as_str().is_none_or(str::is_empty)
+        {
+            return Err(StoreError::Conflict(
+                "ReviewerResult@1 has an invalid dispute".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn exact_keys(
+    object: &serde_json::Map<String, Value>,
+    expected: &[&str],
+    artifact_type: &str,
+) -> Result<(), StoreError> {
+    if object.len() != expected.len() || object.keys().any(|key| !expected.contains(&key.as_str()))
+    {
+        return Err(StoreError::Conflict(format!(
+            "{artifact_type} artifact has unexpected or missing fields"
+        )));
+    }
+    Ok(())
+}
+
+fn string_array(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| items.iter().all(|item| item.as_str().is_some()))
+}
+
+fn is_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn validate_report_plan(plan: &AuthorityPlan, payload: &Value) -> Result<(), StoreError> {
+    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+    let expected: std::collections::BTreeSet<&str> =
+        plan.nodes.keys().map(String::as_str).collect();
+    let actual: std::collections::BTreeSet<&str> = report
+        .outcomes
+        .iter()
+        .map(|outcome| outcome.node.as_str())
+        .collect();
+    if expected != actual || actual.len() != report.outcomes.len() {
+        return Err(StoreError::Conflict(
+            "RunReport@2 does not cover exactly the pinned Campaign plan".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_campaign_transition(
     tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
     run_id: &str,
     events: &[NewEvent],
     first_sequence: i64,
@@ -396,6 +802,11 @@ fn validate_campaign_transition(
         |row| row.get(0),
     )?;
     let mut opened = campaign_opened > 0;
+    let mut authority_plan = if opened {
+        load_authority_plan(tx, cas, run_id)?
+    } else {
+        None
+    };
     let mut active = latest_round(tx, run_id)?;
     let mut terminal = match &active {
         Some((event_id, _)) => round_has_terminal_report(tx, run_id, event_id)?,
@@ -403,7 +814,9 @@ fn validate_campaign_transition(
     };
     let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
     let mut batch_dispatches = std::collections::BTreeMap::new();
-    let mut batch_terminals = std::collections::BTreeSet::new();
+    let mut batch_latest_dispatch = std::collections::BTreeMap::new();
+    let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
+        std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
@@ -423,6 +836,9 @@ fn validate_campaign_transition(
                     ));
                 }
                 opened = true;
+                let payload: review_core::CampaignOpenedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                authority_plan = load_authority_plan_id(cas, &payload.campaign_manifest_id)?;
             }
             EventType::RoundInputSupersededV1 => {
                 let payload: review_core::RoundInputSupersededPayloadV1 =
@@ -501,7 +917,26 @@ fn validate_campaign_transition(
                 terminal = false;
             }
             event_type if round_runtime_event(event_type) => {
-                if let Some((active_id, _)) = &active {
+                if active.is_none() {
+                    if requires_campaign_round(event_type) {
+                        return Err(StoreError::Conflict(format!(
+                            "{event_type} requires an active Round"
+                        )));
+                    }
+                    continue;
+                }
+                if event_type == EventType::RunReportV1 {
+                    return Err(StoreError::Conflict(
+                        "RunReport@1 is replay-only and cannot be appended".into(),
+                    ));
+                }
+                if let Some((active_id, active_payload)) = &active {
+                    let plan = authority_plan.as_ref();
+                    let subject: review_core::SubjectV1 = serde_json::from_value(
+                        cas.get_json(&active_payload.subject_id)
+                            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                    )?;
+                    let subject_snapshot_id = subject.head_snapshot_id;
                     if terminal {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} cannot publish after the active Round concluded"
@@ -527,6 +962,21 @@ fn validate_campaign_transition(
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeInvocation@1 has no node ID".into())
                             })?;
+                            let invocation: review_core::NodeInvocationPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if let Some(plan) = plan {
+                                let expected = plan.nodes.get(node).ok_or_else(|| {
+                                    StoreError::Conflict(format!(
+                                        "node '{node}' is absent from the pinned Campaign plan"
+                                    ))
+                                })?;
+                                validate_plan_ports(
+                                    cas,
+                                    &expected.inputs,
+                                    &invocation.inputs,
+                                    &subject_snapshot_id,
+                                )?;
+                            }
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
                                  WHERE run_id = ?1 AND causation_id = ?2
@@ -562,6 +1012,7 @@ fn validate_campaign_transition(
                                     "attempt '{attempt}' was already dispatched"
                                 )));
                             }
+                            batch_latest_dispatch.insert(node.to_string(), attempt.to_string());
                         }
                         EventType::AttemptAdmittedV1
                         | EventType::AttemptFailedV1
@@ -590,24 +1041,62 @@ fn validate_campaign_transition(
                                     "{event_type} has no matching dispatch"
                                 )));
                             }
-                            let existing_terminal: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
+                            let admitted = (event_type == EventType::AttemptAdmittedV1)
+                                .then(|| {
+                                    serde_json::from_value::<
+                                        review_core::event::AttemptAdmittedPayloadV1,
+                                    >(event.payload.clone())
+                                })
+                                .transpose()?;
+                            let quarantined = admitted
+                                .as_ref()
+                                .is_some_and(|payload| payload.selection == "quarantined");
+                            let existing_terminal: Option<String> = tx
+                                .query_row(
+                                    "SELECT type FROM events
                                  WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3
                                    AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
-                                                'AttemptFenced@1', 'AttemptReleased@1')",
-                                params![run_id, active_id, attempt],
-                                |row| row.get(0),
-                            )?;
-                            if existing_terminal > 0 || !batch_terminals.insert(attempt.to_string())
+                                                'AttemptFenced@1', 'AttemptReleased@1')
+                                 ORDER BY sequence DESC LIMIT 1",
+                                    params![run_id, active_id, attempt],
+                                    |row| row.get(0),
+                                )
+                                .optional()?;
+                            let prior_terminal = batch_terminals
+                                .get(attempt)
+                                .map(|event_type| event_type.as_str())
+                                .or(existing_terminal.as_deref());
+                            if prior_terminal.is_some()
+                                && !(quarantined
+                                    && prior_terminal == Some(EventType::AttemptFencedV1.as_str()))
                             {
                                 return Err(StoreError::Conflict(format!(
                                     "attempt '{attempt}' already has a terminal event"
                                 )));
                             }
-                            if event_type == EventType::AttemptAdmittedV1 {
-                                let admitted: review_core::event::AttemptAdmittedPayloadV1 =
-                                    serde_json::from_value(event.payload.clone())?;
+                            if !quarantined {
+                                batch_terminals.insert(attempt.to_string(), event_type);
+                            }
+                            if let Some(admitted) = admitted {
                                 if admitted.selection == "selected" {
+                                    let latest: Option<String> = tx
+                                        .query_row(
+                                            "SELECT attempt_id FROM events
+                                             WHERE run_id = ?1 AND causation_id = ?2
+                                               AND node_id = ?3 AND type = 'AttemptDispatched@1'
+                                             ORDER BY sequence DESC LIMIT 1",
+                                            params![run_id, active_id, node],
+                                            |row| row.get(0),
+                                        )
+                                        .optional()?;
+                                    let latest =
+                                        batch_latest_dispatch.get(node).cloned().or(latest);
+                                    if latest.as_deref() != Some(attempt) {
+                                        return Err(StoreError::Conflict(
+                                            "only the latest reviewer attempt may be selected"
+                                                .into(),
+                                        ));
+                                    }
                                     let result = admitted.result_artifact.ok_or_else(|| {
                                         StoreError::Conflict(
                                             "selected AttemptAdmitted@1 has no result artifact"
@@ -638,6 +1127,26 @@ fn validate_campaign_transition(
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into())
                             })?;
+                            let receipt: review_core::NodeOutputReceiptPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if let Some(plan) = plan {
+                                let expected = plan.nodes.get(node).ok_or_else(|| {
+                                    StoreError::Conflict(format!(
+                                        "node '{node}' is absent from the pinned Campaign plan"
+                                    ))
+                                })?;
+                                validate_plan_ports(
+                                    cas,
+                                    &expected.outputs,
+                                    &receipt.outputs,
+                                    &subject_snapshot_id,
+                                )?;
+                                if expected.kind == "reviewer" && event.attempt_id.is_none() {
+                                    return Err(StoreError::Conflict(
+                                        "reviewer receipt has no selected attempt ID".into(),
+                                    ));
+                                }
+                            }
                             let invocation: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
                                  WHERE run_id = ?1 AND causation_id = ?2
@@ -693,8 +1202,6 @@ fn validate_campaign_transition(
                                         "reviewer receipt has no selected admitted attempt".into(),
                                     ));
                                 };
-                                let receipt: review_core::NodeOutputReceiptPayloadV1 =
-                                    serde_json::from_value(event.payload.clone())?;
                                 let outputs: Vec<&String> = receipt
                                     .outputs
                                     .iter()
@@ -722,6 +1229,9 @@ fn validate_campaign_transition(
                             ));
                         }
                         if event_type == EventType::RunReportV2 {
+                            if let Some(plan) = plan {
+                                validate_report_plan(plan, &event.payload)?;
+                            }
                             validate_report_receipts(tx, run_id, active_id, &event.payload)?;
                         }
                         terminal = true;
@@ -762,6 +1272,22 @@ fn round_runtime_event(event_type: EventType) -> bool {
             | EventType::FindingReportedV1
             | EventType::GateDecisionV1
             | EventType::GenerationAdvancedV1
+            | EventType::NodeInvocationV1
+            | EventType::NodeOutputReceiptV1
+            | EventType::RunReportV1
+            | EventType::RunReportV2
+    )
+}
+
+fn requires_campaign_round(event_type: EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::AttemptAdmittedV1
+            | EventType::AttemptDispatchedV1
+            | EventType::AttemptFailedV1
+            | EventType::AttemptFencedV1
+            | EventType::AttemptReleasedV1
+            | EventType::GateDecisionV1
             | EventType::NodeInvocationV1
             | EventType::NodeOutputReceiptV1
             | EventType::RunReportV1

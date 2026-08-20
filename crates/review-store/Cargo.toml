@@ -13,6 +13,7 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.10.9"
+toml = "0.8.23"
 
 # fsync(2) without unsafe in this crate: nix wraps the libc call behind a safe API. The CAS
 # must match the log's durability grade (plain fsync), not exceed it — see cas.rs.

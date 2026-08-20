@@ -1,6 +1,9 @@
+use review_core::event::{AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1};
 use review_core::{
-    CampaignOpenedPayloadV1, EventType, RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunVerdictV2,
+    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV2, RunVerdictV2, SnapshotAffinity, SubjectKind, SubjectV1,
 };
 use review_store::{Cas, EventStore, NewEvent};
 
@@ -14,11 +17,64 @@ struct Authority {
 }
 
 fn authority(cas: &Cas, label: &str) -> Authority {
+    let authority = cas.put(format!("{label} authority").as_bytes()).unwrap();
+    let pipeline = cas
+        .put(
+            br#"version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+runner = { program = "/bin/true" }
+"#,
+        )
+        .unwrap();
+    let lock = cas.put(b"test lock").unwrap();
+    let finding_genesis = cas.put(b"finding genesis").unwrap();
+    let demand_genesis = cas.put(b"demand genesis").unwrap();
+    let manifest = cas
+        .put_json(
+            &serde_json::to_value(CampaignManifestV1 {
+                authority_snapshot_id: authority.clone(),
+                subject_kind: SubjectKind::WholeTree,
+                base_snapshot_id: None,
+                pipeline: AuthorityFileV1 {
+                    path: "review.toml".into(),
+                    artifact_id: pipeline.clone(),
+                },
+                reviewer_lock: AuthorityFileV1 {
+                    path: "review.lock".into(),
+                    artifact_id: lock,
+                },
+                reviewers: vec![],
+                execution_policy_ids: vec![pipeline],
+                project_policy_ids: vec![],
+                convergence: CampaignConvergenceV1 {
+                    clean_rounds: 1,
+                    max_rounds: 2,
+                    gate: "major".into(),
+                },
+                reviewer_timeout_seconds: 60,
+                budgets: None,
+                focus: None,
+                finding_identity_policy: "legacy-path-title@1".into(),
+                finding_genesis_id: finding_genesis,
+                demand_genesis_id: demand_genesis,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let head = cas.put(format!("{label} head").as_bytes()).unwrap();
+    let subject = cas
+        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head)).unwrap())
+        .unwrap();
     Authority {
-        authority: cas.put(format!("{label} authority").as_bytes()).unwrap(),
-        manifest: cas.put(format!("{label} manifest").as_bytes()).unwrap(),
-        subject: cas.put(format!("{label} subject").as_bytes()).unwrap(),
-        head: cas.put(format!("{label} head").as_bytes()).unwrap(),
+        authority,
+        manifest,
+        subject,
+        head,
         findings: cas.put(format!("{label} findings").as_bytes()).unwrap(),
         demands: cas.put(format!("{label} demands").as_bytes()).unwrap(),
     }
@@ -216,4 +272,126 @@ fn a_terminal_report_requires_matching_output_receipts() {
         error.to_string().contains("without a durable receipt"),
         "{error}"
     );
+}
+
+#[test]
+fn a_campaign_cannot_append_a_legacy_run_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "legacy-report");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::RunReportV1,
+                serde_json::json!({
+                    "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
+                    "blocked_gates": [],
+                    "verdict": "Pass",
+                    "spent_tokens": 0
+                }),
+            )
+            .caused_by(round.event_id),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("replay-only"), "{error}");
+}
+
+#[test]
+fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "typed-receipt");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let attempt = "b".repeat(26);
+    let malformed_result = cas.put_json(&serde_json::json!({})).unwrap();
+    let provenance = cas.put(b"test provenance").unwrap();
+
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(NodeInvocationPayloadV1 {
+                    node: "reviewer".into(),
+                    inputs: vec![],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(AttemptDispatchedPayloadV1 {
+                    reserved: Some(1),
+                    prior_findings: None,
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptAdmittedV1,
+                serde_json::to_value(AttemptAdmittedPayloadV1 {
+                    selection: "selected".into(),
+                    cost_tokens: 1,
+                    result_artifact: Some(malformed_result.clone()),
+                    provenance_artifact: Some(provenance.clone()),
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id)
+            .referencing(vec![malformed_result.clone(), provenance]),
+        )
+        .unwrap();
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeOutputReceiptV1,
+                serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                    node: "reviewer".into(),
+                    outputs: vec![PortArtifactsV1 {
+                        port: "out".into(),
+                        artifact_type: "review.kernel/ReviewerResult@1".into(),
+                        cardinality: PortCardinality::One,
+                        optional: false,
+                        snapshot_affinity: SnapshotAffinity::Any,
+                        artifact_ids: vec![malformed_result.clone()],
+                        subject_snapshot_id: None,
+                    }],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(attempt)
+            .caused_by(&round.event_id)
+            .referencing(vec![malformed_result]),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("ReviewerResult@1"), "{error}");
 }

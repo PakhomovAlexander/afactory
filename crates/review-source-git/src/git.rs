@@ -213,7 +213,7 @@ impl Repo {
         cmd
     }
 
-    /// The repository's own identity, independent of clone path: the first commit's ID.
+    /// The repository's own identity, independent of clone path: its sorted root commit set.
     ///
     /// A remote URL would be wrong here — the same content served from two remotes is one
     /// repository, and a URL is also attacker-controlled configuration.
@@ -222,7 +222,20 @@ impl Repo {
             return Ok(id.clone());
         }
         let roots = self.text(&["rev-list", "--max-parents=0", "HEAD"])?;
-        let id = roots.lines().next().unwrap_or_default().trim().to_string();
+        let mut roots: Vec<&str> = roots
+            .lines()
+            .map(str::trim)
+            .filter(|root| !root.is_empty())
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        if roots.is_empty() {
+            return Err(GitError::Failed {
+                args: vec!["rev-list".into(), "--max-parents=0".into(), "HEAD".into()],
+                stderr: "git rev-list returned no repository roots".into(),
+            });
+        }
+        let id = roots.join(",");
         Ok(self.repository_id.get_or_init(|| id).clone())
     }
 }

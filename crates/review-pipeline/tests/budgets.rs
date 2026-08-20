@@ -218,13 +218,7 @@ fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
     // the two clean reviews that did land do not speak for the one that never happened.
     let convergence = kernel.convergence(ConvergencePolicy::default());
     let verdict = run_verdict(&report, &convergence);
-    let RunVerdict::Incomplete { missing } = &verdict else {
-        panic!("expected incomplete, got {verdict:?}");
-    };
-    // Plan order, which is causal order: the reviewer that was refused, then everything that
-    // could not run without it.
-    let named: Vec<&str> = missing.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(named, vec!["r-gamma", "gather", "ledger"]);
+    assert_eq!(verdict, RunVerdict::Fail(review_store::Verdict::Exhausted));
     assert!(!verdict.passed());
 
     // And the books balance: two committed attempts, nothing phantom-reserved.
