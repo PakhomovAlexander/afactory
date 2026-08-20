@@ -179,7 +179,7 @@ pub struct Kernel<'a> {
 }
 
 impl<'a> Kernel<'a> {
-    pub fn new(
+    fn new(
         cas: &'a Cas,
         store: &'a mut EventStore,
         run_id: impl Into<String>,

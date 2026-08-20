@@ -383,13 +383,13 @@ impl Definition {
         if let Some(budgets) = &self.budgets {
             if budgets.attempt == 0 || budgets.run == 0 {
                 return Err(ConfigError::Binding(
-                    "a zero-token budget cap means nothing can ever dispatch;                      omit [budgets] to run uncapped"
+                    "a zero-token budget cap means nothing can ever dispatch; omit [budgets] to run uncapped"
                         .to_string(),
                 ));
             }
             if budgets.attempt > budgets.run {
                 return Err(ConfigError::Binding(format!(
-                    "the attempt cap ({}) exceeds the run cap ({}); no attempt could ever                      reserve",
+                    "the attempt cap ({}) exceeds the run cap ({}); no attempt could ever reserve",
                     budgets.attempt, budgets.run
                 )));
             }

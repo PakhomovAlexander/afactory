@@ -47,8 +47,8 @@ pub struct ResolvedReviewer {
 }
 
 impl ResolvedReviewer {
-    /// Only a resolver that has just verified `files` against the pinned digest should call
-    /// this — the bytes given here are what [`ResolvedReviewer::file`] will forever answer.
+    /// Assemble package bytes for an adapter. This type is transport, not authorization: the
+    /// lock resolver is responsible for pin admission before placing it in a loaded pipeline.
     pub fn new(
         name: impl Into<String>,
         version: impl Into<String>,

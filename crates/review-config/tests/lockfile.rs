@@ -8,6 +8,24 @@ use std::path::Path;
 
 use review_config::lock::{LockError, Lockfile, Pin, Registry, package_digest};
 
+trait ResolveWholeTree {
+    fn resolve(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<review_config::lock::ResolvedReviewer, LockError>;
+}
+
+impl ResolveWholeTree for Lockfile {
+    fn resolve(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<review_config::lock::ResolvedReviewer, LockError> {
+        self.resolve_for_subject(name, registry, review_core::SubjectKind::WholeTree)
+    }
+}
+
 /// A package directory: manifest, prompt, one support file.
 fn write_package(root: &Path, name: &str, version: &str) {
     let dir = root.join(name);
@@ -50,6 +68,29 @@ fn a_locked_reviewer_resolves_and_carries_its_runner() {
         resolved.runner.resolve().unwrap(),
         vec!["review".to_string()]
     );
+}
+
+#[test]
+fn a_legacy_manifest_accepts_only_whole_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.2.0\"\n\n\
+         [runner]\nprogram = \"codex\"\nargs = []\n",
+    )
+    .unwrap();
+    let registry = Registry::new([dir.path()]);
+    let lockfile = locked("architecture", &registry);
+
+    assert!(lockfile.resolve("architecture", &registry).is_ok());
+    assert!(matches!(
+        lockfile
+            .resolve_for_subject("architecture", &registry, review_core::SubjectKind::Diff,)
+            .unwrap_err(),
+        LockError::UnsupportedSubject { .. }
+    ));
 }
 
 #[test]
@@ -379,7 +420,7 @@ fn a_symlink_cannot_be_a_package_root() {
     ));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_non_utf8_package_path_is_refused_not_lossily_hashed() {
     use std::os::unix::ffi::OsStringExt;

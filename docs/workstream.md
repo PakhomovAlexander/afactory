@@ -3,14 +3,14 @@
 **Status:** M0 and M1 complete; M2.1 Subject configuration and package compatibility implemented.
 **Goal:** `reviewctl` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
-**Log:** none yet — create `workstream/log.md` beside this file when the first phase concludes.
+**Log:** [`workstream/log.md`](workstream/log.md)
 
 ## Summary
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and fifteen ADR records; ADR-0003 and ADR-0004
-are superseded. No implementation has started. Begin with M0, then follow milestone order.
+are superseded. M0, M1, and M2.1 are complete; resume at M2.2 and follow milestone order.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 

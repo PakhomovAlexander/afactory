@@ -457,11 +457,6 @@ impl Lockfile {
         Ok((reviewer, subjects))
     }
 
-    pub fn resolve(&self, name: &str, registry: &Registry) -> Result<ResolvedReviewer, LockError> {
-        self.resolve_package(name, registry)
-            .map(|(reviewer, _)| reviewer)
-    }
-
     pub fn resolve_for_subject(
         &self,
         name: &str,
