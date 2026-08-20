@@ -1,5 +1,5 @@
 use review_config::Definition;
-use review_pipeline::Kernel;
+use review_pipeline::{Kernel, RoundAuthority};
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore};
 
@@ -25,5 +25,8 @@ runner = { program = "/bin/true" }
     .load()
     .unwrap();
 
-    Kernel::from_loaded(cas, store, run_id, snapshot, &loaded).unwrap()
+    let context = cas.put(b"test round authority").unwrap();
+    let authority =
+        RoundAuthority::new("round-started-test", &context, &context, &context).unwrap();
+    Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
 }

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:campaign-manifest:1",
+  "title": "CampaignManifest@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authority_snapshot_id", "subject_kind", "pipeline", "reviewer_lock", "execution_policy_ids", "project_policy_ids", "convergence", "finding_identity_policy", "finding_genesis_id", "demand_genesis_id"],
+  "properties": {
+    "authority_snapshot_id": { "$ref": "#/$defs/digest" },
+    "subject_kind": { "enum": ["diff", "whole-tree"] },
+    "base_snapshot_id": { "$ref": "#/$defs/digest" },
+    "pipeline": { "$ref": "#/$defs/file" },
+    "reviewer_lock": { "$ref": "#/$defs/file" },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["node", "name", "version", "digest", "package_artifact_id"],
+        "properties": {
+          "node": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "digest": { "$ref": "#/$defs/digest" },
+          "package_artifact_id": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "execution_policy_ids": { "$ref": "#/$defs/digests" },
+    "project_policy_ids": { "$ref": "#/$defs/digests" },
+    "convergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean_rounds", "max_rounds", "gate"],
+      "properties": {
+        "clean_rounds": { "type": "integer", "minimum": 1 },
+        "max_rounds": { "type": "integer", "minimum": 1 },
+        "gate": { "type": "string", "minLength": 1 }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_tokens", "run_tokens"],
+      "properties": {
+        "attempt_tokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "run_tokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "focus": { "type": "string", "minLength": 1 },
+    "finding_identity_policy": { "type": "string", "minLength": 1 },
+    "finding_genesis_id": { "$ref": "#/$defs/digest" },
+    "demand_genesis_id": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "subject_kind": { "const": "diff" } } },
+      "then": { "required": ["base_snapshot_id"] },
+      "else": { "not": { "required": ["base_snapshot_id"] } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "digests": { "type": "array", "items": { "$ref": "#/$defs/digest" }, "uniqueItems": true },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "artifact_id"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "artifact_id": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -21,6 +21,8 @@ pub enum EventType {
     AttemptReleasedV1,
     #[serde(rename = "CheckCompleted@1")]
     CheckCompletedV1,
+    #[serde(rename = "CampaignOpened@1")]
+    CampaignOpenedV1,
     #[serde(rename = "FindingReported@1")]
     FindingReportedV1,
     #[serde(rename = "FindingResolved@1")]
@@ -37,18 +39,23 @@ pub enum EventType {
     RunReportV1,
     #[serde(rename = "RunReport@2")]
     RunReportV2,
+    #[serde(rename = "RoundInputSuperseded@1")]
+    RoundInputSupersededV1,
+    #[serde(rename = "RoundStarted@1")]
+    RoundStartedV1,
     #[serde(rename = "SourceCaptured@1")]
     SourceCapturedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
         Self::AttemptFencedV1,
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
+        Self::CampaignOpenedV1,
         Self::FindingReportedV1,
         Self::FindingResolvedV1,
         Self::GateDecisionV1,
@@ -57,6 +64,8 @@ impl EventType {
         Self::NodeOutputReceiptV1,
         Self::RunReportV1,
         Self::RunReportV2,
+        Self::RoundInputSupersededV1,
+        Self::RoundStartedV1,
         Self::SourceCapturedV1,
     ];
 
@@ -68,6 +77,7 @@ impl EventType {
             Self::AttemptFencedV1 => "AttemptFenced@1",
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
+            Self::CampaignOpenedV1 => "CampaignOpened@1",
             Self::FindingReportedV1 => "FindingReported@1",
             Self::FindingResolvedV1 => "FindingResolved@1",
             Self::GateDecisionV1 => "GateDecision@1",
@@ -76,6 +86,8 @@ impl EventType {
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
+            Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
+            Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
         }
     }
@@ -88,6 +100,7 @@ impl EventType {
             Self::AttemptFencedV1 => ("AttemptFenced", 1),
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
+            Self::CampaignOpenedV1 => ("CampaignOpened", 1),
             Self::FindingReportedV1 => ("FindingReported", 1),
             Self::FindingResolvedV1 => ("FindingResolved", 1),
             Self::GateDecisionV1 => ("GateDecision", 1),
@@ -96,6 +109,8 @@ impl EventType {
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
+            Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
+            Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
         }
     }
@@ -141,6 +156,7 @@ impl std::str::FromStr for EventType {
             "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
+            "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
             "FindingReported@1" => Ok(Self::FindingReportedV1),
             "FindingResolved@1" => Ok(Self::FindingResolvedV1),
             "GateDecision@1" => Ok(Self::GateDecisionV1),
@@ -149,6 +165,8 @@ impl std::str::FromStr for EventType {
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
+            "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
+            "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
@@ -276,7 +294,8 @@ impl RunReportPayloadV2 {
                             outcome.node
                         ));
                     }
-                    if let Some(artifact) = output_artifacts.iter().find(|id| !is_digest(id)) {
+                    if let Some(artifact) = output_artifacts.iter().find(|id| !crate::is_digest(id))
+                    {
                         return Err(format!(
                             "completed node `{}` contains invalid artifact id `{artifact}`",
                             outcome.node
@@ -448,6 +467,28 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::CampaignOpenedV1 => {
+            let opened = serde_json::from_value::<crate::CampaignOpenedPayloadV1>(payload.clone())
+                .map_err(|error| format!("CampaignOpened@1: {error}"))?;
+            opened
+                .validate()
+                .map_err(|error| format!("CampaignOpened@1: {error}"))
+        }
+        EventType::RoundStartedV1 => {
+            let started = serde_json::from_value::<crate::RoundStartedPayloadV1>(payload.clone())
+                .map_err(|error| format!("RoundStarted@1: {error}"))?;
+            started
+                .validate()
+                .map_err(|error| format!("RoundStarted@1: {error}"))
+        }
+        EventType::RoundInputSupersededV1 => {
+            let superseded =
+                serde_json::from_value::<crate::RoundInputSupersededPayloadV1>(payload.clone())
+                    .map_err(|error| format!("RoundInputSuperseded@1: {error}"))?;
+            superseded
+                .validate()
+                .map_err(|error| format!("RoundInputSuperseded@1: {error}"))
+        }
         EventType::NodeInvocationV1 => {
             let invocation = serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
                 .map_err(|error| format!("NodeInvocation@1: {error}"))?;
@@ -528,15 +569,6 @@ pub struct NodeOutputReceiptPayloadV1 {
     pub outputs: Vec<PortArtifactsV1>,
 }
 
-fn is_digest(value: &str) -> bool {
-    value.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    })
-}
-
 pub fn is_artifact_type(value: &str) -> bool {
     let Some((namespace, versioned_name)) = value.split_once('/') else {
         return false;
@@ -577,7 +609,7 @@ fn validate_ports(node: &str, ports: &[PortArtifactsV1]) -> Result<(), String> {
         }
         let ids: std::collections::BTreeSet<&str> =
             port.artifact_ids.iter().map(String::as_str).collect();
-        if ids.len() != port.artifact_ids.len() || ids.iter().any(|id| !is_digest(id)) {
+        if ids.len() != port.artifact_ids.len() || ids.iter().any(|id| !crate::is_digest(id)) {
             return Err(format!(
                 "port `{}` has invalid or duplicate artifacts",
                 port.port
@@ -603,7 +635,7 @@ fn validate_ports(node: &str, ports: &[PortArtifactsV1]) -> Result<(), String> {
         if port
             .subject_snapshot_id
             .as_deref()
-            .is_some_and(|id| !is_digest(id))
+            .is_some_and(|id| !crate::is_digest(id))
         {
             return Err(format!(
                 "port `{}` has an invalid subject snapshot",

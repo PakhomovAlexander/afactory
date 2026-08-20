@@ -20,16 +20,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_config::Definition;
-use review_config::lock::{Lockfile, Registry};
-use review_core::{
-    EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, run_report_closes_round,
-};
+use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2};
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
-use review_source_git::{Capture, Repo};
-use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
+use review_source_git::Repo;
+use review_store::{Cas, EventStore, Ingest, Ledger, Status};
+
+mod authority;
 
 struct Options {
     repo: PathBuf,
@@ -37,6 +35,8 @@ struct Options {
     state: Option<PathBuf>,
     campaign: Option<String>,
     focus: Option<String>,
+    authority: Option<String>,
+    restart_round: bool,
     timeout: Duration,
 }
 
@@ -81,7 +81,7 @@ struct ResolveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
         \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
         \x20      reviewctl report  --campaign NAME [--state DIR] [--format md]\n\
@@ -109,6 +109,8 @@ fn parse_run(mut args: std::env::Args) -> Options {
         state: None,
         campaign: None,
         focus: None,
+        authority: None,
+        restart_round: false,
         timeout: Duration::from_secs(1800),
     };
     while let Some(flag) = args.next() {
@@ -119,6 +121,8 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--state" => options.state = Some(PathBuf::from(value())),
             "--campaign" => options.campaign = Some(value()),
             "--focus" => options.focus = Some(value()),
+            "--authority" => options.authority = Some(value()),
+            "--restart-round" => options.restart_round = true,
             "--timeout-secs" => {
                 options.timeout = Duration::from_secs(value().parse().unwrap_or_else(|_| usage()))
             }
@@ -540,155 +544,33 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
 }
 
 fn run(options: &Options) -> Result<(), String> {
-    // Load the pipeline through its lockfile — the same trust path a test run takes.
-    let review_dir = options
-        .pipeline
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or("the pipeline file must live under .review/pipelines/")?
-        .to_path_buf();
-    let text = std::fs::read_to_string(&options.pipeline).map_err(|e| e.to_string())?;
-    let lock_text =
-        std::fs::read_to_string(review_dir.join("review.lock")).map_err(|e| e.to_string())?;
-    let lockfile = Lockfile::from_toml(&lock_text).map_err(|e| e.to_string())?;
-    let registry = Registry::new([review_dir.join("reviewers")]);
-    let loaded = Definition::from_toml(&text)
-        .map_err(|e| e.to_string())?
-        .load_with(&lockfile, &registry)
-        .map_err(|e| e.to_string())?;
-    if loaded.subject_kind() == review_core::SubjectKind::Diff {
-        return Err(
-            "this kernel refuses to execute a `diff` Subject until its pinned Base and Change \
-             Set are available; use `whole-tree` or complete M2.2-M2.4"
-                .to_string(),
-        );
-    }
-
-    // Capture HEAD. Committed content only: a run reviews an immutable snapshot, and if the
-    // change you want reviewed is not committed, that is the message rather than a workaround.
     let state = options.state_dir();
-    std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
-    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
+    let mut store =
+        EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
+    let home = std::env::var("HOME").map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home);
-    let snapshot = Capture::new(&repo, &cas)
-        .committed("HEAD")
-        .map_err(|e| format!("capturing HEAD: {e}"))?;
-    // A campaign is one logical review across rounds, so it is one run id and one ledger; a
-    // plain run is identified by what it reviewed.
-    let run_id = match &options.campaign {
-        Some(campaign) => campaign_run_id(campaign),
-        None => format!("run-{}", &snapshot.content_digest[7..19]),
-    };
-    println!("snapshot {}", snapshot.content_digest);
+
+    let authority::PreparedRun {
+        loaded,
+        snapshot,
+        prior_artifact,
+        run_id,
+        focus,
+        authority,
+    } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
 
-    // Campaign continuation: a repeat run is a new round, and the ledger as it stands travels
-    // to every reviewer as a labelled artifact — round N+1 re-examines round N's claims
-    // instead of taking a fresh look that happens to share a repository.
-    let mut prior_artifact: Option<String> = None;
-    if options.campaign.is_some() {
-        // Advance only past rounds that actually *closed* — a run that reached a real verdict,
-        // not a crash, a failed reviewer, or an exit-4 incomplete run. Counting closed rounds
-        // (rather than "are there any events?") means an infra failure re-runs the same round
-        // instead of consuming `max_rounds`, and it is correct even after an advance-then-crash:
-        // the target round is a function of closed rounds, so a bumped-but-unclosed round is
-        // simply re-entered.
-        let events = store.replay(&run_id).map_err(|e| e.to_string())?;
-        let mut closed_rounds = 0_u32;
-        for event in &events {
-            if run_report_closes_round(event)
-                .map_err(|e| format!("decoding {}: {e}", event.event_type))?
-                .unwrap_or(false)
-            {
-                closed_rounds += 1;
-            }
-        }
-        let target_round = closed_rounds + 1;
-        {
-            let mut ingest =
-                Ingest::new(&mut store, &cas, run_id.clone()).map_err(|e| e.to_string())?;
-            while ingest.ledger().round < target_round {
-                ingest.advance().map_err(|e| e.to_string())?;
-            }
-            println!("round    {}", ingest.ledger().round);
-        }
-
-        let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
-        // Only claims a reviewer can still act on: declined findings (rejected / wontfix) are
-        // the operator's terminal decision, and the ledger never reopens them — handing them
-        // back under the re-examination contract only invites re-litigation that cannot change
-        // status and spends review budget. Open, fixed, and contested claims all can move.
-        let rows: Vec<serde_json::Value> = ledger
-            .findings()
-            .iter()
-            .filter(|f| !matches!(f.status, Status::Rejected | Status::Wontfix))
-            .map(|f| {
-                serde_json::json!({
-                    "key": f.key,
-                    "severity": format!("{:?}", f.severity).to_lowercase(),
-                    "status": f.status.as_str(),
-                    "file": f.file,
-                    "line": f.line,
-                    "title": f.title,
-                    "body": f.body,
-                    "source": f.source,
-                    "last_seen_round": f.last_seen_round,
-                })
-            })
-            .collect();
-        if !rows.is_empty() {
-            println!("prior    {} findings carried", rows.len());
-            prior_artifact = Some(
-                cas.put_json(&serde_json::json!({
-                    "round": ledger.round,
-                    "prior_findings": rows,
-                }))
-                .map_err(|e| e.to_string())?,
-            );
-        }
-    }
-
-    // The capture is the run's first event: a log that cannot say what was reviewed cannot
-    // rebuild the run that reviewed it.
-    let manifest_artifact = cas
-        .put_json(&serde_json::to_value(&snapshot.manifest).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let tree_id = snapshot
-        .source_revision
-        .as_deref()
-        .and_then(|rev| repo.line(&["rev-parse", &format!("{rev}^{{tree}}")]).ok())
-        .unwrap_or_default();
-    store
-        .append(
-            &run_id,
-            &cas,
-            NewEvent::new(
-                EventType::SourceCapturedV1,
-                snapshot.to_payload(&tree_id, Some(&manifest_artifact)),
-            )
-            .referencing(vec![manifest_artifact]),
-        )
-        .map_err(|e| e.to_string())?;
-
-    // Bind reviewers: a packaged reviewer gets the adapter its runner names; an inline
-    // command runs as itself.
     let auth = (
         std::env::var("CLAUDE_CONFIG_DIR").ok(),
         std::env::var("USER").ok(),
         home.clone(),
     );
-    let mut kernel = Kernel::from_loaded(
-        &cas,
-        &mut store,
-        &run_id,
-        snapshot.manifest.clone(),
-        &loaded,
-    )?
-    .with_checks(loaded.checks().to_vec());
+    let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
+        .with_checks(loaded.checks().to_vec());
     if let Some(artifact) = prior_artifact {
         kernel = kernel.with_prior_findings(artifact);
     }
@@ -699,13 +581,14 @@ fn run(options: &Options) -> Result<(), String> {
         );
         kernel = kernel.with_budgets(budgets.attempt, budgets.run);
     }
+
     let mut bound: BTreeMap<String, String> = BTreeMap::new();
     for (node, command) in loaded.reviewers() {
         let adapter: Box<dyn ReviewerAdapter> = match loaded.packages().get(node) {
             Some(package) => {
                 let program = std::path::Path::new(&command.program)
                     .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
+                    .map(|name| name.to_string_lossy().to_string())
                     .unwrap_or_default();
                 match program.as_str() {
                     "claude" => {
@@ -716,9 +599,9 @@ fn run(options: &Options) -> Result<(), String> {
                             package,
                             options.timeout,
                         )
-                        .map_err(|e| format!("{node}: {e}"))?
+                        .map_err(|error| format!("{node}: {error}"))?
                         .with_auth(auth.0.clone(), user, auth.2.clone());
-                        if let Some(focus) = &options.focus {
+                        if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
                         Box::new(adapter)
@@ -728,9 +611,9 @@ fn run(options: &Options) -> Result<(), String> {
                             package,
                             options.timeout,
                         )
-                        .map_err(|e| format!("{node}: {e}"))?
+                        .map_err(|error| format!("{node}: {error}"))?
                         .with_codex_home(format!("{home}/.codex"));
-                        if let Some(focus) = &options.focus {
+                        if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
                         Box::new(adapter)
@@ -752,8 +635,6 @@ fn run(options: &Options) -> Result<(), String> {
         println!("reviewer {node} -> {program}");
     }
 
-    // Run, and say what happened to every node — a suppressed node in silence would read as
-    // "nothing to report".
     let report = loaded.run(&kernel).map_err(|error| error.to_string())?;
     println!();
     for (node, outcome) in &report.outcomes {
@@ -771,10 +652,12 @@ fn run(options: &Options) -> Result<(), String> {
     println!("findings {}", ledger.len());
     for finding in ledger.findings() {
         println!(
-            "  [{:?}] {}:{} — {} ({:?})",
+            "  [{:?}] {}:{} - {} ({:?})",
             finding.severity,
             finding.file,
-            finding.line.map_or("?".to_string(), |l| l.to_string()),
+            finding
+                .line
+                .map_or("?".to_string(), |line| line.to_string()),
             finding.title,
             finding.status
         );

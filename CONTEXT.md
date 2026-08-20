@@ -59,6 +59,12 @@ policy before candidate content can influence execution authority.
 _Avoid_: assuming Authority Snapshot and Base are synonyms; a diff Campaign commonly uses one
 Snapshot for both roles, while a whole-tree Campaign still needs authority without having a Base.
 
+**Campaign Manifest**:
+The immutable resolved authority of one Campaign: exact Authority Snapshot, pipeline, lock,
+reviewer package, policy, convergence, budget, focus, and genesis-root artifact IDs.
+_Avoid_: calling it the Authority Snapshot; one trusted source Snapshot can resolve different
+Campaign Manifests under different trusted invocation policies.
+
 **Report Scope**:
 Whether a Report's location falls inside the Change Set it was made under — `in` or `out`.
 Stamped on each Report at the Round it was made, never on the Finding, because a file this
@@ -253,7 +259,7 @@ the result incomplete.
 - A **Review Selector** resolves the Authority Snapshot and optional Base once per Campaign, then
   resolves each Round's head Snapshot into that Round's immutable **Subject**. Its labels may be
   retained as metadata but never participate in identity.
-- A Campaign pins one **Authority Snapshot** and one resolved execution manifest. Later Rounds
+- A Campaign pins one **Authority Snapshot** and one **Campaign Manifest**. Later Rounds
   may advance the Subject's head Snapshot but cannot silently change pipeline or reviewer
   authority.
 - The **Ledger** is a function of the event log and its referenced immutable artifacts. Delete

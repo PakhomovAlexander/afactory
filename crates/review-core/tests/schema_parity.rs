@@ -7,24 +7,29 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, ClaimRef, ClaimRefKind, EventType, FindingReport, Location, MissingNodeV2,
-    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal, PortArtifactsV1,
-    PortCardinality, Producer, RunEvent, RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot,
+    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
+    CampaignOpenedPayloadV1, ClaimRef, ClaimRefKind, EventType, FindingReport, Location,
+    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
+    PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 8] = [
+const SCHEMAS: [&str; 11] = [
     "artifact-envelope-v1.json",
+    "campaign-manifest-v1.json",
     "finding-report-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
+    "reviewer-package-v1.json",
     "run-event-v1.json",
     "run-report-v2.json",
     "source-snapshot-v1.json",
+    "subject-v1.json",
 ];
 
 fn schema(name: &str) -> Value {
@@ -192,6 +197,60 @@ fn source_snapshot_has_no_best_effort_capture() {
 }
 
 #[test]
+fn subject_and_campaign_authority_roundtrip() {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let subject = SubjectV1::whole_tree(&digest);
+    subject.validate().unwrap();
+    let value = serde_json::to_value(&subject).unwrap();
+    assert_valid("subject-v1.json", &value);
+    assert_eq!(serde_json::from_value::<SubjectV1>(value).unwrap(), subject);
+
+    let package = ReviewerPackageV1 {
+        name: "architecture".into(),
+        version: "1.0.0".into(),
+        digest: digest.clone(),
+        files: std::collections::BTreeMap::from([("reviewer.toml".into(), digest.clone())]),
+    };
+    package.validate().unwrap();
+    let value = serde_json::to_value(&package).unwrap();
+    assert_valid("reviewer-package-v1.json", &value);
+
+    let manifest = CampaignManifestV1 {
+        authority_snapshot_id: digest.clone(),
+        subject_kind: SubjectKind::WholeTree,
+        base_snapshot_id: None,
+        pipeline: AuthorityFileV1 {
+            path: ".review/pipelines/heavy.toml".into(),
+            artifact_id: digest.clone(),
+        },
+        reviewer_lock: AuthorityFileV1 {
+            path: ".review/review.lock".into(),
+            artifact_id: digest.clone(),
+        },
+        reviewers: vec![],
+        execution_policy_ids: vec![digest.clone()],
+        project_policy_ids: vec![],
+        convergence: CampaignConvergenceV1 {
+            clean_rounds: 1,
+            max_rounds: 3,
+            gate: "major".into(),
+        },
+        budgets: None,
+        focus: Some("authority bootstrap".into()),
+        finding_identity_policy: "legacy-path-title@1".into(),
+        finding_genesis_id: digest.clone(),
+        demand_genesis_id: digest.clone(),
+    };
+    manifest.validate().unwrap();
+    let value = serde_json::to_value(&manifest).unwrap();
+    assert_valid("campaign-manifest-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<CampaignManifestV1>(value).unwrap(),
+        manifest
+    );
+}
+
+#[test]
 fn patch_proposal_roundtrips() {
     let digest = format!("sha256:{}", "b".repeat(64));
     let proposal = PatchProposal {
@@ -260,6 +319,27 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
         .collect();
     assert_eq!(declared, &rust);
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
+}
+
+#[test]
+fn bootstrap_event_payloads_are_semantically_validated() {
+    let digest = format!("sha256:{}", "b".repeat(64));
+    let opened = CampaignOpenedPayloadV1 {
+        campaign_manifest_id: digest.clone(),
+        authority_snapshot_id: digest,
+    };
+    assert!(
+        review_core::event::validate_event_payload(
+            EventType::CampaignOpenedV1,
+            &serde_json::to_value(opened).unwrap(),
+        )
+        .is_ok()
+    );
+    assert!(review_core::event::validate_event_payload(
+        EventType::RoundStartedV1,
+        &json!({"round":0,"epoch":1,"campaign_manifest_id":"x","subject_id":"x","prior_finding_set_id":"x","prior_demand_set_id":"x"}),
+    )
+    .is_err());
 }
 
 #[test]

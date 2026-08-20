@@ -348,10 +348,24 @@ gate = "major"
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-    let mut kernel =
-        Kernel::from_loaded(&cas, &mut store, "run", snapshot.manifest.clone(), &loaded)
-            .unwrap()
-            .with_checks(loaded.checks().to_vec());
+    let context = cas.put(b"end-to-end round authority").unwrap();
+    let authority = review_pipeline::RoundAuthority::new(
+        "round-started-end-to-end",
+        &context,
+        &context,
+        &context,
+    )
+    .unwrap();
+    let mut kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(loaded.checks().to_vec());
     for (node, command) in loaded.reviewers() {
         kernel = kernel.with_reviewer(node.clone(), command.clone());
     }
@@ -602,14 +616,18 @@ fn the_event_log_tells_the_whole_story() {
             .flat_map(|port| port["artifact_ids"].as_array().unwrap())
             .map(|id| id.as_str().unwrap())
             .collect();
-        assert_eq!(
-            selected,
-            receipt
-                .artifact_refs
+        assert!(
+            selected
                 .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
+                .all(|artifact| receipt.artifact_refs.iter().any(|id| id == artifact)),
+            "receipt lost a selected output artifact"
         );
+        assert!(
+            receipt.artifact_refs.len() > selected.len(),
+            "receipt is not bound to Round authority"
+        );
+        assert!(receipt.causation_id.is_some());
+        assert!(receipt.correlation_id.is_some());
     }
 }
 

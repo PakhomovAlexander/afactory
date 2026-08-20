@@ -109,6 +109,55 @@ pub enum RunVerdict {
     Incomplete { missing: Vec<(String, String)> },
 }
 
+/// The immutable publication boundary every event emitted by one Round execution inherits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundAuthority {
+    pub round_event_id: String,
+    pub authority_snapshot_id: String,
+    pub campaign_manifest_id: String,
+    pub subject_id: String,
+}
+
+impl RoundAuthority {
+    pub fn new(
+        round_event_id: impl Into<String>,
+        authority_snapshot_id: impl Into<String>,
+        campaign_manifest_id: impl Into<String>,
+        subject_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let authority = Self {
+            round_event_id: round_event_id.into(),
+            authority_snapshot_id: authority_snapshot_id.into(),
+            campaign_manifest_id: campaign_manifest_id.into(),
+            subject_id: subject_id.into(),
+        };
+        let digest = |value: &str| {
+            value.strip_prefix("sha256:").is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+        };
+        if authority.round_event_id.trim().is_empty()
+            || !digest(&authority.authority_snapshot_id)
+            || !digest(&authority.campaign_manifest_id)
+            || !digest(&authority.subject_id)
+        {
+            return Err("round authority contains an empty event ID or invalid artifact ID".into());
+        }
+        Ok(authority)
+    }
+
+    fn artifact_refs(&self) -> [String; 3] {
+        [
+            self.authority_snapshot_id.clone(),
+            self.campaign_manifest_id.clone(),
+            self.subject_id.clone(),
+        ]
+    }
+}
+
 impl RunVerdict {
     pub fn passed(&self) -> bool {
         matches!(self, RunVerdict::Pass)
@@ -152,6 +201,7 @@ pub struct Kernel<'a> {
     /// same content by construction rather than by discipline.
     snapshot: Manifest,
     subject: review_core::SubjectKind,
+    authority: RoundAuthority,
     checks: Vec<CheckDefinition>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     attempts: Mutex<AttemptLedger>,
@@ -189,6 +239,7 @@ impl<'a> Kernel<'a> {
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
+        authority: RoundAuthority,
     ) -> Kernel<'a> {
         Kernel {
             cas,
@@ -196,6 +247,7 @@ impl<'a> Kernel<'a> {
             run_id: run_id.into(),
             snapshot,
             subject,
+            authority,
             checks: Vec::new(),
             reviewers: BTreeMap::new(),
             attempts: Mutex::new(AttemptLedger::default()),
@@ -220,10 +272,11 @@ impl<'a> Kernel<'a> {
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
+        authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
         match subject {
             review_core::SubjectKind::WholeTree => {
-                Ok(Kernel::new(cas, store, run_id, snapshot, subject))
+                Ok(Kernel::new(cas, store, run_id, snapshot, subject, authority))
             }
             review_core::SubjectKind::Diff => Err(
                 "review-pipeline cannot execute a `diff` Subject until its pinned Base and Change Set are available"
@@ -239,8 +292,16 @@ impl<'a> Kernel<'a> {
         run_id: impl Into<String>,
         snapshot: Manifest,
         loaded: &review_config::Loaded,
+        authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        Kernel::for_subject(cas, store, run_id, snapshot, loaded.subject_kind())
+        Kernel::for_subject(
+            cas,
+            store,
+            run_id,
+            snapshot,
+            loaded.subject_kind(),
+            authority,
+        )
     }
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
@@ -318,7 +379,23 @@ impl<'a> Kernel<'a> {
     /// Append one event to the run's log. Everything the kernel decides goes through here:
     /// the log is the authority a run is rebuilt from, so a decision it never saw is a
     /// decision that, on replay, never happened.
+    fn bind_authority(&self, mut event: NewEvent) -> NewEvent {
+        if event.causation_id.is_none() {
+            event.causation_id = Some(self.authority.round_event_id.clone());
+        }
+        if event.correlation_id.is_none() {
+            event.correlation_id = Some(self.authority.subject_id.clone());
+        }
+        for artifact in self.authority.artifact_refs() {
+            if !event.artifact_refs.contains(&artifact) {
+                event.artifact_refs.push(artifact);
+            }
+        }
+        event
+    }
+
     fn append(&self, event: NewEvent) -> Result<(), String> {
+        let event = self.bind_authority(event);
         self.store
             .lock()
             .expect("event store")
@@ -328,10 +405,15 @@ impl<'a> Kernel<'a> {
     }
 
     fn append_batch(&self, events: &[NewEvent]) -> Result<(), String> {
+        let events: Vec<NewEvent> = events
+            .iter()
+            .cloned()
+            .map(|event| self.bind_authority(event))
+            .collect();
         self.store
             .lock()
             .expect("event store")
-            .append_batch(&self.run_id, self.cas, events)
+            .append_batch(&self.run_id, self.cas, &events)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }

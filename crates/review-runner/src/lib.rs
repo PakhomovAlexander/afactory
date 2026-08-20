@@ -72,6 +72,12 @@ impl ResolvedReviewer {
     pub fn file(&self, path: &str) -> Option<&[u8]> {
         self.files.get(path).map(Vec::as_slice)
     }
+
+    /// Every verified package file. Used to publish campaign authority without returning to
+    /// the package directory after resolution.
+    pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.files
+    }
 }
 
 /// One reviewer's dispatch: which node, and what it is being asked to inspect.

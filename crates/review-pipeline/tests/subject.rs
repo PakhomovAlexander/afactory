@@ -2,7 +2,7 @@
 
 use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
-use review_pipeline::Kernel;
+use review_pipeline::{Kernel, RoundAuthority};
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore};
 
@@ -40,7 +40,17 @@ package = "tester"
     .load_with(&lockfile, &registry)
     .unwrap();
 
-    let result = Kernel::from_loaded(&cas, &mut store, "run", Manifest::new(vec![]), &loaded);
+    let context = cas.put(b"subject test authority").unwrap();
+    let authority =
+        || RoundAuthority::new("round-started-subject", &context, &context, &context).unwrap();
+    let result = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        Manifest::new(vec![]),
+        &loaded,
+        authority(),
+    );
 
     assert!(matches!(result, Err(error) if error.contains("pinned Base and Change Set")));
 
@@ -58,8 +68,15 @@ runner = { program = "/bin/true" }
     .unwrap()
     .load()
     .unwrap();
-    let kernel =
-        Kernel::from_loaded(&cas, &mut store, "run", Manifest::new(vec![]), &whole_tree).unwrap();
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        Manifest::new(vec![]),
+        &whole_tree,
+        authority(),
+    )
+    .unwrap();
 
     let error = loaded.run(&kernel).unwrap_err();
     assert!(error.to_string().contains("declares `diff`"), "{error}");

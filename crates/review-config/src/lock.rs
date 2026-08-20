@@ -222,13 +222,35 @@ pub use review_runner::ResolvedReviewer;
 /// Registries searched in order. Typically project, user, system.
 pub struct Registry {
     roots: Vec<PathBuf>,
+    captured: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
 }
 
 impl Registry {
     pub fn new(roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Registry {
         Registry {
             roots: roots.into_iter().map(Into::into).collect(),
+            captured: BTreeMap::new(),
         }
+    }
+
+    /// A registry reconstructed from a Campaign's immutable package artifacts.
+    pub fn captured(packages: BTreeMap<String, BTreeMap<String, Vec<u8>>>) -> Registry {
+        Registry {
+            roots: Vec::new(),
+            captured: packages,
+        }
+    }
+
+    fn read(&self, name: &str) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
+        if let Some(files) = self.captured.get(name) {
+            return Ok((
+                PathBuf::from("<captured-authority>").join(name),
+                files.clone(),
+            ));
+        }
+        let root = self.locate(name)?;
+        let files = collect(name, &root)?;
+        Ok((root, files))
     }
 
     /// The first root that has the package directory. Search stops here: whether that copy
@@ -423,8 +445,7 @@ impl Lockfile {
                 name: name.to_string(),
             })?;
         validate_pin(name, pin)?;
-        let root = registry.locate(name)?;
-        let files = collect(name, &root)?;
+        let (root, files) = registry.read(name)?;
 
         let found = digest_of(&files);
         if found != pin.digest {
@@ -484,8 +505,7 @@ impl Lockfile {
     /// The same validation as resolution: a manifest with a floating version cannot be pinned,
     /// so the refusal happens when the lock is written rather than on the first run after.
     pub fn pin(name: &str, registry: &Registry) -> Result<Pin, LockError> {
-        let root = registry.locate(name)?;
-        let files = collect(name, &root)?;
+        let (root, files) = registry.read(name)?;
         let manifest = Self::manifest(name, &root, &files)?;
         if manifest.name != name {
             return Err(LockError::NameMismatch {

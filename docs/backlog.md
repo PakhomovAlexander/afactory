@@ -131,8 +131,10 @@ Snapshot ID and never re-resolves the ref.
 
 `CampaignOpened@1` records the Authority Snapshot, Subject kind, pinned Base when present,
 resolved pipeline/config/package digests, execution-policy identifiers, convergence policy,
-invocation focus, Finding identity policy, and deterministic genesis
-`FindingSet@1`/`DemandSet@1` IDs. No node starts before those sets exist. A continuation uses that
+invocation focus, Finding identity policy, and deterministic Finding/Demand genesis-root IDs.
+The roots are deliberately not called Sets: the glossary requires every Finding Set and Demand
+Set to be Subject-bound, and the Subject does not exist before candidate capture. `RoundStarted@1`
+binds the first actual empty Sets to the captured Subject. No node starts before those sets exist. A continuation uses that
 stored manifest; a different manifest requires a new Campaign. The Review Selector ref is
 resolution input, never identity. `parent_snapshot_id` is not available for the Base relation: it
 means patch-integration lineage and `Capture::Derived` requires an `integration_batch_id`
@@ -140,7 +142,8 @@ alongside it. Decision recorded in
 [ADR-0009](adr/0009-campaign-authority-is-base-pinned.md).
 
 Before any Round node dispatches, `RoundStarted@1` records the exact Subject, prior Finding Set,
-prior Demand Set, and campaign manifest IDs. Retrying an incomplete Round reuses those IDs. To
+prior Demand Set, campaign manifest ID, and Round epoch. Retrying an incomplete Round reuses those
+IDs. To
 capture a changed head instead, an explicit restart appends `RoundInputSuperseded@1`, fences all
 old attempts, and records replacement Subject/Set IDs under a new Round epoch; no selected output
 from the superseded epoch may reach a reducer.

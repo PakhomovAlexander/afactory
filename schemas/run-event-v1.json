@@ -25,6 +25,7 @@
         "AttemptFenced@1",
         "AttemptReleased@1",
         "CheckCompleted@1",
+        "CampaignOpened@1",
         "FindingReported@1",
         "FindingResolved@1",
         "GateDecision@1",
@@ -33,6 +34,8 @@
         "NodeOutputReceipt@1",
         "RunReport@1",
         "RunReport@2",
+        "RoundInputSuperseded@1",
+        "RoundStarted@1",
         "SourceCaptured@1"
       ]
     },

@@ -11,6 +11,7 @@
 //! - JSON payloads live in the I-JSON numeric domain ([`json::admit`]) before they are hashed,
 //!   so a value cannot change meaning between producer and consumer.
 
+pub mod campaign;
 pub mod envelope;
 pub mod event;
 pub mod exec;
@@ -21,6 +22,11 @@ pub mod patch;
 pub mod snapshot;
 pub mod subject;
 
+pub use campaign::{
+    AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
+    RoundStartedPayloadV1,
+};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
@@ -34,10 +40,20 @@ pub use json::{NumericDomainError, admit};
 pub use legacy::{LegacyImportError, LegacyStageOutput};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
-pub use subject::SubjectKind;
+pub use subject::{SubjectKind, SubjectV1};
+
+pub(crate) fn is_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
 
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {
+    pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
     pub const FINDING_SET_V1: &str = "review.kernel/FindingSet@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
@@ -47,4 +63,6 @@ pub mod contract {
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
+    pub const SUBJECT_V1: &str = "review.kernel/Subject@1";
+    pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
 }

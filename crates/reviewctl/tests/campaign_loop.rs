@@ -27,13 +27,16 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
 }
 
 fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_reviewctl"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reviewctl"));
+    command
         .current_dir(repo)
         .env("HOME", home)
-        .env("USER", "loop-test")
-        .args(args)
-        .output()
-        .unwrap();
+        .env("USER", "loop-test");
+    let mut actual = args.to_vec();
+    if actual.first() == Some(&"run") {
+        actual.splice(1..1, ["--authority", "HEAD"]);
+    }
+    let out = command.args(actual).output().unwrap();
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -328,13 +331,35 @@ fn an_incomplete_run_does_not_burn_a_round() {
     );
     assert!(stdout.contains("round    1"), "{stdout}");
 
-    // Remove the marker and run again: the previous round never closed, so this is still round 1.
+    // Removing the marker does not silently change an incomplete Round's immutable input.
     std::fs::remove_file(repo.join("FAIL")).unwrap();
     git(&repo, &home, &["commit", "-qam", "let the reviewer run"]);
     let (code, stdout, _) = reviewctl(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
+    );
+    assert_eq!(
+        code, 4,
+        "the original Subject still contains FAIL\n{stdout}"
+    );
+    assert!(
+        stdout.contains("snapshot") && stdout.contains("(reused)"),
+        "{stdout}"
+    );
+
+    // Explicit supersession captures the changed head under a new epoch of the same Round.
+    let (code, stdout, _) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--restart-round",
+        ],
     );
     assert_eq!(code, 3, "the defect is found; not converged\n{stdout}");
     assert!(
@@ -436,6 +461,8 @@ package = "tester"
 "#,
     )
     .unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "declare diff subject"]);
 
     let (code, stdout, stderr) = reviewctl(
         &repo,
@@ -445,7 +472,7 @@ package = "tester"
 
     assert_eq!(code, 1, "{stdout}\n{stderr}");
     assert!(
-        stderr.contains("refuses to execute a `diff` Subject"),
+        stderr.contains("refuses to execute until the typed Change Set is available"),
         "{stderr}"
     );
     assert!(
