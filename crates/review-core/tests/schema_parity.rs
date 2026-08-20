@@ -265,12 +265,20 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
 #[test]
 fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
     let report = RunReportPayloadV2 {
-        outcomes: vec![RunNodeReportV2 {
-            node: "architecture".into(),
-            outcome: RunNodeOutcomeV2::Suppressed {
-                reason: RunSuppressionReasonV2::GateBlocked,
+        outcomes: vec![
+            RunNodeReportV2 {
+                node: "architecture".into(),
+                outcome: RunNodeOutcomeV2::Suppressed {
+                    reason: RunSuppressionReasonV2::GateBlocked,
+                },
             },
-        }],
+            RunNodeReportV2 {
+                node: "gate".into(),
+                outcome: RunNodeOutcomeV2::Completed {
+                    output_artifacts: vec![],
+                },
+            },
+        ],
         blocked_gates: vec!["gate".into()],
         verdict: RunVerdictV2::Incomplete {
             missing_nodes: vec![MissingNodeV2 {
@@ -317,7 +325,12 @@ fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
     );
 
     event.payload = serde_json::to_value(RunReportPayloadV2 {
-        outcomes: vec![],
+        outcomes: vec![RunNodeReportV2 {
+            node: "review".into(),
+            outcome: RunNodeOutcomeV2::Completed {
+                output_artifacts: vec![],
+            },
+        }],
         blocked_gates: vec![],
         verdict: RunVerdictV2::Fail {
             reason: RunFailureReasonV2::Exhausted,

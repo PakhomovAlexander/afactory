@@ -329,8 +329,7 @@ impl EventStore {
             ))
         })?;
         let mut out = Vec::new();
-        let mut expected_sequence = 0u64;
-        for row in rows {
+        for (expected_sequence, row) in (0u64..).zip(rows) {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
@@ -357,7 +356,6 @@ impl EventStore {
                 |error| StoreError::Conflict(format!("invalid replayed event payload: {error}")),
             )?;
             out.push(event);
-            expected_sequence += 1;
         }
         Ok(out)
     }

@@ -291,7 +291,7 @@ impl<'a> Scheduler<'a> {
                                 outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
                             }
                             if node.kind == NodeKind::Gate
-                                && !dispatch.gate_passed(&node_id, &produced)
+                                && !dispatch.gate_passed(node_id, &produced)
                             {
                                 blocked_gates.insert(node_id.clone());
                             }
