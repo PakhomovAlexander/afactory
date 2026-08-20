@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// A monotonic epoch. Fencing revokes an epoch; anything arriving under a revoked one is late by
 /// definition, whatever its wall-clock timestamp says.
@@ -16,6 +17,20 @@ impl AttemptId {
     /// random ID would make two otherwise identical runs incomparable.
     pub fn of(node: &str, epoch: Epoch) -> AttemptId {
         AttemptId(format!("{node}#{epoch}"))
+    }
+
+    /// Schema-conforming identity scoped to one durable Round event.
+    pub fn scoped(round_event_id: &str, node: &str, epoch: Epoch) -> AttemptId {
+        let mut hasher = Sha256::new();
+        for part in [
+            round_event_id.as_bytes(),
+            node.as_bytes(),
+            &epoch.to_be_bytes(),
+        ] {
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part);
+        }
+        AttemptId(format!("{:x}", hasher.finalize())[..26].to_string())
     }
 }
 
@@ -71,9 +86,32 @@ pub struct AttemptLedger {
     current: BTreeMap<String, Epoch>,
     /// Outputs that may feed downstream, in the order they were selected.
     selected: Vec<(String, String)>,
+    namespace: Option<String>,
 }
 
 impl AttemptLedger {
+    /// Reconstruct the next per-node epoch under one durable Round namespace.
+    pub fn scoped(
+        namespace: impl Into<String>,
+        prior_attempt_counts: BTreeMap<String, u64>,
+    ) -> Self {
+        Self {
+            current: prior_attempt_counts
+                .into_iter()
+                .filter_map(|(node, count)| count.checked_sub(1).map(|epoch| (node, epoch)))
+                .collect(),
+            namespace: Some(namespace.into()),
+            ..Self::default()
+        }
+    }
+
+    fn id(&self, node: &str, epoch: Epoch) -> AttemptId {
+        self.namespace.as_deref().map_or_else(
+            || AttemptId::of(node, epoch),
+            |namespace| AttemptId::scoped(namespace, node, epoch),
+        )
+    }
+
     /// Dispatch a new attempt for a node, superseding any earlier one.
     pub fn dispatch(&mut self, node: &str) -> AttemptId {
         let epoch = self.current.get(node).map(|e| e + 1).unwrap_or(0);
@@ -83,7 +121,7 @@ impl AttemptLedger {
             self.fence(node);
         }
         self.current.insert(node.to_string(), epoch);
-        let id = AttemptId::of(node, epoch);
+        let id = self.id(node, epoch);
         self.attempts.insert(
             id.clone(),
             Attempt {
@@ -103,7 +141,7 @@ impl AttemptLedger {
         let Some(epoch) = self.current.get(node).copied() else {
             return;
         };
-        let id = AttemptId::of(node, epoch);
+        let id = self.id(node, epoch);
         if let Some(attempt) = self.attempts.get_mut(&id)
             && attempt.state == AttemptState::Running
         {

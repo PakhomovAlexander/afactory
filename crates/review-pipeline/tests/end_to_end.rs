@@ -228,16 +228,18 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let events = store.replay("run").unwrap();
     assert_eq!(
         events.len(),
-        4,
-        "one invocation, one CheckCompleted, one GateDecision, and one durable receipt"
+        6,
+        "campaign and Round authority plus one invocation, check, decision, and receipt"
     );
-    assert_eq!(events[0].event_type, "NodeInvocation@1");
-    assert_eq!(events[0].payload["node"], "gate");
-    assert_eq!(events[1].event_type, "CheckCompleted@1");
-    assert_eq!(events[1].payload["status"], "failed");
-    assert_eq!(events[2].event_type, "GateDecision@1");
-    assert_eq!(events[2].payload["outcome"], "Blocked");
-    assert_eq!(events[3].event_type, "NodeOutputReceipt@1");
+    assert_eq!(events[0].event_type, "CampaignOpened@1");
+    assert_eq!(events[1].event_type, "RoundStarted@1");
+    assert_eq!(events[2].event_type, "NodeInvocation@1");
+    assert_eq!(events[2].payload["node"], "gate");
+    assert_eq!(events[3].event_type, "CheckCompleted@1");
+    assert_eq!(events[3].payload["status"], "failed");
+    assert_eq!(events[4].event_type, "GateDecision@1");
+    assert_eq!(events[4].payload["outcome"], "Blocked");
+    assert_eq!(events[5].event_type, "NodeOutputReceipt@1");
 }
 
 /// Same inputs, same pipeline, twice — the ledger and the verdict must not move.
@@ -348,14 +350,7 @@ gate = "major"
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-    let context = cas.put(b"end-to-end round authority").unwrap();
-    let authority = review_pipeline::RoundAuthority::new(
-        "round-started-end-to-end",
-        &context,
-        &context,
-        &context,
-    )
-    .unwrap();
+    let authority = support::test_round_authority(&cas, &mut store, "run");
     let mut kernel = Kernel::from_loaded(
         &cas,
         &mut store,
@@ -555,6 +550,7 @@ fn the_event_log_tells_the_whole_story() {
             "AttemptAdmitted@1",
             "AttemptDispatched@1",
             "AttemptDispatched@1",
+            "CampaignOpened@1",
             "CheckCompleted@1",
             "FindingReported@1",
             "FindingReported@1",
@@ -569,11 +565,13 @@ fn the_event_log_tells_the_whole_story() {
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
+            "RoundStarted@1",
             "RunReport@2",
         ],
         "the log holds the whole run"
     );
-    assert_eq!(types[0], "NodeInvocation@1");
+    assert_eq!(types[0], "CampaignOpened@1");
+    assert_eq!(types[1], "RoundStarted@1");
     assert_eq!(*types.last().unwrap(), "RunReport@2");
     for node in ["architecture", "performance"] {
         let lifecycle: Vec<&str> = events

@@ -67,11 +67,61 @@
       "type": "object"
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "CampaignOpened@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/campaign_opened" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "RoundStarted@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/round_started" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "RoundInputSuperseded@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/round_superseded" } } }
+    }
+  ],
   "$defs": {
     "id": {
       "description": "Monotonic sortable identifier (ULID-style), lowercase.",
       "type": "string",
       "pattern": "^[0-9a-z]{26}$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "campaign_opened": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["campaign_manifest_id", "authority_snapshot_id"],
+      "properties": {
+        "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+        "authority_snapshot_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "round_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "epoch", "campaign_manifest_id", "subject_id", "prior_finding_set_id", "prior_demand_set_id"],
+      "properties": {
+        "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+        "subject_id": { "$ref": "#/$defs/digest" },
+        "prior_finding_set_id": { "$ref": "#/$defs/digest" },
+        "prior_demand_set_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "round_superseded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "old_epoch", "new_epoch", "campaign_manifest_id", "old_subject_id", "replacement_subject_id"],
+      "properties": {
+        "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "old_epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "new_epoch": { "type": "integer", "minimum": 2, "maximum": 4294967295 },
+        "campaign_manifest_id": { "$ref": "#/$defs/digest" },
+        "old_subject_id": { "$ref": "#/$defs/digest" },
+        "replacement_subject_id": { "$ref": "#/$defs/digest" }
+      }
     }
   }
 }

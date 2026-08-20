@@ -2,9 +2,11 @@
 
 use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
-use review_pipeline::{Kernel, RoundAuthority};
+use review_pipeline::Kernel;
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore};
+
+mod support;
 
 #[test]
 fn a_diff_subject_is_refused_before_execution() {
@@ -40,16 +42,14 @@ package = "tester"
     .load_with(&lockfile, &registry)
     .unwrap();
 
-    let context = cas.put(b"subject test authority").unwrap();
-    let authority =
-        || RoundAuthority::new("round-started-subject", &context, &context, &context).unwrap();
+    let authority = support::test_round_authority(&cas, &mut store, "run");
     let result = Kernel::from_loaded(
         &cas,
         &mut store,
         "run",
         Manifest::new(vec![]),
         &loaded,
-        authority(),
+        authority.clone(),
     );
 
     assert!(matches!(result, Err(error) if error.contains("pinned Base and Change Set")));
@@ -74,7 +74,7 @@ runner = { program = "/bin/true" }
         "run",
         Manifest::new(vec![]),
         &whole_tree,
-        authority(),
+        authority,
     )
     .unwrap();
 

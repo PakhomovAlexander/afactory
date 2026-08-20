@@ -383,7 +383,7 @@ fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockErr
     Ok(files)
 }
 
-fn digest_of(files: &BTreeMap<String, Vec<u8>>) -> String {
+pub fn package_digest_from_files(files: &BTreeMap<String, Vec<u8>>) -> String {
     let listed: BTreeMap<&str, String> = files
         .iter()
         .map(|(path, bytes)| {
@@ -399,7 +399,7 @@ fn digest_of(files: &BTreeMap<String, Vec<u8>>) -> String {
 
 /// The content digest of a package on disk — what a pin records.
 pub fn package_digest(name: &str, root: &Path) -> Result<String, LockError> {
-    Ok(digest_of(&collect(name, root)?))
+    Ok(package_digest_from_files(&collect(name, root)?))
 }
 
 impl Lockfile {
@@ -447,7 +447,7 @@ impl Lockfile {
         validate_pin(name, pin)?;
         let (root, files) = registry.read(name)?;
 
-        let found = digest_of(&files);
+        let found = package_digest_from_files(&files);
         if found != pin.digest {
             return Err(LockError::DigestMismatch {
                 name: name.to_string(),
@@ -521,7 +521,7 @@ impl Lockfile {
         }
         Ok(Pin {
             version: manifest.version,
-            digest: digest_of(&files),
+            digest: package_digest_from_files(&files),
         })
     }
 

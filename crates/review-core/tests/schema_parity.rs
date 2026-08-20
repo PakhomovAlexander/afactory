@@ -18,14 +18,17 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 11] = [
+const SCHEMAS: [&str; 14] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
+    "campaign-opened-v1.json",
     "finding-report-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "reviewer-package-v1.json",
+    "round-input-superseded-v1.json",
+    "round-started-v1.json",
     "run-event-v1.json",
     "run-report-v2.json",
     "source-snapshot-v1.json",
@@ -235,6 +238,7 @@ fn subject_and_campaign_authority_roundtrip() {
             max_rounds: 3,
             gate: "major".into(),
         },
+        reviewer_timeout_seconds: 1800,
         budgets: None,
         focus: Some("authority bootstrap".into()),
         finding_identity_policy: "legacy-path-title@1".into(),

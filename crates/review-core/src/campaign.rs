@@ -53,6 +53,7 @@ pub struct CampaignManifestV1 {
     pub execution_policy_ids: Vec<String>,
     pub project_policy_ids: Vec<String>,
     pub convergence: CampaignConvergenceV1,
+    pub reviewer_timeout_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budgets: Option<CampaignBudgetV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +113,11 @@ impl CampaignManifestV1 {
             || self.convergence.gate.trim().is_empty()
         {
             return Err("CampaignManifest@1 contains an invalid convergence policy".into());
+        }
+        if self.reviewer_timeout_seconds == 0
+            || self.reviewer_timeout_seconds > 9_007_199_254_740_991
+        {
+            return Err("CampaignManifest@1 contains an invalid reviewer timeout".into());
         }
         if self
             .focus

@@ -37,7 +37,7 @@ struct Options {
     focus: Option<String>,
     authority: Option<String>,
     restart_round: bool,
-    timeout: Duration,
+    timeout: Option<Duration>,
 }
 
 impl Options {
@@ -111,7 +111,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
         focus: None,
         authority: None,
         restart_round: false,
-        timeout: Duration::from_secs(1800),
+        timeout: None,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
@@ -124,7 +124,9 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--authority" => options.authority = Some(value()),
             "--restart-round" => options.restart_round = true,
             "--timeout-secs" => {
-                options.timeout = Duration::from_secs(value().parse().unwrap_or_else(|_| usage()))
+                options.timeout = Some(Duration::from_secs(
+                    value().parse().unwrap_or_else(|_| usage()),
+                ))
             }
             _ => usage(),
         }
@@ -557,9 +559,9 @@ fn run(options: &Options) -> Result<(), String> {
     let authority::PreparedRun {
         loaded,
         snapshot,
-        prior_artifact,
         run_id,
         focus,
+        timeout,
         authority,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
@@ -571,9 +573,6 @@ fn run(options: &Options) -> Result<(), String> {
     );
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
         .with_checks(loaded.checks().to_vec());
-    if let Some(artifact) = prior_artifact {
-        kernel = kernel.with_prior_findings(artifact);
-    }
     if let Some(budgets) = loaded.budgets() {
         println!(
             "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
@@ -595,24 +594,20 @@ fn run(options: &Options) -> Result<(), String> {
                         let user = auth.1.clone().ok_or_else(|| {
                             format!("node `{node}`: Claude subscription auth requires USER")
                         })?;
-                        let mut adapter = review_runner_claude::ClaudeAdapter::from_package(
-                            package,
-                            options.timeout,
-                        )
-                        .map_err(|error| format!("{node}: {error}"))?
-                        .with_auth(auth.0.clone(), user, auth.2.clone());
+                        let mut adapter =
+                            review_runner_claude::ClaudeAdapter::from_package(package, timeout)
+                                .map_err(|error| format!("{node}: {error}"))?
+                                .with_auth(auth.0.clone(), user, auth.2.clone());
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
                         Box::new(adapter)
                     }
                     "codex" => {
-                        let mut adapter = review_runner_codex::CodexAdapter::from_package(
-                            package,
-                            options.timeout,
-                        )
-                        .map_err(|error| format!("{node}: {error}"))?
-                        .with_codex_home(format!("{home}/.codex"));
+                        let mut adapter =
+                            review_runner_codex::CodexAdapter::from_package(package, timeout)
+                                .map_err(|error| format!("{node}: {error}"))?
+                                .with_codex_home(format!("{home}/.codex"));
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }

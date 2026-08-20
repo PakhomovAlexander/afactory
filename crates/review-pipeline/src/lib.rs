@@ -30,10 +30,10 @@ use review_attempt::{
 };
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
 use review_core::{
-    EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, RunFailureReasonV2, RunNodeOutcomeV2,
-    RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity,
-    run_report_closes_round,
+    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
+    SnapshotAffinity, SubjectV1, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{ReviewerAdapter, ReviewerInputs, RunnerError};
@@ -112,50 +112,156 @@ pub enum RunVerdict {
 /// The immutable publication boundary every event emitted by one Round execution inherits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundAuthority {
-    pub round_event_id: String,
-    pub authority_snapshot_id: String,
-    pub campaign_manifest_id: String,
-    pub subject_id: String,
+    run_id: String,
+    round_event_id: String,
+    authority_snapshot_id: String,
+    campaign_manifest_id: String,
+    subject_id: String,
+    head_snapshot_id: String,
+    prior_finding_set_id: String,
 }
 
 impl RoundAuthority {
-    pub fn new(
-        round_event_id: impl Into<String>,
-        authority_snapshot_id: impl Into<String>,
-        campaign_manifest_id: impl Into<String>,
-        subject_id: impl Into<String>,
+    pub fn load(
+        store: &EventStore,
+        cas: &Cas,
+        run_id: &str,
+        round_event_id: &str,
     ) -> Result<Self, String> {
-        let authority = Self {
-            round_event_id: round_event_id.into(),
-            authority_snapshot_id: authority_snapshot_id.into(),
-            campaign_manifest_id: campaign_manifest_id.into(),
-            subject_id: subject_id.into(),
-        };
-        let digest = |value: &str| {
-            value.strip_prefix("sha256:").is_some_and(|hex| {
-                hex.len() == 64
-                    && hex
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
-        };
-        if authority.round_event_id.trim().is_empty()
-            || !digest(&authority.authority_snapshot_id)
-            || !digest(&authority.campaign_manifest_id)
-            || !digest(&authority.subject_id)
-        {
-            return Err("round authority contains an empty event ID or invalid artifact ID".into());
+        let events = store.replay(run_id).map_err(|error| error.to_string())?;
+        let opened = events
+            .iter()
+            .find(|event| event.event_type == EventType::CampaignOpenedV1)
+            .ok_or("Round authority has no CampaignOpened@1")?;
+        let opened: CampaignOpenedPayloadV1 =
+            serde_json::from_value(opened.payload.clone()).map_err(|error| error.to_string())?;
+        let round = events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == EventType::RoundStartedV1)
+            .ok_or("Round authority has no RoundStarted@1")?;
+        if round.event_id != round_event_id {
+            return Err("requested Round is not the active Round epoch".into());
         }
-        Ok(authority)
+        let payload: RoundStartedPayloadV1 =
+            serde_json::from_value(round.payload.clone()).map_err(|error| error.to_string())?;
+        if payload.campaign_manifest_id != opened.campaign_manifest_id {
+            return Err("RoundStarted@1 does not reference the opened CampaignManifest".into());
+        }
+        let subject: SubjectV1 = serde_json::from_value(
+            cas.get_json(&payload.subject_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        subject.validate()?;
+        let required = [
+            &opened.authority_snapshot_id,
+            &opened.campaign_manifest_id,
+            &payload.subject_id,
+            &subject.head_snapshot_id,
+            &payload.prior_finding_set_id,
+            &payload.prior_demand_set_id,
+        ];
+        for artifact in required {
+            cas.get(artifact).map_err(|error| error.to_string())?;
+            if !round.artifact_refs.contains(artifact) {
+                return Err(format!(
+                    "RoundStarted@1 does not publish required authority artifact `{artifact}`"
+                ));
+            }
+        }
+        Ok(Self {
+            run_id: run_id.to_string(),
+            round_event_id: round.event_id.clone(),
+            authority_snapshot_id: opened.authority_snapshot_id,
+            campaign_manifest_id: payload.campaign_manifest_id,
+            subject_id: payload.subject_id,
+            head_snapshot_id: subject.head_snapshot_id,
+            prior_finding_set_id: payload.prior_finding_set_id,
+        })
     }
 
-    fn artifact_refs(&self) -> [String; 3] {
+    fn artifact_refs(&self) -> [String; 4] {
         [
             self.authority_snapshot_id.clone(),
             self.campaign_manifest_id.clone(),
             self.subject_id.clone(),
+            self.head_snapshot_id.clone(),
         ]
     }
+}
+
+#[derive(Default)]
+struct ReplayedExecution {
+    invocations: BTreeMap<String, NodeInvocationPayloadV1>,
+    outputs: BTreeMap<String, ArtifactMap>,
+    gates: BTreeMap<String, GateDecision>,
+    attempt_counts: BTreeMap<String, u64>,
+}
+
+fn replay_execution(
+    store: &EventStore,
+    cas: &Cas,
+    run_id: &str,
+    authority: &RoundAuthority,
+) -> Result<ReplayedExecution, String> {
+    let mut replayed = ReplayedExecution::default();
+    for event in store.replay(run_id).map_err(|error| error.to_string())? {
+        if event.causation_id.as_deref() != Some(&authority.round_event_id) {
+            continue;
+        }
+        match event.event_type {
+            EventType::NodeInvocationV1 => {
+                let invocation: NodeInvocationPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                if replayed
+                    .invocations
+                    .insert(invocation.node.clone(), invocation.clone())
+                    .is_some_and(|prior| prior != invocation)
+                {
+                    return Err("one Round node has conflicting durable invocations".into());
+                }
+            }
+            EventType::NodeOutputReceiptV1 => {
+                let receipt: NodeOutputReceiptPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let mut outputs = ArtifactMap::new();
+                for port in receipt.outputs {
+                    if port.snapshot_affinity == SnapshotAffinity::SameSubject
+                        && port.subject_snapshot_id.as_deref() != Some(&authority.head_snapshot_id)
+                    {
+                        return Err(format!(
+                            "durable output `{}` has stale Subject affinity",
+                            port.port
+                        ));
+                    }
+                    for artifact in &port.artifact_ids {
+                        cas.get(artifact).map_err(|error| error.to_string())?;
+                    }
+                    outputs.insert(port.port, port.artifact_ids);
+                }
+                if replayed
+                    .outputs
+                    .insert(receipt.node.clone(), outputs.clone())
+                    .is_some_and(|prior| prior != outputs)
+                {
+                    return Err("one Round node has conflicting durable output receipts".into());
+                }
+            }
+            EventType::GateDecisionV1 => {
+                let node = event.node_id.ok_or("GateDecision@1 has no node ID")?;
+                let decision: GateDecision =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                replayed.gates.insert(node, decision);
+            }
+            EventType::AttemptDispatchedV1 => {
+                let node = event.node_id.ok_or("AttemptDispatched@1 has no node ID")?;
+                *replayed.attempt_counts.entry(node).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(replayed)
 }
 
 impl RunVerdict {
@@ -230,6 +336,8 @@ pub struct Kernel<'a> {
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
+    replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
+    replayed_outputs: BTreeMap<String, ArtifactMap>,
 }
 
 impl<'a> Kernel<'a> {
@@ -240,27 +348,37 @@ impl<'a> Kernel<'a> {
         snapshot: Manifest,
         subject: review_core::SubjectKind,
         authority: RoundAuthority,
-    ) -> Kernel<'a> {
-        Kernel {
+    ) -> Result<Kernel<'a>, String> {
+        let run_id = run_id.into();
+        if authority.run_id != run_id {
+            return Err("Round authority belongs to a different Campaign run".into());
+        }
+        let replayed = replay_execution(store, cas, &run_id, &authority)?;
+        let attempts =
+            AttemptLedger::scoped(&authority.round_event_id, replayed.attempt_counts.clone());
+        let prior_findings = Some(authority.prior_finding_set_id.clone());
+        Ok(Kernel {
             cas,
             store: Mutex::new(store),
-            run_id: run_id.into(),
+            run_id,
             snapshot,
             subject,
             authority,
             checks: Vec::new(),
             reviewers: BTreeMap::new(),
-            attempts: Mutex::new(AttemptLedger::default()),
+            attempts: Mutex::new(attempts),
             budgets: None,
             timeout_retries: 1,
-            gates: Mutex::new(BTreeMap::new()),
-            prior_findings: None,
+            gates: Mutex::new(replayed.gates),
+            prior_findings,
             reviewer_events: Mutex::new(Vec::new()),
             reviewer_event_seq: Mutex::new(0),
             prepared_attempts: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
             report_published: Mutex::new(false),
-        }
+            replayed_invocations: replayed.invocations,
+            replayed_outputs: replayed.outputs,
+        })
     }
 
     /// Construct a kernel for the declared Subject kind. The legacy constructor above is
@@ -276,7 +394,7 @@ impl<'a> Kernel<'a> {
     ) -> Result<Kernel<'a>, String> {
         match subject {
             review_core::SubjectKind::WholeTree => {
-                Ok(Kernel::new(cas, store, run_id, snapshot, subject, authority))
+                Kernel::new(cas, store, run_id, snapshot, subject, authority)
             }
             review_core::SubjectKind::Diff => Err(
                 "review-pipeline cannot execute a `diff` Subject until its pinned Base and Change Set are available"
@@ -322,12 +440,6 @@ impl<'a> Kernel<'a> {
         adapter: Box<dyn ReviewerAdapter>,
     ) -> Self {
         self.reviewers.insert(node_id.into(), adapter);
-        self
-    }
-
-    /// Deliver a prior-findings artifact (already in the CAS) to every reviewer attempt.
-    pub fn with_prior_findings(mut self, artifact: impl Into<String>) -> Self {
-        self.prior_findings = Some(artifact.into());
         self
     }
 
@@ -689,13 +801,10 @@ impl<'a> Kernel<'a> {
     /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
     /// nothing about delivery depends on ambient kernel state.
     fn run_generation(&self) -> Result<Vec<String>, String> {
-        let artifact = match &self.prior_findings {
-            Some(artifact) => artifact.clone(),
-            None => self
-                .cas
-                .put_json(&serde_json::json!({ "round": 0, "prior_findings": [] }))
-                .map_err(|e| e.to_string())?,
-        };
+        let artifact = self
+            .prior_findings
+            .clone()
+            .ok_or("campaign execution has no exact prior Finding Set from RoundStarted@1")?;
         Ok(vec![artifact])
     }
 
@@ -1067,8 +1176,9 @@ impl<'a> Kernel<'a> {
 
         {
             let mut store = self.store.lock().expect("event store");
-            let mut ingest =
-                Ingest::new(*store, self.cas, self.run_id.clone()).map_err(|e| e.to_string())?;
+            let mut ingest = Ingest::new(*store, self.cas, self.run_id.clone())
+                .map_err(|e| e.to_string())?
+                .under_round(&self.authority.round_event_id);
             for (node_id, stage) in &results {
                 ingest
                     .add_live_stage_output(node_id, stage)
@@ -1120,17 +1230,26 @@ impl Dispatch for Kernel<'_> {
     fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
         let payload = NodeInvocationPayloadV1 {
             node: node.id.clone(),
-            inputs: port_artifacts(&node.inputs, inputs, &self.snapshot.content_digest()),
+            inputs: port_artifacts(&node.inputs, inputs, &self.authority.head_snapshot_id),
         };
-        self.append(
-            NewEvent::new(
-                EventType::NodeInvocationV1,
-                serde_json::to_value(payload).map_err(|e| e.to_string())?,
-            )
-            .node(&node.id)
-            .referencing(artifact_ids(inputs)),
-        )?;
-        if node.kind == NodeKind::Reviewer {
+        if let Some(recorded) = self.replayed_invocations.get(&node.id) {
+            if recorded != &payload {
+                return Err(format!(
+                    "node `{}` no longer resolves to its durable invocation",
+                    node.id
+                ));
+            }
+        } else {
+            self.append(
+                NewEvent::new(
+                    EventType::NodeInvocationV1,
+                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                )
+                .node(&node.id)
+                .referencing(artifact_ids(inputs)),
+            )?;
+        }
+        if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             if !self.reviewers.contains_key(&node.id) {
                 return Err(format!("no reviewer bound to node {}", node.id));
             }
@@ -1147,6 +1266,9 @@ impl Dispatch for Kernel<'_> {
     }
 
     fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+        if let Some(outputs) = self.replayed_outputs.get(&node.id) {
+            return Ok(outputs.clone());
+        }
         // Routing is on the validated kind, never the id: an id is a name someone chose, and a
         // reviewer named `gather` must still be a reviewer that runs.
         let artifacts = match node.kind {
@@ -1162,9 +1284,19 @@ impl Dispatch for Kernel<'_> {
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
+        if let Some(recorded) = self.replayed_outputs.get(&node.id) {
+            return if recorded == outputs {
+                Ok(())
+            } else {
+                Err(format!(
+                    "node `{}` replayed outputs disagree with its durable receipt",
+                    node.id
+                ))
+            };
+        }
         let payload = NodeOutputReceiptPayloadV1 {
             node: node.id.clone(),
-            outputs: port_artifacts(&node.outputs, outputs, &self.snapshot.content_digest()),
+            outputs: port_artifacts(&node.outputs, outputs, &self.authority.head_snapshot_id),
         };
         let mut event = NewEvent::new(
             EventType::NodeOutputReceiptV1,

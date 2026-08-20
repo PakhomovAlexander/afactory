@@ -115,13 +115,16 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
+    let prior = prior.map(|doc| cas.put_json(&serde_json::from_str(doc).unwrap()).unwrap());
     let seen = Arc::new(Mutex::new(None));
-    let mut kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
-    if let Some(doc) = prior {
-        let artifact = cas.put_json(&serde_json::from_str(doc).unwrap()).unwrap();
-        kernel = kernel.with_prior_findings(artifact);
-    }
+    let kernel = support::whole_tree_kernel_with_prior(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        prior,
+    )
+    .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
     let plan = pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
     assert!(report.complete(), "{:?}", report.outcomes);

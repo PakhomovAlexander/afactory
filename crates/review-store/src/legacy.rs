@@ -98,6 +98,7 @@ pub struct Ingest<'a> {
     cas: &'a Cas,
     run_id: String,
     ledger: Ledger,
+    round_event_id: Option<String>,
 }
 
 impl<'a> Ingest<'a> {
@@ -113,7 +114,20 @@ impl<'a> Ingest<'a> {
             cas,
             run_id,
             ledger,
+            round_event_id: None,
         })
+    }
+
+    /// Bind reducer and generation events to the active durable Round epoch.
+    pub fn under_round(mut self, round_event_id: impl Into<String>) -> Self {
+        self.round_event_id = Some(round_event_id.into());
+        self
+    }
+
+    fn bind_round(&self, event: NewEvent) -> NewEvent {
+        self.round_event_id
+            .as_ref()
+            .map_or(event.clone(), |round| event.caused_by(round))
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -130,7 +144,10 @@ impl<'a> Ingest<'a> {
         let event = self.store.append(
             &self.run_id,
             self.cas,
-            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": round })),
+            self.bind_round(NewEvent::new(
+                EVENT_GENERATION_ADVANCED,
+                json!({ "round": round }),
+            )),
         )?;
         self.ledger.apply_event(&event, self.cas)?;
         Ok(round)
@@ -299,6 +316,10 @@ impl<'a> Ingest<'a> {
             .iter()
             .filter(|f| f.status == Status::Open)
             .count();
+        let events: Vec<NewEvent> = events
+            .into_iter()
+            .map(|event| self.bind_round(event))
+            .collect();
         self.store.append_batch(&self.run_id, self.cas, &events)?;
         self.ledger = projected;
         Ok(summary)

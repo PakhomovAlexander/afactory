@@ -225,7 +225,12 @@ impl EventStore {
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
 
-        let tx = self.conn.transaction()?;
+        // Acquire the writer lock before reading aggregate state. A deferred transaction lets
+        // two openers both observe an empty Campaign and only races at INSERT; IMMEDIATE makes
+        // the compare-and-append decision itself serial.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let first: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
@@ -234,6 +239,7 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
+        validate_campaign_transition(&tx, run_id, events, first)?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)
@@ -372,6 +378,252 @@ impl EventStore {
     pub fn is_empty(&self, run_id: &str) -> Result<bool, StoreError> {
         Ok(self.len(run_id)? == 0)
     }
+}
+
+fn validate_campaign_transition(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[NewEvent],
+    first_sequence: i64,
+) -> Result<(), StoreError> {
+    let campaign_opened: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1'",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let mut opened = campaign_opened > 0;
+    let mut active = latest_round(tx, run_id)?;
+    let mut terminal = match &active {
+        Some((event_id, _)) => round_has_terminal_report(tx, run_id, event_id)?,
+        None => false,
+    };
+    let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
+
+    for (offset, event) in events.iter().enumerate() {
+        let sequence = first_sequence
+            .checked_add(i64::try_from(offset).map_err(|_| {
+                StoreError::Conflict("event batch is too large for transition validation".into())
+            })?)
+            .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
+        let event_id = derive_event_id(run_id, sequence);
+        match event.event_type {
+            EventType::CampaignOpenedV1 => {
+                if opened {
+                    return Err(StoreError::Conflict(
+                        "CampaignOpened@1 already exists for this run".into(),
+                    ));
+                }
+                opened = true;
+            }
+            EventType::RoundInputSupersededV1 => {
+                let payload: review_core::RoundInputSupersededPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                let Some((active_id, active_payload)) = &active else {
+                    return Err(StoreError::Conflict(
+                        "cannot supersede a Campaign with no active Round".into(),
+                    ));
+                };
+                if event.causation_id.as_deref() != Some(active_id)
+                    || terminal
+                    || payload.round != active_payload.round
+                    || payload.old_epoch != active_payload.epoch
+                    || payload.old_subject_id != active_payload.subject_id
+                {
+                    return Err(StoreError::Conflict(
+                        "RoundInputSuperseded@1 does not match the active Round epoch".into(),
+                    ));
+                }
+                let published: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM events
+                     WHERE run_id = ?1 AND sequence > (
+                         SELECT sequence FROM events WHERE event_id = ?2
+                     ) AND type IN ('FindingReported@1', 'FindingResolved@1')",
+                    params![run_id, active_id],
+                    |row| row.get(0),
+                )?;
+                if published > 0 {
+                    return Err(StoreError::Conflict(
+                        "cannot supersede a Round after it published finding state".into(),
+                    ));
+                }
+                pending_supersession = Some(payload);
+            }
+            EventType::RoundStartedV1 => {
+                let payload: review_core::RoundStartedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                if !opened {
+                    return Err(StoreError::Conflict(
+                        "RoundStarted@1 requires a durable CampaignOpened@1".into(),
+                    ));
+                }
+                if let Some(superseded) = pending_supersession.take() {
+                    let Some((active_id, _)) = &active else {
+                        return Err(StoreError::Conflict(
+                            "replacement RoundStarted@1 has no active predecessor".into(),
+                        ));
+                    };
+                    if payload.round != superseded.round
+                        || payload.epoch != superseded.new_epoch
+                        || payload.subject_id != superseded.replacement_subject_id
+                        || payload.campaign_manifest_id != superseded.campaign_manifest_id
+                        || event.causation_id.as_deref() != Some(active_id)
+                    {
+                        return Err(StoreError::Conflict(
+                            "replacement RoundStarted@1 disagrees with its supersession".into(),
+                        ));
+                    }
+                } else if let Some((_, prior)) = &active {
+                    if !terminal
+                        || prior.round.checked_add(1) != Some(payload.round)
+                        || payload.epoch != 1
+                    {
+                        return Err(StoreError::Conflict(
+                            "RoundStarted@1 is neither the next closed Round nor an atomic supersession"
+                                .into(),
+                        ));
+                    }
+                } else if payload.round != 1 || payload.epoch != 1 {
+                    return Err(StoreError::Conflict(
+                        "the first RoundStarted@1 must be round 1 epoch 1".into(),
+                    ));
+                }
+                active = Some((event_id, payload));
+                terminal = false;
+            }
+            event_type if round_runtime_event(event_type) => {
+                if let Some((active_id, _)) = &active {
+                    if terminal {
+                        return Err(StoreError::Conflict(format!(
+                            "{event_type} cannot publish after the active Round concluded"
+                        )));
+                    }
+                    if event.causation_id.as_deref() != Some(active_id) {
+                        return Err(StoreError::Conflict(format!(
+                            "{event_type} is not bound to the active Round epoch"
+                        )));
+                    }
+                    if event.attempt_id.as_deref().is_some_and(|attempt| {
+                        attempt.len() != 26
+                            || !attempt
+                                .bytes()
+                                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    }) {
+                        return Err(StoreError::Conflict(format!(
+                            "{event_type} carries a non-schema attempt ID"
+                        )));
+                    }
+                    if matches!(event_type, EventType::RunReportV1 | EventType::RunReportV2)
+                        && report_closes(event_type, &event.payload)?
+                    {
+                        if terminal {
+                            return Err(StoreError::Conflict(
+                                "the active Round epoch already has a terminal conclusion".into(),
+                            ));
+                        }
+                        terminal = true;
+                    }
+                }
+            }
+            EventType::FindingResolvedV1 => {
+                if let (Some(causation), Some((active_id, _))) =
+                    (event.causation_id.as_deref(), &active)
+                    && causation != active_id
+                {
+                    return Err(StoreError::Conflict(
+                        "FindingResolved@1 is bound to a stale Round epoch".into(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if pending_supersession.is_some() {
+        return Err(StoreError::Conflict(
+            "RoundInputSuperseded@1 and its replacement RoundStarted@1 must append atomically"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn round_runtime_event(event_type: EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::AttemptAdmittedV1
+            | EventType::AttemptDispatchedV1
+            | EventType::AttemptFailedV1
+            | EventType::AttemptFencedV1
+            | EventType::AttemptReleasedV1
+            | EventType::CheckCompletedV1
+            | EventType::FindingReportedV1
+            | EventType::GateDecisionV1
+            | EventType::GenerationAdvancedV1
+            | EventType::NodeInvocationV1
+            | EventType::NodeOutputReceiptV1
+            | EventType::RunReportV1
+            | EventType::RunReportV2
+    )
+}
+
+fn latest_round(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+) -> Result<Option<(String, review_core::RoundStartedPayloadV1)>, StoreError> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT event_id, payload FROM events
+             WHERE run_id = ?1 AND type = 'RoundStarted@1'
+             ORDER BY sequence DESC LIMIT 1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    row.map(|(event_id, payload)| Ok((event_id, serde_json::from_str(&payload)?)))
+        .transpose()
+}
+
+fn round_has_terminal_report(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+) -> Result<bool, StoreError> {
+    let mut statement = tx.prepare(
+        "SELECT type, payload FROM events
+         WHERE run_id = ?1 AND causation_id = ?2 AND type IN ('RunReport@1', 'RunReport@2')
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![run_id, round_event_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (event_type, payload) = row?;
+        let event_type = event_type
+            .parse::<EventType>()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if report_closes(event_type, &serde_json::from_str(&payload)?)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn report_closes(event_type: EventType, payload: &Value) -> Result<bool, StoreError> {
+    let event = RunEvent {
+        event_id: String::new(),
+        run_id: String::new(),
+        sequence: 0,
+        event_type,
+        occurred_at: "1970-01-01T00:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: None,
+        artifact_refs: Vec::new(),
+        payload: payload.clone(),
+    };
+    review_core::run_report_closes_round(&event)
+        .map_err(StoreError::Json)
+        .map(Option::unwrap_or_default)
 }
 
 /// Event IDs are derived, not random: a replay of the same run must reproduce them, and a

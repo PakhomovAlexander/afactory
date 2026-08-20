@@ -4,7 +4,7 @@
   "title": "CampaignManifest@1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["authority_snapshot_id", "subject_kind", "pipeline", "reviewer_lock", "execution_policy_ids", "project_policy_ids", "convergence", "finding_identity_policy", "finding_genesis_id", "demand_genesis_id"],
+  "required": ["authority_snapshot_id", "subject_kind", "pipeline", "reviewer_lock", "execution_policy_ids", "project_policy_ids", "convergence", "reviewer_timeout_seconds", "finding_identity_policy", "finding_genesis_id", "demand_genesis_id"],
   "properties": {
     "authority_snapshot_id": { "$ref": "#/$defs/digest" },
     "subject_kind": { "enum": ["diff", "whole-tree"] },
@@ -38,6 +38,7 @@
         "gate": { "type": "string", "minLength": 1 }
       }
     },
+    "reviewer_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "budgets": {
       "type": "object",
       "additionalProperties": false,
