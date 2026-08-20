@@ -417,9 +417,12 @@ impl<'a> Capture<'a> {
             // The sink's failure (a CAS refusal) is the precise cause; the abandoned pipe makes
             // git's own exit uninformative noise after it.
             Err(StreamError::Sink(error)) => Err(error),
-            // A protocol diagnosis (a `missing` object, a malformed header) is authoritative —
-            // the non-zero exit is our own kill of a git that answered on protocol, not a crash.
-            // Only if git *also* wrote to stderr did it genuinely fail, and then its story wins.
+            // A valid `missing` answer is authoritative even when git also emitted an unrelated
+            // environment warning on stderr. The non-zero exit is our kill after that answer.
+            Err(StreamError::Protocol(error @ CaptureError::ObjectUnproducible { .. })) => {
+                Err(error)
+            }
+            // For malformed/truncated protocol, stderr can carry the more precise git failure.
             Err(StreamError::Protocol(error)) => {
                 if stderr.is_empty() {
                     Err(error)

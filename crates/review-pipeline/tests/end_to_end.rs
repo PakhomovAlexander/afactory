@@ -127,23 +127,16 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let before_state = review_source_git::worktree_state(&repo).unwrap();
 
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![passing_check()])
-    .with_reviewer(
-        "architecture",
-        reviewer("architecture", "Unbounded loop never yields", "major"),
-    )
-    .with_reviewer(
-        "performance",
-        reviewer("performance", "Unbounded loop never yields", "blocker"),
-    );
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![passing_check()])
+        .with_reviewer(
+            "architecture",
+            reviewer("architecture", "Unbounded loop never yields", "major"),
+        )
+        .with_reviewer(
+            "performance",
+            reviewer("performance", "Unbounded loop never yields", "blocker"),
+        );
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -198,23 +191,16 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![failing_check()])
-    .with_reviewer(
-        "architecture",
-        reviewer("architecture", "should never be reported", "major"),
-    )
-    .with_reviewer(
-        "performance",
-        reviewer("performance", "should never be reported", "major"),
-    );
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![failing_check()])
+        .with_reviewer(
+            "architecture",
+            reviewer("architecture", "should never be reported", "major"),
+        )
+        .with_reviewer(
+            "performance",
+            reviewer("performance", "should never be reported", "major"),
+        );
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -263,17 +249,10 @@ fn two_runs_of_the_same_review_agree() {
         let cas = Cas::open(workspace.path().join("cas")).unwrap();
         let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
         let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-        let kernel = Kernel::for_subject(
-            &cas,
-            &mut store,
-            "run",
-            snapshot.manifest.clone(),
-            review_core::SubjectKind::WholeTree,
-        )
-        .unwrap()
-        .with_checks(vec![passing_check()])
-        .with_reviewer("architecture", reviewer("architecture", "A", "major"))
-        .with_reviewer("performance", reviewer("performance", "B", "minor"));
+        let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+            .with_checks(vec![passing_check()])
+            .with_reviewer("architecture", reviewer("architecture", "A", "major"))
+            .with_reviewer("performance", reviewer("performance", "B", "minor"));
         let plan = heavy_pipeline().plan().unwrap();
         Scheduler::new(&plan).run(&kernel);
 
@@ -367,15 +346,10 @@ gate = "major"
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-    let mut kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        loaded.subject.kind,
-    )
-    .unwrap()
-    .with_checks(loaded.checks);
+    let mut kernel =
+        Kernel::from_loaded(&cas, &mut store, "run", snapshot.manifest.clone(), &loaded)
+            .unwrap()
+            .with_checks(loaded.checks);
     for (node, command) in loaded.reviewers {
         kernel = kernel.with_reviewer(node, command);
     }
@@ -406,19 +380,12 @@ fn a_reviewer_named_gather_still_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![passing_check()])
-    .with_reviewer(
-        "gather",
-        reviewer("gather", "Found by the awkwardly named reviewer", "major"),
-    );
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![passing_check()])
+        .with_reviewer(
+            "gather",
+            reviewer("gather", "Found by the awkwardly named reviewer", "major"),
+        );
 
     let pipeline = Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
@@ -473,17 +440,10 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![passing_check()])
-    .with_reviewer("architecture", reviewer("architecture", "Wired", "major"))
-    .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", reviewer("architecture", "Wired", "major"))
+        .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
 
     // `sidecar` runs (it is a planned node) but nothing consumes its result port.
     let pipeline = Pipeline::default()
@@ -546,18 +506,11 @@ fn the_event_log_tells_the_whole_story() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![passing_check()])
-    .with_budgets(1000, 10000)
-    .with_reviewer("architecture", reviewer("architecture", "A", "major"))
-    .with_reviewer("performance", reviewer("performance", "B", "minor"));
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![passing_check()])
+        .with_budgets(1000, 10000)
+        .with_reviewer("architecture", reviewer("architecture", "A", "major"))
+        .with_reviewer("performance", reviewer("performance", "B", "minor"));
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -670,21 +623,14 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         "/bin/sh",
         vec![Arg::literal("-c"), Arg::literal("echo boom >&2; exit 7")],
     );
-    let kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_checks(vec![passing_check()])
-    .with_budgets(1000, 10000)
-    .with_reviewer(
-        "architecture",
-        reviewer("architecture", "Found it", "major"),
-    )
-    .with_reviewer("performance", boom);
+    let kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_checks(vec![passing_check()])
+        .with_budgets(1000, 10000)
+        .with_reviewer(
+            "architecture",
+            reviewer("architecture", "Found it", "major"),
+        )
+        .with_reviewer("performance", boom);
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);

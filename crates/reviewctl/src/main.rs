@@ -681,12 +681,12 @@ fn run(options: &Options) -> Result<(), String> {
         std::env::var("USER").ok(),
         home.clone(),
     );
-    let mut kernel = Kernel::for_subject(
+    let mut kernel = Kernel::from_loaded(
         &cas,
         &mut store,
         &run_id,
         snapshot.manifest.clone(),
-        loaded.subject.kind,
+        &loaded,
     )?
     .with_checks(loaded.checks);
     if let Some(artifact) = prior_artifact {

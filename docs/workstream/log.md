@@ -6,7 +6,7 @@ Closed the append-only event vocabulary, structural run reports, typed invocatio
 and canonical report projection. Added complete operator rendering through `show`, long ledger,
 and markdown report commands.
 
-## 2026-08-20 — M2.1 capability negotiation
+## 2026-08-20 — M2.1 capability-negotiation slice
 
 Added versioned pipeline Subject configuration and digest-pinned reviewer capability declarations.
 Legacy pipeline and package formats remain whole-tree-only. Unsupported diff execution, inline

@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 review-attempt = { path = "../review-attempt" }
 review-check = { path = "../review-check" }
+review-config = { path = "../review-config" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
 review-runner = { path = "../review-runner" }
@@ -19,7 +20,6 @@ review-store = { path = "../review-store" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 
 [dev-dependencies]
-review-config = { path = "../review-config" }
 tempfile = "3.27.0"
 
 [lints]

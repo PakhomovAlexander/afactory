@@ -402,3 +402,54 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
         "a rejected finding must not be sent back:\n{stdout}"
     );
 }
+
+#[test]
+fn a_diff_pipeline_is_refused_before_candidate_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let reviewers = repo.join(".review/reviewers");
+    let package = reviewers.join("tester");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
+         [runner]\nprogram = \"codex\"\nargs = []\n",
+    )
+    .unwrap();
+    let registry = review_config::lock::Registry::new([&reviewers]);
+    let mut lockfile = review_config::lock::Lockfile::empty();
+    lockfile.reviewers.insert(
+        "tester".into(),
+        review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
+    );
+    std::fs::write(repo.join(".review/review.lock"), lockfile.to_toml()).unwrap();
+    std::fs::write(
+        repo.join(".review/pipelines/heavy.toml"),
+        r#"
+version = 2
+[subject]
+kind = "diff"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+package = "tester"
+"#,
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "diff", "--state", &state],
+    );
+
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("refuses to execute a `diff` Subject"),
+        "{stderr}"
+    );
+    assert!(
+        !stdout.contains("snapshot "),
+        "candidate capture ran:\n{stdout}"
+    );
+}

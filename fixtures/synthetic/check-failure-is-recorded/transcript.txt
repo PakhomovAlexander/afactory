@@ -1,7 +1,7 @@
 ### checks.sh --file input/checks.render.tsv --out .
 exit=1
 --- stdout
-  ✓ ok-check (0s)
+  ✓ ok-check (<secs>)
   ✗ bad-check (0s) → ./checks/bad-check_.log
       boom
 checks: 1/2 passed

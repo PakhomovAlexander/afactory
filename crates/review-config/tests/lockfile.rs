@@ -395,8 +395,12 @@ fn a_manifest_accepting_no_subject_cannot_be_pinned() {
 fn a_non_regular_package_entry_is_refused_before_reading() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let socket = dir.path().join("architecture/provider.sock");
-    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let pipe = dir.path().join("architecture/provider.pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap();
+    assert!(status.success());
     let registry = Registry::new([dir.path()]);
 
     assert!(matches!(

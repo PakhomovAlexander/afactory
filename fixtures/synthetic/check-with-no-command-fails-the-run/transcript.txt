@@ -1,7 +1,7 @@
 ### checks.sh --file input/checks.render.tsv --out .
 exit=1
 --- stdout
-  ✓ has-command (0s)
+  ✓ has-command (<secs>)
 checks: 1/1 passed
 --- stderr
 checks.sh: line for 'no-command-here' has no command (fields must be TAB-separated)

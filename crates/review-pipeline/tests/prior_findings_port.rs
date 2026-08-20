@@ -115,15 +115,8 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
     let seen = Arc::new(Mutex::new(None));
-    let mut kernel = Kernel::for_subject(
-        &cas,
-        &mut store,
-        "run",
-        snapshot.manifest.clone(),
-        review_core::SubjectKind::WholeTree,
-    )
-    .unwrap()
-    .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
+    let mut kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+        .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
     if let Some(doc) = prior {
         let artifact = cas.put_json(&serde_json::from_str(doc).unwrap()).unwrap();
         kernel = kernel.with_prior_findings(artifact);

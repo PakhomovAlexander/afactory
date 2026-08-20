@@ -207,7 +207,7 @@ impl<'a> Kernel<'a> {
     /// Construct a kernel for the declared Subject kind. The legacy constructor above is
     /// explicitly whole-tree; callers carrying a pipeline definition use this entry point so
     /// an unsupported diff cannot silently execute with whole-tree semantics.
-    pub fn for_subject(
+    fn for_subject(
         cas: &'a Cas,
         store: &'a mut EventStore,
         run_id: impl Into<String>,
@@ -221,6 +221,28 @@ impl<'a> Kernel<'a> {
                     .to_string(),
             ),
         }
+    }
+
+    /// Compose execution from the exact validated pipeline definition.
+    pub fn from_loaded(
+        cas: &'a Cas,
+        store: &'a mut EventStore,
+        run_id: impl Into<String>,
+        snapshot: Manifest,
+        loaded: &review_config::Loaded,
+    ) -> Result<Kernel<'a>, String> {
+        Kernel::for_subject(cas, store, run_id, snapshot, loaded.subject.kind)
+    }
+
+    /// Explicit low-level construction for callers that intentionally execute a whole tree
+    /// without a pipeline definition, principally deterministic component tests.
+    pub fn whole_tree(
+        cas: &'a Cas,
+        store: &'a mut EventStore,
+        run_id: impl Into<String>,
+        snapshot: Manifest,
+    ) -> Kernel<'a> {
+        Kernel::new(cas, store, run_id, snapshot)
     }
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
