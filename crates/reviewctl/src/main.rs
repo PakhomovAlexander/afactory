@@ -675,7 +675,6 @@ fn run(options: &Options) -> Result<(), String> {
         std::env::var("CLAUDE_CONFIG_DIR").ok(),
         std::env::var("USER").map_err(|e| format!("USER: {e}"))?,
         home.clone(),
-        std::env::var("ANTHROPIC_API_KEY").ok(),
     );
     let mut kernel = Kernel::new(&cas, &mut store, &run_id, snapshot.manifest.clone())
         .with_checks(loaded.checks);
@@ -708,7 +707,6 @@ fn run(options: &Options) -> Result<(), String> {
                             auth.0.clone(),
                             auth.1.clone(),
                             auth.2.clone(),
-                            auth.3.clone(),
                         );
                         if let Some(focus) = &options.focus {
                             adapter = adapter.with_focus(focus);

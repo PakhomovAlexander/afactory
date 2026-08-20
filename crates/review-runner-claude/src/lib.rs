@@ -8,11 +8,12 @@
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
-//! operator-selected profile additionally needs `CLAUDE_CONFIG_DIR`; API-key auth needs
-//! `ANTHROPIC_API_KEY`. Never synthesize a config directory: current Claude treats an explicit
-//! `$HOME/.claude` differently from its unset default and therefore selects the wrong credential
-//! profile. Granting the real `HOME` is a deliberate loosening relative to the codex adapter;
-//! every grant's value — including the optional key — is redacted from everything stored.
+//! operator-selected profile additionally needs `CLAUDE_CONFIG_DIR`. Never synthesize a config
+//! directory: current Claude treats an explicit `$HOME/.claude` differently from its unset
+//! default and therefore selects the wrong credential profile. Ambient API keys are not
+//! forwarded because they can silently override the selected subscription identity. Granting
+//! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
+//! is redacted from everything stored.
 //!
 //! **Token mapping, recorded:** cost is `usage.input_tokens + usage.output_tokens` as the CLI
 //! reports them — cache reads and writes excluded. An agentic reviewer re-reads its context
@@ -36,7 +37,7 @@ pub struct ClaudeAdapter {
     model_flags: Vec<String>,
     prompt: String,
     timeout: Duration,
-    /// (name, value) grants for keychain auth plus an optional API key.
+    /// (name, value) grants for subscription/keychain auth.
     grants: Vec<(String, String)>,
 }
 
@@ -87,7 +88,6 @@ impl ClaudeAdapter {
         config_dir: Option<String>,
         user: impl Into<String>,
         home: impl Into<String>,
-        api_key: Option<String>,
     ) -> Self {
         self.grants = vec![
             ("USER".to_string(), user.into()),
@@ -96,10 +96,6 @@ impl ClaudeAdapter {
         if let Some(config_dir) = config_dir {
             self.grants
                 .push(("CLAUDE_CONFIG_DIR".to_string(), config_dir));
-        }
-        if let Some(api_key) = api_key {
-            self.grants
-                .push(("ANTHROPIC_API_KEY".to_string(), api_key));
         }
         self
     }
