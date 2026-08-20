@@ -6,13 +6,15 @@
 //! is under test is the kernel's accounting, not process supervision — that has its own tests
 //! in `review-runner`.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use review_check::{Arg, CheckDefinition, Command};
 use review_core::LegacyStageOutput;
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
-use review_pipeline::{Kernel, RunVerdict, run_verdict};
+use review_pipeline::{RunVerdict, run_verdict};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, ConvergencePolicy, EventStore};
@@ -169,7 +171,7 @@ fn run_fixture() -> Run {
 #[test]
 fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
     let mut run = run_fixture();
-    let kernel = Kernel::whole_tree(&run.cas, &mut run.store, "run", run.snapshot.clone())
+    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
         .with_checks(passing_check())
         .with_budgets(100_000, 250_000)
         .with_adapter("r-alpha", Box::new(Costed { cost: 90_000 }))
@@ -234,7 +236,7 @@ fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
 #[test]
 fn a_timeout_is_fenced_charged_and_retried() {
     let mut run = run_fixture();
-    let kernel = Kernel::whole_tree(&run.cas, &mut run.store, "run", run.snapshot.clone())
+    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
         .with_checks(passing_check())
         .with_budgets(100_000, 2_000_000)
         .with_adapter(
@@ -290,7 +292,7 @@ fn repeated_timeouts_exhaust_rather_than_loop() {
     }
 
     let mut run = run_fixture();
-    let kernel = Kernel::whole_tree(&run.cas, &mut run.store, "run", run.snapshot.clone())
+    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
         .with_checks(passing_check())
         .with_budgets(100_000, 200_000)
         .with_adapter("r-alpha", Box::new(AlwaysHangs))
@@ -333,7 +335,7 @@ fn an_unavailable_reviewer_releases_its_reservation() {
     // gamma's only if alpha's 100k was *released*. A leaked reservation would refuse beta
     // outright (100k held + 100k asked > 170k).
     let mut run = run_fixture();
-    let kernel = Kernel::whole_tree(&run.cas, &mut run.store, "run", run.snapshot.clone())
+    let kernel = support::whole_tree_kernel(&run.cas, &mut run.store, "run", run.snapshot.clone())
         .with_checks(passing_check())
         .with_budgets(100_000, 170_000)
         .with_adapter("r-alpha", Box::new(Missing))

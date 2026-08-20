@@ -4,12 +4,13 @@
 //! `prior_findings` input, wired from it, receives them — and a reviewer that declares no such
 //! input receives nothing, whatever the kernel holds. The plan is the delivery.
 
+mod support;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use review_core::LegacyStageOutput;
 use review_graph::{Node, NodeKind, Pipeline, Port, Scheduler};
-use review_pipeline::Kernel;
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, EventStore};
@@ -115,7 +116,7 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
     let seen = Arc::new(Mutex::new(None));
-    let mut kernel = Kernel::whole_tree(&cas, &mut store, "run", snapshot.manifest.clone())
+    let mut kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
     if let Some(doc) = prior {
         let artifact = cas.put_json(&serde_json::from_str(doc).unwrap()).unwrap();

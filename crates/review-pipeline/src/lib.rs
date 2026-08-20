@@ -234,17 +234,6 @@ impl<'a> Kernel<'a> {
         Kernel::for_subject(cas, store, run_id, snapshot, loaded.subject.kind)
     }
 
-    /// Explicit low-level construction for callers that intentionally execute a whole tree
-    /// without a pipeline definition, principally deterministic component tests.
-    pub fn whole_tree(
-        cas: &'a Cas,
-        store: &'a mut EventStore,
-        run_id: impl Into<String>,
-        snapshot: Manifest,
-    ) -> Kernel<'a> {
-        Kernel::new(cas, store, run_id, snapshot)
-    }
-
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
         self.checks = checks;
         self
