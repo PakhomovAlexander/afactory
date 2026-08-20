@@ -390,6 +390,13 @@ pub fn import_ledger_jsonl(
                 row.fp, row.status
             ))
         })?;
+        let expected_fingerprint = legacy_fingerprint(&row.file, &row.title);
+        if row.fp != expected_fingerprint {
+            return Err(StoreError::Conflict(format!(
+                "legacy row fingerprint `{}` does not match `{expected_fingerprint}` for its file and title",
+                row.fp
+            )));
+        }
         max_round = max_round.max(row.last_seen_round);
 
         let payload = json!({

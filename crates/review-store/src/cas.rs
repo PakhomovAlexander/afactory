@@ -171,9 +171,12 @@ impl Cas {
         // initial `objects` entry in the CAS root.
         dirs.insert(self.root.join("objects"));
         dirs.insert(self.root.clone());
-        if let Some(parent) = self.root.parent() {
-            dirs.insert(parent.to_path_buf());
-        }
+        let root_parent = self
+            .root
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        dirs.insert(root_parent.to_path_buf());
         sync_concurrently(pending.iter().map(PathBuf::as_path), fsync)?;
         sync_concurrently(dirs.iter().map(PathBuf::as_path), fsync)?;
         self.durable

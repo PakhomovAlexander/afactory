@@ -355,6 +355,63 @@ impl<'a> Kernel<'a> {
         })
     }
 
+    fn release_prepared_attempt(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        reservation: Option<&Reservation>,
+        error: &str,
+    ) -> Result<(), String> {
+        if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
+            budgets
+                .ledger
+                .lock()
+                .expect("budget ledger")
+                .release(reservation);
+        }
+        self.attempts.lock().expect("attempt ledger").fence(node_id);
+        self.append(
+            NewEvent::new(
+                EventType::AttemptReleasedV1,
+                serde_json::json!({
+                    "error": error,
+                    "released": reservation.map(|reservation| reservation.amount),
+                }),
+            )
+            .node(node_id)
+            .attempt(attempt.to_string()),
+        )
+    }
+
+    fn fail_started_attempt(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        reservation: Option<&Reservation>,
+        error: &str,
+        charged: u64,
+    ) -> Result<(), String> {
+        if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
+            budgets
+                .ledger
+                .lock()
+                .expect("budget ledger")
+                .charge(reservation, charged);
+        }
+        self.attempts
+            .lock()
+            .expect("attempt ledger")
+            .charge(attempt, charged);
+        self.append(
+            NewEvent::new(
+                EventType::AttemptFailedV1,
+                serde_json::json!({ "error": error, "charged": charged }),
+            )
+            .node(node_id)
+            .attempt(attempt.to_string()),
+        )
+    }
+
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
     fn buffer_reviewer_event(&self, node_id: &str, event: NewEvent) {
         let mut seq = self.reviewer_event_seq.lock().expect("reviewer event seq");
@@ -545,6 +602,11 @@ impl<'a> Kernel<'a> {
             .reviewers
             .get(node_id)
             .ok_or_else(|| format!("no reviewer bound to node {node_id}"))?;
+        let mut prepared = self
+            .prepared_attempts
+            .lock()
+            .expect("prepared attempts")
+            .remove(node_id);
 
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
@@ -555,7 +617,20 @@ impl<'a> Kernel<'a> {
             .cloned();
         let mut inputs = ReviewerInputs::default();
         if let Some(artifact) = &prior_findings_artifact {
-            let value = self.cas.get_json(artifact).map_err(|e| e.to_string())?;
+            let value = match self.cas.get_json(artifact) {
+                Ok(value) => value,
+                Err(error) => {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error.to_string(),
+                        )?;
+                    }
+                    return Err(error.to_string());
+                }
+            };
             // The generation node emits an empty document in the first round; only a non-empty
             // finding set is worth rendering into the prompt.
             let has_findings = value
@@ -568,11 +643,6 @@ impl<'a> Kernel<'a> {
         }
 
         let mut timeouts: Vec<String> = Vec::new();
-        let mut prepared = self
-            .prepared_attempts
-            .lock()
-            .expect("prepared attempts")
-            .remove(node_id);
         for _ in 0..=self.timeout_retries {
             // The scheduler prepares the first attempt in plan order before spawning this
             // worker. Timeout retries are prepared here only after the predecessor is fenced.
@@ -591,10 +661,82 @@ impl<'a> Kernel<'a> {
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
             // snapshot, or a retry of themselves.
-            let sandbox = self.sandbox(Mode::EphemeralWrite)?;
+            let sandbox = match self.sandbox(Mode::EphemeralWrite) {
+                Ok(sandbox) => sandbox,
+                Err(error) => {
+                    self.release_prepared_attempt(
+                        node_id,
+                        &attempt,
+                        reservation.as_ref(),
+                        &error,
+                    )?;
+                    return Err(error);
+                }
+            };
 
-            match adapter.invoke(self.cas, sandbox.root(), &inputs) {
+            let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                adapter.invoke(self.cas, sandbox.root(), &inputs)
+            }));
+            let invoked = match invoked {
+                Ok(invoked) => invoked,
+                Err(_) => {
+                    let error = format!("reviewer adapter panicked for node {node_id}");
+                    let charged = reservation.as_ref().map_or(0, |reservation| reservation.amount);
+                    self.fail_started_attempt(
+                        node_id,
+                        &attempt,
+                        reservation.as_ref(),
+                        &error,
+                        charged,
+                    )?;
+                    return Err(error);
+                }
+            };
+
+            match invoked {
                 Ok(returned) => {
+                    let artifact = (|| -> Result<String, String> {
+                        let sealed = sandbox.seal().map_err(|error| error.to_string())?;
+                        // The mutation set can be enormous — a reviewer that built to verify a
+                        // claim leaves a whole target/ behind. The full list lives once in the
+                        // CAS; the result artifact carries only a bounded summary.
+                        let mutations_artifact = self
+                            .cas
+                            .put_json(&serde_json::json!({
+                                "added": sealed.mutations.added,
+                                "modified": sealed.mutations.modified,
+                                "deleted": sealed.mutations.deleted,
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let mutation_summary =
+                            mutation_summary(&sealed.mutations, &mutations_artifact);
+                        self.cas
+                            .put_json(&serde_json::json!({
+                                "node": node_id,
+                                "attempt": attempt.to_string(),
+                                "output": serde_json::to_value(&returned.output)
+                                    .map_err(|error| error.to_string())?,
+                                "cost_tokens": returned.cost_tokens,
+                                "raw": returned.raw_artifact,
+                                "sandbox_mutations": mutation_summary,
+                            }))
+                            .map_err(|error| error.to_string())
+                    })();
+                    let artifact = match artifact {
+                        Ok(artifact) => artifact,
+                        Err(error) => {
+                            self.fail_started_attempt(
+                                node_id,
+                                &attempt,
+                                reservation.as_ref(),
+                                &error,
+                                returned.cost_tokens,
+                            )?;
+                            return Err(error);
+                        }
+                    };
+
+                    // Selection is recorded only after the complete receipted output exists.
                     let selection = self
                         .attempts
                         .lock()
@@ -604,8 +746,6 @@ impl<'a> Kernel<'a> {
                             output: returned.raw_artifact.clone(),
                             cost: returned.cost_tokens,
                         });
-                    // The spend happened whatever the selection said; forgiving a fenced
-                    // attempt's bill would make lateness cheaper than answering.
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
@@ -613,60 +753,26 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, returned.cost_tokens);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
-                        NewEvent::new(
-                            EventType::AttemptAdmittedV1,
-                            serde_json::json!({
-                                "selection": match selection {
-                                    Selection::Selected => "selected",
-                                    Selection::Quarantined => "quarantined",
-                                },
-                                "cost_tokens": returned.cost_tokens,
-                            }),
-                        )
-                        .node(node_id)
-                        .attempt(attempt.to_string())
-                        .referencing(vec![returned.raw_artifact.clone()]),
-                    );
+                    let admitted = NewEvent::new(
+                        EventType::AttemptAdmittedV1,
+                        serde_json::json!({
+                            "selection": match selection {
+                                Selection::Selected => "selected",
+                                Selection::Quarantined => "quarantined",
+                            },
+                            "cost_tokens": returned.cost_tokens,
+                        }),
+                    )
+                    .node(node_id)
+                    .attempt(attempt.to_string())
+                    .referencing(vec![returned.raw_artifact.clone()]);
                     if selection == Selection::Quarantined {
-                        // Fenced while running: the receipt and its charge stand, the output
-                        // is invisible downstream. This is `admit`'s entire enforcement point.
+                        self.append(admitted)?;
                         return Err(format!(
                             "attempt {attempt} was fenced; its late result is quarantined"
                         ));
                     }
-
-                    let sealed = sandbox.seal().map_err(|e| e.to_string())?;
-                    // The mutation set can be enormous — a reviewer that built to verify a
-                    // claim leaves a whole target/ behind. The full list lives once in the CAS
-                    // (content-addressed, so identical sets across attempts dedupe); the result
-                    // artifact and the event carry a bounded summary that references it, never
-                    // the whole list inlined into SQLite and re-parsed on every ledger rebuild.
-                    let mutations_artifact = self
-                        .cas
-                        .put_json(&serde_json::json!({
-                            "added": sealed.mutations.added,
-                            "modified": sealed.mutations.modified,
-                            "deleted": sealed.mutations.deleted,
-                        }))
-                        .map_err(|e| e.to_string())?;
-                    let mutation_summary = mutation_summary(&sealed.mutations, &mutations_artifact);
-
-                    // The artifact is the node's typed result, whole — it is what the edges
-                    // deliver, so it must be sufficient for whatever consumes it.
-                    let artifact = self
-                        .cas
-                        .put_json(&serde_json::json!({
-                            "node": node_id,
-                            "attempt": attempt.to_string(),
-                            "output": serde_json::to_value(&returned.output)
-                                .map_err(|e| e.to_string())?,
-                            "cost_tokens": returned.cost_tokens,
-                            "raw": returned.raw_artifact,
-                            "sandbox_mutations": mutation_summary,
-                        }))
-                        .map_err(|e| e.to_string())?;
+                    self.buffer_reviewer_event(node_id, admitted);
                     return Ok(vec![artifact]);
                 }
                 Err(RunnerError::TimedOut { after_ms }) => {
@@ -688,8 +794,7 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, reservation.amount);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    self.append(
                         NewEvent::new(
                             EventType::AttemptFencedV1,
                             serde_json::json!({
@@ -699,7 +804,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     timeouts.push(format!("attempt {attempt} timed out after {after_ms}ms"));
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
@@ -712,8 +817,7 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .release(reservation);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    self.append(
                         NewEvent::new(
                             EventType::AttemptReleasedV1,
                             serde_json::json!({
@@ -723,7 +827,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     return Err(error.to_string());
                 }
                 Err(error) => {
@@ -743,8 +847,7 @@ impl<'a> Kernel<'a> {
                             .expect("attempt ledger")
                             .charge(&attempt, reservation.amount);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    self.append(
                         NewEvent::new(
                             EventType::AttemptFailedV1,
                             serde_json::json!({
@@ -754,7 +857,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     return Err(error.to_string());
                 }
             }
