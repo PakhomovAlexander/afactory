@@ -127,7 +127,8 @@ impl ReviewerAdapter for ClaudeAdapter {
         args.extend(self.model_flags.iter().map(Arg::literal));
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
-        args.push(Arg::literal(format!("{}{}", self.prompt, inputs.render())));
+        let inputs = inputs.render().map_err(RunnerError::Refused)?;
+        args.push(Arg::literal(format!("{}{}", self.prompt, inputs)));
         let command = Command::new(&self.program, args);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);

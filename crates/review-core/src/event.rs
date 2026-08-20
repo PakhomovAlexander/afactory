@@ -458,6 +458,45 @@ impl LegacyRunReportV1 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptDispatchedPayloadV1 {
+    pub reserved: Option<u64>,
+    pub prior_findings: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptAdmittedPayloadV1 {
+    pub selection: String,
+    pub cost_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_artifact: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFailedPayloadV1 {
+    pub error: String,
+    pub charged: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFencedPayloadV1 {
+    pub reason: String,
+    pub charged: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptReleasedPayloadV1 {
+    pub error: String,
+    pub released: Option<u64>,
+}
+
 /// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
 /// Legacy finding events retain their frozen projection validator in `review-store`; new typed
 /// node and report payloads are rejected before append and again during replay.
@@ -466,6 +505,59 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::AttemptDispatchedV1 => {
+            let value: AttemptDispatchedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptDispatched@1: {error}"))?;
+            if value
+                .prior_findings
+                .as_deref()
+                .is_some_and(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("AttemptDispatched@1 has an invalid prior Finding Set ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptAdmittedV1 => {
+            let value: AttemptAdmittedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptAdmitted@1: {error}"))?;
+            if !matches!(value.selection.as_str(), "selected" | "quarantined")
+                || value
+                    .result_artifact
+                    .as_deref()
+                    .is_some_and(|artifact| !crate::is_digest(artifact))
+                || value
+                    .provenance_artifact
+                    .as_deref()
+                    .is_some_and(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("AttemptAdmitted@1 has invalid selection or artifact IDs".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFailedV1 => {
+            let value: AttemptFailedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFailed@1: {error}"))?;
+            if value.error.trim().is_empty() {
+                return Err("AttemptFailed@1 has an empty error".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFencedV1 => {
+            let value: AttemptFencedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFenced@1: {error}"))?;
+            if value.reason.trim().is_empty() {
+                return Err("AttemptFenced@1 has an empty reason".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptReleasedV1 => {
+            let value: AttemptReleasedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptReleased@1: {error}"))?;
+            if value.error.trim().is_empty() {
+                return Err("AttemptReleased@1 has an empty error".into());
+            }
+            Ok(())
+        }
         EventType::CampaignOpenedV1 => {
             let opened = serde_json::from_value::<crate::CampaignOpenedPayloadV1>(payload.clone())
                 .map_err(|error| format!("CampaignOpened@1: {error}"))?;

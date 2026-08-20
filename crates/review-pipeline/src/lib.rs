@@ -29,6 +29,10 @@ use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
 };
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
+use review_core::event::{
+    AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFailedPayloadV1,
+    AttemptFencedPayloadV1, AttemptReleasedPayloadV1,
+};
 use review_core::{
     CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
@@ -36,7 +40,7 @@ use review_core::{
     SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
-use review_runner::{ReviewerAdapter, ReviewerInputs, RunnerError};
+use review_runner::{MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputs, RunnerError};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
@@ -114,6 +118,7 @@ pub enum RunVerdict {
 pub struct RoundAuthority {
     run_id: String,
     round_event_id: String,
+    round: u32,
     authority_snapshot_id: String,
     campaign_manifest_id: String,
     subject_id: String,
@@ -191,6 +196,7 @@ impl RoundAuthority {
         Ok(Self {
             run_id: run_id.to_string(),
             round_event_id: round.event_id.clone(),
+            round: payload.round,
             authority_snapshot_id: opened.authority_snapshot_id,
             campaign_manifest_id: payload.campaign_manifest_id,
             subject_id: payload.subject_id,
@@ -210,11 +216,23 @@ impl RoundAuthority {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DurableReceipt {
+    payload: NodeOutputReceiptPayloadV1,
+    attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedReviewer {
+    attempt_id: String,
+    result_artifact: String,
+}
+
 #[derive(Default)]
 struct ReplayedExecution {
     invocations: BTreeMap<String, NodeInvocationPayloadV1>,
-    outputs: BTreeMap<String, NodeOutputReceiptPayloadV1>,
-    admitted_reviewers: BTreeSet<String>,
+    outputs: BTreeMap<String, DurableReceipt>,
+    selected_reviewers: BTreeMap<String, SelectedReviewer>,
     gates: BTreeMap<String, GateDecision>,
     attempt_counts: BTreeMap<String, u64>,
     committed_tokens: u64,
@@ -229,12 +247,34 @@ fn replay_execution(
     let mut replayed = ReplayedExecution::default();
     let mut reservations = BTreeMap::new();
     let mut terminal_attempts = BTreeSet::new();
-    for event in store.replay(run_id).map_err(|error| error.to_string())? {
-        if event.causation_id.as_deref() != Some(&authority.round_event_id) {
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let mut round_lineage = BTreeSet::new();
+    for event in &events {
+        if event.event_type != EventType::RoundStartedV1 {
             continue;
         }
+        let payload: RoundStartedPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        if payload.round == authority.round
+            && payload.campaign_manifest_id == authority.campaign_manifest_id
+        {
+            round_lineage.insert(event.event_id.clone());
+        }
+    }
+    if !round_lineage.contains(&authority.round_event_id) {
+        return Err("active Round is absent from its budget lineage".into());
+    }
+
+    for event in events {
+        let Some(causation) = event.causation_id.as_deref() else {
+            continue;
+        };
+        if !round_lineage.contains(causation) {
+            continue;
+        }
+        let active_epoch = causation == authority.round_event_id;
         match event.event_type {
-            EventType::NodeInvocationV1 => {
+            EventType::NodeInvocationV1 if active_epoch => {
                 let invocation: NodeInvocationPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 if replayed
@@ -245,7 +285,7 @@ fn replay_execution(
                     return Err("one Round node has conflicting durable invocations".into());
                 }
             }
-            EventType::NodeOutputReceiptV1 => {
+            EventType::NodeOutputReceiptV1 if active_epoch => {
                 let receipt: NodeOutputReceiptPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 if event.node_id.as_deref() != Some(receipt.node.as_str())
@@ -268,33 +308,50 @@ fn replay_execution(
                 }
                 if replayed
                     .outputs
-                    .insert(receipt.node.clone(), receipt)
+                    .insert(
+                        receipt.node.clone(),
+                        DurableReceipt {
+                            payload: receipt,
+                            attempt_id: event.attempt_id,
+                        },
+                    )
                     .is_some()
                 {
                     return Err("one Round node has duplicate durable output receipts".into());
                 }
             }
-            EventType::GateDecisionV1 => {
+            EventType::GateDecisionV1 if active_epoch => {
                 let node = event.node_id.ok_or("GateDecision@1 has no node ID")?;
                 let decision: GateDecision =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 replayed.gates.insert(node, decision);
             }
             EventType::AttemptDispatchedV1 => {
+                let payload: AttemptDispatchedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 let node = event.node_id.ok_or("AttemptDispatched@1 has no node ID")?;
-                *replayed.attempt_counts.entry(node).or_default() += 1;
+                if active_epoch {
+                    *replayed.attempt_counts.entry(node).or_default() += 1;
+                }
                 let attempt = event
                     .attempt_id
                     .ok_or("AttemptDispatched@1 has no attempt ID")?;
-                reservations.insert(attempt, event.payload["reserved"].as_u64().unwrap_or(0));
+                if reservations
+                    .insert(attempt, payload.reserved.unwrap_or(0))
+                    .is_some()
+                {
+                    return Err("attempt has duplicate durable dispatch events".into());
+                }
             }
             EventType::AttemptAdmittedV1 => {
+                let payload: AttemptAdmittedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 let node = event.node_id.ok_or("AttemptAdmitted@1 has no node ID")?;
                 let attempt = event
                     .attempt_id
                     .ok_or("AttemptAdmitted@1 has no attempt ID")?;
                 if !terminal_attempts.insert(attempt.clone()) {
-                    if event.payload["selection"] == "quarantined" {
+                    if payload.selection == "quarantined" {
                         continue;
                     }
                     return Err("attempt has duplicate selected terminal lifecycle events".into());
@@ -302,13 +359,37 @@ fn replay_execution(
                 reservations.remove(&attempt);
                 replayed.committed_tokens = replayed
                     .committed_tokens
-                    .checked_add(event.payload["cost_tokens"].as_u64().unwrap_or(0))
+                    .checked_add(payload.cost_tokens)
                     .ok_or("replayed token charge overflow")?;
-                if event.payload["selection"] == "selected" {
-                    replayed.admitted_reviewers.insert(node);
+                if active_epoch && payload.selection == "selected" {
+                    let result_artifact = payload
+                        .result_artifact
+                        .ok_or("selected attempt has no result artifact")?;
+                    let provenance_artifact = payload
+                        .provenance_artifact
+                        .ok_or("selected attempt has no provenance artifact")?;
+                    cas.get(&result_artifact)
+                        .map_err(|error| error.to_string())?;
+                    cas.get(&provenance_artifact)
+                        .map_err(|error| error.to_string())?;
+                    if replayed
+                        .selected_reviewers
+                        .insert(
+                            node,
+                            SelectedReviewer {
+                                attempt_id: attempt,
+                                result_artifact,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err("reviewer has multiple selected attempts".into());
+                    }
                 }
             }
-            EventType::AttemptFailedV1 | EventType::AttemptFencedV1 => {
+            EventType::AttemptFailedV1 => {
+                let payload: AttemptFailedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 let attempt = event
                     .attempt_id
                     .ok_or("terminal attempt event has no attempt ID")?;
@@ -318,10 +399,27 @@ fn replay_execution(
                 reservations.remove(&attempt);
                 replayed.committed_tokens = replayed
                     .committed_tokens
-                    .checked_add(event.payload["charged"].as_u64().unwrap_or(0))
+                    .checked_add(payload.charged.unwrap_or(0))
+                    .ok_or("replayed token charge overflow")?;
+            }
+            EventType::AttemptFencedV1 => {
+                let payload: AttemptFencedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let attempt = event
+                    .attempt_id
+                    .ok_or("terminal attempt event has no attempt ID")?;
+                if !terminal_attempts.insert(attempt.clone()) {
+                    return Err("attempt has duplicate terminal lifecycle events".into());
+                }
+                reservations.remove(&attempt);
+                replayed.committed_tokens = replayed
+                    .committed_tokens
+                    .checked_add(payload.charged.unwrap_or(0))
                     .ok_or("replayed token charge overflow")?;
             }
             EventType::AttemptReleasedV1 => {
+                let _: AttemptReleasedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 let attempt = event
                     .attempt_id
                     .ok_or("AttemptReleased@1 has no attempt ID")?;
@@ -338,6 +436,27 @@ fn replay_execution(
             .committed_tokens
             .checked_add(reserved)
             .ok_or("replayed token charge overflow")?;
+    }
+    for (node, receipt) in &replayed.outputs {
+        let Some(attempt) = &receipt.attempt_id else {
+            continue;
+        };
+        let selected = replayed
+            .selected_reviewers
+            .get(node)
+            .ok_or("reviewer receipt has no selected admitted attempt")?;
+        let output_artifacts: Vec<&String> = receipt
+            .payload
+            .outputs
+            .iter()
+            .flat_map(|port| &port.artifact_ids)
+            .collect();
+        if attempt != &selected.attempt_id
+            || output_artifacts.len() != 1
+            || output_artifacts[0] != &selected.result_artifact
+        {
+            return Err("reviewer receipt contradicts its selected admitted result".into());
+        }
     }
     Ok(replayed)
 }
@@ -415,8 +534,8 @@ pub struct Kernel<'a> {
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
-    replayed_outputs: BTreeMap<String, NodeOutputReceiptPayloadV1>,
-    replayed_admitted_reviewers: BTreeSet<String>,
+    replayed_outputs: BTreeMap<String, DurableReceipt>,
+    reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
     replayed_spent: u64,
 }
 
@@ -461,7 +580,7 @@ impl<'a> Kernel<'a> {
             report_published: Mutex::new(false),
             replayed_invocations: replayed.invocations,
             replayed_outputs: replayed.outputs,
-            replayed_admitted_reviewers: replayed.admitted_reviewers,
+            reviewer_selections: Mutex::new(replayed.selected_reviewers),
             replayed_spent: replayed.committed_tokens,
         })
     }
@@ -969,7 +1088,37 @@ impl<'a> Kernel<'a> {
             .cloned();
         let mut inputs = ReviewerInputs::default();
         if let Some(artifact) = &prior_findings_artifact {
-            let value = match self.cas.get_json(artifact) {
+            let encoded = match self.cas.get(artifact) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error.to_string(),
+                        )?;
+                    }
+                    return Err(error.to_string());
+                }
+            };
+            if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+                let error = format!(
+                    "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
+                    encoded.len(),
+                    MAX_PRIOR_FINDINGS_BYTES
+                );
+                if let Some(prepared) = prepared.take() {
+                    self.release_prepared_attempt(
+                        node_id,
+                        &prepared.attempt,
+                        prepared.reservation.as_ref(),
+                        &error,
+                    )?;
+                }
+                return Err(error);
+            }
+            let value: serde_json::Value = match serde_json::from_slice(&encoded) {
                 Ok(value) => value,
                 Err(error) => {
                     if let Some(prepared) = prepared.take() {
@@ -1044,11 +1193,15 @@ impl<'a> Kernel<'a> {
 
             match invoked {
                 Ok(returned) => {
-                    let artifact = (|| -> Result<String, String> {
+                    let artifacts = (|| -> Result<(String, String), String> {
                         let sealed = sandbox.seal().map_err(|error| error.to_string())?;
+                        let result_artifact = self
+                            .cas
+                            .put_json(&reviewer_result_value(&returned.output)?)
+                            .map_err(|error| error.to_string())?;
                         // The mutation set can be enormous — a reviewer that built to verify a
                         // claim leaves a whole target/ behind. The full list lives once in the
-                        // CAS; the result artifact carries only a bounded summary.
+                        // CAS; provenance carries only a bounded summary.
                         let mutations_artifact = self
                             .cas
                             .put_json(&serde_json::json!({
@@ -1059,20 +1212,21 @@ impl<'a> Kernel<'a> {
                             .map_err(|error| error.to_string())?;
                         let mutation_summary =
                             mutation_summary(&sealed.mutations, &mutations_artifact);
-                        self.cas
+                        let provenance_artifact = self
+                            .cas
                             .put_json(&serde_json::json!({
                                 "node": node_id,
                                 "attempt": attempt.to_string(),
-                                "output": serde_json::to_value(&returned.output)
-                                    .map_err(|error| error.to_string())?,
+                                "result_artifact": result_artifact,
                                 "cost_tokens": returned.cost_tokens,
                                 "raw": returned.raw_artifact,
                                 "sandbox_mutations": mutation_summary,
                             }))
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| error.to_string())?;
+                        Ok((result_artifact, provenance_artifact))
                     })();
-                    let artifact = match artifact {
-                        Ok(artifact) => artifact,
+                    let (result_artifact, provenance_artifact) = match artifacts {
+                        Ok(artifacts) => artifacts,
                         Err(error) => {
                             self.fail_started_attempt(
                                 node_id,
@@ -1104,25 +1258,48 @@ impl<'a> Kernel<'a> {
                     }
                     let admitted = NewEvent::new(
                         EventType::AttemptAdmittedV1,
-                        serde_json::json!({
-                            "selection": match selection {
+                        serde_json::to_value(AttemptAdmittedPayloadV1 {
+                            selection: match selection {
                                 Selection::Selected => "selected",
                                 Selection::Quarantined => "quarantined",
-                            },
-                            "cost_tokens": returned.cost_tokens,
-                        }),
+                            }
+                            .to_string(),
+                            cost_tokens: returned.cost_tokens,
+                            result_artifact: Some(result_artifact.clone()),
+                            provenance_artifact: Some(provenance_artifact.clone()),
+                        })
+                        .map_err(|error| error.to_string())?,
                     )
                     .node(node_id)
                     .attempt(attempt.to_string())
-                    .referencing(vec![returned.raw_artifact.clone()]);
+                    .referencing(vec![
+                        result_artifact.clone(),
+                        provenance_artifact,
+                        returned.raw_artifact.clone(),
+                    ]);
                     if selection == Selection::Quarantined {
                         self.append(admitted)?;
                         return Err(format!(
                             "attempt {attempt} was fenced; its late result is quarantined"
                         ));
                     }
+                    if self
+                        .reviewer_selections
+                        .lock()
+                        .expect("reviewer selections")
+                        .insert(
+                            node_id.to_string(),
+                            SelectedReviewer {
+                                attempt_id: attempt.to_string(),
+                                result_artifact: result_artifact.clone(),
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(format!("reviewer {node_id} selected more than one attempt"));
+                    }
                     self.buffer_reviewer_event(node_id, admitted);
-                    return Ok(vec![artifact]);
+                    return Ok(vec![result_artifact]);
                 }
                 Err(RunnerError::TimedOut { after_ms }) => {
                     // Fence, charge, retry. The killed process's true spend is unreportable,
@@ -1221,7 +1398,7 @@ impl<'a> Kernel<'a> {
     /// This is also the run's canonical barrier: every reviewer has finished, so the buffered
     /// reviewer events are flushed here in node order, giving the log a shape that is a
     /// function of the pipeline rather than of thread timing.
-    fn run_gather(&self, inputs: &[String]) -> Result<Vec<String>, String> {
+    fn run_gather(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         self.flush_reviewer_events()?;
         let artifact = self
             .cas
@@ -1230,69 +1407,124 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_ledger(&self, inputs: &[String]) -> Result<Vec<String>, String> {
+    fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
         let mut results: Vec<(String, LegacyStageOutput)> = Vec::new();
-        let mut load = |id: &str| -> Result<(), String> {
-            let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
-            let node = value
-                .get("node")
-                .and_then(|n| n.as_str())
-                .ok_or_else(|| format!("artifact {id} is not a reviewer result"))?
-                .to_string();
-            let output: LegacyStageOutput =
-                serde_json::from_value(value.get("output").cloned().unwrap_or_default())
-                    .map_err(|e| format!("artifact {id}: {e}"))?;
-            results.push((node, output));
+        let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
+            let output =
+                reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
+            results.push((node.to_string(), output));
             Ok(())
         };
-        for input in inputs {
-            match self.cas.get_json(input).map_err(|e| e.to_string())? {
-                serde_json::Value::Array(ids) => {
-                    for id in &ids {
-                        let id = id
-                            .as_str()
-                            .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
-                        load(id)?;
+        for (input_port, artifacts) in inputs {
+            for input in artifacts {
+                let value = self.cas.get_json(input).map_err(|e| e.to_string())?;
+                if value.get("verdict").is_some() && value.get("reports").is_some() {
+                    load(input_port, input, value)?;
+                    continue;
+                }
+                match value {
+                    serde_json::Value::Object(manifest) => {
+                        for (node, ids) in manifest {
+                            let ids = ids.as_array().ok_or_else(|| {
+                                format!("gather manifest {input} has a non-array port")
+                            })?;
+                            for id in ids {
+                                let id = id.as_str().ok_or_else(|| {
+                                    format!("gather manifest {input} holds a non-id")
+                                })?;
+                                let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
+                                load(&node, id, value)?;
+                            }
+                        }
+                    }
+                    // Compatibility for gather manifests emitted before source-labelled maps.
+                    serde_json::Value::Array(ids) => {
+                        for id in &ids {
+                            let id = id
+                                .as_str()
+                                .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
+                            let selected: Vec<String> = self
+                                .reviewer_selections
+                                .lock()
+                                .expect("reviewer selections")
+                                .iter()
+                                .filter(|(_, selection)| selection.result_artifact == id)
+                                .map(|(node, _)| node.clone())
+                                .collect();
+                            if selected.len() != 1 {
+                                return Err(format!(
+                                    "legacy gather manifest {input} cannot uniquely identify artifact {id}"
+                                ));
+                            }
+                            let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
+                            load(&selected[0], id, value)?;
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "artifact {input} is neither ReviewerResult@1 nor a gather manifest"
+                        ));
                     }
                 }
-                _ => load(input)?,
             }
         }
         // Canonical gather order: node id — not completion order, not artifact digest order.
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
-        {
+        let (round, finding_count) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest = Ingest::new(*store, self.cas, self.run_id.clone())
                 .map_err(|e| e.to_string())?
                 .under_round(&self.authority.round_event_id);
-            for (node_id, stage) in &results {
-                ingest
-                    .add_live_stage_output(node_id, stage)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+            let stages: Vec<(&str, &LegacyStageOutput)> = results
+                .iter()
+                .map(|(node, stage)| (node.as_str(), stage))
+                .collect();
+            ingest
+                .add_live_stage_outputs(&stages)
+                .map_err(|e| e.to_string())?;
+            (ingest.ledger().round, ingest.ledger().len())
+        };
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.
-        let ledger = Ledger::rebuild(
-            *self.store.lock().expect("event store"),
-            self.cas,
-            &self.run_id,
-        )
-        .map_err(|e| e.to_string())?;
         let artifact = self
             .cas
             .put_json(&serde_json::json!({
-                "round": ledger.round,
+                "round": round,
                 "sources": results.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-                "findings": ledger.len(),
+                "findings": finding_count,
             }))
             .map_err(|e| e.to_string())?;
         Ok(vec![artifact])
     }
+}
+
+fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value, String> {
+    let mut object = serde_json::to_value(stage)
+        .map_err(|error| error.to_string())?
+        .as_object()
+        .cloned()
+        .ok_or("reviewer result did not serialize as an object")?;
+    let reports = object
+        .remove("findings")
+        .ok_or("reviewer result has no findings field")?;
+    object.insert("reports".into(), reports);
+    Ok(serde_json::Value::Object(object))
+}
+
+fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {
+    let mut object = value
+        .as_object()
+        .cloned()
+        .ok_or("ReviewerResult@1 is not an object")?;
+    let reports = object
+        .remove("reports")
+        .ok_or("ReviewerResult@1 has no reports field")?;
+    object.insert("findings".into(), reports);
+    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
 }
 
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
@@ -1367,14 +1599,34 @@ impl Dispatch for Kernel<'_> {
 
     fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         if let Some(receipt) = self.replayed_outputs.get(&node.id) {
-            if node.kind == NodeKind::Reviewer
-                && !self.replayed_admitted_reviewers.contains(&node.id)
-            {
-                return Err(format!(
-                    "reviewer '{}': receipt has no selected admitted attempt",
-                    node.id
-                ));
+            if node.kind == NodeKind::Reviewer {
+                let selections = self
+                    .reviewer_selections
+                    .lock()
+                    .expect("reviewer selections");
+                let selected = selections.get(&node.id).ok_or_else(|| {
+                    format!(
+                        "reviewer '{}': receipt has no selected admitted attempt",
+                        node.id
+                    )
+                })?;
+                let output_artifacts: Vec<&String> = receipt
+                    .payload
+                    .outputs
+                    .iter()
+                    .flat_map(|port| &port.artifact_ids)
+                    .collect();
+                if receipt.attempt_id.as_deref() != Some(selected.attempt_id.as_str())
+                    || output_artifacts.len() != 1
+                    || output_artifacts[0] != &selected.result_artifact
+                {
+                    return Err(format!(
+                        "reviewer '{}': receipt contradicts its selected admitted result",
+                        node.id
+                    ));
+                }
             }
+            let receipt = &receipt.payload;
             let outputs: ArtifactMap = receipt
                 .outputs
                 .iter()
@@ -1397,8 +1649,8 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
-            NodeKind::Gather => self.run_gather(&artifact_ids(inputs)),
-            NodeKind::Ledger => self.run_ledger(&artifact_ids(inputs)),
+            NodeKind::Gather => self.run_gather(inputs),
+            NodeKind::Ledger => self.run_ledger(inputs),
             NodeKind::Reviewer => self.run_reviewer(&node.id, inputs),
         }?;
         bind_single_output(node, artifacts)
@@ -1410,7 +1662,7 @@ impl Dispatch for Kernel<'_> {
                 node: node.id.clone(),
                 outputs: port_artifacts(&node.outputs, outputs, &self.authority.head_snapshot_id),
             };
-            return if recorded == &expected {
+            return if recorded.payload == expected {
                 Ok(())
             } else {
                 Err(format!(
@@ -1429,12 +1681,18 @@ impl Dispatch for Kernel<'_> {
         )
         .node(&node.id)
         .referencing(artifact_ids(outputs));
-        if node.kind == NodeKind::Reviewer
-            && let Some(artifact) = artifact_ids(outputs).first()
-            && let Ok(value) = self.cas.get_json(artifact)
-            && let Some(attempt) = value.get("attempt").and_then(serde_json::Value::as_str)
-        {
-            event = event.attempt(attempt);
+        if node.kind == NodeKind::Reviewer {
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let selected = selections.get(&node.id).ok_or_else(|| {
+                format!(
+                    "reviewer '{}': output has no selected admitted attempt",
+                    node.id
+                )
+            })?;
+            event = event.attempt(&selected.attempt_id);
         }
         if node.kind == NodeKind::Reviewer {
             // The scheduler publishes outputs as soon as this returns. Commit the attempt

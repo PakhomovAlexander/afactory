@@ -402,6 +402,11 @@ fn validate_campaign_transition(
         None => false,
     };
     let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
+    let mut batch_dispatches = std::collections::BTreeMap::new();
+    let mut batch_terminals = std::collections::BTreeSet::new();
+    let mut batch_selected = std::collections::BTreeMap::new();
+    let mut batch_invocations = std::collections::BTreeSet::new();
+    let mut batch_receipts = std::collections::BTreeSet::new();
 
     for (offset, event) in events.iter().enumerate() {
         let sequence = first_sequence
@@ -441,7 +446,8 @@ fn validate_campaign_transition(
                     "SELECT COUNT(*) FROM events
                      WHERE run_id = ?1 AND sequence > (
                          SELECT sequence FROM events WHERE event_id = ?2
-                     ) AND type = 'FindingReported@1'",
+                     ) AND (type = 'FindingReported@1'
+                         OR (type = 'FindingResolved@1' AND causation_id = ?2))",
                     params![run_id, active_id],
                     |row| row.get(0),
                 )?;
@@ -515,6 +521,197 @@ fn validate_campaign_transition(
                         return Err(StoreError::Conflict(format!(
                             "{event_type} carries a non-schema attempt ID"
                         )));
+                    }
+                    match event_type {
+                        EventType::NodeInvocationV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("NodeInvocation@1 has no node ID".into())
+                            })?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'NodeInvocation@1' AND node_id = ?3",
+                                params![run_id, active_id, node],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0 || !batch_invocations.insert(node.to_string()) {
+                                return Err(StoreError::Conflict(format!(
+                                    "node '{node}' already has a durable invocation"
+                                )));
+                            }
+                        }
+                        EventType::AttemptDispatchedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptDispatched@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptDispatched@1 has no attempt ID".into())
+                            })?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3",
+                                params![run_id, active_id, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0
+                                || batch_dispatches
+                                    .insert(attempt.to_string(), node.to_string())
+                                    .is_some()
+                            {
+                                return Err(StoreError::Conflict(format!(
+                                    "attempt '{attempt}' was already dispatched"
+                                )));
+                            }
+                        }
+                        EventType::AttemptAdmittedV1
+                        | EventType::AttemptFailedV1
+                        | EventType::AttemptFencedV1
+                        | EventType::AttemptReleasedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict(format!("{event_type} has no node ID"))
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict(format!("{event_type} has no attempt ID"))
+                            })?;
+                            let dispatched: Option<String> = tx
+                                .query_row(
+                                    "SELECT node_id FROM events
+                                     WHERE run_id = ?1 AND causation_id = ?2
+                                       AND attempt_id = ?3 AND type = 'AttemptDispatched@1'
+                                     LIMIT 1",
+                                    params![run_id, active_id, attempt],
+                                    |row| row.get(0),
+                                )
+                                .optional()?;
+                            let dispatched =
+                                dispatched.or_else(|| batch_dispatches.get(attempt).cloned());
+                            if dispatched.as_deref() != Some(node) {
+                                return Err(StoreError::Conflict(format!(
+                                    "{event_type} has no matching dispatch"
+                                )));
+                            }
+                            let existing_terminal: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3
+                                   AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
+                                                'AttemptFenced@1', 'AttemptReleased@1')",
+                                params![run_id, active_id, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing_terminal > 0 || !batch_terminals.insert(attempt.to_string())
+                            {
+                                return Err(StoreError::Conflict(format!(
+                                    "attempt '{attempt}' already has a terminal event"
+                                )));
+                            }
+                            if event_type == EventType::AttemptAdmittedV1 {
+                                let admitted: review_core::event::AttemptAdmittedPayloadV1 =
+                                    serde_json::from_value(event.payload.clone())?;
+                                if admitted.selection == "selected" {
+                                    let result = admitted.result_artifact.ok_or_else(|| {
+                                        StoreError::Conflict(
+                                            "selected AttemptAdmitted@1 has no result artifact"
+                                                .into(),
+                                        )
+                                    })?;
+                                    let provenance =
+                                        admitted.provenance_artifact.ok_or_else(|| {
+                                            StoreError::Conflict(
+                                                "selected AttemptAdmitted@1 has no provenance artifact"
+                                                    .into(),
+                                            )
+                                        })?;
+                                    if !event.artifact_refs.contains(&result)
+                                        || !event.artifact_refs.contains(&provenance)
+                                    {
+                                        return Err(StoreError::Conflict(
+                                            "selected AttemptAdmitted@1 does not publish its result and provenance"
+                                                .into(),
+                                        ));
+                                    }
+                                    batch_selected
+                                        .insert(attempt.to_string(), (node.to_string(), result));
+                                }
+                            }
+                        }
+                        EventType::NodeOutputReceiptV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into())
+                            })?;
+                            let invocation: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'NodeInvocation@1' AND node_id = ?3",
+                                params![run_id, active_id, node],
+                                |row| row.get(0),
+                            )?;
+                            let receipts: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'NodeOutputReceipt@1' AND node_id = ?3",
+                                params![run_id, active_id, node],
+                                |row| row.get(0),
+                            )?;
+                            if invocation == 0 && !batch_invocations.contains(node) {
+                                return Err(StoreError::Conflict(format!(
+                                    "node '{node}' receipt has no durable invocation"
+                                )));
+                            }
+                            if receipts > 0 || !batch_receipts.insert(node.to_string()) {
+                                return Err(StoreError::Conflict(format!(
+                                    "node '{node}' already has a durable output receipt"
+                                )));
+                            }
+                            if let Some(attempt) = event.attempt_id.as_deref() {
+                                let selected: Option<(String, String)> = tx
+                                    .query_row(
+                                        "SELECT node_id, payload FROM events
+                                         WHERE run_id = ?1 AND causation_id = ?2
+                                           AND attempt_id = ?3 AND type = 'AttemptAdmitted@1'
+                                         LIMIT 1",
+                                        params![run_id, active_id, attempt],
+                                        |row| {
+                                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                                        },
+                                    )
+                                    .optional()?
+                                    .and_then(|(node, raw)| {
+                                        serde_json::from_str::<
+                                            review_core::event::AttemptAdmittedPayloadV1,
+                                        >(&raw)
+                                        .ok()
+                                        .and_then(|payload| {
+                                            (payload.selection == "selected")
+                                                .then_some(payload.result_artifact)
+                                                .flatten()
+                                                .map(|result| (node, result))
+                                        })
+                                    })
+                                    .or_else(|| batch_selected.get(attempt).cloned());
+                                let Some((selected_node, result)) = selected else {
+                                    return Err(StoreError::Conflict(
+                                        "reviewer receipt has no selected admitted attempt".into(),
+                                    ));
+                                };
+                                let receipt: review_core::NodeOutputReceiptPayloadV1 =
+                                    serde_json::from_value(event.payload.clone())?;
+                                let outputs: Vec<&String> = receipt
+                                    .outputs
+                                    .iter()
+                                    .flat_map(|port| &port.artifact_ids)
+                                    .collect();
+                                if selected_node != node
+                                    || outputs.len() != 1
+                                    || outputs[0] != &result
+                                {
+                                    return Err(StoreError::Conflict(
+                                        "reviewer receipt contradicts its selected admitted result"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     if matches!(event_type, EventType::RunReportV1 | EventType::RunReportV2)
                         && report_closes(event_type, &event.payload)?

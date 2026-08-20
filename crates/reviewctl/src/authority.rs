@@ -13,6 +13,7 @@ use review_core::{
     run_report_closes_round,
 };
 use review_pipeline::RoundAuthority;
+use review_runner::MAX_PRIOR_FINDINGS_BYTES;
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
 
@@ -576,7 +577,10 @@ fn capture_round(
     {
         let events = store.replay(run_id).map_err(|error| error.to_string())?;
         if events.iter().any(|event| {
-            event.sequence > old_event.sequence && event.event_type == EventType::FindingReportedV1
+            event.sequence > old_event.sequence
+                && (event.event_type == EventType::FindingReportedV1
+                    || (event.event_type == EventType::FindingResolvedV1
+                        && event.causation_id.as_deref() == Some(old_event.event_id.as_str())))
         }) {
             return Err(
                 "cannot supersede an incomplete Round after it published finding state; start a new Campaign"
@@ -668,12 +672,21 @@ fn capture_round(
         )
     };
     let prior_count = prior_findings.as_array().map_or(0, Vec::len);
+    let prior_finding_set = serde_json::json!({
+        "subject_id": subject_id,
+        "round": round,
+        "prior_findings": prior_findings,
+    });
+    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
+        .map_err(|error| error.to_string())?
+        .len();
+    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
+        return Err(format!(
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+        ));
+    }
     let prior_finding_set_id = cas
-        .put_json(&serde_json::json!({
-            "subject_id": subject_id,
-            "round": round,
-            "prior_findings": prior_findings,
-        }))
+        .put_json(&prior_finding_set)
         .map_err(|error| error.to_string())?;
     let prior_demand_set_id = cas
         .put_json(&serde_json::json!({

@@ -253,7 +253,10 @@ fn a_timeout_is_fenced_charged_and_retried() {
     // Sequential on purpose: these tests pin the budget ledger's per-attempt accounting,
     // which is only well-defined against a fixed dispatch order.
     let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
-    assert!(report.complete(), "the retry should have completed the run");
+    assert!(
+        report.complete(),
+        "the retry should have completed the run: {report:?}"
+    );
 
     // Full reservation for the fenced attempt + actual for the retry + the other two.
     assert_eq!(kernel.spent(), Some(100_000 + 40_000 + 10_000 + 10_000));

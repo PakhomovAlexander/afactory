@@ -1,7 +1,7 @@
 use review_runner::ReviewerInputs;
 
 #[test]
-fn prior_findings_rendering_is_deterministically_bounded() {
+fn oversized_prior_findings_fail_closed_without_silent_truncation() {
     let prior = serde_json::json!({
         "subject_id": format!("sha256:{}", "a".repeat(64)),
         "round": 2,
@@ -16,11 +16,6 @@ fn prior_findings_rendering_is_deterministically_bounded() {
     }
     .render();
 
-    assert!(
-        rendered.len() < 70 * 1024,
-        "rendered {} bytes",
-        rendered.len()
-    );
-    assert!(rendered.contains("\"truncated\": true"));
-    assert!(rendered.contains("\"total_findings\": 1"));
+    let error = rendered.expect_err("an inexact prompt must never reach a reviewer");
+    assert!(error.contains("partitioning is required"), "{error}");
 }

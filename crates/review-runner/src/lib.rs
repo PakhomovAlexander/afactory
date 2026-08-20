@@ -23,8 +23,8 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    Grant, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter, ReviewerInputs,
-    ReviewerReturn, extract_result, parse_stage_output, unfence,
+    Grant, MAX_PRIOR_FINDINGS_BYTES, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter,
+    ReviewerInputs, ReviewerReturn, extract_result, parse_stage_output, unfence,
 };
 
 use std::collections::BTreeMap;
