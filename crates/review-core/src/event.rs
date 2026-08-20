@@ -298,15 +298,17 @@ impl RunReportPayloadV2 {
             })
             .collect();
         match &self.verdict {
-            RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => Err(
-                "a terminal pass/fail report cannot contain failed or suppressed nodes".into(),
-            ),
+            RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => {
+                Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
+            }
             RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
                 Err("a passing report cannot contain blocked gates".into())
             }
             RunVerdictV2::Incomplete { missing_nodes } => {
-                let missing: std::collections::BTreeSet<&str> =
-                    missing_nodes.iter().map(|missing| missing.node.as_str()).collect();
+                let missing: std::collections::BTreeSet<&str> = missing_nodes
+                    .iter()
+                    .map(|missing| missing.node.as_str())
+                    .collect();
                 if missing.len() != missing_nodes.len() {
                     return Err("an incomplete report contains duplicate missing nodes".into());
                 }
@@ -326,18 +328,27 @@ impl RunReportPayloadV2 {
 /// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
 /// Legacy finding events retain their frozen projection validator in `review-store`; new typed
 /// node and report payloads are rejected before append and again during replay.
-pub fn validate_event_payload(event_type: EventType, payload: &serde_json::Value) -> Result<(), String> {
+pub fn validate_event_payload(
+    event_type: EventType,
+    payload: &serde_json::Value,
+) -> Result<(), String> {
     match event_type {
-        EventType::NodeInvocationV1 => serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
-            .map(|_| ())
-            .map_err(|error| format!("NodeInvocation@1: {error}")),
-        EventType::NodeOutputReceiptV1 => serde_json::from_value::<NodeOutputReceiptPayloadV1>(payload.clone())
-            .map(|_| ())
-            .map_err(|error| format!("NodeOutputReceipt@1: {error}")),
+        EventType::NodeInvocationV1 => {
+            serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
+                .map(|_| ())
+                .map_err(|error| format!("NodeInvocation@1: {error}"))
+        }
+        EventType::NodeOutputReceiptV1 => {
+            serde_json::from_value::<NodeOutputReceiptPayloadV1>(payload.clone())
+                .map(|_| ())
+                .map_err(|error| format!("NodeOutputReceipt@1: {error}"))
+        }
         EventType::RunReportV2 => {
             let report = serde_json::from_value::<RunReportPayloadV2>(payload.clone())
                 .map_err(|error| format!("RunReport@2: {error}"))?;
-            report.validate().map_err(|error| format!("RunReport@2: {error}"))
+            report
+                .validate()
+                .map_err(|error| format!("RunReport@2: {error}"))
         }
         _ => Ok(()),
     }

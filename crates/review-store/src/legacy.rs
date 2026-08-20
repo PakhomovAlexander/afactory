@@ -203,7 +203,9 @@ impl<'a> Ingest<'a> {
                 }
             };
             let location = report.locations.first();
-            let file = location.map(|location| location.path.as_str()).unwrap_or("");
+            let file = location
+                .map(|location| location.path.as_str())
+                .unwrap_or("");
             let line = location.and_then(|location| location.line).map(i64::from);
             let key = legacy_fingerprint(file, &report.title);
 
@@ -240,10 +242,9 @@ impl<'a> Ingest<'a> {
                 "source": source,
                 "report_id": report_id,
             });
-            let event =
-                NewEvent::new(EVENT_FINDING_REPORTED, payload)
-                    .correlating(key.clone())
-                    .referencing(vec![report_id]);
+            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+                .correlating(key.clone())
+                .referencing(vec![report_id]);
             apply_candidate(&mut projected, &event, self.cas)?;
             events.push(event);
 
@@ -287,8 +288,7 @@ impl<'a> Ingest<'a> {
                 "note": format!("contested by {source}: {}", dispute.reason),
                 "round": round,
             });
-            let event =
-                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
             apply_candidate(&mut projected, &event, self.cas)?;
             events.push(event);
             summary.contested += 1;
@@ -299,8 +299,7 @@ impl<'a> Ingest<'a> {
             .iter()
             .filter(|f| f.status == Status::Open)
             .count();
-        self.store
-            .append_batch(&self.run_id, self.cas, &events)?;
+        self.store.append_batch(&self.run_id, self.cas, &events)?;
         self.ledger = projected;
         Ok(summary)
     }
@@ -374,7 +373,9 @@ pub fn import_ledger_jsonl(
             || row.file.trim().is_empty()
             || row.title.trim().is_empty()
             || row.body.trim().is_empty()
-            || row.line.is_some_and(|line| line <= 0 || u32::try_from(line).is_err())
+            || row
+                .line
+                .is_some_and(|line| line <= 0 || u32::try_from(line).is_err())
             || row
                 .confidence
                 .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
@@ -430,8 +431,7 @@ pub fn import_ledger_jsonl(
                 "confidence": row.confidence,
                 "imported": true,
             });
-            let event =
-                NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -444,8 +444,7 @@ pub fn import_ledger_jsonl(
                 "round": row.last_seen_round,
                 "imported": true,
             });
-            let event =
-                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone());
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -453,10 +452,7 @@ pub fn import_ledger_jsonl(
     }
 
     if max_round > 1 {
-        let event = NewEvent::new(
-            EVENT_GENERATION_ADVANCED,
-            json!({ "round": max_round }),
-        );
+        let event = NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round }));
         apply_candidate(&mut projected, &event, cas)?;
         events.push(event);
     }
@@ -467,11 +463,7 @@ pub fn import_ledger_jsonl(
 /// Apply a not-yet-persisted event through the authoritative projection. Sequence and identity
 /// are irrelevant to Ledger, so placeholders let ingest validate the exact payload and artifact
 /// set before the atomic append makes any part of the batch durable.
-fn apply_candidate(
-    ledger: &mut Ledger,
-    event: &NewEvent,
-    cas: &Cas,
-) -> Result<(), StoreError> {
+fn apply_candidate(ledger: &mut Ledger, event: &NewEvent, cas: &Cas) -> Result<(), StoreError> {
     ledger.apply_event(
         &RunEvent {
             event_id: String::new(),

@@ -118,10 +118,7 @@ impl Cas {
                 // A reopened CAS cannot know whether an existing object and its directory entry
                 // reached stable storage. Re-pend verified bytes so the next referencing event
                 // establishes that durability instead of trusting existence alone.
-                self.pending
-                    .lock()
-                    .expect("cas pending")
-                    .insert(final_path);
+                self.pending.lock().expect("cas pending").insert(final_path);
             }
             return Ok(digest);
         }
@@ -140,10 +137,7 @@ impl Cas {
         fs::rename(&temp_path, &final_path)?;
         // Durability is deferred, not skipped: the object is pending until `flush`, and no
         // event may reference it before then.
-        self.pending
-            .lock()
-            .expect("cas pending")
-            .insert(final_path);
+        self.pending.lock().expect("cas pending").insert(final_path);
         Ok(digest)
     }
 
@@ -232,18 +226,10 @@ impl Cas {
         // Hash verification is mandatory for every new reference. The cache below suppresses
         // redundant fsyncs only; it must never turn existence into an integrity assertion.
         self.get(digest)?;
-        if self
-            .durable
-            .lock()
-            .expect("cas durable")
-            .contains(&path)
-        {
+        if self.durable.lock().expect("cas durable").contains(&path) {
             return Ok(());
         }
-        self.pending
-            .lock()
-            .expect("cas pending")
-            .insert(path);
+        self.pending.lock().expect("cas pending").insert(path);
         Ok(())
     }
 

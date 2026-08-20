@@ -266,7 +266,10 @@ impl Ledger {
                     ReportProjection::from_artifact(report_id, &value)?,
                 )
             }
-            ([], true) => (String::new(), ReportProjection::from_legacy_payload(payload)?),
+            ([], true) => (
+                String::new(),
+                ReportProjection::from_legacy_payload(payload)?,
+            ),
             ([], false) => {
                 return Err(malformed(
                     "FindingReported@1",
@@ -368,13 +371,21 @@ impl Ledger {
         let key = required_string(payload, "FindingResolved@1", "key")?;
         let status_name = required_string(payload, "FindingResolved@1", "status")?;
         let status = Status::parse(&status_name).ok_or_else(|| {
-            malformed("FindingResolved@1", &format!("invalid status `{status_name}`"))
+            malformed(
+                "FindingResolved@1",
+                &format!("invalid status `{status_name}`"),
+            )
         })?;
         let round = required_round(payload, "FindingResolved@1")?;
         let note = match payload.get("note") {
             None | Some(Value::Null) => None,
             Some(Value::String(note)) => Some(note.clone()),
-            Some(_) => return Err(malformed("FindingResolved@1", "`note` must be a string or null")),
+            Some(_) => {
+                return Err(malformed(
+                    "FindingResolved@1",
+                    "`note` must be a string or null",
+                ));
+            }
         };
         let finding = self.findings.get_mut(&key).ok_or_else(|| {
             malformed("FindingResolved@1", &format!("unknown finding key `{key}`"))
@@ -461,10 +472,10 @@ impl ReportProjection {
                 .as_str()
                 .filter(|text| !text.trim().is_empty())
                 .ok_or_else(|| {
-                crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has no non-empty string `{field}`"
-                ))
-            })
+                    crate::store::StoreError::Artifact(format!(
+                        "report {report_id} has no non-empty string `{field}`"
+                    ))
+                })
         };
         let severity_name = required("severity")?;
         let severity = parse_severity(severity_name).ok_or_else(|| {
@@ -473,9 +484,7 @@ impl ReportProjection {
             ))
         })?;
         let file = value["file"].as_str().ok_or_else(|| {
-            crate::store::StoreError::Artifact(format!(
-                "report {report_id} has no string `file`"
-            ))
+            crate::store::StoreError::Artifact(format!("report {report_id} has no string `file`"))
         })?;
         let line = match value.get("line") {
             None | Some(Value::Null) => None,
@@ -487,11 +496,16 @@ impl ReportProjection {
         };
         let confidence = match value.get("confidence") {
             None | Some(Value::Null) => None,
-            Some(value) => Some(value.as_f64().filter(|value| (0.0..=1.0).contains(value)).ok_or_else(|| {
-                crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has invalid `confidence` outside [0,1]"
-                ))
-            })?),
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .filter(|value| (0.0..=1.0).contains(value))
+                    .ok_or_else(|| {
+                        crate::store::StoreError::Artifact(format!(
+                            "report {report_id} has invalid `confidence` outside [0,1]"
+                        ))
+                    })?,
+            ),
         };
         Ok(Self {
             severity,

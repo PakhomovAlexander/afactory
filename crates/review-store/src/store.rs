@@ -201,23 +201,23 @@ impl EventStore {
         }
         let mut has_artifacts = false;
         for event in events {
-            review_core::json::admit(&event.payload).map_err(|error| {
-                StoreError::Conflict(format!("invalid event payload: {error}"))
-            })?;
+            review_core::json::admit(&event.payload)
+                .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
             review_core::event::validate_event_payload(event.event_type, &event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
             for digest in &event.artifact_refs {
                 has_artifacts = true;
-                cas.prepare_for_publication(digest).map_err(|error| match error {
-                    CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
-                        StoreError::DanglingArtifact {
-                            digest: digest.clone(),
+                cas.prepare_for_publication(digest)
+                    .map_err(|error| match error {
+                        CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
+                            StoreError::DanglingArtifact {
+                                digest: digest.clone(),
+                            }
                         }
-                    }
-                    other => StoreError::Artifact(format!(
-                        "referenced artifact {digest} failed verification: {other}"
-                    )),
-                })?;
+                        other => StoreError::Artifact(format!(
+                            "referenced artifact {digest} failed verification: {other}"
+                        )),
+                    })?;
             }
         }
         if has_artifacts {
@@ -267,9 +267,7 @@ impl EventStore {
                 rusqlite::Error::SqliteFailure(err, _)
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    StoreError::Conflict(format!(
-                        "sequence {next} already taken for run {run_id}"
-                    ))
+                    StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
                 }
                 other => StoreError::Sqlite(other),
             })?;
@@ -338,9 +336,7 @@ impl EventStore {
             // exact failure the publication ordering exists to prevent, on the read side.
             let (mut event, raw_sequence, refs, payload) = row?;
             let sequence = u64::try_from(raw_sequence).map_err(|_| {
-                StoreError::Conflict(format!(
-                    "negative sequence {raw_sequence} in run {run_id}"
-                ))
+                StoreError::Conflict(format!("negative sequence {raw_sequence} in run {run_id}"))
             })?;
             if sequence != expected_sequence {
                 return Err(StoreError::Conflict(format!(

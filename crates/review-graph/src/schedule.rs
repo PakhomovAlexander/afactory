@@ -260,8 +260,7 @@ impl<'a> Scheduler<'a> {
                 let wave = in_flight.clone();
                 let mut completions = BTreeMap::new();
                 for _ in 0..wave.len() {
-                    let (node_id, result) =
-                        rx.recv().expect("a running node reports its outcome");
+                    let (node_id, result) = rx.recv().expect("a running node reports its outcome");
                     in_flight.remove(&node_id);
                     completions.insert(node_id, result);
                 }
@@ -271,41 +270,45 @@ impl<'a> Scheduler<'a> {
                         .expect("every wave member completed");
                     let node = &self.plan.nodes[node_id];
                     match result {
-                    Ok(produced) => {
-                        if let Err(error) = validate_outputs(node, &produced) {
+                        Ok(produced) => {
+                            if let Err(error) = validate_outputs(node, &produced) {
+                                unusable.insert(node_id.clone());
+                                if node.kind == NodeKind::Gate {
+                                    blocked_gates.insert(node_id.clone());
+                                }
+                                outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                                continue;
+                            }
+                            if let Err(error) = dispatch.record_outputs(node, &produced) {
+                                unusable.insert(node_id.clone());
+                                if node.kind == NodeKind::Gate {
+                                    blocked_gates.insert(node_id.clone());
+                                }
+                                outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                                continue;
+                            }
+                            for (port, artifacts) in &produced {
+                                outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
+                            }
+                            if node.kind == NodeKind::Gate
+                                && !dispatch.gate_passed(&node_id, &produced)
+                            {
+                                blocked_gates.insert(node_id.clone());
+                            }
+                            outcomes.insert(
+                                node_id.clone(),
+                                NodeOutcome::Completed { outputs: produced },
+                            );
+                        }
+                        Err(error) => {
+                            // A failed node's dependents cannot run — they would be reviewing an
+                            // input that does not exist — but the rest of the graph continues.
                             unusable.insert(node_id.clone());
                             if node.kind == NodeKind::Gate {
                                 blocked_gates.insert(node_id.clone());
                             }
                             outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
-                            continue;
                         }
-                        if let Err(error) = dispatch.record_outputs(node, &produced) {
-                            unusable.insert(node_id.clone());
-                            if node.kind == NodeKind::Gate {
-                                blocked_gates.insert(node_id.clone());
-                            }
-                            outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
-                            continue;
-                        }
-                        for (port, artifacts) in &produced {
-                            outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
-                        }
-                        if node.kind == NodeKind::Gate && !dispatch.gate_passed(&node_id, &produced)
-                        {
-                            blocked_gates.insert(node_id.clone());
-                        }
-                        outcomes.insert(node_id.clone(), NodeOutcome::Completed { outputs: produced });
-                    }
-                    Err(error) => {
-                        // A failed node's dependents cannot run — they would be reviewing an
-                        // input that does not exist — but the rest of the graph continues.
-                        unusable.insert(node_id.clone());
-                        if node.kind == NodeKind::Gate {
-                            blocked_gates.insert(node_id.clone());
-                        }
-                        outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
-                    }
                     }
                 }
             }

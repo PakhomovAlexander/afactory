@@ -704,11 +704,7 @@ fn run(options: &Options) -> Result<(), String> {
                             options.timeout,
                         )
                         .map_err(|e| format!("{node}: {e}"))?
-                        .with_auth(
-                            auth.0.clone(),
-                            user,
-                            auth.2.clone(),
-                        );
+                        .with_auth(auth.0.clone(), user, auth.2.clone());
                         if let Some(focus) = &options.focus {
                             adapter = adapter.with_focus(focus);
                         }

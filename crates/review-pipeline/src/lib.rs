@@ -664,12 +664,7 @@ impl<'a> Kernel<'a> {
             let sandbox = match self.sandbox(Mode::EphemeralWrite) {
                 Ok(sandbox) => sandbox,
                 Err(error) => {
-                    self.release_prepared_attempt(
-                        node_id,
-                        &attempt,
-                        reservation.as_ref(),
-                        &error,
-                    )?;
+                    self.release_prepared_attempt(node_id, &attempt, reservation.as_ref(), &error)?;
                     return Err(error);
                 }
             };
@@ -681,7 +676,9 @@ impl<'a> Kernel<'a> {
                 Ok(invoked) => invoked,
                 Err(_) => {
                     let error = format!("reviewer adapter panicked for node {node_id}");
-                    let charged = reservation.as_ref().map_or(0, |reservation| reservation.amount);
+                    let charged = reservation
+                        .as_ref()
+                        .map_or(0, |reservation| reservation.amount);
                     self.fail_started_attempt(
                         node_id,
                         &attempt,
