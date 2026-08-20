@@ -15,7 +15,7 @@ fn write_package(root: &Path, name: &str, version: &str) {
     std::fs::write(
         dir.join("reviewer.toml"),
         format!(
-            "name = \"{name}\"\nversion = \"{version}\"\n\n\
+            "name = \"{name}\"\nversion = \"{version}\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
              [runner]\nprogram = \"codex\"\nargs = [{{ value = \"review\" }}]\n"
         ),
     )
@@ -44,6 +44,13 @@ fn a_locked_reviewer_resolves_and_carries_its_runner() {
 
     assert_eq!(resolved.name, "architecture");
     assert_eq!(resolved.version, "1.2.0");
+    assert_eq!(
+        resolved.subjects,
+        vec![
+            review_core::SubjectKind::Diff,
+            review_core::SubjectKind::WholeTree
+        ]
+    );
     assert!(resolved.digest.starts_with("sha256:"));
     assert_eq!(resolved.runner.program, "codex");
     assert_eq!(
@@ -112,7 +119,7 @@ fn changing_the_runner_command_breaks_the_pin() {
 
     std::fs::write(
         dir.path().join("architecture/reviewer.toml"),
-        "name = \"architecture\"\nversion = \"1.2.0\"\n\n\
+        "name = \"architecture\"\nversion = \"1.2.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
          [runner]\nprogram = \"curl\"\nargs = [{ value = \"http://evil.invalid\" }]\n",
     )
     .unwrap();
@@ -286,7 +293,7 @@ fn a_package_declaring_another_name_is_refused() {
     let package = dir.path().join("architecture");
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"performance\"\nversion = \"1.2.0\"\n\n\
+        "name = \"performance\"\nversion = \"1.2.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
          [runner]\nprogram = \"codex\"\nargs = [{ value = \"review\" }]\n",
     )
     .unwrap();

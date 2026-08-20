@@ -295,11 +295,19 @@ pub enum BudgetUnit {
     Tokens,
 }
 
+/// The immutable Subject shape this pipeline is defined to review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectSpec {
+    pub kind: review_core::SubjectKind,
+}
+
 /// A whole pipeline definition, as a project writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
     pub version: u32,
+    pub subject: SubjectSpec,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
     pub nodes: Vec<NodeSpec>,
@@ -313,6 +321,7 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
+    pub subject: SubjectSpec,
     pub plan: Planned,
     pub checks: Vec<CheckDefinition>,
     pub reviewers: BTreeMap<String, Command>,
@@ -411,6 +420,13 @@ impl Definition {
                     let resolved = lockfile
                         .resolve(package, registry)
                         .map_err(ConfigError::Lock)?;
+                    if !resolved.subjects.contains(&self.subject.kind) {
+                        return Err(ConfigError::Binding(format!(
+                            "reviewer node `{}` binds package `{package}`, which does not accept \
+                             `{}` subjects",
+                            spec.id, self.subject.kind
+                        )));
+                    }
                     reviewers.insert(spec.id.clone(), resolved.runner.clone());
                     packages.insert(spec.id.clone(), resolved);
                 }
@@ -453,6 +469,7 @@ impl Definition {
             .collect();
 
         Ok(Loaded {
+            subject: self.subject,
             plan,
             checks,
             reviewers,

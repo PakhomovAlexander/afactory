@@ -19,6 +19,7 @@ pub mod json;
 pub mod legacy;
 pub mod patch;
 pub mod snapshot;
+pub mod subject;
 
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
@@ -33,6 +34,7 @@ pub use json::{NumericDomainError, admit};
 pub use legacy::{LegacyImportError, LegacyStageOutput};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
+pub use subject::SubjectKind;
 
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {

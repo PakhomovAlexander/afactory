@@ -4,10 +4,14 @@
 //! 90% of a review, so there is no partial load and no defaulting-around-a-typo.
 
 use review_config::{ConfigError, Definition};
+use review_core::SubjectKind;
 use review_graph::PlanError;
 
 const MINIMAL: &str = r#"
 version = 1
+
+[subject]
+kind = "whole-tree"
 
 [[checks]]
 name = "build"
@@ -53,6 +57,7 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     assert!(loaded.reviewers.contains_key("architecture"));
     assert_eq!(loaded.convergence.max_rounds, 3);
     assert_eq!(loaded.convergence.gate, review_core::Severity::Major);
+    assert_eq!(loaded.subject.kind, SubjectKind::WholeTree);
 }
 
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.
@@ -291,6 +296,45 @@ fn package_binding_rules_are_enforced() {
     assert!(error.to_string().contains("load_with"), "{error}");
 }
 
+#[test]
+fn a_package_that_rejects_the_pipeline_subject_is_refused() {
+    use review_config::lock::{Lockfile, Registry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n\
+         [runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
+    let registry = Registry::new([dir.path()]);
+    let mut lockfile = Lockfile::empty();
+    lockfile.reviewers.insert(
+        "architecture".to_string(),
+        Lockfile::pin("architecture", &registry).unwrap(),
+    );
+
+    let text = MINIMAL
+        .replace("kind = \"whole-tree\"", "kind = \"diff\"")
+        .replace(
+            "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
+            "package = \"architecture\"",
+        );
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map(|_| ())
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("does not accept `diff`"),
+        "{error}"
+    );
+}
+
 /// A tampered package fails the *pipeline* load, not just the lockfile call — the whole
 /// definition is refused before anything could run with the wrong reviewer bytes.
 #[test]
@@ -302,7 +346,7 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"architecture\"\nversion = \"1.0.0\"\n\n[runner]\nprogram = \"codex\"\n",
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n[runner]\nprogram = \"codex\"\n",
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();

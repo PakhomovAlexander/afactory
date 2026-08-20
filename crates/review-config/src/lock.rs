@@ -156,6 +156,7 @@ impl std::error::Error for LockError {}
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
+    pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
 }
 
@@ -366,6 +367,7 @@ impl Lockfile {
             manifest.version,
             found,
             root,
+            manifest.subjects,
             manifest.runner.build(),
             files,
         ))
