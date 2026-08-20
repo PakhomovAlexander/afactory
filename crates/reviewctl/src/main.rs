@@ -672,7 +672,7 @@ fn run(options: &Options) -> Result<(), String> {
     // Bind reviewers: a packaged reviewer gets the adapter its runner names; an inline
     // command runs as itself.
     let auth = (
-        std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| format!("{home}/.claude")),
+        std::env::var("CLAUDE_CONFIG_DIR").ok(),
         std::env::var("USER").map_err(|e| format!("USER: {e}"))?,
         home.clone(),
         std::env::var("ANTHROPIC_API_KEY").ok(),

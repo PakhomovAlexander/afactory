@@ -7,12 +7,12 @@
 //! with `is_error`, the final text in `result`, and cumulative token usage in `usage`.
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
-//! needs `CLAUDE_CONFIG_DIR` (which profile), `USER` (the keychain account), and the real
-//! `HOME` (the keychain search path); API-key auth additionally needs `ANTHROPIC_API_KEY`.
-//! Granting the real `HOME` is a deliberate loosening relative to the codex adapter, recorded
-//! here: the CLI's own permission layer still confines tool use to the sandbox it is `-C`'d
-//! into, and every grant's value — including the optional key — is redacted from everything
-//! stored.
+//! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
+//! operator-selected profile additionally needs `CLAUDE_CONFIG_DIR`; API-key auth needs
+//! `ANTHROPIC_API_KEY`. Never synthesize a config directory: current Claude treats an explicit
+//! `$HOME/.claude` differently from its unset default and therefore selects the wrong credential
+//! profile. Granting the real `HOME` is a deliberate loosening relative to the codex adapter;
+//! every grant's value — including the optional key — is redacted from everything stored.
 //!
 //! **Token mapping, recorded:** cost is `usage.input_tokens + usage.output_tokens` as the CLI
 //! reports them — cache reads and writes excluded. An agentic reviewer re-reads its context
@@ -84,16 +84,19 @@ impl ClaudeAdapter {
     /// caller — this crate never reads env itself, so what reaches the child is explicit.
     pub fn with_auth(
         mut self,
-        config_dir: impl Into<String>,
+        config_dir: Option<String>,
         user: impl Into<String>,
         home: impl Into<String>,
         api_key: Option<String>,
     ) -> Self {
         self.grants = vec![
-            ("CLAUDE_CONFIG_DIR".to_string(), config_dir.into()),
             ("USER".to_string(), user.into()),
             ("HOME".to_string(), home.into()),
         ];
+        if let Some(config_dir) = config_dir {
+            self.grants
+                .push(("CLAUDE_CONFIG_DIR".to_string(), config_dir));
+        }
         if let Some(api_key) = api_key {
             self.grants
                 .push(("ANTHROPIC_API_KEY".to_string(), api_key));
