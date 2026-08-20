@@ -246,7 +246,8 @@ pub struct Grant {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewerReturn {
     pub output: LegacyStageOutput,
-    /// Tokens spent, as reported by the provider. Zero for a deterministic `command` reviewer.
+    /// Chargeable tokens: uncached input plus output when the provider distinguishes cache
+    /// reads. Zero for a deterministic `command` reviewer.
     pub cost_tokens: u64,
     /// CAS id of the redacted raw stdout. Kept whether or not it parsed.
     pub raw_artifact: String,

@@ -83,14 +83,15 @@ fn adapter_for(
 }
 
 /// The captured success shape parses: the answer from the `-o` file, the cost from the
-/// `turn.completed` usage — input plus output tokens, exactly as reported.
+/// `turn.completed` usage — uncached input plus output, matching the kernel's provider-neutral
+/// accounting unit.
 #[test]
 fn a_real_success_stream_yields_the_answer_and_the_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (adapter, cas, sandbox) = adapter_for(dir.path(), ANSWER, SUCCESS_EVENTS, 0);
 
     let returned = adapter.invoke(&cas, &sandbox, &Default::default()).unwrap();
-    assert_eq!(returned.cost_tokens, 12746 + 49);
+    assert_eq!(returned.cost_tokens, 12746 - 4608 + 49);
     assert_eq!(returned.output.findings.len(), 1);
     assert_eq!(returned.output.findings[0].title, "Unbounded loop");
     assert!(

@@ -15,6 +15,11 @@
 //! Failure classification is an accounting decision: a failed exec that *reported usage*
 //! spent real tokens and surfaces as `Failed` (the kernel charges); one that reported none —
 //! at capacity, auth refused, never reached a model — is `Unavailable` (the kernel releases).
+//!
+//! Chargeable usage is uncached input plus output. Codex includes cache reads in
+//! `input_tokens` but also reports `cached_input_tokens`, so subtracting the latter makes the
+//! budget unit match the Claude adapter instead of charging one repeatedly cached context as
+//! if it were fresh on every agent turn.
 
 use std::path::Path;
 use std::time::Duration;
@@ -199,7 +204,9 @@ impl Events {
                     if let Some(usage) = value.get("usage") {
                         let count =
                             |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-                        events.cost_tokens += count("input_tokens") + count("output_tokens");
+                        events.cost_tokens += count("input_tokens")
+                            .saturating_sub(count("cached_input_tokens"))
+                            + count("output_tokens");
                     }
                 }
                 Some("item.completed") => {

@@ -683,7 +683,7 @@ fn run(options: &Options) -> Result<(), String> {
     }
     if let Some(budgets) = loaded.budgets {
         println!(
-            "budgets  {} per attempt, {} per run (tokens)",
+            "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
             budgets.attempt, budgets.run
         );
         kernel = kernel.with_budgets(budgets.attempt, budgets.run);
