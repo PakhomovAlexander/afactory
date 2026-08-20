@@ -26,7 +26,7 @@ pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
     PortCardinality, RunEvent, RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2,
     RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, UnknownEventType,
-    run_report_closes_round,
+    is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};

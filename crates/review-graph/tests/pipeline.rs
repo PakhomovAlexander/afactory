@@ -358,3 +358,26 @@ fn an_optional_input_may_be_unwired() {
         ));
     assert!(pipeline.plan().is_ok());
 }
+
+#[test]
+fn planning_uses_the_persisted_artifact_type_contract() {
+    let pipeline_for = |artifact_type: &str| {
+        Pipeline::default().node(
+            Node::new("producer", NodeKind::Generation)
+                .emitting_contracts(vec![PortContract::new("out", artifact_type)]),
+        )
+    };
+
+    assert!(pipeline_for("review.kernel/GateDecision@1").plan().is_ok());
+    for invalid in [
+        "review.kernel/GateDecision@01",
+        "review.kernel/GateDecision@+1",
+        "1review/GateDecision@1",
+        ".review/GateDecision@1",
+    ] {
+        assert!(matches!(
+            pipeline_for(invalid).plan(),
+            Err(PlanError::InvalidArtifactType { .. })
+        ));
+    }
+}

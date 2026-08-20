@@ -516,9 +516,15 @@ fn the_event_log_tells_the_whole_story() {
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
-    let convergence = kernel.convergence(ConvergencePolicy::default());
-    let verdict = review_pipeline::run_verdict(&report, &convergence);
-    kernel.publish_report(&report, &verdict).unwrap();
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    assert!(
+        kernel
+            .publish_report(&report, ConvergencePolicy::default())
+            .unwrap_err()
+            .contains("already published")
+    );
 
     let events = store.replay("run").unwrap();
     let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
@@ -641,9 +647,9 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         report.outcome("gather"),
         Some(NodeOutcome::Suppressed { .. })
     ));
-    let convergence = kernel.convergence(ConvergencePolicy::default());
-    let verdict = review_pipeline::run_verdict(&report, &convergence);
-    kernel.publish_report(&report, &verdict).unwrap();
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
 
     // The paid work is in the log: both reviewers dispatched, architecture produced a result,
     // performance failed — none of it lost to the suppressed gather.

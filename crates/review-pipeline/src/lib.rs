@@ -33,6 +33,7 @@ use review_core::{
     EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PortArtifactsV1, RunFailureReasonV2, RunNodeOutcomeV2,
     RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity,
+    run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{ReviewerAdapter, ReviewerInputs, RunnerError};
@@ -177,6 +178,8 @@ pub struct Kernel<'a> {
     /// The snapshot materialized once, cloned per sandbox. Built lazily on the first sandbox
     /// request — the gate's — so a run that never reaches a sandbox never pays for it.
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
+    /// One kernel generation has exactly one durable conclusion.
+    report_published: Mutex<bool>,
 }
 
 impl<'a> Kernel<'a> {
@@ -204,6 +207,7 @@ impl<'a> Kernel<'a> {
             reviewer_event_seq: Mutex::new(0),
             prepared_attempts: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
+            report_published: Mutex::new(false),
         }
     }
 
@@ -475,13 +479,44 @@ impl<'a> Kernel<'a> {
     /// Durably record what became of every node, and the verdict derived from that. Without
     /// this the log holds the attempts but not the run's conclusion — an operator resuming
     /// from the log alone could not say what the review decided.
-    pub fn publish_report(&self, report: &RunReport, verdict: &RunVerdict) -> Result<(), String> {
+    pub fn publish_report(
+        &self,
+        report: &RunReport,
+        policy: ConvergencePolicy,
+    ) -> Result<RunVerdict, String> {
+        let mut published = self.report_published.lock().expect("report published");
+        if *published {
+            return Err("this kernel generation already published its conclusion".to_string());
+        }
+        let prior_conclusion = {
+            let store = self.store.lock().expect("event store");
+            let mut conclusion = false;
+            for event in store
+                .replay(&self.run_id)
+                .map_err(|error| error.to_string())?
+            {
+                match event.event_type {
+                    EventType::GenerationAdvancedV1 => conclusion = false,
+                    EventType::RunReportV1 | EventType::RunReportV2 => {
+                        conclusion = run_report_closes_round(&event)
+                            .map_err(|error| error.to_string())?
+                            .unwrap_or(false);
+                    }
+                    _ => {}
+                }
+            }
+            conclusion
+        };
+        if prior_conclusion {
+            return Err("this campaign generation already has a durable conclusion".to_string());
+        }
         // The guaranteed flush point. `run_gather` flushes when it runs — the ordinary case,
         // and the one that keeps attempt events ahead of the findings — but a gather that was
         // suppressed (a failed reviewer upstream) or a pipeline with no gather node never
         // reaches it, and the buffered attempts, charges included, would be lost. Every run
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
+        let verdict = run_verdict(report, &self.convergence(policy));
         let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
             .iter()
@@ -510,7 +545,7 @@ impl<'a> Kernel<'a> {
                 }
             })
             .collect();
-        let verdict = match verdict {
+        let persisted_verdict = match &verdict {
             RunVerdict::Pass => RunVerdictV2::Pass,
             RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV2::Fail {
                 reason: RunFailureReasonV2::NotConverged,
@@ -534,13 +569,15 @@ impl<'a> Kernel<'a> {
         let payload = RunReportPayloadV2 {
             outcomes,
             blocked_gates: report.blocked_gates.iter().cloned().collect(),
-            verdict,
+            verdict: persisted_verdict,
             spent_tokens: self.spent(),
         };
         self.append(NewEvent::new(
             EventType::RunReportV2,
             serde_json::to_value(payload).map_err(|e| e.to_string())?,
-        ))
+        ))?;
+        *published = true;
+        Ok(verdict)
     }
 
     /// A sandbox in the requested mode, as a copy-on-write clone of the run's single

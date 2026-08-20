@@ -537,7 +537,7 @@ fn is_digest(value: &str) -> bool {
     })
 }
 
-fn is_artifact_type(value: &str) -> bool {
+pub fn is_artifact_type(value: &str) -> bool {
     let Some((namespace, versioned_name)) = value.split_once('/') else {
         return false;
     };

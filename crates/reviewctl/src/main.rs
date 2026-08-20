@@ -26,7 +26,7 @@ use review_core::{
     EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, run_report_closes_round,
 };
 use review_graph::NodeOutcome;
-use review_pipeline::{Kernel, RunVerdict, run_verdict};
+use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
@@ -783,9 +783,7 @@ fn run(options: &Options) -> Result<(), String> {
         println!("spent    {spent} tokens");
     }
 
-    let convergence = kernel.convergence(*loaded.convergence());
-    let verdict = run_verdict(&report, &convergence);
-    kernel.publish_report(&report, &verdict)?;
+    let verdict = kernel.publish_report(&report, *loaded.convergence())?;
     println!("verdict  {verdict:?}");
     match verdict {
         RunVerdict::Pass => Ok(()),

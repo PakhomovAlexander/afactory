@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use review_core::{PortCardinality, SnapshotAffinity};
+pub use review_core::{PortCardinality, SnapshotAffinity, is_artifact_type};
 
 /// A named typed port. Edges connect an upstream node's output port to a downstream input port,
 /// so what a node receives is a property of the pipeline definition rather than of whatever was
@@ -332,7 +332,7 @@ impl Pipeline {
                             port: contract.name.clone(),
                         });
                     }
-                    if !valid_artifact_type(&contract.artifact_type) {
+                    if !is_artifact_type(&contract.artifact_type) {
                         return Err(PlanError::InvalidArtifactType {
                             port: Port::new(&node.id, &contract.name),
                             artifact_type: contract.artifact_type.clone(),
@@ -439,24 +439,6 @@ impl Pipeline {
             order,
         })
     }
-}
-
-fn valid_artifact_type(value: &str) -> bool {
-    let Some((namespace, rest)) = value.split_once('/') else {
-        return false;
-    };
-    let Some((name, version)) = rest.rsplit_once('@') else {
-        return false;
-    };
-    !namespace.is_empty()
-        && namespace
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.')
-        && name.starts_with(|character: char| character.is_ascii_uppercase())
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-        && version.parse::<u32>().is_ok_and(|version| version > 0)
 }
 
 /// Kahn's algorithm with a deterministic tie-break: among ready nodes, the lowest ID first.
