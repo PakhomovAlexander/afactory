@@ -252,6 +252,41 @@ pub struct RunReportPayloadV2 {
 
 impl RunReportPayloadV2 {
     pub fn validate(&self) -> Result<(), String> {
+        if self.outcomes.is_empty() {
+            return Err("a run report must contain at least one node outcome".into());
+        }
+        let mut nodes = std::collections::BTreeSet::new();
+        for outcome in &self.outcomes {
+            if outcome.node.trim().is_empty() {
+                return Err("a run report contains an empty node id".into());
+            }
+            if !nodes.insert(outcome.node.as_str()) {
+                return Err(format!(
+                    "a run report contains duplicate outcome for node `{}`",
+                    outcome.node
+                ));
+            }
+            if let RunNodeOutcomeV2::Completed { output_artifacts } = &outcome.outcome {
+                let unique: std::collections::BTreeSet<&str> =
+                    output_artifacts.iter().map(String::as_str).collect();
+                if unique.len() != output_artifacts.len() {
+                    return Err(format!(
+                        "completed node `{}` contains duplicate output artifacts",
+                        outcome.node
+                    ));
+                }
+            }
+        }
+        let blocked: std::collections::BTreeSet<&str> =
+            self.blocked_gates.iter().map(String::as_str).collect();
+        if blocked.len() != self.blocked_gates.len() {
+            return Err("a run report contains duplicate blocked gates".into());
+        }
+        if let Some(gate) = blocked.iter().find(|gate| !nodes.contains(**gate)) {
+            return Err(format!(
+                "blocked gate `{gate}` has no corresponding node outcome"
+            ));
+        }
         let unresolved: std::collections::BTreeSet<&str> = self
             .outcomes
             .iter()

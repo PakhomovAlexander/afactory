@@ -431,6 +431,13 @@ impl Definition {
             );
         }
 
+        if self.nodes.is_empty() {
+            return Err(ConfigError::Binding(
+                "pipeline defines no nodes; an empty review cannot produce a valid round"
+                    .to_string(),
+            ));
+        }
+
         let plan = pipeline.plan().map_err(ConfigError::Plan)?;
         let checks = self
             .checks
