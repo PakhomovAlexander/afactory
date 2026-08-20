@@ -136,17 +136,21 @@ impl LegacyFinding {
             return Err(err(ImportReason::ConfidenceOutOfRange));
         }
 
+        let line = match self.line {
+            None => None,
+            Some(n) => Some(u32::try_from(n).map_err(|_| err(ImportReason::InvalidLine))?),
+        };
+        if line == Some(0) {
+            return Err(err(ImportReason::InvalidLine));
+        }
+
         let path = self.file.trim();
         let locations = if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
-            Vec::new()
-        } else {
-            let line = match self.line {
-                None => None,
-                Some(n) => Some(u32::try_from(n).map_err(|_| err(ImportReason::InvalidLine))?),
-            };
-            if line == Some(0) {
+            if line.is_some() {
                 return Err(err(ImportReason::InvalidLine));
             }
+            Vec::new()
+        } else {
             vec![Location {
                 path: path.to_string(),
                 line,

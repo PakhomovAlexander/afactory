@@ -77,7 +77,7 @@ impl From<canonical::CanonicalError> for CasError {
 pub struct Cas {
     root: PathBuf,
     /// Objects renamed into place but not yet synced. Drained by [`Cas::flush`].
-    pending: Mutex<Vec<PathBuf>>,
+    pending: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Cas {
@@ -86,7 +86,7 @@ impl Cas {
         fs::create_dir_all(root.join("objects"))?;
         Ok(Self {
             root,
-            pending: Mutex::new(Vec::new()),
+            pending: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -102,6 +102,17 @@ impl Cas {
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
         if final_path.exists() {
+            let stored = fs::read(&final_path)?;
+            if canonical::blob_content_id(&stored) != digest {
+                return Err(CasError::Corrupt { digest });
+            }
+            // A reopened CAS cannot know whether an existing object and its directory entry
+            // reached stable storage. Re-pend verified bytes so the next referencing event
+            // establishes that durability instead of trusting existence alone.
+            self.pending
+                .lock()
+                .expect("cas pending")
+                .insert(final_path);
             return Ok(digest);
         }
         let dir = final_path.parent().expect("object path has a parent");
@@ -119,7 +130,10 @@ impl Cas {
         fs::rename(&temp_path, &final_path)?;
         // Durability is deferred, not skipped: the object is pending until `flush`, and no
         // event may reference it before then.
-        self.pending.lock().expect("cas pending").push(final_path);
+        self.pending
+            .lock()
+            .expect("cas pending")
+            .insert(final_path);
         Ok(digest)
     }
 
@@ -136,14 +150,19 @@ impl Cas {
         if pending.is_empty() {
             return Ok(());
         }
-        let mut dirs: BTreeSet<&Path> = BTreeSet::new();
+        let mut dirs = BTreeSet::new();
         for path in pending.iter() {
             if let Some(dir) = path.parent() {
-                dirs.insert(dir);
+                dirs.insert(dir.to_path_buf());
             }
         }
+        // Sync every publication ancestor. Syncing only the shard directory does not make a
+        // newly created `objects/ab` entry durable in `objects`, and the same applies to the
+        // initial `objects` entry in the CAS root.
+        dirs.insert(self.root.join("objects"));
+        dirs.insert(self.root.clone());
         sync_concurrently(pending.iter().map(PathBuf::as_path), fsync)?;
-        sync_concurrently(dirs.into_iter(), fsync)?;
+        sync_concurrently(dirs.iter().map(PathBuf::as_path), fsync)?;
         pending.clear();
         Ok(())
     }
@@ -185,8 +204,20 @@ impl Cas {
         })
     }
 
+    /// Verify an object and schedule its bytes and directory entries for the next publication
+    /// barrier. A reopened process cannot infer durability from existence, so every new event
+    /// reference must pass through this method before commit.
+    pub fn prepare_for_publication(&self, digest: &str) -> Result<(), CasError> {
+        self.get(digest)?;
+        self.pending
+            .lock()
+            .expect("cas pending")
+            .insert(self.path_for(digest));
+        Ok(())
+    }
+
     pub fn contains(&self, digest: &str) -> bool {
-        valid_digest(digest) && self.path_for(digest).exists()
+        self.get(digest).is_ok()
     }
 }
 

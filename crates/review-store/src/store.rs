@@ -67,6 +67,7 @@ impl From<serde_json::Error> for StoreError {
 
 /// What an appender supplies. `event_id` and `sequence` are the store's to assign — a caller
 /// that could choose its own sequence could rewrite history by racing.
+#[derive(Debug, Clone)]
 pub struct NewEvent {
     pub event_type: EventType,
     pub occurred_at: String,
@@ -178,22 +179,47 @@ impl EventStore {
         cas: &Cas,
         event: NewEvent,
     ) -> Result<RunEvent, StoreError> {
-        review_core::json::admit(&event.payload)
-            .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
-        for digest in &event.artifact_refs {
-            if !cas.contains(digest) {
-                return Err(StoreError::DanglingArtifact {
-                    digest: digest.clone(),
-                });
+        self.append_batch(run_id, cas, std::slice::from_ref(&event))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
+    }
+
+    /// Atomically append an ordered event batch.
+    ///
+    /// Every payload and artifact reference is validated before the publication barrier. The
+    /// CAS is flushed once, then every row lands in one FULL-synchronous SQLite transaction, so
+    /// replay observes the complete logical effect or none of it.
+    pub fn append_batch(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut has_artifacts = false;
+        for event in events {
+            review_core::json::admit(&event.payload).map_err(|error| {
+                StoreError::Conflict(format!("invalid event payload: {error}"))
+            })?;
+            for digest in &event.artifact_refs {
+                has_artifacts = true;
+                cas.prepare_for_publication(digest).map_err(|error| {
+                    StoreError::Artifact(format!(
+                        "referenced artifact {digest} failed verification: {error}"
+                    ))
+                })?;
             }
         }
-        if !event.artifact_refs.is_empty() {
+        if has_artifacts {
             cas.flush()
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
 
         let tx = self.conn.transaction()?;
-        let next: i64 = tx
+        let first: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
                 params![run_id],
@@ -201,52 +227,61 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-
-        let event_id = derive_event_id(run_id, next);
-        let refs = serde_json::to_string(&event.artifact_refs)?;
-        let payload = serde_json::to_string(&event.payload)?;
-        tx.execute(
-            "INSERT INTO events
-               (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                causation_id, correlation_id, artifact_refs, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                run_id,
-                next,
+        let mut appended = Vec::with_capacity(events.len());
+        for (offset, event) in events.iter().enumerate() {
+            let offset = i64::try_from(offset)
+                .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
+            let next = first
+                .checked_add(offset)
+                .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
+            let event_id = derive_event_id(run_id, next);
+            let refs = serde_json::to_string(&event.artifact_refs)?;
+            let payload = serde_json::to_string(&event.payload)?;
+            tx.execute(
+                "INSERT INTO events
+                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    run_id,
+                    next,
+                    event_id,
+                    event.event_type.as_str(),
+                    event.occurred_at,
+                    event.node_id,
+                    event.attempt_id,
+                    event.causation_id,
+                    event.correlation_id,
+                    refs,
+                    payload,
+                ],
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::SqliteFailure(err, _)
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    StoreError::Conflict(format!(
+                        "sequence {next} already taken for run {run_id}"
+                    ))
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+            appended.push(RunEvent {
                 event_id,
-                event.event_type.as_str(),
-                event.occurred_at,
-                event.node_id,
-                event.attempt_id,
-                event.causation_id,
-                event.correlation_id,
-                refs,
-                payload,
-            ],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
-            }
-            other => StoreError::Sqlite(other),
-        })?;
+                run_id: run_id.to_string(),
+                sequence: next as u64,
+                event_type: event.event_type,
+                occurred_at: event.occurred_at.clone(),
+                node_id: event.node_id.clone(),
+                attempt_id: event.attempt_id.clone(),
+                causation_id: event.causation_id.clone(),
+                correlation_id: event.correlation_id.clone(),
+                artifact_refs: event.artifact_refs.clone(),
+                payload: event.payload.clone(),
+            });
+        }
         tx.commit()?;
-
-        Ok(RunEvent {
-            event_id,
-            run_id: run_id.to_string(),
-            sequence: next as u64,
-            event_type: event.event_type,
-            occurred_at: event.occurred_at,
-            node_id: event.node_id,
-            attempt_id: event.attempt_id,
-            causation_id: event.causation_id,
-            correlation_id: event.correlation_id,
-            artifact_refs: event.artifact_refs,
-            payload: event.payload,
-        })
+        Ok(appended)
     }
 
     /// Every event of a run, in sequence order. This is the only read replay needs.

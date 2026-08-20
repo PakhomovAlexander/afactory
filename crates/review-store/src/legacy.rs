@@ -9,7 +9,7 @@
 //!   history — and the import is honest about it: it produces one report and at most one
 //!   resolution per row, and claims nothing about what happened in between.
 
-use review_core::{LegacyStageOutput, Severity};
+use review_core::{LegacyStageOutput, RunEvent, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -170,71 +170,64 @@ impl<'a> Ingest<'a> {
     ) -> Result<AddSummary, StoreError> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
-
-        // Live reviewer output is all-or-nothing. A blocking verdict whose only finding is
-        // malformed must fail closed, not degrade into an empty ledger that can converge.
-        if strict {
-            for (index, finding) in stage.findings.iter().enumerate() {
-                finding
-                    .clone()
-                    .into_report(index)
-                    .map_err(|reason| {
-                        StoreError::Conflict(format!(
-                            "{source} finding {index} violates FindingReport@1: {reason}"
-                        ))
-                    })?;
-            }
-        }
+        let mut projected = self.ledger.clone();
+        let mut events = Vec::new();
 
         for (index, finding) in stage.findings.iter().enumerate() {
-            if !strict && let Err(reason) = finding.clone().into_report(index) {
-                eprintln!("add: skipping {source} finding ({reason})");
-                continue;
-            }
-            let key = legacy_fingerprint(&finding.file, &finding.title);
+            let report = match finding.clone().into_report(index) {
+                Ok(report) => report,
+                Err(reason) if !strict => {
+                    eprintln!("add: skipping {source} finding ({reason})");
+                    continue;
+                }
+                Err(reason) => {
+                    return Err(StoreError::Conflict(format!(
+                        "{source} finding {index} violates FindingReport@1: {reason}"
+                    )));
+                }
+            };
+            let location = report.locations.first();
+            let file = location.map(|location| location.path.as_str()).unwrap_or("");
+            let line = location.and_then(|location| location.line).map(i64::from);
+            let key = legacy_fingerprint(file, &report.title);
 
             // The report is an immutable artifact; the event references it. Even a duplicate
             // gets stored — that is the whole difference from the shell ledger, which counted
             // it and threw it away.
-            let report = json!({
-                "title": finding.title,
-                "severity": severity_str(finding.severity),
-                "file": finding.file,
-                "line": finding.line,
-                "body": finding.body,
-                "fix": finding.fix,
-                "confidence": finding.confidence,
-                "source": source,
-                "round": round,
+            let report_artifact = json!({
+                "title": report.title,
+                "severity": severity_str(report.severity),
+                "file": file,
+                "line": line,
+                "body": report.body,
+                "fix": report.fix,
+                "confidence": report.confidence,
             });
             let report_id = self
                 .cas
-                .put_json(&report)
+                .put_json(&report_artifact)
                 .map_err(|e| StoreError::Conflict(e.to_string()))?;
 
             let payload = json!({
                 "key": key,
                 "round": round,
                 "source": source,
-                "severity": severity_str(finding.severity),
-                "file": if finding.file.trim().is_empty() { CHANGE_WIDE } else { finding.file.as_str() },
-                "line": finding.line,
-                "title": finding.title,
-                "body": finding.body,
-                "confidence": finding.confidence,
+                "severity": severity_str(report.severity),
+                "file": if file.is_empty() { CHANGE_WIDE } else { file },
+                "line": line,
+                "title": report.title,
+                "body": report.body,
+                "confidence": report.confidence,
                 "report_id": report_id,
             });
-            let event = self.store.append(
-                &self.run_id,
-                self.cas,
+            let event =
                 NewEvent::new(EVENT_FINDING_REPORTED, payload)
                     .correlating(key.clone())
-                    .referencing(vec![report_id]),
-            )?;
-            self.ledger.apply_event(&event, self.cas)?;
+                    .referencing(vec![report_id]);
+            apply_candidate(&mut projected, &event, self.cas)?;
+            events.push(event);
 
-            match self
-                .ledger
+            match projected
                 .get(&key)
                 .and_then(|f| f.history.last())
                 .map(|t| t.kind)
@@ -262,7 +255,7 @@ impl<'a> Ingest<'a> {
             }
             let key = dispute.fp.trim();
             let contestable = matches!(
-                self.ledger.get(key).map(|f| f.status),
+                projected.get(key).map(|f| f.status),
                 Some(Status::Open | Status::Fixed)
             );
             if !contestable {
@@ -274,21 +267,21 @@ impl<'a> Ingest<'a> {
                 "note": format!("contested by {source}: {}", dispute.reason),
                 "round": round,
             });
-            let event = self.store.append(
-                &self.run_id,
-                self.cas,
-                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string()),
-            )?;
-            self.ledger.apply_event(&event, self.cas)?;
+            let event =
+                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+            apply_candidate(&mut projected, &event, self.cas)?;
+            events.push(event);
             summary.contested += 1;
         }
 
-        summary.open = self
-            .ledger
+        summary.open = projected
             .findings()
             .iter()
             .filter(|f| f.status == Status::Open)
             .count();
+        self.store
+            .append_batch(&self.run_id, self.cas, &events)?;
+        self.ledger = projected;
         Ok(summary)
     }
 
@@ -346,6 +339,8 @@ pub fn import_ledger_jsonl(
 ) -> Result<usize, StoreError> {
     let mut imported = 0;
     let mut max_round = 1;
+    let mut projected = Ledger::rebuild(store, cas, run_id)?;
+    let mut events = Vec::new();
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -366,12 +361,9 @@ pub fn import_ledger_jsonl(
             "confidence": row.confidence,
             "imported": true,
         });
-        let event = store.append(
-            run_id,
-            cas,
-            NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone()),
-        )?;
-        let _ = event;
+        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+        apply_candidate(&mut projected, &event, cas)?;
+        events.push(event);
 
         // The row's own last_seen_round is restored by a second report only when it differs,
         // so an imported finding keeps both round columns the file recorded.
@@ -388,11 +380,10 @@ pub fn import_ledger_jsonl(
                 "confidence": row.confidence,
                 "imported": true,
             });
-            store.append(
-                run_id,
-                cas,
-                NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone()),
-            )?;
+            let event =
+                NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+            apply_candidate(&mut projected, &event, cas)?;
+            events.push(event);
         }
 
         if let Some(status) = Status::parse(&row.status)
@@ -405,23 +396,50 @@ pub fn import_ledger_jsonl(
                 "round": row.last_seen_round,
                 "imported": true,
             });
-            store.append(
-                run_id,
-                cas,
-                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone()),
-            )?;
+            let event =
+                NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone());
+            apply_candidate(&mut projected, &event, cas)?;
+            events.push(event);
         }
         imported += 1;
     }
 
     if max_round > 1 {
-        store.append(
-            run_id,
-            cas,
-            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round })),
-        )?;
+        let event = NewEvent::new(
+            EVENT_GENERATION_ADVANCED,
+            json!({ "round": max_round }),
+        );
+        apply_candidate(&mut projected, &event, cas)?;
+        events.push(event);
     }
+    store.append_batch(run_id, cas, &events)?;
     Ok(imported)
+}
+
+/// Apply a not-yet-persisted event through the authoritative projection. Sequence and identity
+/// are irrelevant to Ledger, so placeholders let ingest validate the exact payload and artifact
+/// set before the atomic append makes any part of the batch durable.
+fn apply_candidate(
+    ledger: &mut Ledger,
+    event: &NewEvent,
+    cas: &Cas,
+) -> Result<(), StoreError> {
+    ledger.apply_event(
+        &RunEvent {
+            event_id: String::new(),
+            run_id: String::new(),
+            sequence: 0,
+            event_type: event.event_type,
+            occurred_at: event.occurred_at.clone(),
+            node_id: event.node_id.clone(),
+            attempt_id: event.attempt_id.clone(),
+            causation_id: event.causation_id.clone(),
+            correlation_id: event.correlation_id.clone(),
+            artifact_refs: event.artifact_refs.clone(),
+            payload: event.payload.clone(),
+        },
+        cas,
+    )
 }
 
 pub fn severity_str(severity: Severity) -> &'static str {

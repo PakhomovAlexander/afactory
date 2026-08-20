@@ -271,6 +271,15 @@ impl<'a> Kernel<'a> {
             .map_err(|e| e.to_string())
     }
 
+    fn append_batch(&self, events: &[NewEvent]) -> Result<(), String> {
+        self.store
+            .lock()
+            .expect("event store")
+            .append_batch(&self.run_id, self.cas, events)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
     fn buffer_reviewer_event(&self, node_id: &str, event: NewEvent) {
         let mut seq = self.reviewer_event_seq.lock().expect("reviewer event seq");
@@ -288,12 +297,11 @@ impl<'a> Kernel<'a> {
     /// already-drained buffer is a no-op, which is why a gather-less pipeline can still flush
     /// from the run driver.
     pub fn flush_reviewer_events(&self) -> Result<(), String> {
-        let mut ordered: Vec<((String, u64), NewEvent)> =
-            std::mem::take(&mut *self.reviewer_events.lock().expect("reviewer events"));
-        ordered.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, event) in ordered {
-            self.append(event)?;
-        }
+        let mut pending = self.reviewer_events.lock().expect("reviewer events");
+        pending.sort_by(|a, b| a.0.cmp(&b.0));
+        let events: Vec<NewEvent> = pending.iter().map(|(_, event)| event.clone()).collect();
+        self.append_batch(&events)?;
+        pending.clear();
         Ok(())
     }
 
@@ -850,8 +858,23 @@ impl Dispatch for Kernel<'_> {
         {
             event = event.attempt(attempt);
         }
-        self.buffer_reviewer_event(&node.id, event);
-        Ok(())
+        if node.kind == NodeKind::Reviewer {
+            // The scheduler publishes outputs as soon as this returns. Commit the attempt
+            // lifecycle and receipt together before that publication point; retaining buffered
+            // events until gather permits consumers to be selected from an unsealed output.
+            let mut pending = self.reviewer_events.lock().expect("reviewer events");
+            let mut events: Vec<NewEvent> = pending
+                .iter()
+                .filter(|((id, _), _)| id == &node.id)
+                .map(|(_, event)| event.clone())
+                .collect();
+            events.push(event);
+            self.append_batch(&events)?;
+            pending.retain(|((id, _), _)| id != &node.id);
+            Ok(())
+        } else {
+            self.append(event)
+        }
     }
 
     fn gate_passed(&self, node_id: &str, _outputs: &ArtifactMap) -> bool {
