@@ -351,6 +351,7 @@ pub struct ModelRunner {
     workdir: PathBuf,
     timeout: Duration,
     grants: Vec<Grant>,
+    environment: Vec<Grant>,
 }
 
 impl ModelRunner {
@@ -359,6 +360,7 @@ impl ModelRunner {
             workdir: workdir.as_ref().to_path_buf(),
             timeout,
             grants: Vec::new(),
+            environment: Vec::new(),
         }
     }
 
@@ -366,6 +368,16 @@ impl ModelRunner {
     /// scrubbed from stdout and stderr before either is kept or quoted.
     pub fn with_grant(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.grants.push(Grant {
+            name: name.into(),
+            value: value.into(),
+        });
+        self
+    }
+
+    /// Set non-secret process context without treating ordinary text such as a username or
+    /// home path as credential material to redact from reviewer findings.
+    pub fn with_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.environment.push(Grant {
             name: name.into(),
             value: value.into(),
         });
@@ -386,6 +398,9 @@ impl ModelRunner {
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("HOME", &self.workdir);
         cmd.env("LC_ALL", "C");
+        for variable in &self.environment {
+            cmd.env(&variable.name, &variable.value);
+        }
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }

@@ -457,9 +457,12 @@ struct ReportProjection {
 impl ReportProjection {
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
         let required = |field: &str| {
-            value[field].as_str().ok_or_else(|| {
+            value[field]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .ok_or_else(|| {
                 crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has no string `{field}`"
+                    "report {report_id} has no non-empty string `{field}`"
                 ))
             })
         };
@@ -469,7 +472,27 @@ impl ReportProjection {
                 "report {report_id} has invalid severity `{severity_name}`"
             ))
         })?;
-        let file = required("file")?;
+        let file = value["file"].as_str().ok_or_else(|| {
+            crate::store::StoreError::Artifact(format!(
+                "report {report_id} has no string `file`"
+            ))
+        })?;
+        let line = match value.get("line") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().filter(|line| *line > 0).ok_or_else(|| {
+                crate::store::StoreError::Artifact(format!(
+                    "report {report_id} has invalid positive integer `line`"
+                ))
+            })?),
+        };
+        let confidence = match value.get("confidence") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_f64().filter(|value| (0.0..=1.0).contains(value)).ok_or_else(|| {
+                crate::store::StoreError::Artifact(format!(
+                    "report {report_id} has invalid `confidence` outside [0,1]"
+                ))
+            })?),
+        };
         Ok(Self {
             severity,
             file: if file.trim().is_empty() {
@@ -477,11 +500,11 @@ impl ReportProjection {
             } else {
                 file.to_string()
             },
-            line: value["line"].as_i64(),
+            line,
             title: required("title")?.to_string(),
             body: required("body")?.to_string(),
             fix: Some(required("fix")?.to_string()),
-            confidence: value["confidence"].as_f64(),
+            confidence,
         })
     }
 

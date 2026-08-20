@@ -149,23 +149,48 @@ impl<'a> Ingest<'a> {
         source: &str,
         stage: &LegacyStageOutput,
     ) -> Result<AddSummary, StoreError> {
+        self.add_stage_output_inner(source, stage, false)
+    }
+
+    /// Strict live admission. Unlike the frozen legacy bridge, one malformed finding rejects
+    /// the complete reviewer result so a blocking verdict cannot degrade into an empty pass.
+    pub fn add_live_stage_output(
+        &mut self,
+        source: &str,
+        stage: &LegacyStageOutput,
+    ) -> Result<AddSummary, StoreError> {
+        self.add_stage_output_inner(source, stage, true)
+    }
+
+    fn add_stage_output_inner(
+        &mut self,
+        source: &str,
+        stage: &LegacyStageOutput,
+        strict: bool,
+    ) -> Result<AddSummary, StoreError> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
 
         // Live reviewer output is all-or-nothing. A blocking verdict whose only finding is
         // malformed must fail closed, not degrade into an empty ledger that can converge.
-        for (index, finding) in stage.findings.iter().enumerate() {
-            finding
-                .clone()
-                .into_report(index)
-                .map_err(|reason| {
-                    StoreError::Conflict(format!(
-                        "{source} finding {index} violates FindingReport@1: {reason}"
-                    ))
-                })?;
+        if strict {
+            for (index, finding) in stage.findings.iter().enumerate() {
+                finding
+                    .clone()
+                    .into_report(index)
+                    .map_err(|reason| {
+                        StoreError::Conflict(format!(
+                            "{source} finding {index} violates FindingReport@1: {reason}"
+                        ))
+                    })?;
+            }
         }
 
-        for finding in &stage.findings {
+        for (index, finding) in stage.findings.iter().enumerate() {
+            if !strict && let Err(reason) = finding.clone().into_report(index) {
+                eprintln!("add: skipping {source} finding ({reason})");
+                continue;
+            }
             let key = legacy_fingerprint(&finding.file, &finding.title);
 
             // The report is an immutable artifact; the event references it. Even a duplicate

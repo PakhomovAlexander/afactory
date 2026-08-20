@@ -756,7 +756,7 @@ impl<'a> Kernel<'a> {
                 Ingest::new(*store, self.cas, self.run_id.clone()).map_err(|e| e.to_string())?;
             for (node_id, stage) in &results {
                 ingest
-                    .add_stage_output(node_id, stage)
+                    .add_live_stage_output(node_id, stage)
                     .map_err(|e| e.to_string())?;
             }
         }

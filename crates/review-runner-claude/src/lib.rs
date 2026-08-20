@@ -132,7 +132,7 @@ impl ReviewerAdapter for ClaudeAdapter {
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {
-            runner = runner.with_grant(name, value);
+            runner = runner.with_env(name, value);
         }
         let capture = runner.capture(cas, &command)?;
 

@@ -8,7 +8,7 @@
   "required": ["event_id", "run_id", "sequence", "type", "occurred_at", "payload"],
   "properties": {
     "event_id": { "$ref": "#/$defs/id" },
-    "run_id": { "$ref": "#/$defs/id" },
+    "run_id": { "type": "string", "minLength": 1 },
     "sequence": {
       "description": "Monotonic per-run sequence allocated by the single sequencer. Dense and gapless: a gap means loss, not reordering.",
       "type": "integer",
@@ -42,7 +42,7 @@
       "format": "date-time"
     },
     "node_id": { "type": "string", "minLength": 1 },
-    "attempt_id": { "$ref": "#/$defs/id" },
+    "attempt_id": { "type": "string", "minLength": 1 },
     "causation_id": {
       "description": "The event this one was caused by. Absent for a run's first event.",
       "$ref": "#/$defs/id"

@@ -34,6 +34,7 @@ use crate::canonical;
 pub enum CasError {
     Io(std::io::Error),
     Canonical(canonical::CanonicalError),
+    InvalidDigest(String),
     /// The stored bytes do not hash to the digest they are filed under.
     Corrupt {
         digest: String,
@@ -48,6 +49,9 @@ impl std::fmt::Display for CasError {
         match self {
             CasError::Io(e) => write!(f, "cas io: {e}"),
             CasError::Canonical(e) => write!(f, "cas canonicalization: {e}"),
+            CasError::InvalidDigest(digest) => {
+                write!(f, "invalid content digest `{digest}`")
+            }
             CasError::Corrupt { digest } => {
                 write!(f, "cas object does not match its digest: {digest}")
             }
@@ -155,6 +159,9 @@ impl Cas {
     }
 
     pub fn get(&self, digest: &str) -> Result<Vec<u8>, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
         let path = self.path_for(digest);
         let bytes = fs::read(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => CasError::NotFound {
@@ -179,8 +186,18 @@ impl Cas {
     }
 
     pub fn contains(&self, digest: &str) -> bool {
-        self.path_for(digest).exists()
+        valid_digest(digest) && self.path_for(digest).exists()
     }
+}
+
+fn valid_digest(digest: &str) -> bool {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// `fsync(2)` on a file or directory — the log's durability grade, not `F_FULLFSYNC`. On a
