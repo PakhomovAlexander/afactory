@@ -106,16 +106,15 @@ impl Cas {
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
         if final_path.exists() {
+            // Durability is cacheable, integrity is not: an external mutation after a prior
+            // publication must still be detected before idempotent put accepts this object.
+            self.get(&digest)?;
             if !self
                 .durable
                 .lock()
                 .expect("cas durable")
                 .contains(&final_path)
             {
-                let stored = fs::read(&final_path)?;
-                if canonical::blob_content_id(&stored) != digest {
-                    return Err(CasError::Corrupt { digest });
-                }
                 // A reopened CAS cannot know whether an existing object and its directory entry
                 // reached stable storage. Re-pend verified bytes so the next referencing event
                 // establishes that durability instead of trusting existence alone.
@@ -227,6 +226,9 @@ impl Cas {
     /// reference must pass through this method before commit.
     pub fn prepare_for_publication(&self, digest: &str) -> Result<(), CasError> {
         let path = self.path_for(digest);
+        // Hash verification is mandatory for every new reference. The cache below suppresses
+        // redundant fsyncs only; it must never turn existence into an integrity assertion.
+        self.get(digest)?;
         if self
             .durable
             .lock()
@@ -235,7 +237,6 @@ impl Cas {
         {
             return Ok(());
         }
-        self.get(digest)?;
         self.pending
             .lock()
             .expect("cas pending")

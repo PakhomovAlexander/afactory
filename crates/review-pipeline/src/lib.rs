@@ -130,6 +130,12 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
     if !missing.is_empty() {
         return RunVerdict::Incomplete { missing };
     }
+    // A gate can be intentionally observational and gate no downstream node. Its blocked
+    // decision still prevents a pass even though there is then no suppressed outcome to make
+    // the run incomplete.
+    if !report.blocked_gates.is_empty() {
+        return RunVerdict::Fail(Verdict::NotConverged);
+    }
     match convergence.verdict {
         Verdict::Converged => RunVerdict::Pass,
         other => RunVerdict::Fail(other),
@@ -871,6 +877,9 @@ impl Dispatch for Kernel<'_> {
             .referencing(artifact_ids(inputs)),
         )?;
         if node.kind == NodeKind::Reviewer {
+            if !self.reviewers.contains_key(&node.id) {
+                return Err(format!("no reviewer bound to node {}", node.id));
+            }
             let prior_findings = inputs
                 .get(PRIOR_FINDINGS_PORT)
                 .and_then(|artifacts| artifacts.first());

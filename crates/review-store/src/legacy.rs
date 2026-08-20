@@ -367,6 +367,29 @@ pub fn import_ledger_jsonl(
             continue;
         }
         let row: LegacyRow = serde_json::from_str(line)?;
+        if row.fp.trim().is_empty()
+            || row.round == 0
+            || row.last_seen_round < row.round
+            || row.source.trim().is_empty()
+            || row.file.trim().is_empty()
+            || row.title.trim().is_empty()
+            || row.body.trim().is_empty()
+            || row.line.is_some_and(|line| line <= 0 || u32::try_from(line).is_err())
+            || row
+                .confidence
+                .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
+        {
+            return Err(StoreError::Conflict(format!(
+                "legacy row `{}` violates persisted ledger invariants",
+                row.fp
+            )));
+        }
+        let status = Status::parse(&row.status).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "legacy row {} has invalid status `{}`",
+                row.fp, row.status
+            ))
+        })?;
         max_round = max_round.max(row.last_seen_round);
 
         let payload = json!({
@@ -406,9 +429,6 @@ pub fn import_ledger_jsonl(
             events.push(event);
         }
 
-        let status = Status::parse(&row.status).ok_or_else(|| {
-            StoreError::Conflict(format!("legacy row {} has invalid status `{}`", row.fp, row.status))
-        })?;
         if status != Status::Open {
             let payload = json!({
                 "key": row.fp,
