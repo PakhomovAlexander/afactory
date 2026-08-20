@@ -15,7 +15,7 @@ use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use crate::cas::Cas;
+use crate::cas::{Cas, CasError};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -204,12 +204,19 @@ impl EventStore {
             review_core::json::admit(&event.payload).map_err(|error| {
                 StoreError::Conflict(format!("invalid event payload: {error}"))
             })?;
+            review_core::event::validate_event_payload(event.event_type, &event.payload)
+                .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
             for digest in &event.artifact_refs {
                 has_artifacts = true;
-                cas.prepare_for_publication(digest).map_err(|error| {
-                    StoreError::Artifact(format!(
-                        "referenced artifact {digest} failed verification: {error}"
-                    ))
+                cas.prepare_for_publication(digest).map_err(|error| match error {
+                    CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
+                        StoreError::DanglingArtifact {
+                            digest: digest.clone(),
+                        }
+                    }
+                    other => StoreError::Artifact(format!(
+                        "referenced artifact {digest} failed verification: {other}"
+                    )),
                 })?;
             }
         }
@@ -294,11 +301,12 @@ impl EventStore {
         let rows = stmt.query_map(params![run_id], |row| {
             let refs: String = row.get(8)?;
             let payload: String = row.get(9)?;
+            let sequence: i64 = row.get(1)?;
             Ok((
                 RunEvent {
                     event_id: row.get(0)?,
                     run_id: run_id.to_string(),
-                    sequence: row.get::<_, i64>(1)? as u64,
+                    sequence: 0,
                     event_type: row
                         .get::<_, String>(2)?
                         .parse::<EventType>()
@@ -317,19 +325,43 @@ impl EventStore {
                     artifact_refs: Vec::new(),
                     payload: Value::Null,
                 },
+                sequence,
                 refs,
                 payload,
             ))
         })?;
         let mut out = Vec::new();
+        let mut expected_sequence = 0u64;
         for row in rows {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
-            let (mut event, refs, payload) = row?;
+            let (mut event, raw_sequence, refs, payload) = row?;
+            let sequence = u64::try_from(raw_sequence).map_err(|_| {
+                StoreError::Conflict(format!(
+                    "negative sequence {raw_sequence} in run {run_id}"
+                ))
+            })?;
+            if sequence != expected_sequence {
+                return Err(StoreError::Conflict(format!(
+                    "event sequence gap in run {run_id}: expected {expected_sequence}, found {sequence}"
+                )));
+            }
+            let expected_id = derive_event_id(run_id, raw_sequence);
+            if event.event_id != expected_id {
+                return Err(StoreError::Conflict(format!(
+                    "event {} has invalid derived id; expected {expected_id}",
+                    event.event_id
+                )));
+            }
+            event.sequence = sequence;
             event.artifact_refs = serde_json::from_str(&refs).map_err(StoreError::Json)?;
             event.payload = serde_json::from_str(&payload).map_err(StoreError::Json)?;
+            review_core::event::validate_event_payload(event.event_type, &event.payload).map_err(
+                |error| StoreError::Conflict(format!("invalid replayed event payload: {error}")),
+            )?;
             out.push(event);
+            expected_sequence += 1;
         }
         Ok(out)
     }

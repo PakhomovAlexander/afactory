@@ -13,6 +13,7 @@ use review_core::{LegacyStageOutput, RunEvent, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 use crate::cas::Cas;
 use crate::ledger::{
@@ -172,6 +173,21 @@ impl<'a> Ingest<'a> {
         let mut summary = AddSummary::default();
         let mut projected = self.ledger.clone();
         let mut events = Vec::new();
+        let existing_reports: BTreeSet<(String, String, u32, String)> = self
+            .ledger
+            .findings()
+            .into_iter()
+            .flat_map(|finding| {
+                finding.reports.iter().map(|report| {
+                    (
+                        finding.key.clone(),
+                        report.source.clone(),
+                        report.round,
+                        report.report_id.clone(),
+                    )
+                })
+            })
+            .collect();
 
         for (index, finding) in stage.findings.iter().enumerate() {
             let report = match finding.clone().into_report(index) {
@@ -208,16 +224,20 @@ impl<'a> Ingest<'a> {
                 .put_json(&report_artifact)
                 .map_err(|e| StoreError::Conflict(e.to_string()))?;
 
+            if existing_reports.contains(&(
+                key.clone(),
+                source.to_string(),
+                round,
+                report_id.clone(),
+            )) {
+                summary.dup += 1;
+                continue;
+            }
+
             let payload = json!({
                 "key": key,
                 "round": round,
                 "source": source,
-                "severity": severity_str(report.severity),
-                "file": if file.is_empty() { CHANGE_WIDE } else { file },
-                "line": line,
-                "title": report.title,
-                "body": report.body,
-                "confidence": report.confidence,
                 "report_id": report_id,
             });
             let event =
@@ -386,9 +406,10 @@ pub fn import_ledger_jsonl(
             events.push(event);
         }
 
-        if let Some(status) = Status::parse(&row.status)
-            && status != Status::Open
-        {
+        let status = Status::parse(&row.status).ok_or_else(|| {
+            StoreError::Conflict(format!("legacy row {} has invalid status `{}`", row.fp, row.status))
+        })?;
+        if status != Status::Open {
             let payload = json!({
                 "key": row.fp,
                 "status": status.as_str(),

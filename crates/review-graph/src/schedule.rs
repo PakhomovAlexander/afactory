@@ -254,17 +254,30 @@ impl<'a> Scheduler<'a> {
                     break;
                 }
 
-                let (node_id, result) = rx.recv().expect("a running node reports its outcome");
-                in_flight.remove(&node_id);
-                let node = &self.plan.nodes[&node_id];
-                match result {
+                // Complete a whole dispatch wave before admitting any result. Workers retain
+                // full concurrency, while publication and dependent dispatch are canonical in
+                // plan order rather than functions of thread completion timing.
+                let wave = in_flight.clone();
+                let mut completions = BTreeMap::new();
+                for _ in 0..wave.len() {
+                    let (node_id, result) =
+                        rx.recv().expect("a running node reports its outcome");
+                    in_flight.remove(&node_id);
+                    completions.insert(node_id, result);
+                }
+                for node_id in self.plan.order.iter().filter(|id| wave.contains(*id)) {
+                    let result = completions
+                        .remove(node_id)
+                        .expect("every wave member completed");
+                    let node = &self.plan.nodes[node_id];
+                    match result {
                     Ok(produced) => {
                         if let Err(error) = validate_outputs(node, &produced) {
                             unusable.insert(node_id.clone());
                             if node.kind == NodeKind::Gate {
                                 blocked_gates.insert(node_id.clone());
                             }
-                            outcomes.insert(node_id, NodeOutcome::Failed { error });
+                            outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
                             continue;
                         }
                         if let Err(error) = dispatch.record_outputs(node, &produced) {
@@ -272,7 +285,7 @@ impl<'a> Scheduler<'a> {
                             if node.kind == NodeKind::Gate {
                                 blocked_gates.insert(node_id.clone());
                             }
-                            outcomes.insert(node_id, NodeOutcome::Failed { error });
+                            outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
                             continue;
                         }
                         for (port, artifacts) in &produced {
@@ -282,7 +295,7 @@ impl<'a> Scheduler<'a> {
                         {
                             blocked_gates.insert(node_id.clone());
                         }
-                        outcomes.insert(node_id, NodeOutcome::Completed { outputs: produced });
+                        outcomes.insert(node_id.clone(), NodeOutcome::Completed { outputs: produced });
                     }
                     Err(error) => {
                         // A failed node's dependents cannot run — they would be reviewing an
@@ -291,7 +304,8 @@ impl<'a> Scheduler<'a> {
                         if node.kind == NodeKind::Gate {
                             blocked_gates.insert(node_id.clone());
                         }
-                        outcomes.insert(node_id, NodeOutcome::Failed { error });
+                        outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                    }
                     }
                 }
             }

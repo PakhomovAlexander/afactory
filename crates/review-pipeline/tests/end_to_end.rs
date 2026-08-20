@@ -226,8 +226,8 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let events = store.replay("run").unwrap();
     assert_eq!(
         events.len(),
-        3,
-        "one invocation, one CheckCompleted, one GateDecision, nothing else"
+        4,
+        "one invocation, one CheckCompleted, one GateDecision, and one durable receipt"
     );
     assert_eq!(events[0].event_type, "NodeInvocation@1");
     assert_eq!(events[0].payload["node"], "gate");
@@ -235,6 +235,7 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     assert_eq!(events[1].payload["status"], "failed");
     assert_eq!(events[2].event_type, "GateDecision@1");
     assert_eq!(events[2].payload["outcome"], "Blocked");
+    assert_eq!(events[3].event_type, "NodeOutputReceipt@1");
 }
 
 /// Same inputs, same pipeline, twice — the ledger and the verdict must not move.

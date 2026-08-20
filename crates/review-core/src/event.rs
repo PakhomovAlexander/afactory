@@ -250,6 +250,64 @@ pub struct RunReportPayloadV2 {
     pub spent_tokens: Option<u64>,
 }
 
+impl RunReportPayloadV2 {
+    pub fn validate(&self) -> Result<(), String> {
+        let unresolved: std::collections::BTreeSet<&str> = self
+            .outcomes
+            .iter()
+            .filter_map(|outcome| match &outcome.outcome {
+                RunNodeOutcomeV2::Completed { .. } => None,
+                RunNodeOutcomeV2::Failed { .. } | RunNodeOutcomeV2::Suppressed { .. } => {
+                    Some(outcome.node.as_str())
+                }
+            })
+            .collect();
+        match &self.verdict {
+            RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => Err(
+                "a terminal pass/fail report cannot contain failed or suppressed nodes".into(),
+            ),
+            RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
+                Err("a passing report cannot contain blocked gates".into())
+            }
+            RunVerdictV2::Incomplete { missing_nodes } => {
+                let missing: std::collections::BTreeSet<&str> =
+                    missing_nodes.iter().map(|missing| missing.node.as_str()).collect();
+                if missing.len() != missing_nodes.len() {
+                    return Err("an incomplete report contains duplicate missing nodes".into());
+                }
+                if missing != unresolved {
+                    return Err(
+                        "an incomplete report's missing nodes must match failed and suppressed outcomes"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
+/// Legacy finding events retain their frozen projection validator in `review-store`; new typed
+/// node and report payloads are rejected before append and again during replay.
+pub fn validate_event_payload(event_type: EventType, payload: &serde_json::Value) -> Result<(), String> {
+    match event_type {
+        EventType::NodeInvocationV1 => serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
+            .map(|_| ())
+            .map_err(|error| format!("NodeInvocation@1: {error}")),
+        EventType::NodeOutputReceiptV1 => serde_json::from_value::<NodeOutputReceiptPayloadV1>(payload.clone())
+            .map(|_| ())
+            .map_err(|error| format!("NodeOutputReceipt@1: {error}")),
+        EventType::RunReportV2 => {
+            let report = serde_json::from_value::<RunReportPayloadV2>(payload.clone())
+                .map_err(|error| format!("RunReport@2: {error}"))?;
+            report.validate().map_err(|error| format!("RunReport@2: {error}"))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PortCardinality {
@@ -306,7 +364,6 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
     match event.event_type {
         EventType::RunReportV1 => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct LegacyRunReport {
                 verdict: String,
             }
@@ -326,6 +383,9 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
         }
         EventType::RunReportV2 => {
             let report: RunReportPayloadV2 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
             Ok(Some(!matches!(
                 report.verdict,
                 RunVerdictV2::Incomplete { .. }

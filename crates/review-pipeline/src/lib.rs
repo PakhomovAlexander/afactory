@@ -25,7 +25,9 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use review_attempt::{AttemptLedger, Budget, BudgetLedger, Receipt, Scope, Selection};
+use review_attempt::{
+    AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
+};
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
 use review_core::{
     EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
@@ -84,6 +86,11 @@ fn port_artifacts(
 struct Budgets {
     attempt_cap: u64,
     ledger: Mutex<BudgetLedger>,
+}
+
+struct PreparedReviewerAttempt {
+    attempt: AttemptId,
+    reservation: Option<Reservation>,
 }
 
 /// What one whole run amounts to.
@@ -157,6 +164,9 @@ pub struct Kernel<'a> {
     /// keeps a node's own events in the order it emitted them; the flush sorts by that key.
     reviewer_events: Mutex<Vec<((String, u64), NewEvent)>>,
     reviewer_event_seq: Mutex<u64>,
+    /// First attempts are reserved, assigned, and durably dispatched by the scheduler thread in
+    /// plan order before any external model call starts. The worker removes its prepared entry.
+    prepared_attempts: Mutex<BTreeMap<String, PreparedReviewerAttempt>>,
     /// The snapshot materialized once, cloned per sandbox. Built lazily on the first sandbox
     /// request — the gate's — so a run that never reaches a sandbox never pays for it.
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
@@ -183,6 +193,7 @@ impl<'a> Kernel<'a> {
             prior_findings: None,
             reviewer_events: Mutex::new(Vec::new()),
             reviewer_event_seq: Mutex::new(0),
+            prepared_attempts: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
         }
     }
@@ -278,6 +289,64 @@ impl<'a> Kernel<'a> {
             .append_batch(&self.run_id, self.cas, events)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    fn prepare_reviewer_attempt(
+        &self,
+        node_id: &str,
+        prior_findings_artifact: Option<&String>,
+        timeouts: &[String],
+    ) -> Result<PreparedReviewerAttempt, String> {
+        let reservation = match &self.budgets {
+            Some(budgets) => Some(
+                budgets
+                    .ledger
+                    .lock()
+                    .expect("budget ledger")
+                    .reserve(
+                        &[Scope::Node(node_id.to_string()), Scope::Run],
+                        budgets.attempt_cap,
+                    )
+                    .map_err(|error| {
+                        if timeouts.is_empty() {
+                            format!("never dispatched: {error}")
+                        } else {
+                            format!("{}; retry refused: {error}", timeouts.join("; "))
+                        }
+                    })?,
+            ),
+            None => None,
+        };
+        let attempt = self
+            .attempts
+            .lock()
+            .expect("attempt ledger")
+            .dispatch(node_id);
+        let event = NewEvent::new(
+            EventType::AttemptDispatchedV1,
+            serde_json::json!({
+                "reserved": reservation.as_ref().map(|reservation| reservation.amount),
+                "prior_findings": prior_findings_artifact,
+            }),
+        )
+        .node(node_id)
+        .attempt(attempt.to_string())
+        .referencing(prior_findings_artifact.cloned().into_iter().collect());
+        if let Err(error) = self.append(event) {
+            if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
+                budgets
+                    .ledger
+                    .lock()
+                    .expect("budget ledger")
+                    .release(reservation);
+            }
+            self.attempts.lock().expect("attempt ledger").fence(node_id);
+            return Err(error);
+        }
+        Ok(PreparedReviewerAttempt {
+            attempt,
+            reservation,
+        })
     }
 
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
@@ -493,47 +562,25 @@ impl<'a> Kernel<'a> {
         }
 
         let mut timeouts: Vec<String> = Vec::new();
+        let mut prepared = self
+            .prepared_attempts
+            .lock()
+            .expect("prepared attempts")
+            .remove(node_id);
         for _ in 0..=self.timeout_retries {
-            // Reserve before dispatch. A dispatch that cannot reserve never runs, and the
-            // refusal is the node's outcome — this is how "never ran" reaches the report.
-            let reservation = match &self.budgets {
-                Some(budgets) => Some(
-                    budgets
-                        .ledger
-                        .lock()
-                        .expect("budget ledger")
-                        .reserve(
-                            &[Scope::Node(node_id.to_string()), Scope::Run],
-                            budgets.attempt_cap,
-                        )
-                        .map_err(|e| {
-                            if timeouts.is_empty() {
-                                format!("never dispatched: {e}")
-                            } else {
-                                format!("{}; retry refused: {e}", timeouts.join("; "))
-                            }
-                        })?,
-                ),
-                None => None,
+            // The scheduler prepares the first attempt in plan order before spawning this
+            // worker. Timeout retries are prepared here only after the predecessor is fenced.
+            let PreparedReviewerAttempt {
+                attempt,
+                reservation,
+            } = match prepared.take() {
+                Some(prepared) => prepared,
+                None => self.prepare_reviewer_attempt(
+                    node_id,
+                    prior_findings_artifact.as_ref(),
+                    &timeouts,
+                )?,
             };
-            let attempt = self
-                .attempts
-                .lock()
-                .expect("attempt ledger")
-                .dispatch(node_id);
-            self.buffer_reviewer_event(
-                node_id,
-                NewEvent::new(
-                    EventType::AttemptDispatchedV1,
-                    serde_json::json!({
-                        "reserved": reservation.as_ref().map(|r| r.amount),
-                        "prior_findings": prior_findings_artifact,
-                    }),
-                )
-                .node(node_id)
-                .attempt(attempt.to_string())
-                .referencing(prior_findings_artifact.iter().cloned().collect()),
-            );
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
@@ -822,7 +869,18 @@ impl Dispatch for Kernel<'_> {
             )
             .node(&node.id)
             .referencing(artifact_ids(inputs)),
-        )
+        )?;
+        if node.kind == NodeKind::Reviewer {
+            let prior_findings = inputs
+                .get(PRIOR_FINDINGS_PORT)
+                .and_then(|artifacts| artifacts.first());
+            let prepared = self.prepare_reviewer_attempt(&node.id, prior_findings, &[])?;
+            self.prepared_attempts
+                .lock()
+                .expect("prepared attempts")
+                .insert(node.id.clone(), prepared);
+        }
+        Ok(())
     }
 
     fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
