@@ -16,9 +16,25 @@
       "maximum": 9007199254740991
     },
     "type": {
-      "description": "Event type and semantic version, e.g. FindingReported@1. The vocabulary is closed by design — it is fixed in the phase that defines each event's payload, alongside the event store. Until then this is shape-checked, not enumerated, so the schema cannot lie about being complete.",
+      "description": "Closed event type and semantic-version vocabulary. New event kinds and payload versions are explicit additive contract changes.",
       "type": "string",
-      "pattern": "^[A-Z][A-Za-z0-9]*@[1-9][0-9]*$"
+      "enum": [
+        "AttemptAdmitted@1",
+        "AttemptDispatched@1",
+        "AttemptFailed@1",
+        "AttemptFenced@1",
+        "AttemptReleased@1",
+        "CheckCompleted@1",
+        "FindingReported@1",
+        "FindingResolved@1",
+        "GateDecision@1",
+        "GenerationAdvanced@1",
+        "NodeInvocation@1",
+        "NodeOutputReceipt@1",
+        "RunReport@1",
+        "RunReport@2",
+        "SourceCaptured@1"
+      ]
     },
     "occurred_at": {
       "description": "Wall-clock observation, for humans and forensics. NOT an ordering authority — `sequence` is. Replay must never depend on this field.",

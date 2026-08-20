@@ -106,7 +106,7 @@ impl<'a> Ingest<'a> {
         run_id: impl Into<String>,
     ) -> Result<Self, StoreError> {
         let run_id = run_id.into();
-        let ledger = Ledger::rebuild(store, &run_id)?;
+        let ledger = Ledger::rebuild(store, cas, &run_id)?;
         Ok(Self {
             store,
             cas,
@@ -131,7 +131,7 @@ impl<'a> Ingest<'a> {
             self.cas,
             NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": round })),
         )?;
-        self.ledger.apply_event(&event);
+        self.ledger.apply_event(&event, self.cas)?;
         Ok(round)
     }
 
@@ -200,7 +200,7 @@ impl<'a> Ingest<'a> {
                     .correlating(key.clone())
                     .referencing(vec![report_id]),
             )?;
-            self.ledger.apply_event(&event);
+            self.ledger.apply_event(&event, self.cas)?;
 
             match self
                 .ledger
@@ -248,7 +248,7 @@ impl<'a> Ingest<'a> {
                 self.cas,
                 NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string()),
             )?;
-            self.ledger.apply_event(&event);
+            self.ledger.apply_event(&event, self.cas)?;
             summary.contested += 1;
         }
 
@@ -279,7 +279,7 @@ impl<'a> Ingest<'a> {
             self.cas,
             NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string()),
         )?;
-        self.ledger.apply_event(&event);
+        self.ledger.apply_event(&event, self.cas)?;
         Ok(())
     }
 }

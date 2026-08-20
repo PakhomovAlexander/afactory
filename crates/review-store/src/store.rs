@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use review_core::RunEvent;
+use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -29,6 +29,8 @@ pub enum StoreError {
     Conflict(String),
     /// The CAS could not make a referenced object durable.
     Durability(String),
+    /// A referenced artifact required for replay was missing or malformed.
+    Artifact(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -44,6 +46,7 @@ impl std::fmt::Display for StoreError {
             StoreError::Durability(what) => {
                 write!(f, "a referenced artifact could not be made durable: {what}")
             }
+            StoreError::Artifact(what) => write!(f, "event store artifact: {what}"),
         }
     }
 }
@@ -65,7 +68,7 @@ impl From<serde_json::Error> for StoreError {
 /// What an appender supplies. `event_id` and `sequence` are the store's to assign — a caller
 /// that could choose its own sequence could rewrite history by racing.
 pub struct NewEvent {
-    pub event_type: String,
+    pub event_type: EventType,
     pub occurred_at: String,
     pub node_id: Option<String>,
     pub attempt_id: Option<String>,
@@ -76,9 +79,9 @@ pub struct NewEvent {
 }
 
 impl NewEvent {
-    pub fn new(event_type: impl Into<String>, payload: Value) -> Self {
+    pub fn new(event_type: EventType, payload: Value) -> Self {
         Self {
-            event_type: event_type.into(),
+            event_type,
             // Deliberately fixed: this store has no clock of its own, and nothing in replay may
             // read this field. A caller that wants a real timestamp passes one.
             occurred_at: "1970-01-01T00:00:00Z".to_string(),
@@ -209,7 +212,7 @@ impl EventStore {
                 run_id,
                 next,
                 event_id,
-                event.event_type,
+                event.event_type.as_str(),
                 event.occurred_at,
                 event.node_id,
                 event.attempt_id,
@@ -259,7 +262,16 @@ impl EventStore {
                     event_id: row.get(0)?,
                     run_id: run_id.to_string(),
                     sequence: row.get::<_, i64>(1)? as u64,
-                    event_type: row.get(2)?,
+                    event_type: row
+                        .get::<_, String>(2)?
+                        .parse::<EventType>()
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
                     occurred_at: row.get(3)?,
                     node_id: row.get(4)?,
                     attempt_id: row.get(5)?,
@@ -328,7 +340,11 @@ mod tests {
         let (_dir, mut store, cas) = fixture();
         for i in 0..5 {
             let event = store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "i": i })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "i": i })),
+                )
                 .unwrap();
             assert_eq!(event.sequence, i as u64);
         }
@@ -343,10 +359,18 @@ mod tests {
     fn runs_do_not_share_a_sequence_space() {
         let (_dir, mut store, cas) = fixture();
         store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         let b = store
-            .append("run-b", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-b",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         assert_eq!(b.sequence, 0);
     }
@@ -359,7 +383,8 @@ mod tests {
             .append(
                 "run-a",
                 &cas,
-                NewEvent::new("Thing@1", json!({})).referencing(vec![missing.clone()]),
+                NewEvent::new(EventType::SourceCapturedV1, json!({}))
+                    .referencing(vec![missing.clone()]),
             )
             .unwrap_err();
         assert!(matches!(err, StoreError::DanglingArtifact { .. }));
@@ -372,7 +397,7 @@ mod tests {
                 .append(
                     "run-a",
                     &cas,
-                    NewEvent::new("Thing@1", json!({})).referencing(vec![digest])
+                    NewEvent::new(EventType::SourceCapturedV1, json!({})).referencing(vec![digest])
                 )
                 .is_ok()
         );
@@ -382,7 +407,11 @@ mod tests {
     fn event_ids_are_derived_so_replay_reproduces_them() {
         let (_dir, mut store, cas) = fixture();
         let first = store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         assert_eq!(first.event_id, derive_event_id("run-a", 0));
         assert_ne!(derive_event_id("run-a", 0), derive_event_id("run-b", 0));
@@ -396,15 +425,27 @@ mod tests {
         {
             let mut store = EventStore::open(&path).unwrap();
             store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 0 })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 0 })),
+                )
                 .unwrap();
             store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 1 })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 1 })),
+                )
                 .unwrap();
         }
         let mut store = EventStore::open(&path).unwrap();
         let third = store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 2 })))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 2 })),
+            )
             .unwrap();
         assert_eq!(third.sequence, 2);
         assert_eq!(store.replay("run-a").unwrap().len(), 3);

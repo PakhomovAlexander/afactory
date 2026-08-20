@@ -10,10 +10,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::plan::{Node, NodeKind, Planned};
 
+/// Exact artifacts resolved per named port. Every declared input is present, including an
+/// optional input that resolved to an empty vector.
+pub type ArtifactMap = BTreeMap<String, Vec<String>>;
+
 /// What the caller does when a node is dispatched. The scheduler owns *when* and *whether*, the
 /// caller owns *what* — so scheduling can be tested without models, checks, or a filesystem.
 pub trait Dispatch {
-    /// Run a node, given its resolved inputs as `(input port, artifact id)` pairs.
+    /// Persist or otherwise observe the exact input selection before the node is scheduled.
+    fn record_invocation(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Run a node, given its exact artifacts grouped by input port.
     ///
     /// The whole `Node` is handed over, not an id: what a node *is* is its validated `kind`,
     /// and a dispatcher routing on the id string would silently misroute a reviewer that
@@ -22,10 +31,15 @@ pub trait Dispatch {
     ///
     /// Returning `Err` means the node ran and failed; it does not stop the pipeline, because a
     /// failed reviewer is a fact about the review, not a reason to lose the rest of it.
-    fn run(&self, node: &Node, inputs: &[(String, String)]) -> Result<Vec<String>, String>;
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String>;
+
+    /// Seal the complete output map after the dispatcher succeeds and cardinality is validated.
+    fn record_outputs(&self, _node: &Node, _outputs: &ArtifactMap) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Whether this node's outputs constitute a passing gate. Only consulted for `Gate` nodes.
-    fn gate_passed(&self, _node_id: &str, _outputs: &[String]) -> bool {
+    fn gate_passed(&self, _node_id: &str, _outputs: &ArtifactMap) -> bool {
         true
     }
 }
@@ -40,7 +54,7 @@ pub enum SuppressionReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeOutcome {
-    Completed { outputs: Vec<String> },
+    Completed { outputs: ArtifactMap },
     Failed { error: String },
     Suppressed { reason: SuppressionReason },
 }
@@ -122,14 +136,14 @@ impl<'a> Scheduler<'a> {
     /// inputs are exactly what the edges deliver (sorted), suppression is a function of
     /// resolved upstream state alone, and the report lists nodes in plan order.
     pub fn run(&self, dispatch: &(dyn Dispatch + Sync)) -> RunReport {
-        let mut outputs: BTreeMap<(String, String), String> = BTreeMap::new();
+        let mut outputs: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         let mut outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
         let mut blocked_gates: BTreeSet<String> = BTreeSet::new();
         let mut unusable: BTreeSet<String> = BTreeSet::new();
         let mut in_flight: BTreeSet<String> = BTreeSet::new();
 
         std::thread::scope(|scope| {
-            type Completion = (String, Result<Vec<String>, String>);
+            type Completion = (String, Result<ArtifactMap, String>);
             let (tx, rx) = std::sync::mpsc::channel::<Completion>();
 
             loop {
@@ -189,15 +203,34 @@ impl<'a> Scheduler<'a> {
                     // input port it arrived on — so a node reads its inputs by name (a reviewer
                     // takes `prior_findings`, not "whichever artifact happened to be first").
                     // Sorted, so the vector does not depend on edge declaration order.
-                    let mut inputs: Vec<(String, String)> = dependencies
+                    let mut inputs: ArtifactMap = node
+                        .inputs
                         .iter()
-                        .filter_map(|edge| {
-                            outputs
-                                .get(&(edge.from.node.clone(), edge.from.name.clone()))
-                                .map(|artifact| (edge.to.name.clone(), artifact.clone()))
-                        })
+                        .map(|port| (port.name.clone(), Vec::new()))
                         .collect();
-                    inputs.sort();
+                    for edge in &dependencies {
+                        if let Some(artifacts) =
+                            outputs.get(&(edge.from.node.clone(), edge.from.name.clone()))
+                        {
+                            inputs
+                                .get_mut(&edge.to.name)
+                                .expect("planned input port")
+                                .extend(artifacts.iter().cloned());
+                        }
+                    }
+                    for artifacts in inputs.values_mut() {
+                        artifacts.sort();
+                    }
+
+                    if let Err(error) = dispatch.record_invocation(node, &inputs) {
+                        unusable.insert(node_id.clone());
+                        if node.kind == NodeKind::Gate {
+                            blocked_gates.insert(node_id.clone());
+                        }
+                        outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                        progressed = true;
+                        continue;
+                    }
 
                     in_flight.insert(node_id.clone());
                     let tx = tx.clone();
@@ -225,30 +258,25 @@ impl<'a> Scheduler<'a> {
                 in_flight.remove(&node_id);
                 let node = &self.plan.nodes[&node_id];
                 match result {
-                    // A node that produced fewer artifacts than it declares output ports has
-                    // under-delivered: `zip` would leave those ports unbound and downstream
-                    // would silently receive a shorter input — the runtime twin of
-                    // `PlanError::UnwiredInput`, which the planner treats as fatal. So it is a
-                    // failed node, not a quietly-incomplete one.
-                    Ok(produced) if produced.len() < node.outputs.len() => {
-                        unusable.insert(node_id.clone());
-                        if node.kind == NodeKind::Gate {
-                            blocked_gates.insert(node_id.clone());
-                        }
-                        outcomes.insert(
-                            node_id,
-                            NodeOutcome::Failed {
-                                error: format!(
-                                    "node produced {} artifacts for {} declared output ports",
-                                    produced.len(),
-                                    node.outputs.len()
-                                ),
-                            },
-                        );
-                    }
                     Ok(produced) => {
-                        for (port, artifact) in node.outputs.iter().zip(produced.iter()) {
-                            outputs.insert((node_id.clone(), port.clone()), artifact.clone());
+                        if let Err(error) = validate_outputs(node, &produced) {
+                            unusable.insert(node_id.clone());
+                            if node.kind == NodeKind::Gate {
+                                blocked_gates.insert(node_id.clone());
+                            }
+                            outcomes.insert(node_id, NodeOutcome::Failed { error });
+                            continue;
+                        }
+                        if let Err(error) = dispatch.record_outputs(node, &produced) {
+                            unusable.insert(node_id.clone());
+                            if node.kind == NodeKind::Gate {
+                                blocked_gates.insert(node_id.clone());
+                            }
+                            outcomes.insert(node_id, NodeOutcome::Failed { error });
+                            continue;
+                        }
+                        for (port, artifacts) in &produced {
+                            outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
                         }
                         if node.kind == NodeKind::Gate && !dispatch.gate_passed(&node_id, &produced)
                         {
@@ -285,4 +313,31 @@ impl<'a> Scheduler<'a> {
             blocked_gates,
         }
     }
+}
+
+fn validate_outputs(node: &Node, produced: &ArtifactMap) -> Result<(), String> {
+    for name in produced.keys() {
+        if !node.outputs.iter().any(|port| &port.name == name) {
+            return Err(format!(
+                "node produced undeclared output port {}.{name}",
+                node.id
+            ));
+        }
+    }
+    for port in &node.outputs {
+        let count = produced.get(&port.name).map_or(0, Vec::len);
+        if !port.optional && count == 0 {
+            return Err(format!(
+                "node produced no artifacts for required output port {}.{}",
+                node.id, port.name
+            ));
+        }
+        if port.cardinality == review_core::PortCardinality::One && count > 1 {
+            return Err(format!(
+                "node produced {count} artifacts for single-valued output port {}.{}",
+                node.id, port.name
+            ));
+        }
+    }
+    Ok(())
 }

@@ -22,6 +22,9 @@ use std::time::Duration;
 
 use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
+use review_core::{
+    EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, run_report_closes_round,
+};
 use review_graph::{NodeOutcome, Scheduler};
 use review_pipeline::{Kernel, RunVerdict, run_verdict};
 use review_runner::ReviewerAdapter;
@@ -52,6 +55,19 @@ impl Options {
 struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
+    long: bool,
+}
+
+struct ShowOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    key: String,
+}
+
+struct ReportOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    format: String,
 }
 
 struct ResolveOptions {
@@ -66,7 +82,9 @@ fn usage() -> ! {
     eprintln!(
         "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--focus TEXT] [--timeout-secs N]\n\
-        \x20      reviewctl ledger  --campaign NAME [--state DIR]\n\
+        \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
+        \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
+        \x20      reviewctl report  --campaign NAME [--state DIR] [--format md]\n\
         \x20      reviewctl resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
@@ -113,17 +131,63 @@ fn parse_run(mut args: std::env::Args) -> Options {
 fn parse_ledger(mut args: std::env::Args) -> LedgerOptions {
     let mut state = None;
     let mut campaign = None;
+    let mut long = false;
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--state" => state = Some(PathBuf::from(value())),
             "--campaign" => campaign = Some(value()),
+            "--long" => long = true,
             _ => usage(),
         }
     }
     LedgerOptions {
         state,
         campaign: campaign.unwrap_or_else(|| usage()),
+        long,
+    }
+}
+
+fn parse_show(mut args: std::env::Args) -> ShowOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut key = None;
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            other if !other.starts_with("--") && key.is_none() => key = Some(other.to_string()),
+            _ => usage(),
+        }
+    }
+    ShowOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        key: key.unwrap_or_else(|| usage()),
+    }
+}
+
+fn parse_report(mut args: std::env::Args) -> ReportOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut format = "md".to_string();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--format" => format = value(),
+            _ => usage(),
+        }
+    }
+    if format != "md" {
+        usage();
+    }
+    ReportOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        format,
     }
 }
 
@@ -160,6 +224,8 @@ fn main() {
     let result = match args.next().as_deref() {
         Some("run") => run(&parse_run(args)),
         Some("ledger") => print_ledger(&parse_ledger(args)),
+        Some("show") => show(&parse_show(args)),
+        Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
         _ => usage(),
     };
@@ -182,8 +248,9 @@ fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign);
     let store = open_campaign_store(&state)?;
-    let ledger =
-        Ledger::rebuild(&store, &campaign_run_id(&options.campaign)).map_err(|e| e.to_string())?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
     for finding in ledger.findings() {
         println!(
             "{}\t{}\t{}\t{}:{}\t{}",
@@ -194,6 +261,16 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
             finding.line.map_or("-".to_string(), |l| l.to_string()),
             finding.title
         );
+        if options.long {
+            print_indented("body", &finding.body);
+            print_indented(
+                "fix",
+                finding
+                    .fix
+                    .as_deref()
+                    .unwrap_or("(unavailable: artifact-less legacy import)"),
+            );
+        }
     }
     eprintln!(
         "round {}; {} findings, {} open",
@@ -206,6 +283,241 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
             .count()
     );
     Ok(())
+}
+
+fn print_indented(label: &str, value: &str) {
+    let mut lines = value.lines();
+    println!("  {label}: {}", lines.next().unwrap_or_default());
+    for line in lines {
+        println!("    {line}");
+    }
+}
+
+fn show(options: &ShowOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign);
+    let store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
+    let finding = ledger
+        .get(&options.key)
+        .ok_or_else(|| format!("no finding with key {}", options.key))?;
+
+    println!("{} [{}]", finding.title, finding.key);
+    println!(
+        "severity={} status={} location={}:{}",
+        format!("{:?}", finding.severity).to_lowercase(),
+        finding.status.as_str(),
+        finding.file,
+        finding
+            .line
+            .map_or("-".to_string(), |line| line.to_string())
+    );
+    for (index, attached) in finding.reports.iter().enumerate() {
+        println!(
+            "\nreport {}: reviewer={} round={} severity={} id={}",
+            index + 1,
+            attached.source,
+            attached.round,
+            format!("{:?}", attached.severity).to_lowercase(),
+            if attached.report_id.is_empty() {
+                "(unavailable: legacy import)"
+            } else {
+                &attached.report_id
+            }
+        );
+        if attached.report_id.is_empty() {
+            print_indented("body", &finding.body);
+            print_indented("fix", "(unavailable: artifact-less legacy import)");
+            println!(
+                "  confidence: {}",
+                finding
+                    .confidence
+                    .map_or("(unavailable)".to_string(), |value| value.to_string())
+            );
+        } else {
+            let report = cas
+                .get_json(&attached.report_id)
+                .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+            );
+        }
+    }
+
+    println!("\nhistory:");
+    for transition in &finding.history {
+        println!(
+            "  round {}: {:?}{}",
+            transition.round,
+            transition.kind,
+            transition
+                .note
+                .as_deref()
+                .map(|note| format!(" - {note}"))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "current note: {}",
+        finding.current_note().unwrap_or("(none)")
+    );
+    Ok(())
+}
+
+fn print_report(options: &ReportOptions) -> Result<(), String> {
+    debug_assert_eq!(options.format, "md");
+    let state = campaign_state(&options.state, &options.campaign);
+    let store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
+    let events = store.replay(&run_id).map_err(|e| e.to_string())?;
+    let reports: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type,
+                EventType::RunReportV1 | EventType::RunReportV2
+            )
+        })
+        .collect();
+
+    println!("# Review campaign `{}`", options.campaign);
+    println!();
+    println!("- Runs recorded: {}", reports.len());
+    println!("- Ledger round: {}", ledger.round);
+    println!(
+        "- Final verdict: {}",
+        reports
+            .last()
+            .map(|event| report_verdict(event))
+            .transpose()?
+            .unwrap_or_else(|| "not recorded".to_string())
+    );
+    println!();
+    println!("## Runs");
+    println!();
+    println!("| Run | Verdict | Tokens |");
+    println!("| ---: | --- | ---: |");
+    for (index, event) in reports.iter().enumerate() {
+        println!(
+            "| {} | {} | {} |",
+            index + 1,
+            report_verdict(event)?,
+            event.payload["spent_tokens"]
+                .as_u64()
+                .map_or("-".to_string(), |tokens| tokens.to_string())
+        );
+    }
+
+    println!();
+    println!("## Findings");
+    for severity in ["blocker", "major", "minor"] {
+        println!();
+        println!("### {}", title_case(severity));
+        let matching: Vec<_> = ledger
+            .findings()
+            .into_iter()
+            .filter(|finding| format!("{:?}", finding.severity).to_lowercase() == severity)
+            .collect();
+        if matching.is_empty() {
+            println!();
+            println!("None.");
+            continue;
+        }
+        for finding in matching {
+            println!();
+            println!(
+                "- **[{}] {}** (`{}`) at `{}:{}`",
+                finding.status.as_str(),
+                finding.title,
+                finding.key,
+                finding.file,
+                finding
+                    .line
+                    .map_or("-".to_string(), |line| line.to_string())
+            );
+            println!("  - Body: {}", markdown_line(&finding.body));
+            println!(
+                "  - Fix: {}",
+                markdown_line(
+                    finding
+                        .fix
+                        .as_deref()
+                        .unwrap_or("unavailable: artifact-less legacy import")
+                )
+            );
+            let evidence = finding
+                .reports
+                .iter()
+                .map(|report| {
+                    if report.report_id.is_empty() {
+                        format!("{} round {} (legacy import)", report.source, report.round)
+                    } else {
+                        format!(
+                            "{} round {} `{}`",
+                            report.source, report.round, report.report_id
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            println!("  - Reports: {evidence}");
+            for transition in finding
+                .history
+                .iter()
+                .filter(|transition| transition.note.is_some())
+            {
+                println!(
+                    "  - Resolution/history, round {}: {:?} - {}",
+                    transition.round,
+                    transition.kind,
+                    markdown_line(transition.note.as_deref().unwrap_or_default())
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
+    match event.event_type {
+        EventType::RunReportV1 => event.payload["verdict"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "RunReport@1 has no string verdict".to_string()),
+        EventType::RunReportV2 => {
+            let report: RunReportPayloadV2 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(match report.verdict {
+                RunVerdictV2::Pass => "pass".to_string(),
+                RunVerdictV2::Fail {
+                    reason: RunFailureReasonV2::NotConverged,
+                } => "fail (not_converged)".to_string(),
+                RunVerdictV2::Fail {
+                    reason: RunFailureReasonV2::Exhausted,
+                } => "fail (exhausted)".to_string(),
+                RunVerdictV2::Incomplete { missing_nodes } => {
+                    format!("incomplete ({} missing nodes)", missing_nodes.len())
+                }
+            })
+        }
+        _ => Err(format!("{} is not a run report", event.event_type)),
+    }
+}
+
+fn markdown_line(value: &str) -> String {
+    value.lines().collect::<Vec<_>>().join(" ")
+}
+
+fn title_case(value: &str) -> String {
+    let mut characters = value.chars();
+    match characters.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
@@ -280,20 +592,16 @@ fn run(options: &Options) -> Result<(), String> {
         // instead of consuming `max_rounds`, and it is correct even after an advance-then-crash:
         // the target round is a function of closed rounds, so a bumped-but-unclosed round is
         // simply re-entered.
-        let closed_rounds = store
-            .replay(&run_id)
-            .map_err(|e| e.to_string())?
-            .iter()
-            .filter(|e| {
-                e.event_type == "RunReport@1"
-                    && !e
-                        .payload
-                        .get("verdict")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .starts_with("Incomplete")
-            })
-            .count() as u32;
+        let events = store.replay(&run_id).map_err(|e| e.to_string())?;
+        let mut closed_rounds = 0_u32;
+        for event in &events {
+            if run_report_closes_round(event)
+                .map_err(|e| format!("decoding {}: {e}", event.event_type))?
+                .unwrap_or(false)
+            {
+                closed_rounds += 1;
+            }
+        }
         let target_round = closed_rounds + 1;
         {
             let mut ingest =
@@ -304,7 +612,7 @@ fn run(options: &Options) -> Result<(), String> {
             println!("round    {}", ingest.ledger().round);
         }
 
-        let ledger = Ledger::rebuild(&store, &run_id).map_err(|e| e.to_string())?;
+        let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
         // Only claims a reviewer can still act on: declined findings (rejected / wontfix) are
         // the operator's terminal decision, and the ledger never reopens them — handing them
         // back under the re-examination contract only invites re-litigation that cannot change
@@ -354,7 +662,7 @@ fn run(options: &Options) -> Result<(), String> {
             &run_id,
             &cas,
             NewEvent::new(
-                "SourceCaptured@1",
+                EventType::SourceCapturedV1,
                 snapshot.to_payload(&tree_id, Some(&manifest_artifact)),
             )
             .referencing(vec![manifest_artifact]),

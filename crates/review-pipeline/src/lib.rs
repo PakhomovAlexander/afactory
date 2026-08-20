@@ -27,8 +27,12 @@ use std::sync::Mutex;
 
 use review_attempt::{AttemptLedger, Budget, BudgetLedger, Receipt, Scope, Selection};
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
-use review_core::LegacyStageOutput;
-use review_graph::{Dispatch, Node, NodeKind, NodeOutcome, RunReport};
+use review_core::{
+    EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, RunFailureReasonV2, RunNodeOutcomeV2,
+    RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity,
+};
+use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{ReviewerAdapter, ReviewerInputs, RunnerError};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
@@ -41,10 +45,38 @@ const PRIOR_FINDINGS_PORT: &str = "prior_findings";
 
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
 /// (gather, ledger) that consume artifacts regardless of which port delivered them.
-fn artifact_ids(inputs: &[(String, String)]) -> Vec<String> {
-    inputs
+fn artifact_ids(inputs: &ArtifactMap) -> Vec<String> {
+    inputs.values().flatten().cloned().collect()
+}
+
+fn bind_single_output(node: &Node, artifacts: Vec<String>) -> Result<ArtifactMap, String> {
+    let [port] = node.outputs.as_slice() else {
+        return Err(format!(
+            "node {} has {} output ports, but its built-in dispatcher produces one port",
+            node.id,
+            node.outputs.len()
+        ));
+    };
+    Ok(BTreeMap::from([(port.name.clone(), artifacts)]))
+}
+
+fn port_artifacts(
+    contracts: &[PortContract],
+    artifacts: &ArtifactMap,
+    subject_snapshot_id: &str,
+) -> Vec<PortArtifactsV1> {
+    contracts
         .iter()
-        .map(|(_, artifact)| artifact.clone())
+        .map(|port| PortArtifactsV1 {
+            port: port.name.clone(),
+            artifact_type: port.artifact_type.clone(),
+            cardinality: port.cardinality,
+            optional: port.optional,
+            snapshot_affinity: port.snapshot_affinity,
+            artifact_ids: artifacts.get(&port.name).cloned().unwrap_or_default(),
+            subject_snapshot_id: (port.snapshot_affinity == SnapshotAffinity::SameSubject)
+                .then(|| subject_snapshot_id.to_string()),
+        })
         .collect()
 }
 
@@ -215,7 +247,12 @@ impl<'a> Kernel<'a> {
 
     /// The ledger as it stands, rebuilt from the log rather than accumulated in memory.
     pub fn ledger(&self) -> Ledger {
-        Ledger::rebuild(*self.store.lock().expect("event store"), &self.run_id).expect("replay")
+        Ledger::rebuild(
+            *self.store.lock().expect("event store"),
+            self.cas,
+            &self.run_id,
+        )
+        .expect("replay")
     }
 
     pub fn convergence(&self, policy: ConvergencePolicy) -> Convergence {
@@ -270,28 +307,64 @@ impl<'a> Kernel<'a> {
         // reaches it, and the buffered attempts, charges included, would be lost. Every run
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
-        let outcomes: Vec<serde_json::Value> = report
+        let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
             .iter()
             .map(|(id, outcome)| {
-                let (status, detail) = match outcome {
-                    NodeOutcome::Completed { outputs } => ("completed", serde_json::json!(outputs)),
-                    NodeOutcome::Failed { error } => ("failed", serde_json::json!(error)),
-                    NodeOutcome::Suppressed { reason } => {
-                        ("suppressed", serde_json::json!(format!("{reason:?}")))
-                    }
+                let outcome = match outcome {
+                    NodeOutcome::Completed { outputs } => RunNodeOutcomeV2::Completed {
+                        output_artifacts: artifact_ids(outputs),
+                    },
+                    NodeOutcome::Failed { error } => RunNodeOutcomeV2::Failed {
+                        error: error.clone(),
+                    },
+                    NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
+                        reason: match reason {
+                            review_graph::SuppressionReason::GateBlocked => {
+                                RunSuppressionReasonV2::GateBlocked
+                            }
+                            review_graph::SuppressionReason::UpstreamMissing => {
+                                RunSuppressionReasonV2::UpstreamMissing
+                            }
+                        },
+                    },
                 };
-                serde_json::json!({ "node": id, "status": status, "detail": detail })
+                RunNodeReportV2 {
+                    node: id.clone(),
+                    outcome,
+                }
             })
             .collect();
+        let verdict = match verdict {
+            RunVerdict::Pass => RunVerdictV2::Pass,
+            RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::NotConverged,
+            },
+            RunVerdict::Fail(Verdict::Exhausted) => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::Exhausted,
+            },
+            RunVerdict::Fail(Verdict::Converged) => {
+                return Err("invalid run verdict: converged cannot be a failure".to_string());
+            }
+            RunVerdict::Incomplete { missing } => RunVerdictV2::Incomplete {
+                missing_nodes: missing
+                    .iter()
+                    .map(|(node, reason)| MissingNodeV2 {
+                        node: node.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+            },
+        };
+        let payload = RunReportPayloadV2 {
+            outcomes,
+            blocked_gates: report.blocked_gates.iter().cloned().collect(),
+            verdict,
+            spent_tokens: self.spent(),
+        };
         self.append(NewEvent::new(
-            "RunReport@1",
-            serde_json::json!({
-                "outcomes": outcomes,
-                "blocked_gates": report.blocked_gates,
-                "verdict": format!("{verdict:?}"),
-                "spent_tokens": self.spent(),
-            }),
+            EventType::RunReportV2,
+            serde_json::to_value(payload).map_err(|e| e.to_string())?,
         ))
     }
 
@@ -367,7 +440,7 @@ impl<'a> Kernel<'a> {
             .map_err(|e| e.to_string())?;
         self.append(
             NewEvent::new(
-                "GateDecision@1",
+                EventType::GateDecisionV1,
                 serde_json::to_value(&decision).map_err(|e| e.to_string())?,
             )
             .node(node_id)
@@ -383,7 +456,7 @@ impl<'a> Kernel<'a> {
     fn run_reviewer(
         &self,
         node_id: &str,
-        node_inputs: &[(String, String)],
+        node_inputs: &ArtifactMap,
     ) -> Result<Vec<String>, String> {
         let adapter = self
             .reviewers
@@ -394,9 +467,9 @@ impl<'a> Kernel<'a> {
         // the pipeline routed from the generation node — not from ambient kernel state. A
         // reviewer that declares no such input receives none; the plan is the delivery.
         let prior_findings_artifact = node_inputs
-            .iter()
-            .find(|(port, _)| port == PRIOR_FINDINGS_PORT)
-            .map(|(_, artifact)| artifact.clone());
+            .get(PRIOR_FINDINGS_PORT)
+            .and_then(|artifacts| artifacts.first())
+            .cloned();
         let mut inputs = ReviewerInputs::default();
         if let Some(artifact) = &prior_findings_artifact {
             let value = self.cas.get_json(artifact).map_err(|e| e.to_string())?;
@@ -437,7 +510,7 @@ impl<'a> Kernel<'a> {
             self.buffer_reviewer_event(
                 node_id,
                 NewEvent::new(
-                    "AttemptDispatched@1",
+                    EventType::AttemptDispatchedV1,
                     serde_json::json!({
                         "reserved": reservation.as_ref().map(|r| r.amount),
                         "prior_findings": prior_findings_artifact,
@@ -476,7 +549,7 @@ impl<'a> Kernel<'a> {
                     self.buffer_reviewer_event(
                         node_id,
                         NewEvent::new(
-                            "AttemptAdmitted@1",
+                            EventType::AttemptAdmittedV1,
                             serde_json::json!({
                                 "selection": match selection {
                                     Selection::Selected => "selected",
@@ -527,27 +600,6 @@ impl<'a> Kernel<'a> {
                             "sandbox_mutations": mutation_summary,
                         }))
                         .map_err(|e| e.to_string())?;
-                    self.buffer_reviewer_event(
-                        node_id,
-                        NewEvent::new(
-                            // The design's name for this record. Not "ReviewerResult@1":
-                            // that is the typed result contract, and this is the receipt.
-                            "NodeOutputReceipt@1",
-                            serde_json::json!({
-                                "verdict": format!("{:?}", returned.output.verdict),
-                                "findings": returned.output.findings.len(),
-                                "cost_tokens": returned.cost_tokens,
-                                "sandbox_mutations": mutation_summary,
-                            }),
-                        )
-                        .node(node_id)
-                        .attempt(attempt.to_string())
-                        .referencing(vec![
-                            artifact.clone(),
-                            returned.raw_artifact.clone(),
-                            mutations_artifact,
-                        ]),
-                    );
                     return Ok(vec![artifact]);
                 }
                 Err(RunnerError::TimedOut { after_ms }) => {
@@ -566,7 +618,7 @@ impl<'a> Kernel<'a> {
                     self.buffer_reviewer_event(
                         node_id,
                         NewEvent::new(
-                            "AttemptFenced@1",
+                            EventType::AttemptFencedV1,
                             serde_json::json!({
                                 "reason": format!("timed out after {after_ms}ms"),
                                 "charged": reservation.as_ref().map(|r| r.amount),
@@ -590,7 +642,7 @@ impl<'a> Kernel<'a> {
                     self.buffer_reviewer_event(
                         node_id,
                         NewEvent::new(
-                            "AttemptReleased@1",
+                            EventType::AttemptReleasedV1,
                             serde_json::json!({
                                 "error": error.to_string(),
                                 "released": reservation.as_ref().map(|r| r.amount),
@@ -615,7 +667,7 @@ impl<'a> Kernel<'a> {
                     self.buffer_reviewer_event(
                         node_id,
                         NewEvent::new(
-                            "AttemptFailed@1",
+                            EventType::AttemptFailedV1,
                             serde_json::json!({
                                 "error": error.to_string(),
                                 "charged": reservation.as_ref().map(|r| r.amount),
@@ -693,8 +745,12 @@ impl<'a> Kernel<'a> {
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.
-        let ledger = Ledger::rebuild(*self.store.lock().expect("event store"), &self.run_id)
-            .map_err(|e| e.to_string())?;
+        let ledger = Ledger::rebuild(
+            *self.store.lock().expect("event store"),
+            self.cas,
+            &self.run_id,
+        )
+        .map_err(|e| e.to_string())?;
         let artifact = self
             .cas
             .put_json(&serde_json::json!({
@@ -728,10 +784,25 @@ fn mutation_summary(
 }
 
 impl Dispatch for Kernel<'_> {
-    fn run(&self, node: &Node, inputs: &[(String, String)]) -> Result<Vec<String>, String> {
+    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
+        let payload = NodeInvocationPayloadV1 {
+            node: node.id.clone(),
+            inputs: port_artifacts(&node.inputs, inputs, &self.snapshot.content_digest()),
+        };
+        self.append(
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(payload).map_err(|e| e.to_string())?,
+            )
+            .node(&node.id)
+            .referencing(artifact_ids(inputs)),
+        )
+    }
+
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         // Routing is on the validated kind, never the id: an id is a name someone chose, and a
         // reviewer named `gather` must still be a reviewer that runs.
-        match node.kind {
+        let artifacts = match node.kind {
             NodeKind::Generation => self.run_generation(),
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
@@ -739,10 +810,33 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Gather => self.run_gather(&artifact_ids(inputs)),
             NodeKind::Ledger => self.run_ledger(&artifact_ids(inputs)),
             NodeKind::Reviewer => self.run_reviewer(&node.id, inputs),
-        }
+        }?;
+        bind_single_output(node, artifacts)
     }
 
-    fn gate_passed(&self, node_id: &str, _outputs: &[String]) -> bool {
+    fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
+        let payload = NodeOutputReceiptPayloadV1 {
+            node: node.id.clone(),
+            outputs: port_artifacts(&node.outputs, outputs, &self.snapshot.content_digest()),
+        };
+        let mut event = NewEvent::new(
+            EventType::NodeOutputReceiptV1,
+            serde_json::to_value(payload).map_err(|e| e.to_string())?,
+        )
+        .node(&node.id)
+        .referencing(artifact_ids(outputs));
+        if node.kind == NodeKind::Reviewer
+            && let Some(artifact) = artifact_ids(outputs).first()
+            && let Ok(value) = self.cas.get_json(artifact)
+            && let Some(attempt) = value.get("attempt").and_then(serde_json::Value::as_str)
+        {
+            event = event.attempt(attempt);
+        }
+        self.buffer_reviewer_event(&node.id, event);
+        Ok(())
+    }
+
+    fn gate_passed(&self, node_id: &str, _outputs: &ArtifactMap) -> bool {
         self.gates
             .lock()
             .expect("gates")

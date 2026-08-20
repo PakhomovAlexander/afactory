@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use review_core::LegacyStageOutput;
-use review_store::{Cas, EventStore, Ingest, Ledger, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
 
 fn stage(json: &str) -> LegacyStageOutput {
     serde_json::from_str(json).unwrap()
@@ -73,7 +73,8 @@ fn the_projection_survives_process_death() {
     // Everything above is dropped here — connection closed, no in-memory state left.
 
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let rebuilt = snapshot(&Ledger::rebuild(&store, "run").unwrap());
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let rebuilt = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
     assert_eq!(live, rebuilt, "rebuild must reproduce the committed state");
 
     // And the reopen-after-fix path really was exercised, so this is not a trivial equality.
@@ -88,9 +89,63 @@ fn rebuilding_twice_is_the_same_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     build_run(dir.path());
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let first = snapshot(&Ledger::rebuild(&store, "run").unwrap());
-    let second = snapshot(&Ledger::rebuild(&store, "run").unwrap());
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let first = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
+    let second = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
     assert_eq!(first, second);
+}
+
+#[test]
+fn the_report_artifact_not_the_event_copy_is_projection_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "title": "Canonical title",
+            "severity": "blocker",
+            "file": "src/authority.rs",
+            "line": 19,
+            "body": "canonical body",
+            "fix": "canonical fix",
+            "confidence": 0.99,
+            "source": "architecture",
+            "round": 1,
+        }))
+        .unwrap();
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                review_store::ledger::EVENT_FINDING_REPORTED,
+                serde_json::json!({
+                    "key": "claim",
+                    "round": 1,
+                    "source": "architecture",
+                    "severity": "minor",
+                    "file": "forged.rs",
+                    "line": 1,
+                    "title": "Forged title",
+                    "body": "forged body",
+                    "confidence": 0.1,
+                    "report_id": report_id,
+                }),
+            )
+            .correlating("claim")
+            .referencing(vec![report_id]),
+        )
+        .unwrap();
+
+    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
+    let finding = ledger.get("claim").unwrap();
+    assert_eq!(finding.title, "Canonical title");
+    assert_eq!(finding.body, "canonical body");
+    assert_eq!(finding.fix.as_deref(), Some("canonical fix"));
+    assert_eq!(finding.file, "src/authority.rs");
+    assert_eq!(finding.line, Some(19));
+    assert_eq!(finding.severity, review_core::Severity::Blocker);
+    assert_eq!(finding.confidence, Some(0.99));
 }
 
 /// A crash between publishing an artifact and appending the event that references it leaves an
@@ -111,7 +166,7 @@ fn a_crash_after_publish_but_before_append_leaves_only_garbage() {
     ingest
         .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
         .unwrap();
-    let ledger = Ledger::rebuild(&store, "run").unwrap();
+    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
     assert_eq!(ledger.len(), 1);
 
     let referenced: Vec<String> = store
@@ -144,7 +199,11 @@ fn a_refused_append_does_not_consume_a_sequence() {
     let err = store.append(
         "run",
         &cas,
-        review_store::NewEvent::new("Thing@1", serde_json::json!({})).referencing(vec![missing]),
+        review_store::NewEvent::new(
+            review_core::EventType::SourceCapturedV1,
+            serde_json::json!({}),
+        )
+        .referencing(vec![missing]),
     );
     assert!(err.is_err());
     assert_eq!(store.len("run").unwrap(), before, "no partial write");
@@ -153,7 +212,10 @@ fn a_refused_append_does_not_consume_a_sequence() {
         .append(
             "run",
             &cas,
-            review_store::NewEvent::new("Thing@1", serde_json::json!({})),
+            review_store::NewEvent::new(
+                review_core::EventType::SourceCapturedV1,
+                serde_json::json!({}),
+            ),
         )
         .unwrap();
     assert_eq!(next.sequence, before, "the sequence stayed dense");
@@ -178,8 +240,8 @@ fn runs_are_isolated_in_one_store() {
             .unwrap();
     }
 
-    let a = Ledger::rebuild(&store, "run-a").unwrap();
-    let b = Ledger::rebuild(&store, "run-b").unwrap();
+    let a = Ledger::rebuild(&store, &cas, "run-a").unwrap();
+    let b = Ledger::rebuild(&store, &cas, "run-b").unwrap();
     assert_eq!(a.len(), 1);
     assert_eq!(b.len(), 1);
     assert_eq!(a.findings()[0].title, "only in a");

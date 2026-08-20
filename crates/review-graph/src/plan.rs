@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use review_core::{PortCardinality, SnapshotAffinity};
+
 /// A named typed port. Edges connect an upstream node's output port to a downstream input port,
 /// so what a node receives is a property of the pipeline definition rather than of whatever was
 /// lying around when it ran.
@@ -26,6 +28,50 @@ pub struct Edge {
     pub to: Port,
 }
 
+/// The contract of one named input or output port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortContract {
+    pub name: String,
+    pub artifact_type: String,
+    pub cardinality: PortCardinality,
+    pub optional: bool,
+    pub snapshot_affinity: SnapshotAffinity,
+}
+
+impl PortContract {
+    pub fn new(name: impl Into<String>, artifact_type: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            artifact_type: artifact_type.into(),
+            cardinality: PortCardinality::One,
+            optional: false,
+            snapshot_affinity: SnapshotAffinity::SameSubject,
+        }
+    }
+
+    /// Compatibility shorthand for tests and generic graph users. The port is still fully
+    /// declared, but deliberately makes no domain claim beyond carrying one opaque artifact.
+    pub fn opaque(name: impl Into<String>) -> Self {
+        Self::new(name, review_core::contract::OPAQUE_V1)
+            .with_snapshot_affinity(SnapshotAffinity::Any)
+    }
+
+    pub fn with_cardinality(mut self, cardinality: PortCardinality) -> Self {
+        self.cardinality = cardinality;
+        self
+    }
+
+    pub fn optional(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+
+    pub fn with_snapshot_affinity(mut self, affinity: SnapshotAffinity) -> Self {
+        self.snapshot_affinity = affinity;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     /// Emits the run's generation state — the campaign's prior findings — as an artifact, so
@@ -47,8 +93,8 @@ pub struct Node {
     pub kind: NodeKind,
     /// Ports this node will accept input on. An edge to any other name is a planning error —
     /// a typo in a pipeline must not silently mean "this node gets nothing".
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
+    pub inputs: Vec<PortContract>,
+    pub outputs: Vec<PortContract>,
     /// The gate whose pass is a precondition for dispatching this node. Transitive: a node
     /// downstream of a gated node is gated too.
     pub gated_by: Option<String>,
@@ -60,18 +106,28 @@ impl Node {
             id: id.into(),
             kind,
             inputs: Vec::new(),
-            outputs: vec!["out".to_string()],
+            outputs: vec![PortContract::opaque("out")],
             gated_by: None,
         }
     }
 
     pub fn accepting(mut self, ports: &[&str]) -> Node {
-        self.inputs = ports.iter().map(|p| (*p).to_string()).collect();
+        self.inputs = ports.iter().map(|p| PortContract::opaque(*p)).collect();
         self
     }
 
     pub fn emitting(mut self, ports: &[&str]) -> Node {
-        self.outputs = ports.iter().map(|p| (*p).to_string()).collect();
+        self.outputs = ports.iter().map(|p| PortContract::opaque(*p)).collect();
+        self
+    }
+
+    pub fn accepting_contracts(mut self, ports: Vec<PortContract>) -> Node {
+        self.inputs = ports;
+        self
+    }
+
+    pub fn emitting_contracts(mut self, ports: Vec<PortContract>) -> Node {
+        self.outputs = ports;
         self
     }
 
@@ -99,6 +155,33 @@ pub enum PlanError {
         edge: String,
         port: Port,
     },
+    DuplicatePort {
+        node: String,
+        port: String,
+    },
+    InvalidArtifactType {
+        port: Port,
+        artifact_type: String,
+    },
+    TypeMismatch {
+        edge: String,
+        produced: String,
+        accepted: String,
+    },
+    CardinalityMismatch {
+        edge: String,
+        produced: PortCardinality,
+        accepted: PortCardinality,
+    },
+    SnapshotAffinityMismatch {
+        edge: String,
+        produced: SnapshotAffinity,
+        accepted: SnapshotAffinity,
+    },
+    OptionalityMismatch {
+        edge: String,
+    },
+    MultipleWriters(Port),
     /// A node's declared input port with nothing wired to it. Not a warning: a reviewer running
     /// without the prior findings it expects produces a confident, wrong review.
     UnwiredInput(Port),
@@ -119,6 +202,50 @@ impl std::fmt::Display for PlanError {
             PlanError::UnknownPort { edge, port } => write!(
                 f,
                 "edge {edge} names port {}.{} which that node does not declare",
+                port.node, port.name
+            ),
+            PlanError::DuplicatePort { node, port } => {
+                write!(f, "node {node} declares port {port} more than once")
+            }
+            PlanError::InvalidArtifactType {
+                port,
+                artifact_type,
+            } => write!(
+                f,
+                "port {}.{} has invalid versioned artifact type {artifact_type}",
+                port.node, port.name
+            ),
+            PlanError::TypeMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} carries {produced}, but its input accepts {accepted}"
+            ),
+            PlanError::CardinalityMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} has incompatible cardinality {produced:?} -> {accepted:?}"
+            ),
+            PlanError::SnapshotAffinityMismatch {
+                edge,
+                produced,
+                accepted,
+            } => write!(
+                f,
+                "edge {edge} has incompatible snapshot affinity {produced:?} -> {accepted:?}"
+            ),
+            PlanError::OptionalityMismatch { edge } => write!(
+                f,
+                "edge {edge} feeds a required input from an optional output"
+            ),
+            PlanError::MultipleWriters(port) => write!(
+                f,
+                "single-valued input {}.{} has more than one writer",
                 port.node, port.name
             ),
             PlanError::UnwiredInput(port) => write!(
@@ -195,6 +322,26 @@ impl Pipeline {
             nodes.insert(node.id.clone(), node);
         }
 
+        for node in nodes.values() {
+            for contracts in [&node.inputs, &node.outputs] {
+                let mut names = BTreeSet::new();
+                for contract in contracts {
+                    if !names.insert(contract.name.as_str()) {
+                        return Err(PlanError::DuplicatePort {
+                            node: node.id.clone(),
+                            port: contract.name.clone(),
+                        });
+                    }
+                    if !valid_artifact_type(&contract.artifact_type) {
+                        return Err(PlanError::InvalidArtifactType {
+                            port: Port::new(&node.id, &contract.name),
+                            artifact_type: contract.artifact_type.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         for edge in &self.edges {
             let label = format!(
                 "{}.{} -> {}.{}",
@@ -212,12 +359,50 @@ impl Pipeline {
                 } else {
                     &spec.inputs
                 };
-                if !declared.contains(&port.name) {
+                if !declared.iter().any(|contract| contract.name == port.name) {
                     return Err(PlanError::UnknownPort {
                         edge: label.clone(),
                         port: port.clone(),
                     });
                 }
+            }
+            let produced = nodes[&edge.from.node]
+                .outputs
+                .iter()
+                .find(|port| port.name == edge.from.name)
+                .expect("ports validated");
+            let accepted = nodes[&edge.to.node]
+                .inputs
+                .iter()
+                .find(|port| port.name == edge.to.name)
+                .expect("ports validated");
+            if produced.artifact_type != accepted.artifact_type {
+                return Err(PlanError::TypeMismatch {
+                    edge: label,
+                    produced: produced.artifact_type.clone(),
+                    accepted: accepted.artifact_type.clone(),
+                });
+            }
+            if produced.cardinality == PortCardinality::Many
+                && accepted.cardinality == PortCardinality::One
+            {
+                return Err(PlanError::CardinalityMismatch {
+                    edge: label,
+                    produced: produced.cardinality,
+                    accepted: accepted.cardinality,
+                });
+            }
+            if accepted.snapshot_affinity != SnapshotAffinity::Any
+                && produced.snapshot_affinity != accepted.snapshot_affinity
+            {
+                return Err(PlanError::SnapshotAffinityMismatch {
+                    edge: label,
+                    produced: produced.snapshot_affinity,
+                    accepted: accepted.snapshot_affinity,
+                });
+            }
+            if produced.optional && !accepted.optional {
+                return Err(PlanError::OptionalityMismatch { edge: label });
             }
         }
 
@@ -225,12 +410,16 @@ impl Pipeline {
         // the failure mode this typing exists to remove.
         for node in nodes.values() {
             for input in &node.inputs {
-                let wired = self
+                let writers = self
                     .edges
                     .iter()
-                    .any(|e| e.to.node == node.id && &e.to.name == input);
-                if !wired {
-                    return Err(PlanError::UnwiredInput(Port::new(&node.id, input)));
+                    .filter(|e| e.to.node == node.id && e.to.name == input.name)
+                    .count();
+                if writers == 0 && !input.optional {
+                    return Err(PlanError::UnwiredInput(Port::new(&node.id, &input.name)));
+                }
+                if writers > 1 && input.cardinality == PortCardinality::One {
+                    return Err(PlanError::MultipleWriters(Port::new(&node.id, &input.name)));
                 }
             }
             if let Some(gate) = &node.gated_by
@@ -250,6 +439,24 @@ impl Pipeline {
             order,
         })
     }
+}
+
+fn valid_artifact_type(value: &str) -> bool {
+    let Some((namespace, rest)) = value.split_once('/') else {
+        return false;
+    };
+    let Some((name, version)) = rest.rsplit_once('@') else {
+        return false;
+    };
+    !namespace.is_empty()
+        && namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.')
+        && name.starts_with(|character: char| character.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && version.parse::<u32>().is_ok_and(|version| version > 0)
 }
 
 /// Kahn's algorithm with a deterministic tie-break: among ready nodes, the lowest ID first.

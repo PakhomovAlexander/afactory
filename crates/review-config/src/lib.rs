@@ -20,7 +20,10 @@ use std::collections::BTreeMap;
 
 use review_check::CheckDefinition;
 use review_core::{Arg, Command, Provenance};
-use review_graph::{Node, NodeKind, Pipeline, PlanError, Planned, Port};
+use review_graph::{
+    Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
+    SnapshotAffinity,
+};
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
 
@@ -148,9 +151,9 @@ pub struct NodeSpec {
     pub id: String,
     pub kind: NodeKindSpec,
     #[serde(default)]
-    pub inputs: Vec<String>,
+    pub inputs: Vec<PortContractSpec>,
     #[serde(default = "default_outputs")]
-    pub outputs: Vec<String>,
+    pub outputs: Vec<PortContractSpec>,
     #[serde(default)]
     pub gated_by: Option<String>,
     /// An inline runner command. A reviewer binds exactly one of `runner` or `package`;
@@ -163,8 +166,47 @@ pub struct NodeSpec {
     pub package: Option<String>,
 }
 
-fn default_outputs() -> Vec<String> {
-    vec!["out".to_string()]
+fn default_outputs() -> Vec<PortContractSpec> {
+    vec![PortContractSpec::Name("out".to_string())]
+}
+
+/// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
+/// explicit opaque/one/required/any contract; new and shipped definitions use the typed arm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PortContractSpec {
+    Name(String),
+    Typed(TypedPortSpec),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedPortSpec {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub artifact_type: String,
+    pub cardinality: PortCardinality,
+    #[serde(default)]
+    pub optional: bool,
+    pub snapshot_affinity: SnapshotAffinity,
+}
+
+impl PortContractSpec {
+    fn build(&self) -> PortContract {
+        match self {
+            Self::Name(name) => PortContract::opaque(name),
+            Self::Typed(port) => {
+                let contract = PortContract::new(&port.name, &port.artifact_type)
+                    .with_cardinality(port.cardinality)
+                    .with_snapshot_affinity(port.snapshot_affinity);
+                if port.optional {
+                    contract.optional()
+                } else {
+                    contract
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,8 +375,8 @@ impl Definition {
         let mut packages = BTreeMap::new();
         for spec in &self.nodes {
             let mut node = Node::new(&spec.id, spec.kind.into())
-                .accepting(&spec.inputs.iter().map(String::as_str).collect::<Vec<_>>())
-                .emitting(&spec.outputs.iter().map(String::as_str).collect::<Vec<_>>());
+                .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
+                .emitting_contracts(spec.outputs.iter().map(PortContractSpec::build).collect());
             if let Some(gate) = &spec.gated_by {
                 node = node.gated_by(gate);
             }

@@ -8,6 +8,13 @@ example, and every configuration knob — is
 reviewers only ever mutate a private sandbox; they return typed findings, and only the
 kernel integrates anything. Publishing to a branch or PR stays an explicit human action.
 
+The kernel's own vocabulary is defined in [`CONTEXT.md`](CONTEXT.md) — read it before
+arguing about what a Finding, a Report, a Subject or a Scope is. Queued work lives in
+[`docs/backlog.md`](docs/backlog.md), and decisions about the kernel's own design in
+[`docs/adr/`](docs/adr/). **Picking up that work cold: start at
+[`docs/workstream.md`](docs/workstream.md)**, which carries the status, the resume point, and
+the gotchas that are not obvious from the code.
+
 The legacy shell harness (`.agents/skills/self-review-heavy/scripts/`) is retired as the
 orchestrator but kept deliberately: it is the reference implementation that regenerates
 the synthetic fixture corpus, gated in CI.

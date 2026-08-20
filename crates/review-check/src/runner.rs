@@ -7,9 +7,12 @@ use review_store::{Cas, EventStore, NewEvent, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use review_core::exec::{Arg, ArgError, Command};
+use review_core::{
+    EventType,
+    exec::{Arg, ArgError, Command},
+};
 
-pub const EVENT_CHECK_COMPLETED: &str = "CheckCompleted@1";
+pub const EVENT_CHECK_COMPLETED: EventType = EventType::CheckCompletedV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

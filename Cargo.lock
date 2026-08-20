@@ -762,6 +762,9 @@ dependencies = [
 [[package]]
 name = "review-graph"
 version = "0.1.0"
+dependencies = [
+ "review-core",
+]
 
 [[package]]
 name = "review-pipeline"
@@ -861,6 +864,7 @@ name = "reviewctl"
 version = "0.1.0"
 dependencies = [
  "review-config",
+ "review-core",
  "review-graph",
  "review-pipeline",
  "review-runner",

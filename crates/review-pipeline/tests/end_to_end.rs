@@ -226,13 +226,15 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let events = store.replay("run").unwrap();
     assert_eq!(
         events.len(),
-        2,
-        "one CheckCompleted, one GateDecision, nothing else"
+        3,
+        "one invocation, one CheckCompleted, one GateDecision, nothing else"
     );
-    assert_eq!(events[0].event_type, "CheckCompleted@1");
-    assert_eq!(events[0].payload["status"], "failed");
-    assert_eq!(events[1].event_type, "GateDecision@1");
-    assert_eq!(events[1].payload["outcome"], "Blocked");
+    assert_eq!(events[0].event_type, "NodeInvocation@1");
+    assert_eq!(events[0].payload["node"], "gate");
+    assert_eq!(events[1].event_type, "CheckCompleted@1");
+    assert_eq!(events[1].payload["status"], "failed");
+    assert_eq!(events[2].event_type, "GateDecision@1");
+    assert_eq!(events[2].payload["outcome"], "Blocked");
 }
 
 /// Same inputs, same pipeline, twice — the ledger and the verdict must not move.
@@ -266,7 +268,7 @@ fn two_runs_of_the_same_review_agree() {
             .replay("run")
             .unwrap()
             .into_iter()
-            .map(|e| (e.sequence, e.event_type, e.event_id))
+            .map(|e| (e.sequence, e.event_type.to_string(), e.event_id))
             .collect();
         (snapshot.content_digest, rows, log)
     };
@@ -532,15 +534,22 @@ fn the_event_log_tells_the_whole_story() {
             "FindingReported@1",
             "FindingReported@1",
             "GateDecision@1",
+            "NodeInvocation@1",
+            "NodeInvocation@1",
+            "NodeInvocation@1",
+            "NodeInvocation@1",
+            "NodeInvocation@1",
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
-            "RunReport@1",
+            "NodeOutputReceipt@1",
+            "NodeOutputReceipt@1",
+            "NodeOutputReceipt@1",
+            "RunReport@2",
         ],
         "the log holds the whole run"
     );
-    assert_eq!(types[0], "CheckCompleted@1");
-    assert_eq!(types[1], "GateDecision@1");
-    assert_eq!(*types.last().unwrap(), "RunReport@1");
+    assert_eq!(types[0], "NodeInvocation@1");
+    assert_eq!(*types.last().unwrap(), "RunReport@2");
     for node in ["architecture", "performance"] {
         let lifecycle: Vec<&str> = events
             .iter()
@@ -550,6 +559,7 @@ fn the_event_log_tells_the_whole_story() {
         assert_eq!(
             lifecycle,
             vec![
+                "NodeInvocation@1",
                 "AttemptDispatched@1",
                 "AttemptAdmitted@1",
                 "NodeOutputReceipt@1"
@@ -558,7 +568,8 @@ fn the_event_log_tells_the_whole_story() {
         );
     }
     let run_report = events.last().unwrap();
-    assert_eq!(run_report.payload["verdict"], "Fail(NotConverged)");
+    assert_eq!(run_report.payload["verdict"]["kind"], "fail");
+    assert_eq!(run_report.payload["verdict"]["reason"], "not_converged");
     assert_eq!(run_report.payload["outcomes"].as_array().unwrap().len(), 5);
     let admitted: Vec<&serde_json::Value> = events
         .iter()
@@ -569,6 +580,26 @@ fn the_event_log_tells_the_whole_story() {
         admitted.iter().all(|p| p["selection"] == "selected"),
         "no quarantines in a clean run"
     );
+    for receipt in events
+        .iter()
+        .filter(|event| event.event_type == "NodeOutputReceipt@1")
+    {
+        let selected: Vec<&str> = receipt.payload["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|port| port["artifact_ids"].as_array().unwrap())
+            .map(|id| id.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            selected,
+            receipt
+                .artifact_refs
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// A failed reviewer suppresses the gather it feeds — and the buffered attempt events, charges
@@ -615,7 +646,7 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         .replay("run")
         .unwrap()
         .into_iter()
-        .map(|e| e.event_type)
+        .map(|e| e.event_type.to_string())
         .collect();
     let count = |t: &str| types.iter().filter(|x| x.as_str() == t).count();
     assert_eq!(
@@ -623,15 +654,20 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         2,
         "both reviewers dispatched: {types:?}"
     );
-    assert_eq!(
-        count("NodeOutputReceipt@1"),
-        1,
-        "architecture's result recorded"
-    );
+    let architecture_receipts = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "NodeOutputReceipt@1"
+                && event.node_id.as_deref() == Some("architecture")
+        })
+        .count();
+    assert_eq!(architecture_receipts, 1, "architecture's result recorded");
     assert_eq!(
         count("AttemptFailed@1"),
         1,
         "performance's failure recorded"
     );
-    assert!(types.contains(&"RunReport@1".to_string()));
+    assert!(types.contains(&"RunReport@2".to_string()));
 }

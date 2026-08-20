@@ -101,6 +101,6 @@ fn a_refute_dispute_contests_the_prior_claim() {
     assert_eq!(summary.contested, 1);
 
     // Rebuilt from the log alone, the claim is contested — the dispute reached the ledger.
-    let ledger = Ledger::rebuild(&store, "run").unwrap();
+    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
     assert_eq!(ledger.get(&key).unwrap().status, Status::Contested);
 }

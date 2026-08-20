@@ -5,10 +5,12 @@
 //! no models, no checks, no filesystem. That is the point of the split — these guarantees can be
 //! proved without anything expensive or nondeterministic in the loop.
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use review_graph::{
-    Dispatch, Node, NodeKind, NodeOutcome, Pipeline, PlanError, Port, Scheduler, SuppressionReason,
+    ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, Pipeline, PlanError, Port, PortCardinality,
+    PortContract, Scheduler, SnapshotAffinity, SuppressionReason,
 };
 
 /// Records every dispatch, so "this node never ran" is checkable rather than assumed.
@@ -41,11 +43,12 @@ impl Recorder {
 }
 
 impl Dispatch for Recorder {
-    fn run(&self, node: &Node, inputs: &[(String, String)]) -> Result<Vec<String>, String> {
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         let node_id = node.id.as_str();
         let rendered = inputs
-            .iter()
-            .map(|(_, artifact)| artifact.clone())
+            .values()
+            .flatten()
+            .cloned()
             .collect::<Vec<_>>()
             .join(",");
         self.dispatched
@@ -55,10 +58,13 @@ impl Dispatch for Recorder {
         if self.failing.as_deref() == Some(node_id) {
             return Err(format!("{node_id} exploded"));
         }
-        Ok(vec![format!("artifact:{node_id}")])
+        Ok(BTreeMap::from([(
+            node.outputs[0].name.clone(),
+            vec![format!("artifact:{node_id}")],
+        )]))
     }
 
-    fn gate_passed(&self, _node_id: &str, _outputs: &[String]) -> bool {
+    fn gate_passed(&self, _node_id: &str, _outputs: &ArtifactMap) -> bool {
         self.gate_passes
     }
 }
@@ -288,11 +294,14 @@ fn gating_reaches_through_the_graph() {
 fn independent_reviewers_run_concurrently() {
     struct Sleepy;
     impl Dispatch for Sleepy {
-        fn run(&self, node: &Node, _inputs: &[(String, String)]) -> Result<Vec<String>, String> {
+        fn run(&self, node: &Node, _inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
             if node.kind == NodeKind::Reviewer {
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
-            Ok(vec![format!("artifact:{}", node.id)])
+            Ok(BTreeMap::from([(
+                node.outputs[0].name.clone(),
+                vec![format!("artifact:{}", node.id)],
+            )]))
         }
     }
 
@@ -306,4 +315,46 @@ fn independent_reviewers_run_concurrently() {
         elapsed < std::time::Duration::from_millis(700),
         "three 300ms reviewers took {elapsed:?}; they must overlap"
     );
+}
+
+#[test]
+fn planning_refuses_incompatible_port_contracts() {
+    let typed_edge = |output: PortContract, input: PortContract| {
+        Pipeline::default()
+            .node(Node::new("producer", NodeKind::Generation).emitting_contracts(vec![output]))
+            .node(Node::new("consumer", NodeKind::Gather).accepting_contracts(vec![input]))
+            .edge(Port::new("producer", "out"), Port::new("consumer", "in"))
+    };
+
+    let output = PortContract::new("out", "review.kernel/FindingSet@1");
+    let input = PortContract::new("in", "review.kernel/ReportSet@1");
+    assert!(matches!(
+        typed_edge(output, input).plan(),
+        Err(PlanError::TypeMismatch { .. })
+    ));
+
+    let output = PortContract::new("out", "review.kernel/FindingSet@1")
+        .with_cardinality(PortCardinality::Many);
+    let input = PortContract::new("in", "review.kernel/FindingSet@1");
+    assert!(matches!(
+        typed_edge(output, input).plan(),
+        Err(PlanError::CardinalityMismatch { .. })
+    ));
+
+    let output = PortContract::new("out", "review.kernel/FindingSet@1")
+        .with_snapshot_affinity(SnapshotAffinity::Unbound);
+    let input = PortContract::new("in", "review.kernel/FindingSet@1");
+    assert!(matches!(
+        typed_edge(output, input).plan(),
+        Err(PlanError::SnapshotAffinityMismatch { .. })
+    ));
+}
+
+#[test]
+fn an_optional_input_may_be_unwired() {
+    let pipeline =
+        Pipeline::default().node(Node::new("consumer", NodeKind::Gather).accepting_contracts(
+            vec![PortContract::new("maybe", "review.kernel/FindingSet@1").optional()],
+        ));
+    assert!(pipeline.plan().is_ok());
 }

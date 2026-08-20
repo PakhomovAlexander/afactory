@@ -157,6 +157,48 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     assert!(row.contains("\tmajor\topen\t"), "{row}");
     let key = row.split('\t').next().unwrap().to_string();
 
+    let (code, long_out, long_err) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "loop", "--state", &state, "--long"],
+    );
+    assert_eq!(code, 0, "{long_out}\n{long_err}");
+    assert!(long_out.contains("body: spins"), "{long_out}");
+    assert!(long_out.contains("fix: bound it"), "{long_out}");
+
+    let (code, show_out, show_err) = reviewctl(
+        &repo,
+        &home,
+        &["show", "--campaign", "loop", "--state", &state, &key],
+    );
+    assert_eq!(code, 0, "{show_out}\n{show_err}");
+    assert!(
+        show_out.contains("reviewer=architecture round=1"),
+        "{show_out}"
+    );
+    assert!(show_out.contains(r#""fix": "bound it""#), "{show_out}");
+    assert!(show_out.contains("Reported"), "{show_out}");
+
+    let (code, report_out, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "md",
+        ],
+    );
+    assert_eq!(code, 0, "{report_out}\n{report_err}");
+    assert!(
+        report_out.contains("# Review campaign `loop`"),
+        "{report_out}"
+    );
+    assert!(report_out.contains("Fix: bound it"), "{report_out}");
+
     // Fix, commit, record the disposition.
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
@@ -197,6 +239,18 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert!(ledger_out.contains("\tfixed\t"), "{ledger_out}");
     assert!(ledger_err.contains("0 open"), "{ledger_err}");
+
+    let (_, report_out, report_err) = reviewctl(
+        &repo,
+        &home,
+        &["report", "--campaign", "loop", "--state", &state],
+    );
+    assert!(report_out.contains("Final verdict: pass"), "{report_out}");
+    assert!(
+        report_out.contains("bounded in src/main.rs"),
+        "{report_out}"
+    );
+    assert!(report_err.is_empty(), "{report_err}");
 }
 
 /// A "fix" that does not actually fix reopens the finding, and the campaign refuses to pass.

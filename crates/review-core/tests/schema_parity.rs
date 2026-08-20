@@ -7,18 +7,23 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, ClaimRef, ClaimRefKind, FindingReport, Location, PatchProposal, Producer,
-    RunEvent, SourceSnapshot,
+    ArtifactEnvelope, ClaimRef, ClaimRefKind, EventType, FindingReport, Location, MissingNodeV2,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal, PortArtifactsV1,
+    PortCardinality, Producer, RunEvent, RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 5] = [
+const SCHEMAS: [&str; 8] = [
     "artifact-envelope-v1.json",
     "finding-report-v1.json",
+    "node-invocation-v1.json",
+    "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "run-event-v1.json",
+    "run-report-v2.json",
     "source-snapshot-v1.json",
 ];
 
@@ -230,7 +235,7 @@ fn run_event_roundtrips() {
         event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
         run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
         sequence: 184,
-        event_type: "FindingReported@1".into(),
+        event_type: EventType::FindingReportedV1,
         occurred_at: "2026-08-16T12:00:00Z".into(),
         node_id: Some("architecture.storage".into()),
         attempt_id: Some("01jd8m4qz9k7v3n2p6r8t0w200".into()),
@@ -242,7 +247,122 @@ fn run_event_roundtrips() {
     let value = serde_json::to_value(&event).unwrap();
     assert_valid("run-event-v1.json", &value);
     assert_eq!(serde_json::from_value::<RunEvent>(value).unwrap(), event);
-    assert_eq!(event.typed(), Some(("FindingReported", 1)));
+    assert_eq!(event.typed(), ("FindingReported", 1));
+}
+
+#[test]
+fn run_event_schema_and_rust_vocabulary_are_identical() {
+    let schema = schema("run-event-v1.json");
+    let declared = schema["properties"]["type"]["enum"].as_array().unwrap();
+    let rust: Vec<Value> = EventType::ALL
+        .into_iter()
+        .map(|event_type| serde_json::to_value(event_type).unwrap())
+        .collect();
+    assert_eq!(declared, &rust);
+    assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
+}
+
+#[test]
+fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
+    let report = RunReportPayloadV2 {
+        outcomes: vec![RunNodeReportV2 {
+            node: "architecture".into(),
+            outcome: RunNodeOutcomeV2::Suppressed {
+                reason: RunSuppressionReasonV2::GateBlocked,
+            },
+        }],
+        blocked_gates: vec!["gate".into()],
+        verdict: RunVerdictV2::Incomplete {
+            missing_nodes: vec![MissingNodeV2 {
+                node: "architecture".into(),
+                reason: "gate blocked".into(),
+            }],
+        },
+        spent_tokens: Some(42),
+    };
+    let value = serde_json::to_value(&report).unwrap();
+    assert_valid("run-report-v2.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV2>(value).unwrap(),
+        report
+    );
+
+    let mut event = RunEvent {
+        event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
+        run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+        sequence: 1,
+        event_type: EventType::RunReportV1,
+        occurred_at: "2026-08-16T12:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: None,
+        artifact_refs: vec![],
+        payload: json!({ "verdict": "Fail(NotConverged)" }),
+    };
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+    event.payload = json!({ "verdict": "Incomplete { missing: [] }" });
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(false)
+    );
+    event.event_type = EventType::RunReportV2;
+    event.payload = serde_json::to_value(report).unwrap();
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(false)
+    );
+
+    event.payload = serde_json::to_value(RunReportPayloadV2 {
+        outcomes: vec![],
+        blocked_gates: vec![],
+        verdict: RunVerdictV2::Fail {
+            reason: RunFailureReasonV2::Exhausted,
+        },
+        spent_tokens: None,
+    })
+    .unwrap();
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+}
+
+#[test]
+fn node_invocation_and_output_receipt_roundtrip() {
+    let selection = PortArtifactsV1 {
+        port: "subject".into(),
+        artifact_type: review_core::contract::SOURCE_SNAPSHOT_V1.into(),
+        cardinality: PortCardinality::One,
+        optional: false,
+        snapshot_affinity: SnapshotAffinity::SameSubject,
+        artifact_ids: vec![format!("sha256:{}", "a".repeat(64))],
+        subject_snapshot_id: Some(format!("sha256:{}", "b".repeat(64))),
+    };
+    let invocation = NodeInvocationPayloadV1 {
+        node: "architecture".into(),
+        inputs: vec![selection.clone()],
+    };
+    let value = serde_json::to_value(&invocation).unwrap();
+    assert_valid("node-invocation-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<NodeInvocationPayloadV1>(value).unwrap(),
+        invocation
+    );
+
+    let receipt = NodeOutputReceiptPayloadV1 {
+        node: "architecture".into(),
+        outputs: vec![selection],
+    };
+    let value = serde_json::to_value(&receipt).unwrap();
+    assert_valid("node-output-receipt-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<NodeOutputReceiptPayloadV1>(value).unwrap(),
+        receipt
+    );
 }
 
 #[test]

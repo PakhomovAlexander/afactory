@@ -121,7 +121,7 @@ fn ingest(outcomes: &[Outcome]) -> (Vec<String>, Vec<String>) {
         })
         .collect();
 
-    let ledger: Vec<String> = Ledger::rebuild(&store, "run")
+    let ledger: Vec<String> = Ledger::rebuild(&store, &cas, "run")
         .unwrap()
         .findings()
         .into_iter()

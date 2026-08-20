@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:source-snapshot:1",
   "title": "SourceSnapshot@1 payload",
-  "description": "Immutable identification of source CONTENT, never a branch. The snapshot's own identity is the envelope content_id; branch and PR labels are metadata on a ReviewTarget and carry no authority. Capture and materialization run offline through sanitized plumbing, so configuration cannot change content identity.",
+  "description": "Immutable identification of source CONTENT, never a branch. The snapshot's own identity is the envelope content_id; branch and PR labels originate as Review Selector inputs and carry no authority. Capture and materialization run offline through sanitized plumbing, so configuration cannot change content identity.",
   "type": "object",
   "additionalProperties": false,
   "required": ["repository_id", "vcs", "capture", "content_digest"],

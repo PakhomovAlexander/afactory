@@ -96,7 +96,7 @@ fn round_trips(name: &str, jsonl: &str) -> usize {
     let imported = import_ledger_jsonl(&mut store, &cas, name, jsonl).unwrap();
     assert_eq!(imported, expected.len(), "{name}: import count");
 
-    let ledger = Ledger::rebuild(&store, name).unwrap();
+    let ledger = Ledger::rebuild(&store, &cas, name).unwrap();
     assert_eq!(ledger.len(), expected.len(), "{name}: projected count");
 
     for row in &expected {
@@ -113,6 +113,11 @@ fn round_trips(name: &str, jsonl: &str) -> usize {
         );
         assert_eq!(finding.title, row.title, "{name}/{}", row.fp);
         assert_eq!(finding.file, row.file, "{name}/{}", row.fp);
+        assert_eq!(
+            finding.fix, None,
+            "{name}/{}: an artifact-less import must not invent a fix",
+            row.fp
+        );
         // The importer emits a resolution only for a row whose status is not `open`, and
         // the note rides on that resolution — so an open row's note is dropped. That is
         // the documented loss of importing final state, pinned here in both directions
@@ -184,7 +189,7 @@ fn importing_twice_yields_the_same_projection() {
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         import_ledger_jsonl(&mut store, &cas, &name, &jsonl).unwrap();
-        let ledger = Ledger::rebuild(&store, &name).unwrap();
+        let ledger = Ledger::rebuild(&store, &cas, &name).unwrap();
         projections.push(
             ledger
                 .findings()
