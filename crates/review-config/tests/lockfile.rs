@@ -349,3 +349,49 @@ fn a_non_regular_package_entry_is_refused_before_reading() {
         LockError::UnsupportedFileType { .. }
     ));
 }
+
+#[test]
+fn a_package_name_cannot_escape_its_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::new([dir.path()]);
+    assert!(matches!(
+        Lockfile::pin("../outside", &registry).unwrap_err(),
+        LockError::InvalidName { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_cannot_be_a_package_root() {
+    let registry_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write_package(outside.path(), "architecture", "1.2.0");
+    std::os::unix::fs::symlink(
+        outside.path().join("architecture"),
+        registry_dir.path().join("architecture"),
+    )
+    .unwrap();
+    let registry = Registry::new([registry_dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::Symlink { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_package_path_is_refused_not_lossily_hashed() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let name = std::ffi::OsString::from_vec(vec![b'x', 0xff]);
+    std::fs::write(dir.path().join("architecture").join(name), b"content").unwrap();
+    let registry = Registry::new([dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::UnsupportedPath { .. }
+    ));
+}

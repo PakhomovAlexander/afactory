@@ -32,6 +32,9 @@ use crate::CommandSpec;
 #[derive(Debug)]
 pub enum LockError {
     Parse(String),
+    InvalidName {
+        name: String,
+    },
     /// A version that does not name exactly one release.
     Floating {
         name: String,
@@ -74,6 +77,10 @@ pub enum LockError {
         name: String,
         path: PathBuf,
     },
+    UnsupportedPath {
+        name: String,
+        path: PathBuf,
+    },
     UnsupportedSubject {
         name: String,
         subject: review_core::SubjectKind,
@@ -92,6 +99,9 @@ impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LockError::Parse(e) => write!(f, "lockfile: {e}"),
+            LockError::InvalidName { name } => {
+                write!(f, "reviewer name `{name}` is not a safe registry component")
+            }
             LockError::Floating { name, version } => write!(
                 f,
                 "reviewer `{name}` pins version `{version}`, which does not name exactly one \
@@ -149,6 +159,11 @@ impl std::fmt::Display for LockError {
             LockError::UnsupportedFileType { name, path } => write!(
                 f,
                 "reviewer `{name}` contains a non-regular file at {}; a package is regular files only",
+                path.display()
+            ),
+            LockError::UnsupportedPath { name, path } => write!(
+                f,
+                "reviewer `{name}` contains a path that is not valid UTF-8 at {}; refusing a lossy digest name",
                 path.display()
             ),
             LockError::UnsupportedSubject { name, subject } => {
@@ -220,10 +235,38 @@ impl Registry {
     /// verifies is the next question, and a failure there must not be papered over by a copy
     /// further down the chain.
     fn locate(&self, name: &str) -> Result<PathBuf, LockError> {
+        if name.is_empty()
+            || !name.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+            })
+        {
+            return Err(LockError::InvalidName {
+                name: name.to_string(),
+            });
+        }
         for root in &self.roots {
             let candidate = root.join(name);
-            if candidate.is_dir() {
-                return Ok(candidate);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(LockError::Symlink {
+                        name: name.to_string(),
+                        path: candidate,
+                    });
+                }
+                Ok(metadata) if metadata.is_dir() => return Ok(candidate),
+                Ok(_) => {
+                    return Err(LockError::UnsupportedFileType {
+                        name: name.to_string(),
+                        path: candidate,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(LockError::Io {
+                        path: candidate,
+                        error: error.to_string(),
+                    });
+                }
             }
         }
         Err(LockError::NotFound {
@@ -280,13 +323,20 @@ fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockErr
                         path,
                     });
                 }
-                let relative = path
+                let relative_path = path
                     .strip_prefix(root)
-                    .expect("walked paths live under the root")
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
+                    .expect("walked paths live under the root");
+                let mut components = Vec::new();
+                for component in relative_path.components() {
+                    let component = component.as_os_str().to_str().ok_or_else(|| {
+                        LockError::UnsupportedPath {
+                            name: name.to_string(),
+                            path: path.clone(),
+                        }
+                    })?;
+                    components.push(component);
+                }
+                let relative = components.join("/");
                 let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
                 files.insert(relative, bytes);
             }

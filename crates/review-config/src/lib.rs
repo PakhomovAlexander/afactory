@@ -46,7 +46,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands version 1"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1 and 2"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -328,7 +328,7 @@ pub struct Loaded {
     pub reviewers: BTreeMap<String, Command>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
-    pub packages: BTreeMap<String, lock::ResolvedReviewer>,
+    pub packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
     pub convergence: ConvergencePolicy,
     pub budgets: Option<BudgetSpec>,
 }
@@ -398,6 +398,8 @@ impl Definition {
         let mut pipeline = Pipeline::default();
         let mut reviewers = BTreeMap::new();
         let mut packages = BTreeMap::new();
+        let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
+            BTreeMap::new();
         for spec in &self.nodes {
             let mut node = Node::new(&spec.id, spec.kind.into())
                 .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
@@ -440,9 +442,19 @@ impl Definition {
                             spec.id
                         )));
                     };
-                    let resolved = lockfile
-                        .resolve_for_subject(package, registry, subject.kind)
-                        .map_err(ConfigError::Lock)?;
+                    let resolved = match resolved_packages.get(package) {
+                        Some(resolved) => std::sync::Arc::clone(resolved),
+                        None => {
+                            let resolved = std::sync::Arc::new(
+                                lockfile
+                                    .resolve_for_subject(package, registry, subject.kind)
+                                    .map_err(ConfigError::Lock)?,
+                            );
+                            resolved_packages
+                                .insert(package.clone(), std::sync::Arc::clone(&resolved));
+                            resolved
+                        }
+                    };
                     reviewers.insert(spec.id.clone(), resolved.runner.clone());
                     packages.insert(spec.id.clone(), resolved);
                 }
@@ -466,6 +478,12 @@ impl Definition {
         if self.nodes.is_empty() {
             return Err(ConfigError::Binding(
                 "pipeline defines no nodes; an empty review cannot produce a valid round"
+                    .to_string(),
+            ));
+        }
+        if reviewers.is_empty() {
+            return Err(ConfigError::Binding(
+                "pipeline defines no reviewer; a review with no reviewer cannot produce claims"
                     .to_string(),
             ));
         }

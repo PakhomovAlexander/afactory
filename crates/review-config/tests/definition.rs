@@ -175,6 +175,55 @@ fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
     assert_eq!(loaded.subject.kind, SubjectKind::WholeTree);
 }
 
+#[test]
+fn subject_format_transitions_are_explicit() {
+    let missing = MINIMAL.replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
+    let error = Definition::from_toml(&missing)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("version 2 requires `[subject]`"));
+
+    let legacy_with_subject = MINIMAL.replace("version = 2", "version = 1");
+    let error = Definition::from_toml(&legacy_with_subject)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("version 1 has no `[subject]`"));
+}
+
+#[test]
+fn an_inline_reviewer_cannot_claim_diff_support() {
+    let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
+    let error = Definition::from_toml(&diff)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("inline runner"), "{error}");
+}
+
+#[test]
+fn a_pipeline_with_no_reviewer_is_refused() {
+    let text = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+"#;
+    let error = Definition::from_toml(text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("no reviewer"), "{error}");
+}
+
 /// This repository's own pipeline must load — through its own lockfile and registry, which
 /// re-verifies every package digest on every test run: editing a package without re-locking
 /// fails here, exactly as it would fail a real run.
@@ -235,6 +284,25 @@ fn the_checked_in_pipeline_loads() {
     // Every node the plan orders is a node the definition declares, and the order is a
     // function of the pipeline alone.
     assert!(!loaded.plan.order.is_empty());
+}
+
+#[test]
+fn the_template_repository_self_review_pipeline_loads_when_present() {
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../..");
+    if !repo.join("template/.review").is_dir() {
+        return;
+    }
+    let review_dir = repo.join(".review");
+    let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
+    let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
+    let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
+    let registry = review_config::lock::Registry::new([review_dir.join("reviewers")]);
+    let loaded = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map_err(|error| error.to_string())
+        .unwrap();
+    assert_eq!(loaded.packages.len(), 4);
 }
 
 /// Budgets validate at load: caps that could never admit a dispatch are refused as config

@@ -204,6 +204,25 @@ impl<'a> Kernel<'a> {
         }
     }
 
+    /// Construct a kernel for the declared Subject kind. The legacy constructor above is
+    /// explicitly whole-tree; callers carrying a pipeline definition use this entry point so
+    /// an unsupported diff cannot silently execute with whole-tree semantics.
+    pub fn for_subject(
+        cas: &'a Cas,
+        store: &'a mut EventStore,
+        run_id: impl Into<String>,
+        snapshot: Manifest,
+        subject: review_core::SubjectKind,
+    ) -> Result<Kernel<'a>, String> {
+        match subject {
+            review_core::SubjectKind::WholeTree => Ok(Kernel::new(cas, store, run_id, snapshot)),
+            review_core::SubjectKind::Diff => Err(
+                "review-pipeline cannot execute a `diff` Subject until its pinned Base and Change Set are available"
+                    .to_string(),
+            ),
+        }
+    }
+
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
         self.checks = checks;
         self

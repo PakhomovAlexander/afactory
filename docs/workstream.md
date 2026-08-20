@@ -1,7 +1,6 @@
 # Review Kernel — capability work (M0–M9)
 
-**Status:** design re-grilled against the recovered source, **zero code written, nothing
-committed.**
+**Status:** M0 and M1 complete; M2.1 Subject configuration and package compatibility implemented.
 **Goal:** `reviewctl` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** none yet — create `workstream/log.md` beside this file when the first phase concludes.
@@ -109,10 +108,10 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0 and M1 are complete. Resume at M2.1 with the trusted Subject configuration and reviewer
-compatibility check, then pin Campaign authority before candidate capture. Continue in milestone
-order; do not pull Proposal or scatter work forward past Subject, authority, isolation, and
-verification prerequisites.
+M0, M1, and M2.1's trusted Subject configuration and reviewer compatibility check are complete.
+Resume by pinning Campaign authority before candidate capture, then publish and wire the exact
+Subject and Change Set. Continue in milestone order; do not pull Proposal or scatter work forward
+past Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes
 

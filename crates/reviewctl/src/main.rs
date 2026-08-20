@@ -681,8 +681,14 @@ fn run(options: &Options) -> Result<(), String> {
         std::env::var("USER").ok(),
         home.clone(),
     );
-    let mut kernel = Kernel::new(&cas, &mut store, &run_id, snapshot.manifest.clone())
-        .with_checks(loaded.checks);
+    let mut kernel = Kernel::for_subject(
+        &cas,
+        &mut store,
+        &run_id,
+        snapshot.manifest.clone(),
+        loaded.subject.kind,
+    )?
+    .with_checks(loaded.checks);
     if let Some(artifact) = prior_artifact {
         kernel = kernel.with_prior_findings(artifact);
     }

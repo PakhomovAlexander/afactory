@@ -291,8 +291,5 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
         "{sent}"
     );
     assert!(sent.contains("ab12cd34ef56"), "{sent}");
-    assert!(
-        sent.contains("dispute it, with claim_id set to the finding's key"),
-        "{sent}"
-    );
+    assert!(sent.contains("position set to `refute`"), "{sent}");
 }
