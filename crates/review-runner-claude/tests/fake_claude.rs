@@ -62,7 +62,9 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
-    lockfile.resolve("tester", &registry).unwrap()
+    lockfile
+        .resolve_for_subject("tester", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap()
 }
 
 fn adapter_for(

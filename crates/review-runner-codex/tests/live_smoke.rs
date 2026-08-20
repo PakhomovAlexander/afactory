@@ -62,7 +62,9 @@ fn one_real_review_parses_and_reports_its_cost() {
         "smoke".to_string(),
         Lockfile::pin("smoke", &registry).unwrap(),
     );
-    let package = lockfile.resolve("smoke", &registry).unwrap();
+    let package = lockfile
+        .resolve_for_subject("smoke", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap();
 
     // The real credentials, granted explicitly — the supervisor's environment rebuild would
     // otherwise leave codex logged out.

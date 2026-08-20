@@ -63,7 +63,9 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
-    lockfile.resolve("tester", &registry).unwrap()
+    lockfile
+        .resolve_for_subject("tester", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap()
 }
 
 fn adapter_for(
@@ -200,7 +202,9 @@ fn a_package_naming_another_runner_is_refused() {
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
-    let resolved = lockfile.resolve("tester", &registry).unwrap();
+    let resolved = lockfile
+        .resolve_for_subject("tester", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap();
 
     let error = review_runner_codex::CodexAdapter::from_package(&resolved, Duration::from_secs(1))
         .map(|_| ())
