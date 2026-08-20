@@ -291,6 +291,22 @@ fn well_formed_digest(digest: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+fn validate_pin(name: &str, pin: &Pin) -> Result<(), LockError> {
+    if !exact_version(&pin.version) {
+        return Err(LockError::Floating {
+            name: name.to_string(),
+            version: pin.version.clone(),
+        });
+    }
+    if !well_formed_digest(&pin.digest) {
+        return Err(LockError::MalformedDigest {
+            name: name.to_string(),
+            digest: pin.digest.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// Read every regular file in the package into memory, keyed by `/`-separated relative path.
 ///
 /// One read serves both the digest and the manifest parse, so what was verified is what is
@@ -384,18 +400,7 @@ impl Lockfile {
             )));
         }
         for (name, pin) in &lockfile.reviewers {
-            if !exact_version(&pin.version) {
-                return Err(LockError::Floating {
-                    name: name.clone(),
-                    version: pin.version.clone(),
-                });
-            }
-            if !well_formed_digest(&pin.digest) {
-                return Err(LockError::MalformedDigest {
-                    name: name.clone(),
-                    digest: pin.digest.clone(),
-                });
-            }
+            validate_pin(name, pin)?;
         }
         Ok(lockfile)
     }
@@ -417,6 +422,7 @@ impl Lockfile {
             .ok_or_else(|| LockError::NotLocked {
                 name: name.to_string(),
             })?;
+        validate_pin(name, pin)?;
         let root = registry.locate(name)?;
         let files = collect(name, &root)?;
 

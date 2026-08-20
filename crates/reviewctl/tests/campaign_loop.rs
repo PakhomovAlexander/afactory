@@ -56,7 +56,10 @@ fn write_review_config(repo: &Path) {
          else printf '%s' \"{clean}\"; fi"
     );
     let pipeline = format!(
-        r#"version = 1
+        r#"version = 2
+
+[subject]
+kind = "whole-tree"
 
 [[checks]]
 name = "noop"

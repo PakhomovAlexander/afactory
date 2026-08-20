@@ -94,6 +94,20 @@ fn a_legacy_manifest_accepts_only_whole_tree() {
 }
 
 #[test]
+fn a_programmatically_inserted_floating_pin_is_refused_at_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let registry = Registry::new([dir.path()]);
+    let mut lockfile = locked("architecture", &registry);
+    lockfile.reviewers.get_mut("architecture").unwrap().version = "latest".to_string();
+
+    assert!(matches!(
+        lockfile.resolve("architecture", &registry).unwrap_err(),
+        LockError::Floating { .. }
+    ));
+}
+
+#[test]
 fn pin_then_resolve_round_trips_through_the_file_format() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
