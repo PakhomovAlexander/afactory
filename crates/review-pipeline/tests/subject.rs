@@ -99,7 +99,8 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
     .unwrap()
     .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
 
-    loaded.run(&kernel).unwrap();
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
     let delivered = seen
         .lock()
         .unwrap()

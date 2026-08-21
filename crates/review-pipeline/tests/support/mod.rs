@@ -179,6 +179,7 @@ fn test_round_authority_with_subject(
         .unwrap();
     let prior_finding_set_id = prior_finding_set_id.unwrap_or_else(|| {
         cas.put_json(&serde_json::json!({
+            "subject_id": subject_id,
             "round": 1,
             "prior_findings": [],
         }))
