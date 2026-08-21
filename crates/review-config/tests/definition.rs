@@ -440,6 +440,35 @@ fn a_package_that_rejects_the_pipeline_subject_is_refused() {
     let text = MINIMAL
         .replace("kind = \"whole-tree\"", "kind = \"diff\"")
         .replace(
+            "[[nodes]]\nid = \"architecture\"",
+            r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[nodes]]
+id = "architecture""#,
+        )
+        .replace(
+            "inputs = [\"gate\"]",
+            r#"inputs = [
+  "gate",
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]"#,
+        )
+        .replace(
+            "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
+            r#"[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "architecture", port = "change_set" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }"#,
+        )
+        .replace(
             "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
             "package = \"architecture\"",
         );
