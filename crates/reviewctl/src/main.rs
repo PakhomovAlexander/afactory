@@ -1,6 +1,6 @@
 //! `reviewctl` — reviews from a definition file to a verdict, and the campaign loop.
 //!
-//! Three subcommands:
+//! Six subcommands:
 //!
 //! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
 //!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
@@ -11,6 +11,8 @@
 //! - `ledger` prints a campaign's findings, one per line, machine-readably.
 //! - `resolve` records the operator's disposition of one finding (fixed, wontfix, ...) in the
 //!   campaign's ledger — the step between fixing and the round that verifies the fix.
+//! - `tui` drafts an explicit configuration patch for the pipeline's existing reviewer packages
+//!   and launches the same pinned-authority `run` path from an alternate-screen interface.
 //!
 //! Nothing here mutates any repository. A run reads a repo and writes its own state
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
@@ -28,7 +30,9 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, Status};
 
 mod authority;
+mod tui;
 
+#[derive(Clone)]
 struct Options {
     repo: PathBuf,
     pipeline: PathBuf,
@@ -82,6 +86,8 @@ struct ResolveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+        \x20      reviewctl tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
         \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
@@ -231,11 +237,12 @@ fn main() {
     let mut args = std::env::args();
     args.next();
     let result = match args.next().as_deref() {
-        Some("run") => run(&parse_run(args)),
+        Some("run") => run(&parse_run(args)).map(exit_for_verdict),
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
+        Some("tui") => tui::launch(parse_run(args)),
         _ => usage(),
     };
     if let Err(error) = result {
@@ -548,7 +555,7 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn run(options: &Options) -> Result<(), String> {
+fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.state_dir();
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
@@ -666,13 +673,13 @@ fn run(options: &Options) -> Result<(), String> {
 
     let verdict = kernel.publish_report(&report, *loaded.convergence())?;
     println!("verdict  {verdict:?}");
+    Ok(verdict)
+}
+
+fn exit_for_verdict(verdict: RunVerdict) {
     match verdict {
-        RunVerdict::Pass => Ok(()),
-        RunVerdict::Fail(_) => {
-            std::process::exit(3);
-        }
-        RunVerdict::Incomplete { .. } => {
-            std::process::exit(4);
-        }
+        RunVerdict::Pass => {}
+        RunVerdict::Fail(_) => std::process::exit(3),
+        RunVerdict::Incomplete { .. } => std::process::exit(4),
     }
 }

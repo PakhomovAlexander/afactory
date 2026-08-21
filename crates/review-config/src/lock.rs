@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use toml_edit::{Array, DocumentMut, Item, Value};
 
 use crate::CommandSpec;
 
@@ -192,6 +193,199 @@ pub struct PackageManifest {
     #[serde(default = "legacy_subjects")]
     pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewerBackend {
+    Codex,
+    Claude,
+}
+
+impl std::fmt::Display for ReviewerBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Codex => write!(f, "codex"),
+            Self::Claude => write!(f, "claude"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewerRunnerSettings {
+    pub backend: ReviewerBackend,
+    pub model: String,
+    pub effort: String,
+}
+
+/// Read the model settings from a typed package manifest. Only the two adapter flag shapes the
+/// kernel owns are configurable; ambiguity is refused rather than guessed around.
+pub fn reviewer_runner_settings(text: &str) -> Result<ReviewerRunnerSettings, LockError> {
+    let manifest: PackageManifest =
+        toml::from_str(text).map_err(|error| LockError::Parse(error.to_string()))?;
+    let basename = Path::new(&manifest.runner.program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| LockError::Parse("reviewer runner program has no basename".into()))?;
+    let backend = match basename {
+        "codex" => ReviewerBackend::Codex,
+        "claude" => ReviewerBackend::Claude,
+        other => {
+            return Err(LockError::Parse(format!(
+                "reviewer runner `{other}` has no configurable model profile"
+            )));
+        }
+    };
+    let model_index = unique_option_value(&manifest.runner.args, "--model")?;
+    let effort_index = match backend {
+        ReviewerBackend::Claude => unique_option_value(&manifest.runner.args, "--effort")?,
+        ReviewerBackend::Codex => unique_codex_effort(&manifest.runner.args)?,
+    };
+    let effort = match backend {
+        ReviewerBackend::Claude => manifest.runner.args[effort_index].value.clone(),
+        ReviewerBackend::Codex => manifest.runner.args[effort_index]
+            .value
+            .strip_prefix("model_reasoning_effort=")
+            .expect("the index was selected by this prefix")
+            .trim_matches(['\'', '"'])
+            .to_string(),
+    };
+    Ok(ReviewerRunnerSettings {
+        backend,
+        model: manifest.runner.args[model_index].value.clone(),
+        effort,
+    })
+}
+
+/// Update only the model and effort value slots. The executable path, unrelated flags,
+/// provenance markers, comments, and formatting remain package-owned.
+pub fn update_reviewer_runner_settings(
+    text: &str,
+    model: &str,
+    effort: &str,
+) -> Result<String, LockError> {
+    validate_runner_value("model", model)?;
+    validate_runner_value("effort", effort)?;
+    let manifest: PackageManifest =
+        toml::from_str(text).map_err(|error| LockError::Parse(error.to_string()))?;
+    let settings = reviewer_runner_settings(text)?;
+    let model_index = unique_option_value(&manifest.runner.args, "--model")?;
+    let effort_index = match settings.backend {
+        ReviewerBackend::Claude => unique_option_value(&manifest.runner.args, "--effort")?,
+        ReviewerBackend::Codex => unique_codex_effort(&manifest.runner.args)?,
+    };
+    let mut document: DocumentMut = text
+        .parse()
+        .map_err(|error| LockError::Parse(format!("reviewer manifest formatting: {error}")))?;
+    let arguments = document
+        .get_mut("runner")
+        .and_then(Item::as_table_mut)
+        .and_then(|runner| runner.get_mut("args"));
+    let effort_value = match settings.backend {
+        ReviewerBackend::Claude => effort.to_string(),
+        ReviewerBackend::Codex => format!("model_reasoning_effort=\"{effort}\""),
+    };
+    match arguments {
+        Some(Item::Value(Value::Array(arguments))) => {
+            set_argument_value(arguments, model_index, model)?;
+            set_argument_value(arguments, effort_index, &effort_value)?;
+        }
+        Some(Item::ArrayOfTables(arguments)) => {
+            set_table_argument_value(arguments, model_index, model)?;
+            set_table_argument_value(arguments, effort_index, &effort_value)?;
+        }
+        _ => {
+            return Err(LockError::Parse(
+                "reviewer runner has no editable args array".into(),
+            ));
+        }
+    }
+    let rendered = document.to_string();
+    let _: PackageManifest = toml::from_str(&rendered)
+        .map_err(|error| LockError::Parse(format!("updated reviewer manifest: {error}")))?;
+    Ok(rendered)
+}
+
+fn unique_option_value(args: &[crate::ArgSpec], option: &str) -> Result<usize, LockError> {
+    let matches: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| (argument.value == option).then_some(index + 1))
+        .collect();
+    let [index] = matches.as_slice() else {
+        return Err(LockError::Parse(format!(
+            "reviewer runner must contain exactly one `{option}` option"
+        )));
+    };
+    if *index >= args.len() {
+        return Err(LockError::Parse(format!(
+            "reviewer runner `{option}` has no value"
+        )));
+    }
+    Ok(*index)
+}
+
+fn unique_codex_effort(args: &[crate::ArgSpec]) -> Result<usize, LockError> {
+    let matches: Vec<usize> = args
+        .windows(2)
+        .enumerate()
+        .filter_map(|(index, pair)| {
+            (pair[0].value == "-c" && pair[1].value.starts_with("model_reasoning_effort="))
+                .then_some(index + 1)
+        })
+        .collect();
+    let [index] = matches.as_slice() else {
+        return Err(LockError::Parse(
+            "Codex runner must contain exactly one model_reasoning_effort override".into(),
+        ));
+    };
+    Ok(*index)
+}
+
+fn validate_runner_value(label: &str, value: &str) -> Result<(), LockError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.starts_with('-')
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || matches!(character, '"' | '\'' | '\\'))
+    {
+        return Err(LockError::Parse(format!(
+            "reviewer {label} must be 1-128 non-option characters without whitespace, quotes, or backslashes"
+        )));
+    }
+    Ok(())
+}
+
+fn set_argument_value(array: &mut Array, index: usize, value: &str) -> Result<(), LockError> {
+    let argument = array
+        .get_mut(index)
+        .and_then(Value::as_inline_table_mut)
+        .and_then(|table| table.get_mut("value"))
+        .ok_or_else(|| {
+            LockError::Parse(format!(
+                "reviewer runner argument {index} is not an inline value table"
+            ))
+        })?;
+    *argument = Value::from(value);
+    Ok(())
+}
+
+fn set_table_argument_value(
+    tables: &mut toml_edit::ArrayOfTables,
+    index: usize,
+    value: &str,
+) -> Result<(), LockError> {
+    let argument = tables
+        .get_mut(index)
+        .and_then(|table| table.get_mut("value"))
+        .and_then(Item::as_value_mut)
+        .ok_or_else(|| {
+            LockError::Parse(format!(
+                "reviewer runner argument {index} is not a value table"
+            ))
+        })?;
+    *argument = Value::from(value);
+    Ok(())
 }
 
 fn legacy_subjects() -> Vec<review_core::SubjectKind> {
@@ -506,7 +700,49 @@ impl Lockfile {
     /// so the refusal happens when the lock is written rather than on the first run after.
     pub fn pin(name: &str, registry: &Registry) -> Result<Pin, LockError> {
         let (root, files) = registry.read(name)?;
-        let manifest = Self::manifest(name, &root, &files)?;
+        Self::pin_from_files(name, &root, &files)
+    }
+
+    /// Compute a prospective pin by replacing one package file in the same byte map used to
+    /// verify the package's opening digest. This supports proposal generation without writing
+    /// or silently blessing concurrent package changes.
+    pub fn pin_with_replacement(
+        name: &str,
+        registry: &Registry,
+        expected_digest: &str,
+        relative_path: &str,
+        replacement: Vec<u8>,
+    ) -> Result<Pin, LockError> {
+        if relative_path.is_empty()
+            || relative_path
+                .split('/')
+                .any(|component| component.is_empty() || matches!(component, "." | ".."))
+        {
+            return Err(LockError::UnsupportedPath {
+                name: name.to_string(),
+                path: PathBuf::from(relative_path),
+            });
+        }
+        let (root, mut files) = registry.read(name)?;
+        let found = package_digest_from_files(&files);
+        if found != expected_digest {
+            return Err(LockError::DigestMismatch {
+                name: name.to_string(),
+                root,
+                locked: expected_digest.to_string(),
+                found,
+            });
+        }
+        files.insert(relative_path.to_string(), replacement);
+        Self::pin_from_files(name, &root, &files)
+    }
+
+    fn pin_from_files(
+        name: &str,
+        root: &Path,
+        files: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Pin, LockError> {
+        let manifest = Self::manifest(name, root, files)?;
         if manifest.name != name {
             return Err(LockError::NameMismatch {
                 requested: name.to_string(),
@@ -521,7 +757,7 @@ impl Lockfile {
         }
         Ok(Pin {
             version: manifest.version,
-            digest: package_digest_from_files(&files),
+            digest: package_digest_from_files(files),
         })
     }
 

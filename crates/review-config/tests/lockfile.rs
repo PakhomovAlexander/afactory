@@ -6,7 +6,10 @@
 
 use std::path::Path;
 
-use review_config::lock::{LockError, Lockfile, Pin, Registry, package_digest};
+use review_config::lock::{
+    LockError, Lockfile, Pin, Registry, package_digest, reviewer_runner_settings,
+    update_reviewer_runner_settings,
+};
 
 trait ResolveWholeTree {
     fn resolve(
@@ -452,5 +455,111 @@ fn a_non_utf8_package_path_is_refused_not_lossily_hashed() {
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
         LockError::UnsupportedPath { .. }
+    ));
+}
+
+#[test]
+fn runner_settings_round_trip_without_destroying_package_owned_arguments() {
+    let codex = "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
+                 [runner]\nprogram = \"/opt/review/bin/codex\"\n# keep this policy\n\
+                 args = [{ value = \"--model\" }, { value = \"old\", provenance = \"untrusted\" }, \
+                 { value = \"-c\" }, { value = 'model_reasoning_effort=\"medium\"' }, \
+                 { value = \"--config\" }, { value = \"/etc/review.toml\" }]\n";
+    let updated = update_reviewer_runner_settings(codex, "gpt-5.6-sol", "high").unwrap();
+    let settings = reviewer_runner_settings(&updated).unwrap();
+    assert_eq!(settings.model, "gpt-5.6-sol");
+    assert_eq!(settings.effort, "high");
+    assert!(updated.contains("program = \"/opt/review/bin/codex\""));
+    assert!(updated.contains("# keep this policy"));
+    assert!(updated.contains("provenance = \"untrusted\""));
+    assert!(updated.contains("{ value = \"--config\" }"));
+    assert!(updated.contains("{ value = \"/etc/review.toml\" }"));
+
+    let claude = codex
+        .replace("/opt/review/bin/codex", "/opt/review/bin/claude")
+        .replace(
+            "{ value = \"-c\" }, { value = 'model_reasoning_effort=\"medium\"' }",
+            "{ value = \"--effort\" }, { value = \"medium\" }",
+        );
+    let updated = update_reviewer_runner_settings(&claude, "opus", "max").unwrap();
+    let settings = reviewer_runner_settings(&updated).unwrap();
+    assert_eq!(settings.model, "opus");
+    assert_eq!(settings.effort, "max");
+}
+
+#[test]
+fn runner_settings_support_array_of_tables_manifests() {
+    let manifest = "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
+                    [runner]\nprogram = \"claude\"\n\n\
+                    [[runner.args]]\nvalue = \"--model\"\n\n\
+                    [[runner.args]]\nvalue = \"old\"\nprovenance = \"untrusted\"\n\n\
+                    [[runner.args]]\nvalue = \"--effort\"\n\n\
+                    [[runner.args]]\nvalue = \"high\"\n";
+    let updated = update_reviewer_runner_settings(manifest, "opus", "max").unwrap();
+    let settings = reviewer_runner_settings(&updated).unwrap();
+    assert_eq!(settings.model, "opus");
+    assert_eq!(settings.effort, "max");
+    assert!(updated.contains("provenance = \"untrusted\""));
+}
+
+#[test]
+fn runner_settings_refuse_ambiguous_shapes_and_unsafe_values() {
+    let manifest = "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
+                    [runner]\nprogram = \"claude\"\nargs = [{ value = \"--model\" }, { value = \"old\" }, \
+                    { value = \"--effort\" }, { value = \"high\" }]\n";
+    for invalid in ["", "-option", "two words", "a\\\"b", "a'b", "a\\\\b"] {
+        assert!(update_reviewer_runner_settings(manifest, invalid, "high").is_err());
+    }
+    assert!(update_reviewer_runner_settings(manifest, &"x".repeat(129), "high").is_err());
+
+    let duplicate = manifest.replace(
+        "{ value = \"--effort\" }",
+        "{ value = \"--model\" }, { value = \"other\" }, { value = \"--effort\" }",
+    );
+    assert!(reviewer_runner_settings(&duplicate).is_err());
+    let valueless = manifest.replace("{ value = \"--model\" }, { value = \"old\" }, ", "")
+        + "\n[[runner.args]]\nvalue = \"--model\"\n";
+    assert!(reviewer_runner_settings(&valueless).is_err());
+}
+
+#[test]
+fn prospective_pin_matches_applied_bytes_and_rejects_sibling_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    let manifest = "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
+                    [runner]\nprogram = \"claude\"\nargs = [{ value = \"--model\" }, { value = \"old\" }, \
+                    { value = \"--effort\" }, { value = \"high\" }]\n";
+    std::fs::write(package.join("reviewer.toml"), manifest).unwrap();
+    std::fs::write(package.join("reviewer.md"), "trusted prompt\n").unwrap();
+    let registry = Registry::new([dir.path()]);
+    let opening_digest = package_digest("architecture", &package).unwrap();
+    let updated = update_reviewer_runner_settings(manifest, "opus", "max").unwrap();
+    let prospective = Lockfile::pin_with_replacement(
+        "architecture",
+        &registry,
+        &opening_digest,
+        "reviewer.toml",
+        updated.as_bytes().to_vec(),
+    )
+    .unwrap();
+    std::fs::write(package.join("reviewer.toml"), &updated).unwrap();
+    assert_eq!(
+        prospective,
+        Lockfile::pin("architecture", &registry).unwrap()
+    );
+
+    std::fs::write(package.join("reviewer.toml"), manifest).unwrap();
+    let opening_digest = package_digest("architecture", &package).unwrap();
+    std::fs::write(package.join("reviewer.md"), "changed prompt\n").unwrap();
+    assert!(matches!(
+        Lockfile::pin_with_replacement(
+            "architecture",
+            &registry,
+            &opening_digest,
+            "reviewer.toml",
+            updated.into_bytes(),
+        ),
+        Err(LockError::DigestMismatch { .. })
     ));
 }
