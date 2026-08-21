@@ -5,10 +5,11 @@
 //! and commits that patch, then starts a new campaign whose `--authority` names that commit.
 //! `r` always delegates to the ordinary pinned-authority run path.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -29,11 +30,15 @@ use review_config::pipeline_edit::{
     update_pipeline_setting, validate_pipeline, validate_pipeline_structure,
 };
 
-use crate::Options;
+use crate::{Options, providers};
 
 const CONFIG_ROWS: usize = 3;
 const RUN_ROWS: usize = 6;
 const POLICY_ROWS: usize = 5;
+const MAX_DIAGRAM_NODES: usize = 256;
+const MAX_DIAGRAM_LINKS: usize = 2_048;
+const MAX_DIAGRAM_CELLS: usize = 1_000_000;
+const MAX_DIAGRAM_ROUTE_CELLS: usize = 4_000_000;
 
 pub fn launch(options: Options) -> Result<(), String> {
     let mut app = App::load(options)?;
@@ -46,6 +51,9 @@ pub fn launch(options: Options) -> Result<(), String> {
 fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), String> {
     terminal.draw(app)?;
     loop {
+        if app.finish_provider_refresh() {
+            terminal.draw(app)?;
+        }
         if !event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
             continue;
         }
@@ -80,6 +88,9 @@ fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), Strin
                 }
                 Err(error) => app.failure(format!("Reload refused: {error}")),
             },
+            Action::RefreshProviders => {
+                app.start_provider_refresh();
+            }
             Action::Run => {
                 terminal.leave()?;
                 println!(
@@ -189,191 +200,15 @@ impl TerminalSession {
             Paint::Muted,
         )?;
 
-        paint(
-            &mut self.stdout,
-            2,
-            1,
-            14,
-            if app.tab == TopTab::Pipelines {
-                "[ PIPELINES ]"
-            } else {
-                "  PIPELINES  "
-            },
-            if app.tab == TopTab::Pipelines {
-                Paint::Focus
-            } else {
-                Paint::Normal
-            },
-        )?;
-        paint(
-            &mut self.stdout,
-            2,
-            16,
-            14,
-            if app.tab == TopTab::Reviewers {
-                "[ REVIEWERS ]"
-            } else {
-                "  REVIEWERS  "
-            },
-            if app.tab == TopTab::Reviewers {
-                Paint::Focus
-            } else {
-                Paint::Normal
-            },
-        )?;
+        draw_top_tabs(&mut self.stdout, app.tab, width)?;
 
         let footer = height - 3;
-        let left_width = (width / 3).clamp(24, 40);
-        if app.tab == TopTab::Reviewers {
-            for y in 3..footer {
-                paint(&mut self.stdout, y, left_width, 1, "|", Paint::Muted)?;
-            }
-            paint(
-                &mut self.stdout,
-                3,
-                1,
-                left_width - 2,
-                if app.pane == Pane::Reviewers {
-                    "[ REVIEWERS ]"
-                } else {
-                    "  REVIEWERS  "
-                },
-                if app.pane == Pane::Reviewers {
-                    Paint::Focus
-                } else {
-                    Paint::Normal
-                },
-            )?;
-            let list_top = 5;
-            let capacity = usize::from(footer.saturating_sub(list_top));
-            let start = app
-                .selected_reviewer
-                .saturating_sub(capacity.saturating_sub(1));
-            for (row, (index, reviewer)) in app
-                .reviewers
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(capacity)
-                .enumerate()
-            {
-                let selected = index == app.selected_reviewer;
-                paint(
-                    &mut self.stdout,
-                    list_top + row as u16,
-                    1,
-                    left_width - 2,
-                    &format!(
-                        "{} {}{}",
-                        if selected { ">" } else { " " },
-                        reviewer.name,
-                        if reviewer.dirty { " *" } else { "" }
-                    ),
-                    if selected {
-                        Paint::Selected
-                    } else {
-                        Paint::Normal
-                    },
-                )?;
-            }
-
-            let right_x = left_width + 2;
-            let right_width = width - right_x - 1;
-            let reviewer = &app.reviewers[app.selected_reviewer];
-            paint(
-                &mut self.stdout,
-                3,
-                right_x,
-                right_width,
-                if app.pane == Pane::Configuration {
-                    "[ WORKTREE CONFIG PROPOSAL ]"
-                } else {
-                    "  WORKTREE CONFIG PROPOSAL  "
-                },
-                if app.pane == Pane::Configuration {
-                    Paint::Focus
-                } else {
-                    Paint::Normal
-                },
-            )?;
-            paint(
-                &mut self.stdout,
-                4,
-                right_x,
-                right_width,
-                "Values below are worktree proposal inputs only; Run never executes them",
-                Paint::Muted,
-            )?;
-            let config_values = [
-                ("Backend (fixed)", reviewer.backend.as_str()),
-                ("Model (worktree)", reviewer.model.as_str()),
-                ("Effort (worktree)", reviewer.effort.as_str()),
-            ];
-            for (index, (label, value)) in config_values.iter().enumerate() {
-                setting_row(
-                    &mut self.stdout,
-                    6 + index as u16,
-                    right_x,
-                    right_width,
-                    label,
-                    value,
-                    app.pane == Pane::Configuration && app.selected_config == index,
-                )?;
-            }
-            paint(
-                &mut self.stdout,
-                10,
-                right_x,
-                right_width,
-                if app.pane == Pane::Run {
-                    "[ PINNED-AUTHORITY RUN ]"
-                } else {
-                    "  PINNED-AUTHORITY RUN  "
-                },
-                if app.pane == Pane::Run {
-                    Paint::Focus
-                } else {
-                    Paint::Normal
-                },
-            )?;
-            paint(
-                &mut self.stdout,
-                11,
-                right_x,
-                right_width,
-                "A resumed campaign keeps its original packages and ignores --authority",
-                Paint::Muted,
-            )?;
-            let state = app
-                .options
-                .state
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "(campaign default)".to_string());
-            let run_values = [
-                ("Campaign", optional(&app.options.campaign)),
-                ("Authority", optional(&app.options.authority)),
-                ("Focus", optional(&app.options.focus)),
-                ("State", state),
-                ("Uncommitted", yes_no(app.options.uncommitted).to_string()),
-                (
-                    "Restart round",
-                    yes_no(app.options.restart_round).to_string(),
-                ),
-            ];
-            for (index, (label, value)) in run_values.iter().enumerate() {
-                setting_row(
-                    &mut self.stdout,
-                    12 + index as u16,
-                    right_x,
-                    right_width,
-                    label,
-                    value,
-                    app.pane == Pane::Run && app.selected_run == index,
-                )?;
-            }
+        if app.tab == TopTab::Providers {
+            draw_provider_body(&mut self.stdout, app, width, footer)?;
+        } else if app.tab == TopTab::Reviewers {
+            draw_reviewer_body(&mut self.stdout, app, width, footer)?;
         } else {
-            draw_pipeline_body(&mut self.stdout, app, width, footer, left_width)?;
+            draw_pipeline_body(&mut self.stdout, app, width, footer)?;
         }
 
         paint(
@@ -391,7 +226,7 @@ impl TerminalSession {
                 0,
                 width,
                 &format!(" EDIT {}: {}_", editor.label, editor.value),
-                Paint::Focus,
+                Paint::Mutation,
             )?;
             paint(
                 &mut self.stdout,
@@ -414,18 +249,7 @@ impl TerminalSession {
                     Paint::Success
                 },
             )?;
-            paint(
-                &mut self.stdout,
-                footer + 2,
-                0,
-                width,
-                if app.tab == TopTab::Pipelines {
-                    " j/k g/G move | h/l panes | Tab or H/L tabs | Enter edit | a add | d remove | s export | R reload | q"
-                } else {
-                    " j/k g/G C-u/C-d move | h/l panes | Tab or H/L tabs | Enter edit | s export | R reload | r run | q"
-                },
-                Paint::Muted,
-            )?;
+            draw_key_legend(&mut self.stdout, footer + 2, width, app.tab)?;
         }
         self.stdout.flush().map_err(|error| error.to_string())
     }
@@ -437,173 +261,464 @@ impl Drop for TerminalSession {
     }
 }
 
-fn draw_pipeline_body(
+fn draw_reviewer_body(
     stdout: &mut Stdout,
     app: &App,
     width: u16,
     footer: u16,
-    left_width: u16,
 ) -> Result<(), String> {
-    for y in 3..footer {
-        paint(stdout, y, left_width, 1, "|", Paint::Muted)?;
+    let content_x = 1;
+    let content_width = width - 2;
+    paint_spans(
+        stdout,
+        3,
+        content_x,
+        content_width,
+        &[
+            (
+                "[REVIEWERS]",
+                if app.pane == Pane::Reviewers {
+                    Paint::Navigation
+                } else {
+                    Paint::Normal
+                },
+            ),
+            ("  l>  ", Paint::Muted),
+            (
+                "[WORKTREE CONFIG PROPOSAL]",
+                if app.pane == Pane::Configuration {
+                    Paint::Navigation
+                } else {
+                    Paint::Normal
+                },
+            ),
+            ("  l>  ", Paint::Muted),
+            (
+                "[PINNED-AUTHORITY RUN]",
+                if app.pane == Pane::Run {
+                    Paint::Navigation
+                } else {
+                    Paint::Normal
+                },
+            ),
+        ],
+    )?;
+
+    let reviewer = &app.reviewers[app.selected_reviewer];
+    match app.pane {
+        Pane::Reviewers => {
+            paint(
+                stdout,
+                4,
+                content_x,
+                content_width,
+                "Select a reviewer; l opens its worktree configuration proposal",
+                Paint::Muted,
+            )?;
+            let list_top = 6;
+            let capacity = usize::from(footer.saturating_sub(list_top));
+            let start = app
+                .selected_reviewer
+                .saturating_sub(capacity.saturating_sub(1));
+            for (row, (index, reviewer)) in app
+                .reviewers
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(capacity)
+                .enumerate()
+            {
+                let selected = index == app.selected_reviewer;
+                paint(
+                    stdout,
+                    list_top + row as u16,
+                    content_x,
+                    content_width,
+                    &format!(
+                        "{} {:<20} {:<8} {:<24} {}{}",
+                        if selected { ">" } else { " " },
+                        reviewer.name,
+                        reviewer.backend,
+                        reviewer.model,
+                        reviewer.effort,
+                        if reviewer.dirty { " *" } else { "" }
+                    ),
+                    if selected {
+                        Paint::Navigation
+                    } else if reviewer.dirty {
+                        Paint::Mutation
+                    } else {
+                        Paint::Normal
+                    },
+                )?;
+            }
+        }
+        Pane::Configuration => {
+            paint(
+                stdout,
+                5,
+                content_x,
+                content_width,
+                &format!(
+                    "Reviewer {}{}",
+                    reviewer.name,
+                    if reviewer.dirty { " *" } else { "" }
+                ),
+                if reviewer.dirty {
+                    Paint::Mutation
+                } else {
+                    Paint::Normal
+                },
+            )?;
+            paint(
+                stdout,
+                6,
+                content_x,
+                content_width,
+                "Values are worktree proposal inputs only; Run never executes them",
+                Paint::Muted,
+            )?;
+            let config_values = [
+                ("Backend (fixed)", reviewer.backend.as_str()),
+                ("Model (worktree)", reviewer.model.as_str()),
+                ("Effort (worktree)", reviewer.effort.as_str()),
+            ];
+            for (index, (label, value)) in config_values.iter().enumerate() {
+                setting_row(
+                    stdout,
+                    8 + index as u16,
+                    content_x,
+                    content_width,
+                    label,
+                    value,
+                    app.selected_config == index,
+                )?;
+            }
+        }
+        Pane::Run => {
+            paint(
+                stdout,
+                5,
+                content_x,
+                content_width,
+                "Run the selected campaign through committed, pinned configuration",
+                Paint::Normal,
+            )?;
+            paint(
+                stdout,
+                6,
+                content_x,
+                content_width,
+                "A resumed campaign keeps its original packages and ignores --authority",
+                Paint::Muted,
+            )?;
+            let state = app
+                .options
+                .state
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(campaign default)".to_string());
+            let run_values = [
+                ("Campaign", optional(&app.options.campaign)),
+                ("Authority", optional(&app.options.authority)),
+                ("Focus", optional(&app.options.focus)),
+                ("State", state),
+                ("Uncommitted", yes_no(app.options.uncommitted).to_string()),
+                (
+                    "Restart round",
+                    yes_no(app.options.restart_round).to_string(),
+                ),
+            ];
+            for (index, (label, value)) in run_values.iter().enumerate() {
+                setting_row(
+                    stdout,
+                    8 + index as u16,
+                    content_x,
+                    content_width,
+                    label,
+                    value,
+                    app.selected_run == index,
+                )?;
+            }
+        }
     }
+    Ok(())
+}
+
+fn draw_provider_body(
+    stdout: &mut Stdout,
+    app: &App,
+    width: u16,
+    footer: u16,
+) -> Result<(), String> {
+    let content_x = 1;
+    let content_width = width - 2;
     paint(
         stdout,
         3,
-        1,
-        left_width - 2,
-        if app.pipeline_pane == PipelinePane::Nodes {
-            "[ NODES ]"
-        } else {
-            "  NODES  "
-        },
-        if app.pipeline_pane == PipelinePane::Nodes {
-            Paint::Focus
-        } else {
-            Paint::Normal
-        },
+        content_x,
+        content_width,
+        "PROVIDERS | IDs label local auth contexts; accounts are not verified; Campaign authority is untouched",
+        Paint::Normal,
     )?;
-    let list_top = 5;
-    let capacity = usize::from(footer.saturating_sub(list_top));
-    let start = app.selected_node.saturating_sub(capacity.saturating_sub(1));
-    for (row, (index, node)) in app
-        .pipeline_view
-        .nodes
+    if let Some(warning) = &app.providers.warning {
+        paint(stdout, 4, content_x, content_width, warning, Paint::Error)?;
+    } else {
+        let registry = app
+            .providers
+            .registry
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(HOME unavailable)".to_string());
+        paint(
+            stdout,
+            4,
+            content_x,
+            content_width,
+            &format!("Registry {registry}"),
+            Paint::Muted,
+        )?;
+    }
+    paint(
+        stdout,
+        5,
+        content_x,
+        content_width,
+        "  ID                     KIND      STATUS              AUTH TYPE",
+        Paint::Muted,
+    )?;
+    let detail_top = footer - 6;
+    let list_top = 6;
+    let capacity = usize::from(detail_top.saturating_sub(list_top));
+    if app.providers.providers.is_empty() {
+        paint(
+            stdout,
+            list_top,
+            content_x,
+            content_width,
+            "No supported provider CLI is installed and no provider registry entries were loaded",
+            Paint::Error,
+        )?;
+        return Ok(());
+    }
+    let start = app
+        .selected_provider
+        .saturating_sub(capacity.saturating_sub(1));
+    for (row, (index, provider)) in app
+        .providers
+        .providers
         .iter()
         .enumerate()
         .skip(start)
         .take(capacity)
         .enumerate()
     {
-        let selected = index == app.selected_node;
+        let selected = index == app.selected_provider;
         paint(
             stdout,
             list_top + row as u16,
-            1,
-            left_width - 2,
+            content_x,
+            content_width,
             &format!(
-                "{} {:<14} {}",
+                "{} {:<22} {:<9} {:<19} {}",
                 if selected { ">" } else { " " },
-                node.id,
-                node.kind
+                provider.id,
+                provider.kind,
+                provider.status,
+                provider.auth_type
             ),
             if selected {
-                Paint::Selected
+                Paint::Navigation
             } else {
                 Paint::Normal
             },
         )?;
     }
+    let provider = &app.providers.providers[app.selected_provider];
+    paint(
+        stdout,
+        detail_top,
+        content_x,
+        content_width,
+        &format!("SELECTED {} [{}]", provider.id, provider.kind),
+        Paint::Navigation,
+    )?;
+    paint(
+        stdout,
+        detail_top + 1,
+        content_x,
+        content_width,
+        &format!("COMMAND      {}", provider.command),
+        Paint::Muted,
+    )?;
+    paint(
+        stdout,
+        detail_top + 2,
+        content_x,
+        content_width,
+        &format!("AUTH CONTEXT {}", provider.auth_context),
+        Paint::Muted,
+    )?;
+    paint(
+        stdout,
+        detail_top + 3,
+        content_x,
+        content_width,
+        &format!("SOURCE       {}", provider.source),
+        Paint::Muted,
+    )?;
+    paint(
+        stdout,
+        detail_top + 4,
+        content_x,
+        content_width,
+        &format!(
+            "DETAIL       {}",
+            if provider.detail.is_empty() {
+                "-"
+            } else {
+                &provider.detail
+            }
+        ),
+        Paint::Muted,
+    )?;
+    Ok(())
+}
 
-    let right_x = left_width + 2;
-    let right_width = width - right_x - 1;
+fn draw_pipeline_body(
+    stdout: &mut Stdout,
+    app: &App,
+    width: u16,
+    footer: u16,
+) -> Result<(), String> {
+    let content_x = 1;
+    let content_width = width - 2;
+    if app.tab == TopTab::PipelineGraph {
+        paint(
+            stdout,
+            3,
+            content_x,
+            content_width,
+            &format!(
+                " WORKTREE ASCII DAG{}",
+                if app.pipeline_dirty { " *" } else { "" }
+            ),
+            if app.pipeline_dirty {
+                Paint::Mutation
+            } else {
+                Paint::Normal
+            },
+        )?;
+        let detail_top = footer - 4;
+        let graph_top = 5;
+        let graph_height = usize::from(detail_top.saturating_sub(graph_top));
+        match &app.diagram {
+            Ok(diagram) => {
+                let viewport =
+                    diagram.viewport(app.selected_node, usize::from(content_width), graph_height);
+                paint(
+                    stdout,
+                    4,
+                    content_x,
+                    content_width,
+                    &format!(
+                        "cyan * selected | --> data | ..> gate control | viewport follows selection{}",
+                        viewport.clipping_label()
+                    ),
+                    Paint::Muted,
+                )?;
+                for (row, line) in viewport.lines.iter().enumerate() {
+                    paint_graph_row(
+                        stdout,
+                        graph_top + row as u16,
+                        content_x,
+                        content_width,
+                        line,
+                        viewport.selection.filter(|selection| selection.0 == row),
+                    )?;
+                }
+            }
+            Err(error) => paint(
+                stdout,
+                4,
+                content_x,
+                content_width,
+                &format!("ASCII graph unavailable: {error}"),
+                Paint::Error,
+            )?,
+        }
+
+        let node = &app.pipeline_view.nodes[app.selected_node];
+        let incoming = &app.graph.incoming[app.selected_node];
+        let outgoing = &app.graph.outgoing[app.selected_node];
+        paint(
+            stdout,
+            detail_top,
+            content_x,
+            content_width,
+            &format!(
+                "NODE {} [{}] package={}",
+                node.id,
+                node.kind,
+                node.package.as_deref().unwrap_or("-")
+            ),
+            Paint::Navigation,
+        )?;
+        paint(
+            stdout,
+            detail_top + 1,
+            content_x,
+            content_width,
+            &format!(
+                "IN   {}",
+                if incoming.is_empty() {
+                    "-"
+                } else {
+                    incoming.as_str()
+                }
+            ),
+            Paint::Muted,
+        )?;
+        paint(
+            stdout,
+            detail_top + 2,
+            content_x,
+            content_width,
+            &format!(
+                "OUT  {}",
+                if outgoing.is_empty() {
+                    "-"
+                } else {
+                    outgoing.as_str()
+                }
+            ),
+            Paint::Muted,
+        )?;
+        return Ok(());
+    }
+
     paint(
         stdout,
         3,
-        right_x,
-        right_width,
+        content_x,
+        content_width,
         &format!(
-            " WORKTREE GRAPH PROPOSAL{}",
+            " WORKTREE POLICY PROPOSAL{}",
             if app.pipeline_dirty { " *" } else { "" }
         ),
-        Paint::Normal,
+        if app.pipeline_dirty {
+            Paint::Mutation
+        } else {
+            Paint::Normal
+        },
     )?;
     paint(
         stdout,
         4,
-        right_x,
-        right_width,
-        "Run executes pinned authority, not this draft",
+        content_x,
+        content_width,
+        "Values below are worktree proposal inputs only; Run never executes them",
         Paint::Muted,
-    )?;
-    let visible_levels = if app.graph.levels.len() > 4 {
-        3
-    } else {
-        app.graph.levels.len()
-    };
-    for (row, level) in app.graph.levels.iter().take(visible_levels).enumerate() {
-        paint(
-            stdout,
-            5 + row as u16,
-            right_x,
-            right_width,
-            &format!("L{row}  {}", level.join("  ||  ")),
-            Paint::Muted,
-        )?;
-    }
-    if app.graph.levels.len() > 4 {
-        paint(
-            stdout,
-            8,
-            right_x,
-            right_width,
-            &format!("... +{} more levels", app.graph.levels.len() - 3),
-            Paint::Muted,
-        )?;
-    }
-
-    let node = &app.pipeline_view.nodes[app.selected_node];
-    let incoming = &app.graph.incoming[app.selected_node];
-    let outgoing = &app.graph.outgoing[app.selected_node];
-    paint(
-        stdout,
-        9,
-        right_x,
-        right_width,
-        &format!(
-            "NODE {} [{}] package={}",
-            node.id,
-            node.kind,
-            node.package.as_deref().unwrap_or("-")
-        ),
-        Paint::Selected,
-    )?;
-    paint(
-        stdout,
-        10,
-        right_x,
-        right_width,
-        &format!(
-            "IN   {}",
-            if incoming.is_empty() {
-                "-"
-            } else {
-                incoming.as_str()
-            }
-        ),
-        Paint::Muted,
-    )?;
-    paint(
-        stdout,
-        11,
-        right_x,
-        right_width,
-        &format!(
-            "OUT  {}",
-            if outgoing.is_empty() {
-                "-"
-            } else {
-                outgoing.as_str()
-            }
-        ),
-        Paint::Muted,
-    )?;
-
-    paint(
-        stdout,
-        12,
-        right_x,
-        right_width,
-        if app.pipeline_pane == PipelinePane::Policy {
-            "[ WORKTREE POLICY PROPOSAL ]"
-        } else {
-            "  WORKTREE POLICY PROPOSAL  "
-        },
-        if app.pipeline_pane == PipelinePane::Policy {
-            Paint::Focus
-        } else {
-            Paint::Normal
-        },
     )?;
     let policy = &app.pipeline_view.policy;
     let values = [
@@ -628,19 +743,352 @@ fn draw_pipeline_body(
     for (index, (label, value)) in values.iter().enumerate() {
         setting_row(
             stdout,
-            13 + index as u16,
-            right_x,
-            right_width,
+            6 + index as u16,
+            content_x,
+            content_width,
             label,
             value,
-            app.pipeline_pane == PipelinePane::Policy && app.selected_policy == index,
+            app.selected_policy == index,
         )?;
     }
     Ok(())
 }
 
+struct AsciiGraph {
+    cells: Vec<Vec<char>>,
+    positions: Vec<(usize, usize)>,
+    label_widths: Vec<usize>,
+}
+
+struct GraphViewport {
+    lines: Vec<String>,
+    selection: Option<(usize, usize, usize)>,
+    clipped_left: bool,
+    clipped_right: bool,
+    clipped_up: bool,
+    clipped_down: bool,
+}
+
+impl GraphViewport {
+    fn clipping_label(&self) -> String {
+        let mut directions = Vec::new();
+        if self.clipped_left {
+            directions.push("left");
+        }
+        if self.clipped_right {
+            directions.push("right");
+        }
+        if self.clipped_up {
+            directions.push("up");
+        }
+        if self.clipped_down {
+            directions.push("down");
+        }
+        if directions.is_empty() {
+            String::new()
+        } else {
+            format!(" | clipped: {}", directions.join(" "))
+        }
+    }
+}
+
+impl AsciiGraph {
+    fn new(view: &PipelineView, graph: &PipelineGraph) -> Result<Self, String> {
+        if view.nodes.is_empty() || graph.levels.is_empty() {
+            return Ok(Self {
+                cells: vec![Vec::new()],
+                positions: Vec::new(),
+                label_widths: Vec::new(),
+            });
+        }
+        if view.nodes.len() > MAX_DIAGRAM_NODES {
+            return Err(format!(
+                "{} nodes exceed the TUI limit of {MAX_DIAGRAM_NODES}; edit this pipeline in TOML",
+                view.nodes.len()
+            ));
+        }
+        if graph.links.len() > MAX_DIAGRAM_LINKS {
+            return Err(format!(
+                "{} links exceed the TUI limit of {MAX_DIAGRAM_LINKS}; edit this pipeline in TOML",
+                graph.links.len()
+            ));
+        }
+
+        let labels: Vec<String> = view
+            .nodes
+            .iter()
+            .map(|node| format!(" [{}]", display_ascii(&node.id)))
+            .collect();
+        let mut node_levels = vec![0_usize; view.nodes.len()];
+        for (level, nodes) in graph.levels.iter().enumerate() {
+            for &node in nodes {
+                node_levels[node] = level;
+            }
+        }
+        let column_widths: Vec<usize> = graph
+            .levels
+            .iter()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .map(|&node| labels[node].len())
+                    .max()
+                    .unwrap_or(1)
+            })
+            .collect();
+        let mut long_links_by_level = vec![0_usize; graph.levels.len()];
+        for link in &graph.links {
+            if node_levels[link.to] > node_levels[link.from].saturating_add(1) {
+                long_links_by_level[node_levels[link.from]] += 1;
+            }
+        }
+        let mut column_x = vec![0_usize; graph.levels.len()];
+        for level in 1..graph.levels.len() {
+            let channel_width = graph.levels[level - 1]
+                .len()
+                .checked_add(long_links_by_level[level - 1])
+                .and_then(|width| width.checked_add(3))
+                .ok_or("ASCII graph width overflow")?
+                .max(5);
+            column_x[level] = column_x[level - 1]
+                .checked_add(column_widths[level - 1])
+                .and_then(|x| x.checked_add(channel_width))
+                .ok_or("ASCII graph width overflow")?;
+        }
+
+        let node_rows = graph
+            .levels
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1)
+            .checked_mul(2)
+            .and_then(|rows| rows.checked_sub(1))
+            .ok_or("ASCII graph height overflow")?
+            .max(1);
+        let mut positions = vec![(0_usize, 0_usize); view.nodes.len()];
+        for (level, nodes) in graph.levels.iter().enumerate() {
+            for (row, &node) in nodes.iter().enumerate() {
+                let y = if nodes.len() == 1 {
+                    (node_rows - 1) / 2
+                } else {
+                    row * (node_rows - 1) / (nodes.len() - 1)
+                };
+                positions[node] = (column_x[level], y);
+            }
+        }
+        let canvas_width = column_x
+            .last()
+            .zip(column_widths.last())
+            .and_then(|(x, width)| x.checked_add(*width))
+            .ok_or("ASCII graph width overflow")?
+            .max(1);
+        let long_links: usize = long_links_by_level.iter().sum();
+        let canvas_height = if long_links == 0 {
+            node_rows
+        } else {
+            node_rows
+                .checked_add(long_links)
+                .and_then(|height| height.checked_add(1))
+                .ok_or("ASCII graph height overflow")?
+        };
+        let cells = canvas_width
+            .checked_mul(canvas_height)
+            .ok_or("ASCII graph area overflow")?;
+        if cells > MAX_DIAGRAM_CELLS {
+            return Err(format!(
+                "diagram needs {cells} cells, above the TUI limit of {MAX_DIAGRAM_CELLS}; edit this pipeline in TOML"
+            ));
+        }
+        let mut cells = vec![vec![' '; canvas_width]; canvas_height];
+        let mut arrows = Vec::new();
+        let mut long_link = 0;
+        let mut long_rank_by_level = vec![0_usize; graph.levels.len()];
+        let mut route_cells = 0_usize;
+
+        for link in &graph.links {
+            let from_level = node_levels[link.from];
+            let to_level = node_levels[link.to];
+            let (from_x, from_y) = positions[link.from];
+            let (to_x, to_y) = positions[link.to];
+            let from_end = from_x + labels[link.from].len();
+            let arrow_x = to_x.saturating_sub(1);
+            let horizontal = if link.control { '.' } else { '-' };
+            let vertical = if link.control { ':' } else { '|' };
+            if to_level == from_level.saturating_add(1) {
+                let source_rank = graph.levels[from_level]
+                    .iter()
+                    .position(|node| *node == link.from)
+                    .unwrap_or(0);
+                let channel = column_x[from_level] + column_widths[from_level] + 1 + source_rank;
+                route_cells = add_route_work(
+                    route_cells,
+                    from_end.abs_diff(channel) + from_y.abs_diff(to_y) + channel.abs_diff(arrow_x),
+                )?;
+                draw_horizontal(&mut cells, from_end, channel, from_y, horizontal);
+                if from_y != to_y {
+                    draw_vertical(&mut cells, channel, from_y, to_y, vertical);
+                }
+                draw_horizontal(
+                    &mut cells,
+                    channel,
+                    arrow_x.saturating_sub(1),
+                    to_y,
+                    horizontal,
+                );
+            } else {
+                let lane_y = node_rows + 1 + long_link;
+                long_link += 1;
+                let rank = long_rank_by_level[from_level];
+                long_rank_by_level[from_level] += 1;
+                let left_channel = column_x[from_level]
+                    + column_widths[from_level]
+                    + 1
+                    + graph.levels[from_level].len()
+                    + rank;
+                let right_channel = arrow_x.saturating_sub(1);
+                route_cells = add_route_work(
+                    route_cells,
+                    from_end.abs_diff(left_channel)
+                        + from_y.abs_diff(lane_y)
+                        + left_channel.abs_diff(right_channel)
+                        + lane_y.abs_diff(to_y),
+                )?;
+                draw_horizontal(&mut cells, from_end, left_channel, from_y, horizontal);
+                draw_vertical(&mut cells, left_channel, from_y, lane_y, vertical);
+                draw_horizontal(&mut cells, left_channel, right_channel, lane_y, horizontal);
+                draw_vertical(&mut cells, right_channel, lane_y, to_y, vertical);
+            }
+            arrows.push((arrow_x, to_y));
+        }
+
+        for (x, y) in arrows {
+            if let Some(cell) = cells.get_mut(y).and_then(|row| row.get_mut(x)) {
+                *cell = '>';
+            }
+        }
+        for (index, label) in labels.iter().enumerate() {
+            let (x, y) = positions[index];
+            for (offset, character) in label.chars().enumerate() {
+                if let Some(cell) = cells.get_mut(y).and_then(|row| row.get_mut(x + offset)) {
+                    *cell = character;
+                }
+            }
+        }
+        let label_widths = labels.iter().map(String::len).collect();
+        Ok(Self {
+            cells,
+            positions,
+            label_widths,
+        })
+    }
+
+    fn viewport(&self, selected: usize, width: usize, height: usize) -> GraphViewport {
+        if width == 0 || height == 0 || self.cells.is_empty() || self.cells[0].is_empty() {
+            return GraphViewport {
+                lines: Vec::new(),
+                selection: None,
+                clipped_left: false,
+                clipped_right: false,
+                clipped_up: false,
+                clipped_down: false,
+            };
+        }
+        let selected = selected.min(self.positions.len().saturating_sub(1));
+        let (selected_x, selected_y) = self.positions[selected];
+        let canvas_height = self.cells.len();
+        let canvas_width = self.cells[0].len();
+        let visible_width = width.min(canvas_width);
+        let visible_height = height.min(canvas_height);
+        let anchor_x = selected_x + self.label_widths[selected] / 2;
+        let x = anchor_x
+            .saturating_sub(visible_width / 2)
+            .min(canvas_width - visible_width);
+        let y = selected_y
+            .saturating_sub(visible_height / 2)
+            .min(canvas_height - visible_height);
+        let mut lines: Vec<String> = (0..visible_height)
+            .map(|row| {
+                let mut visible = self.cells[y + row][x..x + visible_width].to_vec();
+                if y + row == selected_y && (x..x + visible_width).contains(&selected_x) {
+                    visible[selected_x - x] = '*';
+                }
+                visible.into_iter().collect()
+            })
+            .collect();
+        let label_end = selected_x + self.label_widths[selected];
+        let visible_start = selected_x.max(x);
+        let visible_end = label_end.min(x + visible_width);
+        let selection = (selected_y >= y && selected_y < y + visible_height)
+            .then_some((
+                selected_y - y,
+                visible_start - x,
+                visible_end.saturating_sub(visible_start),
+            ))
+            .filter(|selection| selection.2 > 0);
+        for line in &mut lines {
+            while line.ends_with(' ') {
+                line.pop();
+            }
+        }
+        GraphViewport {
+            lines,
+            selection,
+            clipped_left: x > 0,
+            clipped_right: x + visible_width < canvas_width,
+            clipped_up: y > 0,
+            clipped_down: y + visible_height < canvas_height,
+        }
+    }
+}
+
+fn add_route_work(current: usize, added: usize) -> Result<usize, String> {
+    let total = current
+        .checked_add(added)
+        .ok_or("ASCII graph routing work overflow")?;
+    if total > MAX_DIAGRAM_ROUTE_CELLS {
+        return Err(format!(
+            "diagram routing exceeds the TUI limit of {MAX_DIAGRAM_ROUTE_CELLS} cells; edit this pipeline in TOML"
+        ));
+    }
+    Ok(total)
+}
+
+fn draw_horizontal(cells: &mut [Vec<char>], from: usize, to: usize, y: usize, character: char) {
+    let (start, end) = if from <= to { (from, to) } else { (to, from) };
+    for x in start..=end {
+        merge_edge(cells, x, y, character);
+    }
+}
+
+fn draw_vertical(cells: &mut [Vec<char>], x: usize, from: usize, to: usize, character: char) {
+    let (start, end) = if from <= to { (from, to) } else { (to, from) };
+    for y in start..=end {
+        merge_edge(cells, x, y, character);
+    }
+}
+
+fn merge_edge(cells: &mut [Vec<char>], x: usize, y: usize, character: char) {
+    let Some(cell) = cells.get_mut(y).and_then(|row| row.get_mut(x)) else {
+        return;
+    };
+    *cell = match *cell {
+        ' ' => character,
+        existing if existing == character => existing,
+        _ => '+',
+    };
+}
+
+#[derive(Clone, Copy)]
+struct GraphLink {
+    from: usize,
+    to: usize,
+    control: bool,
+}
+
 struct PipelineGraph {
-    levels: Vec<Vec<String>>,
+    levels: Vec<Vec<usize>>,
+    links: Vec<GraphLink>,
     incoming: Vec<String>,
     outgoing: Vec<String>,
 }
@@ -653,10 +1101,10 @@ impl PipelineGraph {
             .enumerate()
             .map(|(index, node)| (node.id.as_str(), index))
             .collect();
-        let mut indegree = vec![0_usize; view.nodes.len()];
-        let mut adjacency = vec![Vec::new(); view.nodes.len()];
         let mut incoming = vec![Vec::new(); view.nodes.len()];
         let mut outgoing = vec![Vec::new(); view.nodes.len()];
+        let mut dependencies = BTreeSet::new();
+        let mut control_dependencies = BTreeSet::new();
         for edge in &view.edges {
             let (Some(&from), Some(&to)) = (
                 indexes.get(edge.from_node.as_str()),
@@ -664,10 +1112,40 @@ impl PipelineGraph {
             ) else {
                 continue;
             };
+            dependencies.insert((from, to));
+            let mapping = format!(
+                "{}.{} -> {}.{}",
+                edge.from_node, edge.from_port, edge.to_node, edge.to_port
+            );
+            incoming[to].push(mapping.clone());
+            outgoing[from].push(mapping);
+        }
+        for (to, node) in view.nodes.iter().enumerate() {
+            let Some(gate_id) = node.gated_by.as_deref() else {
+                continue;
+            };
+            let Some(&from) = indexes.get(gate_id) else {
+                continue;
+            };
+            dependencies.insert((from, to));
+            control_dependencies.insert((from, to));
+            let mapping = format!("CONTROL {gate_id} -> {}", node.id);
+            incoming[to].push(mapping.clone());
+            outgoing[from].push(mapping);
+        }
+        let links = dependencies
+            .iter()
+            .map(|&(from, to)| GraphLink {
+                from,
+                to,
+                control: control_dependencies.contains(&(from, to)),
+            })
+            .collect();
+        let mut indegree = vec![0_usize; view.nodes.len()];
+        let mut adjacency = vec![Vec::new(); view.nodes.len()];
+        for &(from, to) in &dependencies {
             indegree[to] += 1;
             adjacency[from].push(to);
-            incoming[to].push(format!("{}.{}", edge.from_node, edge.from_port));
-            outgoing[from].push(format!("{}.{}", edge.to_node, edge.to_port));
         }
         let mut queue: VecDeque<usize> = indegree
             .iter()
@@ -685,11 +1163,12 @@ impl PipelineGraph {
             }
         }
         let mut levels = vec![Vec::new(); node_levels.iter().copied().max().unwrap_or(0) + 1];
-        for (node, level) in view.nodes.iter().zip(node_levels) {
-            levels[level].push(format!("[{}]", node.id));
+        for (node, level) in node_levels.into_iter().enumerate() {
+            levels[level].push(node);
         }
         Self {
             levels,
+            links,
             incoming: incoming
                 .into_iter()
                 .map(|items| items.join(" | "))
@@ -704,30 +1183,28 @@ impl PipelineGraph {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TopTab {
-    Pipelines,
+    PipelineGraph,
+    PipelinePolicy,
     Reviewers,
+    Providers,
 }
 
 impl TopTab {
-    fn other(self) -> Self {
+    fn next(self) -> Self {
         match self {
-            Self::Pipelines => Self::Reviewers,
-            Self::Reviewers => Self::Pipelines,
+            Self::PipelineGraph => Self::PipelinePolicy,
+            Self::PipelinePolicy => Self::Reviewers,
+            Self::Reviewers => Self::Providers,
+            Self::Providers => Self::PipelineGraph,
         }
     }
-}
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PipelinePane {
-    Nodes,
-    Policy,
-}
-
-impl PipelinePane {
-    fn other(self) -> Self {
+    fn previous(self) -> Self {
         match self {
-            Self::Nodes => Self::Policy,
-            Self::Policy => Self::Nodes,
+            Self::PipelineGraph => Self::Providers,
+            Self::PipelinePolicy => Self::PipelineGraph,
+            Self::Reviewers => Self::PipelinePolicy,
+            Self::Providers => Self::Reviewers,
         }
     }
 }
@@ -761,6 +1238,7 @@ enum Action {
     Continue,
     Export,
     Reload,
+    RefreshProviders,
     Run,
     Quit,
 }
@@ -809,18 +1287,21 @@ struct App {
     pipeline_text: String,
     pipeline_view: PipelineView,
     graph: PipelineGraph,
+    diagram: Result<AsciiGraph, String>,
     pipeline_dirty: bool,
     reviewers_root: PathBuf,
     lock_path: PathBuf,
     lock_original: String,
     reviewers: Vec<ReviewerConfig>,
+    providers: providers::ProviderInventory,
     tab: TopTab,
-    pipeline_pane: PipelinePane,
     selected_node: usize,
     selected_policy: usize,
     selected_reviewer: usize,
+    selected_provider: usize,
     selected_config: usize,
     selected_run: usize,
+    provider_refresh: Option<ProviderRefresh>,
     pane: Pane,
     editor: Option<Editor>,
     message: String,
@@ -830,6 +1311,25 @@ struct App {
     confirm_remove: Option<String>,
     exported_path: Option<PathBuf>,
     export_sequence: u64,
+}
+
+struct ProviderRefresh {
+    receiver: Receiver<providers::ProviderInventory>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(mut refresh) = self.provider_refresh.take() {
+            refresh
+                .cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(handle) = refresh.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
 
 impl App {
@@ -875,6 +1375,8 @@ impl App {
         let registry = Registry::new([reviewers_root.clone()]);
         validate_pipeline(&pipeline_text, &lock, &registry)?;
         let graph = PipelineGraph::new(&pipeline_view);
+        let diagram = AsciiGraph::new(&pipeline_view, &graph);
+        let providers = providers::discover();
 
         Ok(Self {
             options,
@@ -885,18 +1387,21 @@ impl App {
             pipeline_text,
             pipeline_view,
             graph,
+            diagram,
             pipeline_dirty: false,
             reviewers_root,
             lock_path,
             lock_original,
             reviewers,
-            tab: TopTab::Pipelines,
-            pipeline_pane: PipelinePane::Nodes,
+            providers,
+            tab: TopTab::PipelineGraph,
             selected_node: 0,
             selected_policy: 0,
             selected_reviewer: 0,
+            selected_provider: 0,
             selected_config: 0,
             selected_run: 0,
+            provider_refresh: None,
             pane: Pane::Reviewers,
             editor: None,
             message: "Ready; Run uses pinned authority, while edits export as a separate patch"
@@ -934,11 +1439,23 @@ impl App {
             self.confirm_remove = None;
         }
         match key.code {
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('H') | KeyCode::Char('L') => {
-                self.tab = self.tab.other();
+            KeyCode::Tab => {
+                self.tab = self.tab.next();
+                if self.provider_refresh_needed() {
+                    return Action::RefreshProviders;
+                }
+            }
+            KeyCode::BackTab => {
+                self.tab = self.tab.previous();
+                if self.provider_refresh_needed() {
+                    return Action::RefreshProviders;
+                }
             }
             KeyCode::Char('s') => return Action::Export,
             KeyCode::Char('R') => {
+                if self.tab == TopTab::Providers {
+                    return Action::RefreshProviders;
+                }
                 if self.has_pending_configuration() && !self.confirm_reload {
                     self.confirm_reload = true;
                     self.failure("Reload discards the pending draft; press R again to confirm");
@@ -979,8 +1496,9 @@ impl App {
                 }
             }
             _ => match self.tab {
-                TopTab::Pipelines => self.handle_pipeline_key(key),
+                TopTab::PipelineGraph | TopTab::PipelinePolicy => self.handle_pipeline_key(key),
                 TopTab::Reviewers => self.handle_reviewer_key(key),
+                TopTab::Providers => self.handle_provider_key(key),
             },
         }
         Action::Continue
@@ -999,20 +1517,114 @@ impl App {
         }
     }
 
+    fn handle_provider_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.move_provider_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_provider_selection(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.provider_selection_edge(false),
+            KeyCode::Char('G') | KeyCode::End => self.provider_selection_edge(true),
+            _ => {}
+        }
+    }
+
+    fn start_provider_refresh(&mut self) {
+        if self.provider_refresh.is_some() {
+            self.failure("Provider refresh is already running");
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancelled = std::sync::Arc::clone(&cancelled);
+        let handle = std::thread::spawn(move || {
+            let inventory = providers::discover_with_cancel(&worker_cancelled);
+            let _ = sender.send(inventory);
+        });
+        self.provider_refresh = Some(ProviderRefresh {
+            receiver,
+            cancelled,
+            handle: Some(handle),
+        });
+        self.success("Refreshing provider status in the background");
+    }
+
+    fn provider_refresh_needed(&self) -> bool {
+        self.tab == TopTab::Providers
+            && self.provider_refresh.is_none()
+            && self
+                .providers
+                .providers
+                .iter()
+                .any(|provider| provider.status == "not probed")
+    }
+
+    fn finish_provider_refresh(&mut self) -> bool {
+        let result = match self
+            .provider_refresh
+            .as_ref()
+            .map(|refresh| refresh.receiver.try_recv())
+        {
+            Some(Ok(inventory)) => Some(Ok(inventory)),
+            Some(Err(TryRecvError::Disconnected)) => Some(Err(())),
+            Some(Err(TryRecvError::Empty)) | None => None,
+        };
+        if result.is_none() {
+            return false;
+        }
+        let mut refresh = self
+            .provider_refresh
+            .take()
+            .expect("completed provider refresh exists");
+        if let Some(handle) = refresh.handle.take() {
+            let _ = handle.join();
+        }
+        match result {
+            Some(Ok(inventory)) => {
+                self.providers = inventory;
+                self.selected_provider = self
+                    .selected_provider
+                    .min(self.providers.providers.len().saturating_sub(1));
+                self.success("Provider status refreshed");
+                true
+            }
+            Some(Err(())) => {
+                self.failure("Provider refresh worker stopped without a result");
+                true
+            }
+            None => unreachable!("empty refresh result returned above"),
+        }
+    }
+
     fn handle_pipeline_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_pipeline_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_pipeline_selection(-1),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.tab == TopTab::PipelineGraph {
+                    self.move_graph_selection(0, 1);
+                } else {
+                    self.move_pipeline_selection(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.tab == TopTab::PipelineGraph {
+                    self.move_graph_selection(0, -1);
+                } else {
+                    self.move_pipeline_selection(-1);
+                }
+            }
             KeyCode::Char('g') | KeyCode::Home => self.pipeline_selection_edge(false),
             KeyCode::Char('G') | KeyCode::End => self.pipeline_selection_edge(true),
-            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('l') | KeyCode::Right => {
-                self.pipeline_pane = self.pipeline_pane.other();
+            KeyCode::Char('h') | KeyCode::Left if self.tab == TopTab::PipelineGraph => {
+                self.move_graph_selection(-1, 0);
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.tab == TopTab::PipelineGraph => {
+                self.move_graph_selection(1, 0);
             }
             KeyCode::Enter | KeyCode::Char(' ') => self.activate_pipeline_selection(),
-            KeyCode::Char('a') => {
+            KeyCode::Char('a') if self.tab == TopTab::PipelineGraph => {
                 self.begin_edit(EditTarget::AddReviewer, "reviewer package", String::new());
             }
-            KeyCode::Char('d') => self.remove_selected_reviewer(),
+            KeyCode::Char('d') if self.tab == TopTab::PipelineGraph => {
+                self.remove_selected_reviewer();
+            }
             _ => {}
         }
     }
@@ -1065,9 +1677,27 @@ impl App {
 
     fn move_active_selection(&mut self, amount: isize) {
         match self.tab {
-            TopTab::Pipelines => self.move_pipeline_selection(amount),
+            TopTab::PipelineGraph | TopTab::PipelinePolicy => {
+                self.move_pipeline_selection(amount);
+            }
             TopTab::Reviewers => self.move_reviewer_selection(amount),
+            TopTab::Providers => self.move_provider_selection(amount),
         }
+    }
+
+    fn move_provider_selection(&mut self, amount: isize) {
+        self.selected_provider = self
+            .selected_provider
+            .saturating_add_signed(amount)
+            .min(self.providers.providers.len().saturating_sub(1));
+    }
+
+    fn provider_selection_edge(&mut self, end: bool) {
+        self.selected_provider = if end {
+            self.providers.providers.len().saturating_sub(1)
+        } else {
+            0
+        };
     }
 
     fn move_reviewer_selection(&mut self, amount: isize) {
@@ -1136,9 +1766,11 @@ impl App {
     }
 
     fn move_pipeline_selection(&mut self, amount: isize) {
-        let (selected, count) = match self.pipeline_pane {
-            PipelinePane::Nodes => (&mut self.selected_node, self.pipeline_view.nodes.len()),
-            PipelinePane::Policy => (&mut self.selected_policy, POLICY_ROWS),
+        let (selected, count) = match self.tab {
+            TopTab::PipelineGraph => (&mut self.selected_node, self.pipeline_view.nodes.len()),
+            TopTab::PipelinePolicy => (&mut self.selected_policy, POLICY_ROWS),
+            TopTab::Reviewers => return,
+            TopTab::Providers => return,
         };
         *selected = selected
             .saturating_add_signed(amount)
@@ -1146,16 +1778,55 @@ impl App {
     }
 
     fn pipeline_selection_edge(&mut self, end: bool) {
-        let (selected, count) = match self.pipeline_pane {
-            PipelinePane::Nodes => (&mut self.selected_node, self.pipeline_view.nodes.len()),
-            PipelinePane::Policy => (&mut self.selected_policy, POLICY_ROWS),
+        match self.tab {
+            TopTab::PipelineGraph => {
+                let selected = if end {
+                    self.graph.levels.last().and_then(|level| level.last())
+                } else {
+                    self.graph.levels.first().and_then(|level| level.first())
+                };
+                if let Some(&selected) = selected {
+                    self.selected_node = selected;
+                }
+            }
+            TopTab::PipelinePolicy => {
+                self.selected_policy = if end { POLICY_ROWS - 1 } else { 0 };
+            }
+            TopTab::Reviewers => {}
+            TopTab::Providers => {}
+        }
+    }
+
+    fn move_graph_selection(&mut self, horizontal: isize, vertical: isize) {
+        let Some((level, row)) = self
+            .graph
+            .levels
+            .iter()
+            .enumerate()
+            .find_map(|(level, nodes)| {
+                nodes
+                    .iter()
+                    .position(|node| *node == self.selected_node)
+                    .map(|row| (level, row))
+            })
+        else {
+            return;
         };
-        *selected = if end { count.saturating_sub(1) } else { 0 };
+        let target_level = level
+            .saturating_add_signed(horizontal)
+            .min(self.graph.levels.len().saturating_sub(1));
+        let target_nodes = &self.graph.levels[target_level];
+        let target_row = row
+            .saturating_add_signed(vertical)
+            .min(target_nodes.len().saturating_sub(1));
+        if let Some(&node) = target_nodes.get(target_row) {
+            self.selected_node = node;
+        }
     }
 
     fn activate_pipeline_selection(&mut self) {
-        match self.pipeline_pane {
-            PipelinePane::Nodes => {
+        match self.tab {
+            TopTab::PipelineGraph => {
                 let node = &self.pipeline_view.nodes[self.selected_node];
                 let Some(package) = &node.package else {
                     self.failure(
@@ -1169,7 +1840,7 @@ impl App {
                     package.clone(),
                 );
             }
-            PipelinePane::Policy => {
+            TopTab::PipelinePolicy => {
                 let policy = &self.pipeline_view.policy;
                 let (target, label, value) = match self.selected_policy {
                     0 => (
@@ -1202,6 +1873,8 @@ impl App {
                 };
                 self.begin_edit(target, label, value);
             }
+            TopTab::Reviewers => {}
+            TopTab::Providers => {}
         }
     }
 
@@ -1338,9 +2011,11 @@ impl App {
             }
         }
         let graph = PipelineGraph::new(&view);
+        let diagram = AsciiGraph::new(&view, &graph);
         self.pipeline_text = candidate;
         self.pipeline_view = view;
         self.graph = graph;
+        self.diagram = diagram;
         self.reviewers = reviewers;
         self.pipeline_dirty = self.pipeline_text != self.pipeline_original;
         self.selected_node = self
@@ -1731,6 +2406,181 @@ fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+fn draw_top_tabs(stdout: &mut Stdout, active: TopTab, width: u16) -> Result<(), String> {
+    paint_spans(
+        stdout,
+        2,
+        1,
+        width - 2,
+        &[
+            (
+                "[ PIPELINE GRAPH ]",
+                if active == TopTab::PipelineGraph {
+                    Paint::Tab
+                } else {
+                    Paint::Normal
+                },
+            ),
+            (" ", Paint::Normal),
+            (
+                "[ PIPELINE POLICY ]",
+                if active == TopTab::PipelinePolicy {
+                    Paint::Tab
+                } else {
+                    Paint::Normal
+                },
+            ),
+            (" ", Paint::Normal),
+            (
+                "[ REVIEWERS ]",
+                if active == TopTab::Reviewers {
+                    Paint::Tab
+                } else {
+                    Paint::Normal
+                },
+            ),
+            (" ", Paint::Normal),
+            (
+                "[ PROVIDERS ]",
+                if active == TopTab::Providers {
+                    Paint::Tab
+                } else {
+                    Paint::Normal
+                },
+            ),
+        ],
+    )
+}
+
+fn draw_key_legend(stdout: &mut Stdout, y: u16, width: u16, tab: TopTab) -> Result<(), String> {
+    let graph = [
+        (" ", Paint::Muted),
+        ("h/j/k/l g/G C-u/C-d", Paint::Navigation),
+        (" move | ", Paint::Muted),
+        ("Tab/S-Tab", Paint::Tab),
+        (" tabs | ", Paint::Muted),
+        ("Enter a d s R r", Paint::Mutation),
+        (" change/run | q quit", Paint::Muted),
+    ];
+    let policy = [
+        (" ", Paint::Muted),
+        ("j/k g/G C-u/C-d", Paint::Navigation),
+        (" move | ", Paint::Muted),
+        ("Tab/S-Tab", Paint::Tab),
+        (" tabs | ", Paint::Muted),
+        ("Enter s R r", Paint::Mutation),
+        (" change/run | q quit", Paint::Muted),
+    ];
+    let reviewers = [
+        (" ", Paint::Muted),
+        ("j/k g/G C-u/C-d h/l", Paint::Navigation),
+        (" move | ", Paint::Muted),
+        ("Tab/S-Tab", Paint::Tab),
+        (" tabs | ", Paint::Muted),
+        ("Enter s R r", Paint::Mutation),
+        (" change/run | q quit", Paint::Muted),
+    ];
+    let providers = [
+        (" ", Paint::Muted),
+        ("j/k g/G C-u/C-d", Paint::Navigation),
+        (" select | ", Paint::Muted),
+        ("Tab/S-Tab", Paint::Tab),
+        (" tabs | R reload/probe | q quit", Paint::Muted),
+    ];
+    paint_spans(
+        stdout,
+        y,
+        0,
+        width,
+        match tab {
+            TopTab::PipelineGraph => &graph,
+            TopTab::PipelinePolicy => &policy,
+            TopTab::Reviewers => &reviewers,
+            TopTab::Providers => &providers,
+        },
+    )
+}
+
+fn paint_graph_row(
+    stdout: &mut Stdout,
+    y: u16,
+    x: u16,
+    width: u16,
+    line: &str,
+    selection: Option<(usize, usize, usize)>,
+) -> Result<(), String> {
+    let Some((_, start, length)) = selection else {
+        return paint(stdout, y, x, width, line, Paint::Muted);
+    };
+    let start = start.min(line.len());
+    let end = start.saturating_add(length).min(line.len());
+    paint_spans(
+        stdout,
+        y,
+        x,
+        width,
+        &[
+            (&line[..start], Paint::Muted),
+            (&line[start..end], Paint::Navigation),
+            (&line[end..], Paint::Muted),
+        ],
+    )
+}
+
+fn paint_spans(
+    stdout: &mut Stdout,
+    y: u16,
+    x: u16,
+    width: u16,
+    spans: &[(&str, Paint)],
+) -> Result<(), String> {
+    let mut offset = 0_usize;
+    let total = usize::from(width);
+    for (text, style) in spans {
+        if offset >= total {
+            break;
+        }
+        let text = display_ascii(text);
+        let visible = text.len().min(total - offset);
+        if visible == 0 {
+            continue;
+        }
+        paint(
+            stdout,
+            y,
+            x + offset as u16,
+            visible as u16,
+            &text[..visible],
+            *style,
+        )?;
+        offset += visible;
+    }
+    if offset < total {
+        paint(
+            stdout,
+            y,
+            x + offset as u16,
+            (total - offset) as u16,
+            "",
+            Paint::Muted,
+        )?;
+    }
+    Ok(())
+}
+
+fn display_ascii(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| {
+            if (' '..='~').contains(&character) {
+                character.to_string().chars().collect::<Vec<_>>()
+            } else {
+                character.escape_default().collect()
+            }
+        })
+        .collect()
+}
+
 fn setting_row(
     stdout: &mut Stdout,
     y: u16,
@@ -1747,7 +2597,7 @@ fn setting_row(
         width,
         &format!("{} {label:<17} {value}", if selected { ">" } else { " " }),
         if selected {
-            Paint::Selected
+            Paint::Navigation
         } else {
             Paint::Normal
         },
@@ -1759,8 +2609,9 @@ enum Paint {
     Normal,
     Muted,
     Header,
-    Focus,
-    Selected,
+    Tab,
+    Navigation,
+    Mutation,
     Success,
     Error,
 }
@@ -1774,6 +2625,7 @@ fn paint(
     paint: Paint,
 ) -> Result<(), String> {
     let width = usize::from(width);
+    let text = display_ascii(text);
     let text_width = text.chars().count();
     let mut visible = if text_width > width {
         if width <= 3 {
@@ -1782,7 +2634,7 @@ fn paint(
             text.chars().take(width - 3).collect::<String>() + "..."
         }
     } else {
-        text.to_string()
+        text
     };
     visible.extend(std::iter::repeat_n(
         ' ',
@@ -1792,8 +2644,9 @@ fn paint(
         Paint::Normal => (Color::White, Color::Reset, false),
         Paint::Muted => (Color::DarkGrey, Color::Reset, false),
         Paint::Header => (Color::Black, Color::Cyan, true),
-        Paint::Focus => (Color::Yellow, Color::Reset, true),
-        Paint::Selected => (Color::Black, Color::DarkYellow, true),
+        Paint::Tab => (Color::Black, Color::Yellow, true),
+        Paint::Navigation => (Color::Cyan, Color::Reset, true),
+        Paint::Mutation => (Color::Green, Color::Reset, true),
         Paint::Success => (Color::Green, Color::Reset, false),
         Paint::Error => (Color::Red, Color::Reset, true),
     };
@@ -1816,7 +2669,126 @@ fn paint(
 
 #[cfg(test)]
 mod tests {
-    use super::{append_full_file_patch, proposal_directory};
+    use super::{
+        AsciiGraph, PipelineGraph, append_full_file_patch, display_ascii, proposal_directory,
+    };
+    use review_config::pipeline_edit::pipeline_view;
+
+    const ASCII_PIPELINE: &str = r#"version = 1
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+inputs = []
+outputs = []
+
+[[nodes]]
+id = "source"
+kind = "generation"
+inputs = []
+outputs = []
+
+[[nodes]]
+id = "middle"
+kind = "reviewer"
+inputs = []
+outputs = []
+gated_by = "gate"
+package = "architecture"
+
+[[nodes]]
+id = "branch"
+kind = "reviewer"
+inputs = []
+outputs = []
+package = "contracts"
+
+[[nodes]]
+id = "sink"
+kind = "gather"
+inputs = []
+outputs = []
+
+[[nodes]]
+id = "final"
+kind = "ledger"
+inputs = []
+outputs = []
+
+[[edges]]
+from = { node = "source", port = "a" }
+to = { node = "middle", port = "a" }
+
+[[edges]]
+from = { node = "source", port = "b" }
+to = { node = "middle", port = "b" }
+
+[[edges]]
+from = { node = "source", port = "branch" }
+to = { node = "branch", port = "input" }
+
+[[edges]]
+from = { node = "middle", port = "result" }
+to = { node = "sink", port = "middle" }
+
+[[edges]]
+from = { node = "branch", port = "result" }
+to = { node = "sink", port = "branch" }
+
+[[edges]]
+from = { node = "source", port = "skip" }
+to = { node = "final", port = "skip" }
+
+[[edges]]
+from = { node = "sink", port = "reports" }
+to = { node = "final", port = "reports" }
+
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
+"#;
+
+    #[test]
+    fn ascii_graph_routes_and_follows_the_selected_node() {
+        let view = pipeline_view(ASCII_PIPELINE).unwrap();
+        let graph = PipelineGraph::new(&view);
+        let middle = view
+            .nodes
+            .iter()
+            .position(|node| node.id == "middle")
+            .unwrap();
+        let diagram = AsciiGraph::new(&view, &graph).unwrap();
+        let rendered = diagram.viewport(middle, 200, 200).lines.join("\n");
+        assert!(rendered.is_ascii());
+        assert!(rendered.contains("*[middle]"));
+        assert!(rendered.contains("[sink]"));
+        assert!(rendered.contains('-'));
+        assert!(rendered.contains('|'));
+        assert!(rendered.contains('.'));
+        assert!(rendered.contains('>'));
+        assert!(graph.incoming[middle].contains("source.a -> middle.a"));
+        assert!(graph.incoming[middle].contains("source.b -> middle.b"));
+        assert!(graph.incoming[middle].contains("CONTROL gate -> middle"));
+
+        let final_node = view
+            .nodes
+            .iter()
+            .position(|node| node.id == "final")
+            .unwrap();
+        let clipped = diagram.viewport(final_node, 24, 5);
+        assert!(clipped.lines.iter().any(|line| line.contains("*[final]")));
+        assert!(clipped.clipped_left);
+    }
+
+    #[test]
+    fn terminal_data_is_printable_ascii() {
+        let escaped = display_ascii("node\u{1b}\n雪");
+        assert!(escaped.bytes().all(|byte| (b' '..=b'~').contains(&byte)));
+        assert!(escaped.contains("\\u{1b}"));
+        assert!(escaped.contains("\\n"));
+        assert!(escaped.contains("\\u{96ea}"));
+    }
 
     #[test]
     fn configuration_proposal_is_a_full_file_patch() {

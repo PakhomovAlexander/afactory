@@ -30,6 +30,7 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, Status};
 
 mod authority;
+mod providers;
 mod tui;
 
 #[derive(Clone)]

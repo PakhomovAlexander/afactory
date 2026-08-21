@@ -200,6 +200,14 @@ The trusted, content-pinned sandbox, tool, network, environment, broker, and quo
 which one executable node runs.
 _Avoid_: an ambient/default environment; an unresolved or insufficient Binding fails planning.
 
+**Provider**:
+An operator-named, machine-local authentication context for one adapter kind. A Provider ID is a
+stable label for that context, not a verified or immutable external account identity: credentials
+inside the context can change without changing the ID. An ambient CLI login may be displayed as an
+explicitly unstable candidate but does not become a configured Provider until the operator names
+its context. Credentials are capabilities used through a Provider and never part of its ID.
+_Avoid_: using "provider" for a CLI binary, model, reviewer package, or verified account identity.
+
 **Broker Handle**:
 A non-secret, Attempt/epoch-bound capability authorizing only named external operations through a
 trusted broker that can revoke it after fencing.

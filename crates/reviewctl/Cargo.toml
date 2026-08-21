@@ -21,6 +21,9 @@ review-store = { path = "../review-store" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 toml = "0.8.23"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"] }
+
 [lints]
 workspace = true
 

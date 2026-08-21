@@ -1094,6 +1094,7 @@ name = "reviewctl"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "nix",
  "review-config",
  "review-core",
  "review-graph",

@@ -19,6 +19,7 @@ pub struct PipelineNode {
     pub id: String,
     pub kind: String,
     pub package: Option<String>,
+    pub gated_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +65,7 @@ pub fn pipeline_view(text: &str) -> Result<PipelineView, String> {
                 id: node.id.clone(),
                 kind: node_kind(node.kind).to_string(),
                 package: node.package.clone(),
+                gated_by: node.gated_by.clone(),
             })
             .collect(),
         edges: definition
