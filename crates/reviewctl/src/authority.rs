@@ -13,7 +13,7 @@ use review_core::{
     SubjectV1, run_report_closes_round,
 };
 use review_pipeline::RoundAuthority;
-use review_runner::MAX_PRIOR_FINDINGS_BYTES;
+use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
 
@@ -684,10 +684,10 @@ fn capture_round(
                 .ok_or("diff Campaign has no pinned Base Snapshot")?;
             let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
             let encoded = serde_json::to_vec(&change_set).map_err(|error| error.to_string())?;
-            if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+            if encoded.len() > MAX_CHANGE_SET_BYTES {
                 return Err(format!(
                     "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    encoded.len(), MAX_PRIOR_FINDINGS_BYTES
+                    encoded.len(), MAX_CHANGE_SET_BYTES
                 ));
             }
             Some(

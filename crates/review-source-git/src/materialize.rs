@@ -103,8 +103,7 @@ pub fn materialize(
 
         match entry.kind {
             EntryKind::Symlink => {
-                let link_target = String::from_utf8_lossy(&bytes).into_owned();
-                symlink(&link_target, &target)?;
+                symlink(&bytes, &target)?;
             }
             EntryKind::File | EntryKind::Executable => {
                 fs::write(&target, &bytes)?;
@@ -116,12 +115,13 @@ pub fn materialize(
 }
 
 #[cfg(unix)]
-fn symlink(target: &str, at: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, at)
+fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), at)
 }
 
 #[cfg(not(unix))]
-fn symlink(target: &str, at: &Path) -> std::io::Result<()> {
+fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
     fs::write(at, target)
 }
 

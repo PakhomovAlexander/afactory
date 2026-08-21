@@ -162,13 +162,15 @@ fn source_snapshot_roundtrips_every_capture_kind() {
     ];
 
     for capture in captures {
+        let source_revision = matches!(&capture, Capture::Committed { .. })
+            .then(|| "bba24cb".to_string());
         let snapshot = SourceSnapshot {
             repository_id: "example-org/project-hub".into(),
             vcs: Vcs::Git,
             capture,
             content_digest: digest.clone(),
             parent_snapshot_id: None,
-            source_revision: Some("bba24cb".into()),
+            source_revision,
             artifact_manifest: Some(digest.clone()),
             submodules: vec![Submodule {
                 path: "contrib/x".into(),
@@ -183,6 +185,23 @@ fn source_snapshot_roundtrips_every_capture_kind() {
             snapshot
         );
     }
+
+    let synthetic_with_revision = json!({
+        "repository_id": "r",
+        "vcs": "git",
+        "capture": {
+            "kind": "synthetic_worktree",
+            "tree_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "boundary": "revalidated"
+        },
+        "content_digest": digest,
+        "source_revision": "HEAD"
+    });
+    assert_invalid(
+        "source-snapshot-v1.json",
+        &synthetic_with_revision,
+        "synthetic content cannot claim a committed source revision",
+    );
 }
 
 #[test]

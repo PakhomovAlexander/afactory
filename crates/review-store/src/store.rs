@@ -641,6 +641,11 @@ fn validate_artifact_payload(
         StoreError::Conflict(format!("{artifact_type} artifact is not a JSON object"))
     })?;
     match artifact_type {
+        review_core::contract::CHANGE_SET_V1 => {
+            let change_set: review_core::ChangeSetV1 = serde_json::from_value(value)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            change_set.validate().map_err(StoreError::Conflict)?;
+        }
         "review.kernel/GateDecision@1" => {
             exact_keys(
                 object,

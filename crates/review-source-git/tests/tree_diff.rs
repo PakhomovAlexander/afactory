@@ -5,6 +5,31 @@ mod common;
 use common::{Fixture, cas_of, repo_of};
 use review_source_git::{Capture, TreeChangeKind};
 
+fn object_store_state(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
+    fn walk(
+        root: &std::path::Path,
+        at: &std::path::Path,
+        out: &mut Vec<(std::path::PathBuf, u64)>,
+    ) {
+        for entry in std::fs::read_dir(at).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                out.push((
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    entry.metadata().unwrap().len(),
+                ));
+            }
+        }
+    }
+    let mut state = Vec::new();
+    walk(root, root, &mut state);
+    state.sort();
+    state
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -101,6 +126,9 @@ fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     let repo = repo_of(&fixture);
     let cas = cas_of(&fixture);
     let snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    let before_worktree = review_source_git::worktree_state(&repo).unwrap();
+    let objects = fixture.repo_path().join(".git/objects");
+    let before_objects = object_store_state(&objects);
     let (tree, diff) = repo
         .tree_diff_synthetic_head(
             &repo.resolve_tree(&base_revision).unwrap(),
@@ -112,4 +140,11 @@ fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     assert!(!tree.as_str().is_empty());
     assert!(contains(diff.patch(), b"+fn new() {}"));
     assert!(contains(diff.patch(), b"diff --git a/src/added.rs"));
+    assert_eq!(
+        review_source_git::worktree_state(&repo).unwrap(),
+        before_worktree
+    );
+    assert_eq!(object_store_state(&objects), before_objects);
+    repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
+    assert_eq!(object_store_state(&objects), before_objects);
 }

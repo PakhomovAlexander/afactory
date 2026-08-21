@@ -200,15 +200,15 @@ fn test_round_authority_with_subject(
         )
         .unwrap();
     let mut round_refs = vec![
-        authority_snapshot_id,
-        campaign_manifest_id,
-        head_snapshot_id,
-        subject_id,
-        prior_finding_set_id,
-        prior_demand_set_id,
+        authority_snapshot_id.clone(),
+        campaign_manifest_id.clone(),
+        head_snapshot_id.clone(),
+        subject_id.clone(),
+        prior_finding_set_id.clone(),
+        prior_demand_set_id.clone(),
     ];
-    round_refs.extend(subject.base_snapshot_id);
-    round_refs.extend(subject.change_set_id);
+    round_refs.extend(subject.base_snapshot_id.clone());
+    round_refs.extend(subject.change_set_id.clone());
     let round = store
         .append(
             run_id,

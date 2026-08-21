@@ -429,7 +429,7 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
 }
 
 #[test]
-fn a_diff_pipeline_is_refused_before_candidate_capture() {
+fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
     let reviewers = repo.join(".review/reviewers");
@@ -437,8 +437,17 @@ fn a_diff_pipeline_is_refused_before_candidate_capture() {
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
-         [runner]\nprogram = \"codex\"\nargs = []\n",
+        r#"name = "tester"
+version = "1.0.0"
+subjects = ["diff"]
+
+[runner]
+program = "/bin/sh"
+args = [
+  { value = "-c" },
+  { value = "printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'" },
+]
+"#,
     )
     .unwrap();
     let registry = review_config::lock::Registry::new([&reviewers]);
@@ -455,9 +464,41 @@ version = 2
 [subject]
 kind = "diff"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
+inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "reviewer", port = "change_set" }
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "gather", port = "reviewer" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
 "#,
     )
     .unwrap();
@@ -470,13 +511,22 @@ package = "tester"
         &["run", "--campaign", "diff", "--state", &state],
     );
 
-    assert_eq!(code, 1, "{stdout}\n{stderr}");
-    assert!(
-        stderr.contains("refuses to execute until the typed Change Set is available"),
-        "{stderr}"
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("done      generation"), "{stdout}");
+
+    std::fs::write(repo.join("dirty.txt"), b"not committed\n").unwrap();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "diff-dirty",
+            "--state",
+            &state,
+            "--uncommitted",
+        ],
     );
-    assert!(
-        !stdout.contains("snapshot "),
-        "candidate capture ran:\n{stdout}"
-    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("done      reviewer"), "{stdout}");
 }

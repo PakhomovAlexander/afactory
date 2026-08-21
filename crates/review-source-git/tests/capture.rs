@@ -310,6 +310,46 @@ fn a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_symlink_targets_roundtrip_through_both_capture_modes() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = Fixture::new();
+    let target = std::ffi::OsStr::from_bytes(b"target-\xff");
+    std::os::unix::fs::symlink(target, fixture.repo_path().join("link")).unwrap();
+    fixture.commit_all("non-utf8 symlink");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let capture = Capture::new(&repo, &cas);
+    let committed = capture.committed("HEAD").unwrap();
+    let dirty = capture.dirty().unwrap();
+
+    assert_eq!(committed.content_digest, dirty.content_digest);
+    let root = fixture.dir.path().join("materialized");
+    review_source_git::materialize(&dirty.manifest, &cas, &root).unwrap();
+    assert_eq!(
+        std::fs::read_link(root.join("link")).unwrap().as_os_str().as_bytes(),
+        b"target-\xff"
+    );
+}
+
+#[test]
+fn dirty_capture_fails_closed_when_the_index_contains_a_gitlink() {
+    let fixture = Fixture::new();
+    fixture.write("tracked.txt", b"content\n");
+    let revision = fixture.commit_all("base");
+    let cacheinfo = format!("160000,{revision},submodule");
+    fixture.git(&["update-index", "--add", "--cacheinfo", &cacheinfo]);
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+
+    assert!(matches!(
+        Capture::new(&repo, &cas).dirty(),
+        Err(review_source_git::CaptureError::UnsupportedSubmodules { .. })
+    ));
+}
+
 #[test]
 fn an_object_git_cannot_produce_is_refused_not_zeroed() {
     let fixture = Fixture::new();

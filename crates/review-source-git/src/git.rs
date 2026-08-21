@@ -176,16 +176,6 @@ enum DiffHead<'a> {
     Synthetic(&'a Manifest, &'a Cas),
 }
 
-#[derive(Default)]
-struct SyntheticTree {
-    entries: std::collections::BTreeMap<Vec<u8>, SyntheticEntry>,
-}
-
-enum SyntheticEntry {
-    Blob { mode: &'static str, oid: String },
-    Tree(SyntheticTree),
-}
-
 /// A repository we may only read.
 pub struct Repo {
     workdir: PathBuf,
@@ -467,86 +457,89 @@ impl Repo {
         manifest: &Manifest,
         cas: &Cas,
     ) -> Result<TreeId, GitError> {
-        let mut root = SyntheticTree::default();
-        for entry in &manifest.entries {
-            let path = decode_path(&entry.path);
-            let components: Vec<&[u8]> = path.split(|byte| *byte == b'/').collect();
-            if components.iter().any(|component| {
-                component.is_empty() || *component == b"." || *component == b".."
-            }) {
-                return Err(GitError::MalformedTreeDiff {
-                    detail: format!("synthetic manifest has invalid path {:?}", entry.path),
-                });
-            }
-            let bytes = cas.get(&entry.content).map_err(|error| GitError::Cas(error.to_string()))?;
-            if bytes.len() as u64 != entry.size {
-                return Err(GitError::MalformedTreeDiff {
-                    detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
-                });
-            }
-            let output = self.run_isolated_with_input(
-                git_dir,
-                object_dir,
-                alternate_object_dir,
-                &["hash-object", "-w", "--stdin", "--no-filters"],
-                &bytes,
-            )?;
-            let oid = parse_object_id(&output, "hash-object")?;
-            insert_synthetic_entry(
-                &mut root,
-                &components,
-                SyntheticEntry::Blob {
-                    mode: entry.kind.mode(),
-                    oid,
-                },
-            )?;
-        }
-        self.write_synthetic_tree_node(
-            git_dir,
-            object_dir,
-            alternate_object_dir,
-            &root,
-        )
-    }
-
-    fn write_synthetic_tree_node(
-        &self,
-        git_dir: &Path,
-        object_dir: &Path,
-        alternate_object_dir: Option<&Path>,
-        tree: &SyntheticTree,
-    ) -> Result<TreeId, GitError> {
-        let mut input = Vec::new();
-        for (name, entry) in &tree.entries {
-            let (mode, kind, oid) = match entry {
-                SyntheticEntry::Blob { mode, oid } => (*mode, "blob", oid.clone()),
-                SyntheticEntry::Tree(child) => {
-                    let oid = self.write_synthetic_tree_node(
-                        git_dir,
-                        object_dir,
-                        alternate_object_dir,
-                        child,
-                    )?;
-                    ("040000", "tree", oid.0)
+        let mut cmd = self.command();
+        cmd.current_dir(&self.home)
+            .arg("--git-dir")
+            .arg(git_dir)
+            .env("GIT_OBJECT_DIRECTORY", object_dir)
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .args(["fast-import", "--quiet", "--force"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(alternate) = alternate_object_dir {
+            let joined = std::env::join_paths([alternate]).map_err(|error| {
+                GitError::MalformedTreeDiff {
+                    detail: format!("invalid alternate object directory: {error}"),
                 }
-            };
-            input.extend_from_slice(mode.as_bytes());
-            input.push(b' ');
-            input.extend_from_slice(kind.as_bytes());
-            input.push(b' ');
-            input.extend_from_slice(oid.as_bytes());
-            input.push(b'\t');
-            input.extend_from_slice(name);
-            input.push(0);
+            })?;
+            cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
+        }
+        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
+        {
+            let mut input = child
+                .stdin
+                .take()
+                .ok_or_else(|| GitError::MalformedTreeDiff {
+                    detail: "isolated fast-import has no stdin".to_string(),
+                })?;
+            input
+                .write_all(
+                    b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
+                )
+                .map_err(GitError::Io)?;
+            for entry in &manifest.entries {
+                let path = decode_path(&entry.path);
+                if path.is_empty()
+                    || path.contains(&0)
+                    || path.split(|byte| *byte == b'/').any(|component| {
+                        component.is_empty() || component == b"." || component == b".."
+                    })
+                {
+                    return Err(GitError::MalformedTreeDiff {
+                        detail: format!("synthetic manifest has invalid path {:?}", entry.path),
+                    });
+                }
+                let bytes = cas
+                    .get(&entry.content)
+                    .map_err(|error| GitError::Cas(error.to_string()))?;
+                if bytes.len() as u64 != entry.size {
+                    return Err(GitError::MalformedTreeDiff {
+                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
+                    });
+                }
+                writeln!(
+                    input,
+                    "M {} inline {}",
+                    entry.kind.mode(),
+                    quote_fast_import_path(&path)
+                )
+                .map_err(GitError::Io)?;
+                writeln!(input, "data {}", bytes.len()).map_err(GitError::Io)?;
+                input.write_all(&bytes).map_err(GitError::Io)?;
+                input.write_all(b"\n").map_err(GitError::Io)?;
+            }
+            input.write_all(b"done\n").map_err(GitError::Io)?;
+        }
+        let output = child.wait_with_output().map_err(GitError::Io)?;
+        if !output.status.success() {
+            return Err(GitError::Failed {
+                args: vec!["fast-import".into(), "--quiet".into(), "--force".into()],
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
         }
         let output = self.run_isolated_with_input(
             git_dir,
             object_dir,
             alternate_object_dir,
-            &["mktree", "-z"],
-            &input,
+            &[
+                "rev-parse",
+                "--verify",
+                "refs/heads/review-kernel-synthetic^{tree}",
+            ],
+            b"",
         )?;
-        Ok(TreeId(parse_object_id(&output, "mktree")?))
+        Ok(TreeId(parse_object_id(&output, "synthetic rev-parse")?))
     }
 
     fn tree_diff_with_head(
@@ -645,6 +638,24 @@ impl Repo {
         Ok(TreeId(tree))
     }
 
+    /// Indexed gitlinks cannot be represented by the current synthetic-worktree manifest.
+    pub fn indexed_gitlinks(&self) -> Result<Vec<String>, GitError> {
+        let mut paths = Vec::new();
+        for record in split_nul(&self.bytes(&["ls-files", "-s", "-z"])? ) {
+            let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
+                continue;
+            };
+            let metadata =
+                std::str::from_utf8(&record[..tab]).map_err(|_| GitError::NotUtf8)?;
+            if metadata.split_ascii_whitespace().next() == Some("160000") {
+                paths.push(encode_path(&record[tab + 1..]));
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
     /// Compare two resolved trees without exposing Git's worktree-capable diff interface.
     pub fn tree_diff(&self, base: &TreeId, head: &TreeId) -> Result<TreeDiff, GitError> {
         self.tree_diff_with_head(base, DiffHead::Resolved(head))
@@ -713,34 +724,20 @@ impl Repo {
     }
 }
 
-fn insert_synthetic_entry(
-    tree: &mut SyntheticTree,
-    components: &[&[u8]],
-    entry: SyntheticEntry,
-) -> Result<(), GitError> {
-    let (name, rest) = components
-        .split_first()
-        .ok_or_else(|| GitError::MalformedTreeDiff {
-            detail: "synthetic manifest contains an empty path".to_string(),
-        })?;
-    if rest.is_empty() {
-        if tree.entries.insert(name.to_vec(), entry).is_some() {
-            return Err(GitError::MalformedTreeDiff {
-                detail: "synthetic manifest contains duplicate or conflicting paths".to_string(),
-            });
+fn quote_fast_import_path(path: &[u8]) -> String {
+    let mut quoted = String::from("\"");
+    for byte in path {
+        match byte {
+            b'"' | b'\\' => {
+                quoted.push('\\');
+                quoted.push(*byte as char);
+            }
+            b' '..=b'~' => quoted.push(*byte as char),
+            _ => quoted.push_str(&format!("\\{byte:03o}")),
         }
-        return Ok(());
     }
-    let child = tree
-        .entries
-        .entry(name.to_vec())
-        .or_insert_with(|| SyntheticEntry::Tree(SyntheticTree::default()));
-    let SyntheticEntry::Tree(child) = child else {
-        return Err(GitError::MalformedTreeDiff {
-            detail: "synthetic manifest contains a file/directory conflict".to_string(),
-        });
-    };
-    insert_synthetic_entry(child, rest, entry)
+    quoted.push('"');
+    quoted
 }
 
 fn parse_object_id(output: &[u8], operation: &str) -> Result<String, GitError> {

@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 
 use review_core::snapshot::Vcs;
-use review_core::{Capture as SourceCapture, SourceSnapshot};
+use review_core::{Capture as SourceCapture, SourceSnapshot, Submodule};
 use review_store::Cas;
 use sha2::{Digest, Sha256};
 
@@ -52,6 +52,9 @@ pub enum CaptureError {
     SnapshotMismatch {
         detail: String,
     },
+    UnsupportedSubmodules {
+        paths: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for CaptureError {
@@ -77,6 +80,11 @@ impl std::fmt::Display for CaptureError {
             CaptureError::SnapshotMismatch { detail } => {
                 write!(f, "persisted snapshot does not match Git source: {detail}")
             }
+            CaptureError::UnsupportedSubmodules { paths } => write!(
+                f,
+                "revalidated worktree capture refuses indexed gitlinks until submodule content policy is explicit: {}",
+                paths.join(", ")
+            ),
         }
     }
 }
@@ -104,6 +112,7 @@ pub struct Snapshot {
     pub tree_id: Option<TreeId>,
     /// The commit this content corresponds to, when one exists. Provenance, not identity.
     pub source_revision: Option<String>,
+    pub submodules: Vec<Submodule>,
     pub dirty: bool,
     /// Passes consumed before the read boundary held. Always 1 for a committed capture.
     pub attempts: u32,
@@ -142,6 +151,14 @@ impl Snapshot {
         }
         if let Some(manifest_id) = manifest_artifact {
             payload["artifact_manifest"] = serde_json::json!(manifest_id);
+        }
+        if !self.submodules.is_empty() {
+            payload["submodules"] =
+                serde_json::to_value(&self.submodules).map_err(|error| {
+                    CaptureError::SnapshotMismatch {
+                        detail: error.to_string(),
+                    }
+                })?;
         }
         Ok(payload)
     }
@@ -187,6 +204,7 @@ impl<'a> Capture<'a> {
             .bytes(&["ls-tree", "-r", "-z", "--full-tree", tree_id.as_str()])?;
 
         let mut oids: Vec<(String, EntryKind, String)> = Vec::new();
+        let mut submodules = Vec::new();
         for record in split_nul(&listing) {
             // "<mode> SP <type> SP <oid> TAB <path>"
             let Some(tab) = record.iter().position(|b| *b == b'\t') else {
@@ -203,6 +221,14 @@ impl<'a> Capture<'a> {
             // Gitlinks (submodule commits) are recorded by reference in the snapshot's
             // submodule list, never fetched — implicit recursion is exactly what capture must
             // not do.
+            if kind == "commit" && mode == "160000" {
+                submodules.push(Submodule {
+                    path,
+                    revision: oid.to_string(),
+                    included: Some(false),
+                });
+                continue;
+            }
             if kind != "blob" {
                 continue;
             }
@@ -249,6 +275,7 @@ impl<'a> Capture<'a> {
             repository_id: self.repo.repository_id()?,
             tree_id: Some(tree_id),
             source_revision: Some(commit),
+            submodules,
             dirty: false,
             attempts: 1,
         })
@@ -283,6 +310,7 @@ impl<'a> Capture<'a> {
             || source.content_digest != manifest.content_digest()
             || source.content_digest != captured.content_digest
             || manifest != &captured.manifest
+            || source.submodules != captured.submodules
             || captured.tree_id.as_ref().map(TreeId::as_str) != Some(tree_id.as_str())
         {
             return Err(CaptureError::SnapshotMismatch {
@@ -302,6 +330,10 @@ impl<'a> Capture<'a> {
     }
 
     pub fn dirty_observed(&self, observer: &dyn CaptureObserver) -> Result<Snapshot, CaptureError> {
+        let gitlinks = self.repo.indexed_gitlinks()?;
+        if !gitlinks.is_empty() {
+            return Err(CaptureError::UnsupportedSubmodules { paths: gitlinks });
+        }
         for attempt in 1..=self.max_attempts {
             let index_before = self.index_fingerprint()?;
             let first = self.scan_worktree(false)?;
@@ -327,7 +359,8 @@ impl<'a> Capture<'a> {
                     manifest,
                     repository_id: self.repo.repository_id()?,
                     tree_id: None,
-                    source_revision: self.repo.rev_parse("HEAD").ok(),
+                    source_revision: None,
+                    submodules: Vec::new(),
                     dirty: true,
                     attempts: attempt,
                 });
@@ -379,11 +412,7 @@ impl<'a> Capture<'a> {
                 continue;
             };
             let (kind, bytes) = if meta.file_type().is_symlink() {
-                let target = std::fs::read_link(&full)?;
-                (
-                    EntryKind::Symlink,
-                    target.to_string_lossy().into_owned().into_bytes(),
-                )
+                (EntryKind::Symlink, read_link_bytes(&full)?)
             } else if meta.is_file() {
                 let bytes = std::fs::read(&full)?;
                 (
@@ -560,6 +589,26 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
+#[cfg(unix)]
+fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(std::fs::read_link(path)?.as_os_str().as_bytes().to_vec())
+}
+
+#[cfg(not(unix))]
+fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
+    std::fs::read_link(path)?
+        .into_os_string()
+        .into_string()
+        .map(String::into_bytes)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "symlink target is not UTF-8",
+            )
+        })
+}
+
 /// Whether a capture left the checkout as it found it. Used by tests, and worth having in the
 /// API: "read-only" is a claim that should be checkable, not a comment.
 ///
@@ -590,7 +639,7 @@ pub fn worktree_state(repo: &Repo) -> Result<String, CaptureError> {
         match std::fs::symlink_metadata(&full) {
             Err(_) => hasher.update(b"<absent>"),
             Ok(meta) if meta.file_type().is_symlink() => {
-                hasher.update(std::fs::read_link(&full)?.to_string_lossy().as_bytes());
+                hasher.update(read_link_bytes(&full)?);
             }
             Ok(meta) => {
                 hasher.update(std::fs::read(&full)?);

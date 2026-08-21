@@ -41,7 +41,8 @@ use review_core::{
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{
-    MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError,
+    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact,
+    ReviewerInputs, RunnerError,
 };
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
@@ -236,7 +237,6 @@ impl RoundAuthority {
             self.subject_id.clone(),
             self.head_snapshot_id.clone(),
         ];
-        refs.extend(self.change_set_id.clone());
         refs
     }
 }
@@ -1174,9 +1174,14 @@ impl<'a> Kernel<'a> {
             let mut resolved = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+                let limit = if port == "change_set" {
+                    MAX_CHANGE_SET_BYTES
+                } else {
+                    MAX_PRIOR_FINDINGS_BYTES
+                };
+                if encoded.len() > limit {
                     return Err(format!(
-                        "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
+                        "reviewer input port '{port}' artifact {artifact} exceeds {limit} bytes"
                     ));
                 }
                 let value = serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
