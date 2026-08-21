@@ -7,21 +7,22 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
+    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, ChangeSetV1,
     CampaignOpenedPayloadV1, ClaimRef, ClaimRefKind, EventType, FindingReport, Location,
     MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
     PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
     RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    PathRenameV1, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 14] = [
+const SCHEMAS: [&str; 15] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
+    "change-set-v1.json",
     "finding-report-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
@@ -251,6 +252,37 @@ fn subject_and_campaign_authority_roundtrip() {
     assert_eq!(
         serde_json::from_value::<CampaignManifestV1>(value).unwrap(),
         manifest
+    );
+}
+
+#[test]
+fn change_set_roundtrips_with_exact_patch_bytes() {
+    let base = format!("sha256:{}", "a".repeat(64));
+    let head = format!("sha256:{}", "b".repeat(64));
+    let change_set = ChangeSetV1::new(
+        base,
+        head,
+        vec!["src/new.rs".into(), "src/old.rs".into()],
+        vec![PathRenameV1 {
+            old_path: "src/old.rs".into(),
+            new_path: "src/new.rs".into(),
+            similarity: 100,
+        }],
+        b"diff --git a/src/old.rs b/src/new.rs\n\0\xff",
+        "git version test",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    change_set.validate().unwrap();
+    assert_eq!(
+        change_set.canonical_patch().unwrap(),
+        b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"
+    );
+    let value = serde_json::to_value(&change_set).unwrap();
+    assert_valid("change-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<ChangeSetV1>(value).unwrap(),
+        change_set
     );
 }
 

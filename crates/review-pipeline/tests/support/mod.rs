@@ -1,7 +1,7 @@
 use review_config::Definition;
 use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
-    RoundStartedPayloadV1, SubjectKind, SubjectV1,
+    ChangeSetV1, RoundStartedPayloadV1, SubjectKind, SubjectV1,
 };
 use review_pipeline::{Kernel, RoundAuthority};
 use review_source_git::Manifest;
@@ -38,6 +38,25 @@ pub fn test_round_authority_for_pipeline(
     test_round_authority_with_prior(cas, store, run_id, snapshot, None, pipeline)
 }
 
+#[allow(dead_code)]
+pub fn test_diff_round_authority(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+    pipeline: &str,
+) -> RoundAuthority {
+    test_round_authority_with_subject(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        pipeline,
+        SubjectKind::Diff,
+    )
+}
+
 fn test_round_authority_with_prior(
     cas: &Cas,
     store: &mut EventStore,
@@ -46,7 +65,40 @@ fn test_round_authority_with_prior(
     prior_finding_set_id: Option<String>,
     pipeline: &str,
 ) -> RoundAuthority {
-    let authority_snapshot_id = cas.put(b"test authority snapshot").unwrap();
+    test_round_authority_with_subject(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        prior_finding_set_id,
+        pipeline,
+        SubjectKind::WholeTree,
+    )
+}
+
+fn test_round_authority_with_subject(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+    prior_finding_set_id: Option<String>,
+    pipeline: &str,
+    subject_kind: SubjectKind,
+) -> RoundAuthority {
+    let authority_manifest = Manifest::new(vec![]);
+    let authority_manifest_id = cas
+        .put_json(&serde_json::to_value(&authority_manifest).unwrap())
+        .unwrap();
+    let authority_snapshot_id = cas
+        .put_json(&serde_json::json!({
+            "repository_id": "test/repository",
+            "vcs": "git",
+            "capture": { "kind": "committed", "tree_id": "test-base-tree" },
+            "content_digest": authority_manifest.content_digest(),
+            "source_revision": "test-base",
+            "artifact_manifest": authority_manifest_id,
+        }))
+        .unwrap();
     let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
     let lock_id = cas.put(b"test reviewer lock").unwrap();
     let finding_genesis_id = cas.put(b"test finding genesis").unwrap();
@@ -55,8 +107,9 @@ fn test_round_authority_with_prior(
         .put_json(
             &serde_json::to_value(CampaignManifestV1 {
                 authority_snapshot_id: authority_snapshot_id.clone(),
-                subject_kind: SubjectKind::WholeTree,
-                base_snapshot_id: None,
+                subject_kind,
+                base_snapshot_id: (subject_kind == SubjectKind::Diff)
+                    .then(|| authority_snapshot_id.clone()),
                 pipeline: AuthorityFileV1 {
                     path: "test.toml".into(),
                     artifact_id: pipeline_id.clone(),
@@ -99,8 +152,26 @@ fn test_round_authority_with_prior(
             "artifact_manifest": head_manifest_id,
         }))
         .unwrap();
+    let subject = if subject_kind == SubjectKind::Diff {
+        let change_set = ChangeSetV1::new(
+            &authority_snapshot_id,
+            &head_snapshot_id,
+            snapshot.entries.iter().map(|entry| entry.path.clone()).collect(),
+            vec![],
+            b"",
+            "git version test",
+            "review.kernel/git-tree-diff@test",
+        )
+        .unwrap();
+        let change_set_id = cas
+            .put_json(&serde_json::to_value(change_set).unwrap())
+            .unwrap();
+        SubjectV1::diff(&head_snapshot_id, &authority_snapshot_id, change_set_id)
+    } else {
+        SubjectV1::whole_tree(&head_snapshot_id)
+    };
     let subject_id = cas
-        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head_snapshot_id)).unwrap())
+        .put_json(&serde_json::to_value(&subject).unwrap())
         .unwrap();
     let prior_finding_set_id = prior_finding_set_id.unwrap_or_else(|| {
         cas.put_json(&serde_json::json!({
@@ -128,6 +199,16 @@ fn test_round_authority_with_prior(
             ]),
         )
         .unwrap();
+    let mut round_refs = vec![
+        authority_snapshot_id,
+        campaign_manifest_id,
+        head_snapshot_id,
+        subject_id,
+        prior_finding_set_id,
+        prior_demand_set_id,
+    ];
+    round_refs.extend(subject.base_snapshot_id);
+    round_refs.extend(subject.change_set_id);
     let round = store
         .append(
             run_id,
@@ -145,14 +226,7 @@ fn test_round_authority_with_prior(
                 .unwrap(),
             )
             .caused_by(opened.event_id)
-            .referencing(vec![
-                authority_snapshot_id,
-                campaign_manifest_id,
-                head_snapshot_id,
-                subject_id,
-                prior_finding_set_id,
-                prior_demand_set_id,
-            ]),
+            .referencing(round_refs),
         )
         .unwrap();
     RoundAuthority::load(store, cas, run_id, &round.event_id).unwrap()

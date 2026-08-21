@@ -115,19 +115,22 @@ impl Snapshot {
         &self,
         manifest_artifact: Option<&str>,
     ) -> Result<serde_json::Value, CaptureError> {
-        if self.dirty {
-            return Err(CaptureError::SnapshotMismatch {
-                detail: "synthetic worktree has no content-matching Git tree authority; M2.4 must derive one from its admitted manifest"
-                    .to_string(),
-            });
-        }
         let tree_id = self
             .tree_id
             .as_ref()
             .ok_or_else(|| CaptureError::SnapshotMismatch {
                 detail: "committed snapshot has no resolved tree authority".to_string(),
             })?;
-        let capture = serde_json::json!({ "kind": "committed", "tree_id": tree_id.as_str() });
+        let capture = if self.dirty {
+            serde_json::json!({
+                "kind": "synthetic_worktree",
+                "tree_id": tree_id.as_str(),
+                "boundary": "revalidated",
+                "attempts": self.attempts,
+            })
+        } else {
+            serde_json::json!({ "kind": "committed", "tree_id": tree_id.as_str() })
+        };
         let mut payload = serde_json::json!({
             "repository_id": self.repository_id,
             "vcs": "git",

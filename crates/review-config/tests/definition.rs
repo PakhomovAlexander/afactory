@@ -179,6 +179,17 @@ fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
 }
 
 #[test]
+fn a_diff_pipeline_cannot_omit_the_change_set_port() {
+    let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
+    let error = Definition::from_toml(&diff)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("ChangeSet@1"), "{error}");
+}
+
+#[test]
 fn subject_format_transitions_are_explicit() {
     let missing = MINIMAL.replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
     let error = Definition::from_toml(&missing)

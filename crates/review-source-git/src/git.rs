@@ -20,7 +20,12 @@ use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+
+use review_core::{ChangeSetV1, PathRenameV1};
+use review_store::Cas;
+
+use crate::manifest::{Manifest, decode_path, encode_path};
 
 #[derive(Debug)]
 pub enum GitError {
@@ -40,6 +45,7 @@ pub enum GitError {
     MalformedTreeDiff {
         detail: String,
     },
+    Cas(String),
 }
 
 impl std::fmt::Display for GitError {
@@ -58,6 +64,7 @@ impl std::fmt::Display for GitError {
             GitError::MalformedTreeDiff { detail } => {
                 write!(f, "git produced a malformed tree diff: {detail}")
             }
+            GitError::Cas(detail) => write!(f, "reading a synthetic tree artifact: {detail}"),
         }
     }
 }
@@ -81,7 +88,7 @@ pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-
 pub const TREE_DIFF_POLICY_VERSION: &str =
     "review.kernel/git-tree-diff@1;binary=git-deflate-level-6";
 
-/// A tree object id admitted by [`Repo::resolve_tree`].
+/// A tree object id admitted by [`Repo::resolve_tree`] or the kernel's synthetic-tree builder.
 ///
 /// The inner value is deliberately private: callers can select a revision, but cannot smuggle a
 /// flag, pathspec, or worktree operand into [`Repo::tree_diff`].
@@ -130,6 +137,53 @@ impl TreeDiff {
     pub fn patch(&self) -> &[u8] {
         &self.output[self.patch_start..]
     }
+
+    pub fn change_set(
+        &self,
+        base_snapshot_id: impl Into<String>,
+        head_snapshot_id: impl Into<String>,
+    ) -> Result<ChangeSetV1, String> {
+        let mut paths = Vec::new();
+        let mut renames = Vec::new();
+        for change in &self.changes {
+            paths.extend(change.old_path.as_deref().map(encode_path));
+            paths.extend(change.new_path.as_deref().map(encode_path));
+            if let TreeChangeKind::Renamed { similarity } = &change.kind
+                && let (Some(old_path), Some(new_path)) =
+                    (change.old_path.as_deref(), change.new_path.as_deref())
+            {
+                renames.push(PathRenameV1 {
+                    old_path: encode_path(old_path),
+                    new_path: encode_path(new_path),
+                    similarity: *similarity,
+                });
+            }
+        }
+        ChangeSetV1::new(
+            base_snapshot_id,
+            head_snapshot_id,
+            paths,
+            renames,
+            self.patch(),
+            &self.git_version,
+            &self.diff_policy,
+        )
+    }
+}
+
+enum DiffHead<'a> {
+    Resolved(&'a TreeId),
+    Synthetic(&'a Manifest, &'a Cas),
+}
+
+#[derive(Default)]
+struct SyntheticTree {
+    entries: std::collections::BTreeMap<Vec<u8>, SyntheticEntry>,
+}
+
+enum SyntheticEntry {
+    Blob { mode: &'static str, oid: String },
+    Tree(SyntheticTree),
 }
 
 /// A repository we may only read.
@@ -265,6 +319,9 @@ impl Repo {
     /// caller-controlled `git diff` forms globally.
     fn run_tree_diff_unchecked<S: AsRef<OsStr>>(
         &self,
+        git_dir: &Path,
+        object_dir: &Path,
+        alternate_object_dir: Option<&Path>,
         args: &[S],
     ) -> Result<(Output, String), GitError> {
         let mut version_cmd = self.command();
@@ -283,14 +340,20 @@ impl Repo {
             .trim()
             .to_string();
 
-        let (administration, object_dir) = self.prepare_tree_diff_repository()?;
-        let git_dir = administration.path().join("repo.git");
         let mut cmd = self.command();
         cmd.current_dir(&self.home)
             .arg("--git-dir")
             .arg(git_dir)
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1");
+        if let Some(alternate) = alternate_object_dir {
+            let joined = std::env::join_paths([alternate]).map_err(|error| {
+                GitError::MalformedTreeDiff {
+                    detail: format!("invalid alternate object directory: {error}"),
+                }
+            })?;
+            cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
+        }
         cmd.args(args);
         let output = cmd.output().map_err(GitError::Spawn)?;
         if !output.status.success() {
@@ -303,6 +366,51 @@ impl Repo {
             });
         }
         Ok((output, git_version))
+    }
+
+    fn run_isolated_with_input(
+        &self,
+        git_dir: &Path,
+        object_dir: &Path,
+        alternate_object_dir: Option<&Path>,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<Vec<u8>, GitError> {
+        let mut cmd = self.command();
+        cmd.current_dir(&self.home)
+            .arg("--git-dir")
+            .arg(git_dir)
+            .env("GIT_OBJECT_DIRECTORY", object_dir)
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(alternate) = alternate_object_dir {
+            let joined = std::env::join_paths([alternate]).map_err(|error| {
+                GitError::MalformedTreeDiff {
+                    detail: format!("invalid alternate object directory: {error}"),
+                }
+            })?;
+            cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
+        }
+        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| GitError::MalformedTreeDiff {
+                detail: "isolated Git command has no stdin".to_string(),
+            })?
+            .write_all(input)
+            .map_err(GitError::Io)?;
+        let output = child.wait_with_output().map_err(GitError::Io)?;
+        if !output.status.success() {
+            return Err(GitError::Failed {
+                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok(output.stdout)
     }
 
     fn prepare_tree_diff_repository(&self) -> Result<(tempfile::TempDir, PathBuf), GitError> {
@@ -351,6 +459,153 @@ impl Repo {
         Ok((administration, object_dir))
     }
 
+    fn write_synthetic_tree(
+        &self,
+        git_dir: &Path,
+        object_dir: &Path,
+        alternate_object_dir: Option<&Path>,
+        manifest: &Manifest,
+        cas: &Cas,
+    ) -> Result<TreeId, GitError> {
+        let mut root = SyntheticTree::default();
+        for entry in &manifest.entries {
+            let path = decode_path(&entry.path);
+            let components: Vec<&[u8]> = path.split(|byte| *byte == b'/').collect();
+            if components.iter().any(|component| {
+                component.is_empty() || *component == b"." || *component == b".."
+            }) {
+                return Err(GitError::MalformedTreeDiff {
+                    detail: format!("synthetic manifest has invalid path {:?}", entry.path),
+                });
+            }
+            let bytes = cas.get(&entry.content).map_err(|error| GitError::Cas(error.to_string()))?;
+            if bytes.len() as u64 != entry.size {
+                return Err(GitError::MalformedTreeDiff {
+                    detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
+                });
+            }
+            let output = self.run_isolated_with_input(
+                git_dir,
+                object_dir,
+                alternate_object_dir,
+                &["hash-object", "-w", "--stdin", "--no-filters"],
+                &bytes,
+            )?;
+            let oid = parse_object_id(&output, "hash-object")?;
+            insert_synthetic_entry(
+                &mut root,
+                &components,
+                SyntheticEntry::Blob {
+                    mode: entry.kind.mode(),
+                    oid,
+                },
+            )?;
+        }
+        self.write_synthetic_tree_node(
+            git_dir,
+            object_dir,
+            alternate_object_dir,
+            &root,
+        )
+    }
+
+    fn write_synthetic_tree_node(
+        &self,
+        git_dir: &Path,
+        object_dir: &Path,
+        alternate_object_dir: Option<&Path>,
+        tree: &SyntheticTree,
+    ) -> Result<TreeId, GitError> {
+        let mut input = Vec::new();
+        for (name, entry) in &tree.entries {
+            let (mode, kind, oid) = match entry {
+                SyntheticEntry::Blob { mode, oid } => (*mode, "blob", oid.clone()),
+                SyntheticEntry::Tree(child) => {
+                    let oid = self.write_synthetic_tree_node(
+                        git_dir,
+                        object_dir,
+                        alternate_object_dir,
+                        child,
+                    )?;
+                    ("040000", "tree", oid.0)
+                }
+            };
+            input.extend_from_slice(mode.as_bytes());
+            input.push(b' ');
+            input.extend_from_slice(kind.as_bytes());
+            input.push(b' ');
+            input.extend_from_slice(oid.as_bytes());
+            input.push(b'\t');
+            input.extend_from_slice(name);
+            input.push(0);
+        }
+        let output = self.run_isolated_with_input(
+            git_dir,
+            object_dir,
+            alternate_object_dir,
+            &["mktree", "-z"],
+            &input,
+        )?;
+        Ok(TreeId(parse_object_id(&output, "mktree")?))
+    }
+
+    fn tree_diff_with_head(
+        &self,
+        base: &TreeId,
+        head: DiffHead<'_>,
+    ) -> Result<(TreeId, TreeDiff), GitError> {
+        let (administration, candidate_objects) = self.prepare_tree_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
+        let local_objects = git_dir.join("objects");
+        let (head, object_dir, alternate) = match head {
+            DiffHead::Resolved(head) => (head.clone(), candidate_objects.as_path(), None),
+            DiffHead::Synthetic(manifest, cas) => (
+                self.write_synthetic_tree(
+                    &git_dir,
+                    &local_objects,
+                    Some(&candidate_objects),
+                    manifest,
+                    cas,
+                )?,
+                local_objects.as_path(),
+                Some(candidate_objects.as_path()),
+            ),
+        };
+        let (output, git_version) = self.run_tree_diff_unchecked(
+            &git_dir,
+            object_dir,
+            alternate,
+            &[
+                "diff",
+                "--patch-with-raw",
+                "-z",
+                "--no-abbrev",
+                "--full-index",
+                "--binary",
+                "--diff-algorithm=myers",
+                "--no-indent-heuristic",
+                "--find-renames=50%",
+                "--unified=3",
+                "--inter-hunk-context=0",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--line-prefix=",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-relative",
+                "--submodule=short",
+                "--ignore-submodules=none",
+                "-l1000",
+                "-O/dev/null",
+                base.as_str(),
+                head.as_str(),
+                "--",
+            ],
+        )?;
+        Ok((head, parse_tree_diff(output.stdout, git_version)?))
+    }
+
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
     pub fn bytes<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Vec<u8>, GitError> {
         Ok(self.run_raw(args)?.stdout)
@@ -392,34 +647,25 @@ impl Repo {
 
     /// Compare two resolved trees without exposing Git's worktree-capable diff interface.
     pub fn tree_diff(&self, base: &TreeId, head: &TreeId) -> Result<TreeDiff, GitError> {
-        let (output, git_version) = self.run_tree_diff_unchecked(&[
-            "diff",
-            "--patch-with-raw",
-            "-z",
-            "--no-abbrev",
-            "--full-index",
-            "--binary",
-            "--diff-algorithm=myers",
-            "--no-indent-heuristic",
-            "--find-renames=50%",
-            "--unified=3",
-            "--inter-hunk-context=0",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--line-prefix=",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-relative",
-            "--submodule=short",
-            "--ignore-submodules=none",
-            "-l1000",
-            "-O/dev/null",
-            base.as_str(),
-            head.as_str(),
-            "--",
-        ])?;
-        parse_tree_diff(output.stdout, git_version)
+        self.tree_diff_with_head(base, DiffHead::Resolved(head))
+            .map(|(_, diff)| diff)
+    }
+
+    /// Build a content-matching tree in kernel-owned storage and compare it to a resolved Base.
+    pub fn tree_diff_synthetic_head(
+        &self,
+        base: &TreeId,
+        manifest: &Manifest,
+        cas: &Cas,
+    ) -> Result<(TreeId, TreeDiff), GitError> {
+        self.tree_diff_with_head(base, DiffHead::Synthetic(manifest, cas))
+    }
+
+    /// Derive the tree identity of a revalidated worktree without writing into the repository.
+    pub fn synthetic_tree(&self, manifest: &Manifest, cas: &Cas) -> Result<TreeId, GitError> {
+        let (administration, _) = self.prepare_tree_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
+        self.write_synthetic_tree(&git_dir, &git_dir.join("objects"), None, manifest, cas)
     }
 
     /// A sanitized git invocation the caller will stream, rather than capture whole.
@@ -465,6 +711,50 @@ impl Repo {
         let id = roots.join(",");
         Ok(self.repository_id.get_or_init(|| id).clone())
     }
+}
+
+fn insert_synthetic_entry(
+    tree: &mut SyntheticTree,
+    components: &[&[u8]],
+    entry: SyntheticEntry,
+) -> Result<(), GitError> {
+    let (name, rest) = components
+        .split_first()
+        .ok_or_else(|| GitError::MalformedTreeDiff {
+            detail: "synthetic manifest contains an empty path".to_string(),
+        })?;
+    if rest.is_empty() {
+        if tree.entries.insert(name.to_vec(), entry).is_some() {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "synthetic manifest contains duplicate or conflicting paths".to_string(),
+            });
+        }
+        return Ok(());
+    }
+    let child = tree
+        .entries
+        .entry(name.to_vec())
+        .or_insert_with(|| SyntheticEntry::Tree(SyntheticTree::default()));
+    let SyntheticEntry::Tree(child) = child else {
+        return Err(GitError::MalformedTreeDiff {
+            detail: "synthetic manifest contains a file/directory conflict".to_string(),
+        });
+    };
+    insert_synthetic_entry(child, rest, entry)
+}
+
+fn parse_object_id(output: &[u8], operation: &str) -> Result<String, GitError> {
+    let value = std::str::from_utf8(output)
+        .map_err(|_| GitError::NotUtf8)?
+        .trim();
+    if !matches!(value.len(), 40 | 64)
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(GitError::MalformedTreeDiff {
+            detail: format!("{operation} returned an invalid object id {value:?}"),
+        });
+    }
+    Ok(value.to_string())
 }
 
 fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, GitError> {

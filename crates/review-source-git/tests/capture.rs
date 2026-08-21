@@ -268,10 +268,16 @@ fn the_snapshot_payload_matches_source_snapshot_v1() {
     }
     let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
     assert!(!parsed.is_derived());
-    assert!(
-        capture.dirty().unwrap().to_payload(None).is_err(),
-        "a dirty manifest must not be mislabeled with HEAD's committed tree id"
-    );
+    let mut dirty = capture.dirty().unwrap();
+    assert!(dirty.to_payload(None).is_err());
+    dirty.tree_id = Some(repo.synthetic_tree(&dirty.manifest, &cas).unwrap());
+    let payload = dirty.to_payload(None).unwrap();
+    assert!(validator.is_valid(&payload));
+    let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
+    assert!(matches!(
+        parsed.capture,
+        review_core::snapshot::Capture::SyntheticWorktree { .. }
+    ));
 }
 
 #[test]

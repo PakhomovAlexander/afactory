@@ -9,7 +9,7 @@ use review_store::{Cas, EventStore};
 mod support;
 
 #[test]
-fn a_diff_subject_is_refused_before_execution() {
+fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -33,9 +33,20 @@ version = 2
 [subject]
 kind = "diff"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
+inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "reviewer", port = "change_set" }
 "#,
     )
     .unwrap()
@@ -43,17 +54,27 @@ package = "tester"
     .unwrap();
 
     let manifest = Manifest::new(vec![]);
-    let authority = support::test_round_authority(&cas, &mut store, "run", &manifest);
-    let result = Kernel::from_loaded(
+    let authority = support::test_diff_round_authority(
+        &cas,
+        &mut store,
+        "run",
+        &manifest,
+        r#"
+version = 2
+[subject]
+kind = "diff"
+"#,
+    );
+    let kernel = Kernel::from_loaded(
         &cas,
         &mut store,
         "run",
         manifest.clone(),
         &loaded,
         authority.clone(),
-    );
-
-    assert!(matches!(result, Err(error) if error.contains("pinned Base and Change Set")));
+    )
+    .unwrap();
+    drop(kernel);
 
     let whole_tree = Definition::from_toml(
         r#"

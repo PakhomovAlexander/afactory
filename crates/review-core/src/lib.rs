@@ -12,6 +12,7 @@
 //!   so a value cannot change meaning between producer and consumer.
 
 pub mod campaign;
+pub mod change_set;
 pub mod envelope;
 pub mod event;
 pub mod exec;
@@ -27,6 +28,7 @@ pub use campaign::{
     CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
     RoundStartedPayloadV1,
 };
+pub use change_set::{ChangeSetV1, PathRenameV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
@@ -54,6 +56,7 @@ pub(crate) fn is_digest(value: &str) -> bool {
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {
     pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
+    pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
     pub const FINDING_SET_V1: &str = "review.kernel/FindingSet@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";

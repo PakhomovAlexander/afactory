@@ -170,6 +170,64 @@ fn default_outputs() -> Vec<PortContractSpec> {
     vec![PortContractSpec::Name("out".to_string())]
 }
 
+fn validate_diff_change_set_wiring(
+    nodes: &[NodeSpec],
+    edges: &[EdgeSpec],
+) -> Result<(), ConfigError> {
+    let exact = |port: &PortContractSpec| {
+        let port = port.build();
+        port.name == "change_set"
+            && port.artifact_type == review_core::contract::CHANGE_SET_V1
+            && port.cardinality == review_core::PortCardinality::One
+            && !port.optional
+            && port.snapshot_affinity == review_core::SnapshotAffinity::SameSubject
+    };
+    let mut producers = nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Generation)
+        .filter(|node| node.outputs.iter().any(|port| port.build().name == "change_set"));
+    let producer = producers.next().ok_or_else(|| {
+        ConfigError::Binding(
+            "a `diff` pipeline requires generation to emit one exact ChangeSet@1 on `change_set`"
+                .into(),
+        )
+    })?;
+    if producers.next().is_some()
+        || !producer
+            .outputs
+            .iter()
+            .find(|port| port.build().name == "change_set")
+            .is_some_and(exact)
+    {
+        return Err(ConfigError::Binding(
+            "a `diff` pipeline must have exactly one typed ChangeSet@1 producer".into(),
+        ));
+    }
+    for reviewer in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+    {
+        if !reviewer
+            .inputs
+            .iter()
+            .find(|port| port.build().name == "change_set")
+            .is_some_and(exact)
+            || !edges.iter().any(|edge| {
+                edge.from.node == producer.id
+                    && edge.from.port == "change_set"
+                    && edge.to.node == reviewer.id
+                    && edge.to.port == "change_set"
+            })
+        {
+            return Err(ConfigError::Binding(format!(
+                "diff reviewer `{}` must receive generation's exact ChangeSet@1 through `change_set`",
+                reviewer.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
 /// explicit opaque/one/required/any contract; new and shipped definitions use the typed arm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,6 +496,9 @@ impl Definition {
             }
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        if subject.kind == review_core::SubjectKind::Diff {
+            validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
+        }
         if let Some(budgets) = &self.budgets {
             if budgets.attempt == 0 || budgets.run == 0 {
                 return Err(ConfigError::Binding(

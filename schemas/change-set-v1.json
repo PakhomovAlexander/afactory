@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:change-set:1",
+  "title": "ChangeSet@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "base_snapshot_id",
+    "head_snapshot_id",
+    "changed_paths",
+    "renames",
+    "canonical_patch_base64",
+    "git_version",
+    "diff_policy_version"
+  ],
+  "properties": {
+    "base_snapshot_id": { "$ref": "#/$defs/digest" },
+    "head_snapshot_id": { "$ref": "#/$defs/digest" },
+    "changed_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "renames": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/rename" }
+    },
+    "canonical_patch_base64": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "git_version": { "type": "string", "minLength": 1 },
+    "diff_policy_version": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1, "pattern": "^[^/]" },
+    "rename": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["old_path", "new_path", "similarity"],
+      "properties": {
+        "old_path": { "$ref": "#/$defs/path" },
+        "new_path": { "$ref": "#/$defs/path" },
+        "similarity": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    }
+  }
+}

@@ -42,6 +42,19 @@ impl SubjectV1 {
         }
     }
 
+    pub fn diff(
+        head_snapshot_id: impl Into<String>,
+        base_snapshot_id: impl Into<String>,
+        change_set_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: SubjectKind::Diff,
+            head_snapshot_id: head_snapshot_id.into(),
+            base_snapshot_id: Some(base_snapshot_id.into()),
+            change_set_id: Some(change_set_id.into()),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !crate::is_digest(&self.head_snapshot_id) {
             return Err("Subject@1 has an invalid head Snapshot ID".into());

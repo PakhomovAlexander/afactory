@@ -36,6 +36,7 @@ struct Options {
     campaign: Option<String>,
     focus: Option<String>,
     authority: Option<String>,
+    uncommitted: bool,
     restart_round: bool,
     timeout: Option<Duration>,
 }
@@ -81,7 +82,7 @@ struct ResolveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
         \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
         \x20      reviewctl report  --campaign NAME [--state DIR] [--format md]\n\
@@ -110,6 +111,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
         campaign: None,
         focus: None,
         authority: None,
+        uncommitted: false,
         restart_round: false,
         timeout: None,
     };
@@ -122,6 +124,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--campaign" => options.campaign = Some(value()),
             "--focus" => options.focus = Some(value()),
             "--authority" => options.authority = Some(value()),
+            "--uncommitted" => options.uncommitted = true,
             "--restart-round" => options.restart_round = true,
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
