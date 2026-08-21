@@ -220,7 +220,7 @@ fn the_prompt_is_the_verified_bytes_not_the_disk() {
     let prompt_dump = dir.path().join("prompt-dump");
     let stub_path = dir.path().join("codex");
     let script = format!(
-        "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"{}\"\nexit 1\n",
+        "#!/bin/sh\ncat > \"{}\"\nexit 1\n",
         prompt_dump.display()
     );
     std::fs::write(&stub_path, script).unwrap();
@@ -257,7 +257,7 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
     let prompt_dump = dir.path().join("prompt-dump");
     let stub_path = dir.path().join("codex");
     let script = format!(
-        "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"{}\"\nexit 1\n",
+        "#!/bin/sh\ncat > \"{}\"\nexit 1\n",
         prompt_dump.display()
     );
     std::fs::write(&stub_path, script).unwrap();

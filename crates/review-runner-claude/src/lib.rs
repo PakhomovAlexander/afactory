@@ -4,7 +4,8 @@
 //! args are the model flags (`--model opus --effort xhigh`), and both sit under the lockfile's
 //! content digest — but a different provider surface, pinned by fixtures captured from a real
 //! `claude` 2.1.234 run on 2026-08-18: `-p --output-format json` prints one JSON envelope
-//! with `is_error`, the final text in `result`, and cumulative token usage in `usage`.
+//! with `is_error`, the final text in `result`, and cumulative token usage in `usage`; the
+//! prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling.
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
@@ -128,14 +129,14 @@ impl ReviewerAdapter for ClaudeAdapter {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        args.push(Arg::literal(format!("{}{}", self.prompt, inputs)));
+        let prompt = format!("{}{}", self.prompt, inputs);
         let command = Command::new(&self.program, args);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture(cas, &command)?;
+        let capture = runner.capture_with_stdin(cas, &command, prompt.as_bytes())?;
 
         let envelope = Envelope::parse(&capture.stdout);
         let cost = envelope.cost_tokens;

@@ -2,6 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:change-set:1",
   "title": "ChangeSet@1",
+  "$comment": "JSON Schema enforces structure. Ordering, containment, canonical base64, and cross-field rules are normative in change-set-v1-conformance.json and every permanent reader must enforce them.",
+  "x-semantic-constraints": [
+    "changed_paths are strictly sorted and unique",
+    "renames are strictly sorted and unique",
+    "both rename endpoints occur in changed_paths and are distinct",
+    "canonical_patch_base64 uses canonical RFC 4648 base64"
+  ],
   "type": "object",
   "additionalProperties": false,
   "required": [

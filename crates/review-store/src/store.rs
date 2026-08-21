@@ -573,6 +573,8 @@ fn validate_plan_ports(
     expected: &[AuthorityPort],
     actual: &[review_core::PortArtifactsV1],
     subject_snapshot_id: &str,
+    subject_base_snapshot_id: Option<&str>,
+    subject_change_set_id: Option<&str>,
 ) -> Result<(), StoreError> {
     if expected.len() != actual.len() {
         return Err(StoreError::Conflict(
@@ -619,6 +621,29 @@ fn validate_plan_ports(
         }
         for artifact in &port.artifact_ids {
             validate_artifact_payload(cas, &port.artifact_type, artifact)?;
+        }
+        if port.artifact_type == review_core::contract::CHANGE_SET_V1 {
+            let expected = subject_change_set_id.ok_or_else(|| {
+                StoreError::Conflict("whole-tree Subject cannot carry a ChangeSet@1 port".into())
+            })?;
+            if port.artifact_ids.first().map(String::as_str) != Some(expected)
+                || port.artifact_ids.len() != 1
+            {
+                return Err(StoreError::Conflict(
+                    "ChangeSet@1 port does not carry the Subject's exact Change Set".into(),
+                ));
+            }
+            let change_set: review_core::ChangeSetV1 = serde_json::from_value(
+                cas.get_json(expected)
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
+            )?;
+            if change_set.head_snapshot_id != subject_snapshot_id
+                || Some(change_set.base_snapshot_id.as_str()) != subject_base_snapshot_id
+            {
+                return Err(StoreError::Conflict(
+                    "ChangeSet@1 Base or head contradicts the active Subject".into(),
+                ));
+            }
         }
     }
     Ok(())
@@ -1028,6 +1053,8 @@ fn validate_campaign_transition(
                             .map_err(|error| StoreError::Conflict(error.to_string()))?,
                     )?;
                     let subject_snapshot_id = subject.head_snapshot_id;
+                    let subject_base_snapshot_id = subject.base_snapshot_id;
+                    let subject_change_set_id = subject.change_set_id;
                     if terminal {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} cannot publish after the active Round concluded"
@@ -1071,6 +1098,8 @@ fn validate_campaign_transition(
                                     &expected.inputs,
                                     &invocation.inputs,
                                     &subject_snapshot_id,
+                                    subject_base_snapshot_id.as_deref(),
+                                    subject_change_set_id.as_deref(),
                                 )?;
                             }
                             let existing: i64 = tx.query_row(
@@ -1288,6 +1317,8 @@ fn validate_campaign_transition(
                                     &expected.outputs,
                                     &receipt.outputs,
                                     &subject_snapshot_id,
+                                    subject_base_snapshot_id.as_deref(),
+                                    subject_change_set_id.as_deref(),
                                 )?;
                                 if expected.kind == "reviewer" && event.attempt_id.is_none() {
                                     return Err(StoreError::Conflict(

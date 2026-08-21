@@ -634,6 +634,22 @@ fn capture_round(
             "candidate HEAD belongs to a different repository than the Campaign authority".into(),
         );
     }
+    if campaign.loaded.subject_kind() == SubjectKind::Diff
+        && snapshot.submodules != authority_snapshot.submodules
+    {
+        let mut paths: Vec<String> = snapshot
+            .submodules
+            .iter()
+            .chain(&authority_snapshot.submodules)
+            .map(|submodule| submodule.path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        return Err(format!(
+            "diff capture refuses changed gitlinks until submodule sandbox policy is explicit: {}",
+            paths.join(", ")
+        ));
+    }
     let tree_diff = if campaign.loaded.subject_kind() == SubjectKind::Diff {
         let base_manifest_id = authority_snapshot
             .artifact_manifest

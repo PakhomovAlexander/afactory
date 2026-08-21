@@ -210,7 +210,37 @@ fn subject_format_transitions_are_explicit() {
 
 #[test]
 fn an_inline_reviewer_cannot_claim_diff_support() {
-    let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
+    let diff = MINIMAL
+        .replace("kind = \"whole-tree\"", "kind = \"diff\"")
+        .replace(
+            "[[nodes]]\nid = \"architecture\"",
+            r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[nodes]]
+id = "architecture""#,
+        )
+        .replace(
+            "inputs = [\"gate\"]",
+            r#"inputs = [
+  "gate",
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]"#,
+        )
+        .replace(
+            "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
+            r#"[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "architecture", port = "change_set" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }"#,
+        );
     let error = Definition::from_toml(&diff)
         .unwrap()
         .load()

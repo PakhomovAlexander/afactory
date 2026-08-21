@@ -1,0 +1,56 @@
+{
+  "contract": "review.kernel/ChangeSet@1",
+  "description": "Language-neutral semantic cases that complement change-set-v1.json.",
+  "valid": [
+    {
+      "name": "sorted rename and canonical patch",
+      "payload": {
+        "base_snapshot_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_snapshot_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_paths": ["new", "old"],
+        "renames": [{ "old_path": "old", "new_path": "new", "similarity": 100 }],
+        "canonical_patch_base64": "",
+        "git_version": "git version test",
+        "diff_policy_version": "review.kernel/git-tree-diff@test"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unsorted changed paths",
+      "payload": {
+        "base_snapshot_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_snapshot_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_paths": ["z", "a"],
+        "renames": [],
+        "canonical_patch_base64": "",
+        "git_version": "git version test",
+        "diff_policy_version": "review.kernel/git-tree-diff@test"
+      }
+    },
+    {
+      "name": "rename endpoint absent from changed paths",
+      "payload": {
+        "base_snapshot_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_snapshot_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_paths": ["new"],
+        "renames": [{ "old_path": "old", "new_path": "new", "similarity": 100 }],
+        "canonical_patch_base64": "",
+        "git_version": "git version test",
+        "diff_policy_version": "review.kernel/git-tree-diff@test"
+      }
+    },
+    {
+      "name": "noncanonical base64",
+      "payload": {
+        "base_snapshot_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_snapshot_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_paths": [],
+        "renames": [],
+        "canonical_patch_base64": "Zh==",
+        "git_version": "git version test",
+        "diff_policy_version": "review.kernel/git-tree-diff@test"
+      }
+    }
+  ]
+}

@@ -6,7 +6,8 @@
 //!
 //! The invocation shape (captured from `codex-cli 0.147.0` and pinned by the fixtures in
 //! `tests/`): `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s
-//! workspace-write -o <staging>/last-message <flags> <prompt>`. Events arrive as JSONL on
+//! workspace-write -o <staging>/last-message <flags> -`, with the prompt streamed on stdin.
+//! Events arrive as JSONL on
 //! stdout; the final agent message is the reviewer's answer; `turn.completed` events carry
 //! token usage. `--ephemeral` keeps session files off the host, `-C` roots the model in the
 //! kernel's sandbox, and `workspace-write` matches `Mode::EphemeralWrite` — the reviewer may
@@ -127,14 +128,15 @@ impl ReviewerAdapter for CodexAdapter {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        args.push(Arg::literal(format!("{}{}", self.prompt, inputs)));
+        args.push(Arg::literal("-"));
+        let prompt = format!("{}{}", self.prompt, inputs);
         let command = Command::new(&self.program, args);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = runner.capture(cas, &command)?;
+        let capture = runner.capture_with_stdin(cas, &command, prompt.as_bytes())?;
 
         let events = Events::parse(&capture.stdout);
         if !capture.status.success() {

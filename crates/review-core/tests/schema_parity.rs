@@ -306,6 +306,22 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
 }
 
 #[test]
+fn change_set_semantic_conformance_corpus_matches_the_permanent_reader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/change-set-v1-conformance.json");
+    let corpus: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(value.validate().is_ok(), "{}", case["name"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(value.validate().is_err(), "{}", case["name"]);
+    }
+}
+
+#[test]
 fn patch_proposal_roundtrips() {
     let digest = format!("sha256:{}", "b".repeat(64));
     let proposal = PatchProposal {

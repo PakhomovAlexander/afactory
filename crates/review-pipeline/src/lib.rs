@@ -1757,6 +1757,7 @@ impl Dispatch for Kernel<'_> {
                 .iter()
                 .map(|port| (port.port.clone(), port.artifact_ids.clone()))
                 .collect();
+            self.validate_generation_outputs(node, &outputs)?;
             let expected =
                 port_artifacts(&node.outputs, &outputs, &self.authority.head_snapshot_id);
             if receipt.node != node.id || receipt.outputs != expected {
@@ -1785,6 +1786,7 @@ impl Dispatch for Kernel<'_> {
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
+        self.validate_generation_outputs(node, outputs)?;
         if let Some(recorded) = self.replayed_outputs.get(&node.id) {
             let expected = NodeOutputReceiptPayloadV1 {
                 node: node.id.clone(),
@@ -1834,6 +1836,31 @@ impl Dispatch for Kernel<'_> {
         events.push(event);
         self.append_batch(&events)?;
         pending.retain(|((id, _), _)| id != &node.id);
+        Ok(())
+    }
+
+    fn validate_generation_outputs(
+        &self,
+        node: &Node,
+        outputs: &ArtifactMap,
+    ) -> Result<(), String> {
+        if node.kind != NodeKind::Generation {
+            return Ok(());
+        }
+        let expected_findings = vec![self.authority.prior_finding_set_id.clone()];
+        let expected_change_set = self
+            .authority
+            .change_set_id
+            .as_ref()
+            .map(|id| vec![id.clone()]);
+        if outputs.get("findings") != Some(&expected_findings)
+            || outputs.get("change_set") != expected_change_set.as_ref()
+        {
+            return Err(format!(
+                "generation receipt contradicts Round {}'s pinned inputs or Change Set",
+                self.authority.round
+            ));
+        }
         Ok(())
     }
 

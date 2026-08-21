@@ -5,9 +5,10 @@
 //! - A **committed** capture reads objects. They cannot change under us, so one pass is enough.
 //! - A **dirty** capture reads a live worktree, which someone may be editing *right now*. There
 //!   is no atomic read of a directory tree, so the boundary has to be established rather than
-//!   assumed: fingerprint the index, take two complete passes, fingerprint the index again, and
-//!   admit the result only if all three agree. Any disagreement is retried, and a bounded number
-//!   of failures fails closed.
+//!   assumed: start a recursive monitor, fingerprint the index, take two complete passes,
+//!   fingerprint the index again, and admit the result only if all observations agree and the
+//!   monitor saw no event or watch failure. Any disagreement is retried, and a bounded number of
+//!   failures fails closed.
 //!
 //! The failure this prevents is a torn tree: half the files from before an edit, half from
 //! after, digested as though it were a state that existed. Every reviewer would then agree they
@@ -15,8 +16,12 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use review_core::snapshot::Vcs;
 use review_core::{Capture as SourceCapture, SourceSnapshot, Submodule};
 use review_store::Cas;
@@ -55,6 +60,12 @@ pub enum CaptureError {
     UnsupportedSubmodules {
         paths: Vec<String>,
     },
+    UnsafePath {
+        path: String,
+    },
+    Watch {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CaptureError {
@@ -85,6 +96,13 @@ impl std::fmt::Display for CaptureError {
                 "revalidated worktree capture refuses indexed gitlinks until submodule content policy is explicit: {}",
                 paths.join(", ")
             ),
+            CaptureError::UnsafePath { path } => write!(
+                f,
+                "worktree path {path} has a symlink or non-directory parent; refusing capture outside the checkout"
+            ),
+            CaptureError::Watch { detail } => {
+                write!(f, "worktree monitor could not establish a read boundary: {detail}")
+            }
         }
     }
 }
@@ -305,23 +323,17 @@ impl<'a> Capture<'a> {
                 .ok_or_else(|| CaptureError::SnapshotMismatch {
                     detail: "committed source has no revision provenance".to_string(),
                 })?;
-        let captured = self.committed(revision)?;
-        if source.repository_id != captured.repository_id
+        let resolved = self.repo.resolve_tree(revision)?;
+        if source.repository_id != self.repo.repository_id()?
             || source.content_digest != manifest.content_digest()
-            || source.content_digest != captured.content_digest
-            || manifest != &captured.manifest
-            || source.submodules != captured.submodules
-            || captured.tree_id.as_ref().map(TreeId::as_str) != Some(tree_id.as_str())
+            || resolved.as_str() != tree_id
         {
             return Err(CaptureError::SnapshotMismatch {
-                detail: "repository, tree, manifest, or content digest disagrees".to_string(),
+                detail: "repository, resolved tree, manifest, or content digest disagrees"
+                    .to_string(),
             });
         }
-        captured
-            .tree_id
-            .ok_or_else(|| CaptureError::SnapshotMismatch {
-                detail: "recaptured committed snapshot has no tree authority".to_string(),
-            })
+        Ok(resolved)
     }
 
     /// Capture the live worktree behind a revalidated read boundary.
@@ -335,6 +347,7 @@ impl<'a> Capture<'a> {
             return Err(CaptureError::UnsupportedSubmodules { paths: gitlinks });
         }
         for attempt in 1..=self.max_attempts {
+            let monitor = WorktreeMonitor::start(self.repo.workdir())?;
             let index_before = self.index_fingerprint()?;
             let first = self.scan_worktree(false)?;
             observer.between_passes(attempt);
@@ -342,8 +355,9 @@ impl<'a> Capture<'a> {
             // the snapshot's bytes, and if it does not, unreferenced CAS objects are inert.
             let second = self.scan_worktree(true)?;
             let index_after = self.index_fingerprint()?;
+            let changed = monitor.changed()?;
 
-            if index_before == index_after && first == second {
+            if !changed && index_before == index_after && first == second {
                 let mut entries = Vec::with_capacity(second.len());
                 for (path, (kind, digest, size)) in second {
                     entries.push(Entry {
@@ -406,7 +420,10 @@ impl<'a> Capture<'a> {
         let mut out = BTreeMap::new();
         for path in paths {
             // `path` is the encoded manifest key; the filesystem read needs the raw bytes.
-            let full = self.repo.workdir().join(crate::manifest::fs_path(&path));
+            let relative = crate::manifest::fs_path(&path);
+            let Some(full) = checked_worktree_path(self.repo.workdir(), &relative, &path)? else {
+                continue;
+            };
             let Ok(meta) = std::fs::symlink_metadata(&full) else {
                 // Tracked but deleted from the worktree: it is not part of what is there.
                 continue;
@@ -426,6 +443,11 @@ impl<'a> Capture<'a> {
             } else {
                 continue;
             };
+            if checked_worktree_path(self.repo.workdir(), &relative, &path)?.as_deref()
+                != Some(full.as_path())
+            {
+                return Err(CaptureError::UnsafePath { path });
+            }
             let digest = if publish {
                 self.store(&bytes)?
             } else {
@@ -587,6 +609,83 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+struct WorktreeMonitor {
+    _watcher: RecommendedWatcher,
+    events: Receiver<notify::Result<notify::Event>>,
+}
+
+impl WorktreeMonitor {
+    fn start(root: &Path) -> Result<Self, CaptureError> {
+        let (send, events) = std::sync::mpsc::channel();
+        let mut watcher = RecommendedWatcher::new(
+            move |event| {
+                let _ = send.send(event);
+            },
+            Config::default(),
+        )
+        .map_err(|error| CaptureError::Watch {
+            detail: error.to_string(),
+        })?;
+        watcher
+            .watch(root, RecursiveMode::Recursive)
+            .map_err(|error| CaptureError::Watch {
+                detail: error.to_string(),
+            })?;
+        Ok(Self {
+            _watcher: watcher,
+            events,
+        })
+    }
+
+    fn changed(&self) -> Result<bool, CaptureError> {
+        match self.events.recv_timeout(Duration::from_millis(250)) {
+            Ok(Ok(_)) => Ok(true),
+            Ok(Err(error)) => Err(CaptureError::Watch {
+                detail: error.to_string(),
+            }),
+            Err(RecvTimeoutError::Timeout) => Ok(false),
+            Err(RecvTimeoutError::Disconnected) => Err(CaptureError::Watch {
+                detail: "monitor disconnected before the boundary closed".to_string(),
+            }),
+        }
+    }
+}
+
+fn checked_worktree_path(
+    root: &Path,
+    relative: &Path,
+    encoded: &str,
+) -> Result<Option<PathBuf>, CaptureError> {
+    let root = std::fs::canonicalize(root)?;
+    let mut current = root;
+    let Some(file_name) = relative.file_name() else {
+        return Err(CaptureError::UnsafePath {
+            path: encoded.to_string(),
+        });
+    };
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let Component::Normal(component) = component else {
+                return Err(CaptureError::UnsafePath {
+                    path: encoded.to_string(),
+                });
+            };
+            current.push(component);
+            let metadata = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(CaptureError::UnsafePath {
+                    path: encoded.to_string(),
+                });
+            }
+        }
+    }
+    Ok(Some(current.join(file_name)))
 }
 
 #[cfg(unix)]
