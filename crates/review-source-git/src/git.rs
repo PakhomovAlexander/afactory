@@ -337,11 +337,10 @@ impl Repo {
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1");
         if let Some(alternate) = alternate_object_dir {
-            let joined = std::env::join_paths([alternate]).map_err(|error| {
-                GitError::MalformedTreeDiff {
+            let joined =
+                std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
                     detail: format!("invalid alternate object directory: {error}"),
-                }
-            })?;
+                })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         cmd.args(args);
@@ -377,11 +376,10 @@ impl Repo {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(alternate) = alternate_object_dir {
-            let joined = std::env::join_paths([alternate]).map_err(|error| {
-                GitError::MalformedTreeDiff {
+            let joined =
+                std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
                     detail: format!("invalid alternate object directory: {error}"),
-                }
-            })?;
+                })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         let mut child = cmd.spawn().map_err(GitError::Spawn)?;
@@ -468,11 +466,10 @@ impl Repo {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(alternate) = alternate_object_dir {
-            let joined = std::env::join_paths([alternate]).map_err(|error| {
-                GitError::MalformedTreeDiff {
+            let joined =
+                std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
                     detail: format!("invalid alternate object directory: {error}"),
-                }
-            })?;
+                })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         let mut child = cmd.spawn().map_err(GitError::Spawn)?;
@@ -641,12 +638,11 @@ impl Repo {
     /// Indexed gitlinks cannot be represented by the current synthetic-worktree manifest.
     pub fn indexed_gitlinks(&self) -> Result<Vec<String>, GitError> {
         let mut paths = Vec::new();
-        for record in split_nul(&self.bytes(&["ls-files", "-s", "-z"])? ) {
+        for record in split_nul(&self.bytes(&["ls-files", "-s", "-z"])?) {
             let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
                 continue;
             };
-            let metadata =
-                std::str::from_utf8(&record[..tab]).map_err(|_| GitError::NotUtf8)?;
+            let metadata = std::str::from_utf8(&record[..tab]).map_err(|_| GitError::NotUtf8)?;
             if metadata.split_ascii_whitespace().next() == Some("160000") {
                 paths.push(encode_path(&record[tab + 1..]));
             }
@@ -744,9 +740,7 @@ fn parse_object_id(output: &[u8], operation: &str) -> Result<String, GitError> {
     let value = std::str::from_utf8(output)
         .map_err(|_| GitError::NotUtf8)?
         .trim();
-    if !matches!(value.len(), 40 | 64)
-        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(GitError::MalformedTreeDiff {
             detail: format!("{operation} returned an invalid object id {value:?}"),
         });

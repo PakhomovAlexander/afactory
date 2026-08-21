@@ -1,7 +1,7 @@
 use review_config::Definition;
 use review_core::{
-    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
-    ChangeSetV1, RoundStartedPayloadV1, SubjectKind, SubjectV1,
+    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
+    ChangeSetV1, EventType, RoundStartedPayloadV1, SubjectKind, SubjectV1,
 };
 use review_pipeline::{Kernel, RoundAuthority};
 use review_source_git::Manifest;
@@ -156,7 +156,11 @@ fn test_round_authority_with_subject(
         let change_set = ChangeSetV1::new(
             &authority_snapshot_id,
             &head_snapshot_id,
-            snapshot.entries.iter().map(|entry| entry.path.clone()).collect(),
+            snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
             vec![],
             b"",
             "git version test",

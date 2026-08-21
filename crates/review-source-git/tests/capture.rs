@@ -376,7 +376,10 @@ fn non_utf8_symlink_targets_roundtrip_through_both_capture_modes() {
     let root = fixture.dir.path().join("materialized");
     review_source_git::materialize(&dirty.manifest, &cas, &root).unwrap();
     assert_eq!(
-        std::fs::read_link(root.join("link")).unwrap().as_os_str().as_bytes(),
+        std::fs::read_link(root.join("link"))
+            .unwrap()
+            .as_os_str()
+            .as_bytes(),
         b"target-\xff"
     );
 }

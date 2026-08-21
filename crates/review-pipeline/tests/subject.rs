@@ -80,18 +80,13 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
         .reviewers
         .insert("tester".into(), Lockfile::pin("tester", &registry).unwrap());
     let loaded = Definition::from_toml(DIFF_PIPELINE)
-    .unwrap()
-    .load_with(&lockfile, &registry)
-    .unwrap();
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .unwrap();
 
     let manifest = Manifest::new(vec![]);
-    let authority = support::test_diff_round_authority(
-        &cas,
-        &mut store,
-        "run",
-        &manifest,
-        DIFF_PIPELINE,
-    );
+    let authority =
+        support::test_diff_round_authority(&cas, &mut store, "run", &manifest, DIFF_PIPELINE);
     let expected = authority.change_set_id.clone().unwrap();
     let seen = Arc::new(Mutex::new(None));
     let kernel = Kernel::from_loaded(

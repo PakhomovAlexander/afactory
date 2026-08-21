@@ -34,10 +34,11 @@ use review_core::event::{
     AttemptFencedPayloadV1, AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, ChangeSetV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
+    CampaignOpenedPayloadV1, ChangeSetV1, EventType, LegacyStageOutput, MissingNodeV2,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1,
+    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectV1,
+    run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{
@@ -174,7 +175,8 @@ impl RoundAuthority {
             )
             .map_err(|error| error.to_string())?;
             change_set.validate()?;
-            if change_set.base_snapshot_id != subject.base_snapshot_id.as_deref().unwrap_or_default()
+            if change_set.base_snapshot_id
+                != subject.base_snapshot_id.as_deref().unwrap_or_default()
                 || change_set.head_snapshot_id != subject.head_snapshot_id
             {
                 return Err("Round Change Set does not match its Subject".into());

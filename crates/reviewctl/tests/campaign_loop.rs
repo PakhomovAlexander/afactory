@@ -456,17 +456,24 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        format!(r#"name = "tester"
+        format!(
+            r#"name = "tester"
 version = "1.0.0"
 subjects = ["diff"]
 
 [runner]
 program = "{}"
 args = []
-"#, codex.display()),
+"#,
+            codex.display()
+        ),
     )
     .unwrap();
-    std::fs::write(package.join("reviewer.md"), "Review the exact Change Set.\n").unwrap();
+    std::fs::write(
+        package.join("reviewer.md"),
+        "Review the exact Change Set.\n",
+    )
+    .unwrap();
     let registry = review_config::lock::Registry::new([&reviewers]);
     let mut lockfile = review_config::lock::Lockfile::empty();
     lockfile.reviewers.insert(

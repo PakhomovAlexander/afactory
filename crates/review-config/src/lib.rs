@@ -185,7 +185,11 @@ fn validate_diff_change_set_wiring(
     let mut producers = nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Generation)
-        .filter(|node| node.outputs.iter().any(|port| port.build().name == "change_set"));
+        .filter(|node| {
+            node.outputs
+                .iter()
+                .any(|port| port.build().name == "change_set")
+        });
     let producer = producers.next().ok_or_else(|| {
         ConfigError::Binding(
             "a `diff` pipeline requires generation to emit one exact ChangeSet@1 on `change_set`"

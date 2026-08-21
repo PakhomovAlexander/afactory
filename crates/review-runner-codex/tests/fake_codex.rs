@@ -219,10 +219,7 @@ fn the_prompt_is_the_verified_bytes_not_the_disk() {
     let dir = tempfile::tempdir().unwrap();
     let prompt_dump = dir.path().join("prompt-dump");
     let stub_path = dir.path().join("codex");
-    let script = format!(
-        "#!/bin/sh\ncat > \"{}\"\nexit 1\n",
-        prompt_dump.display()
-    );
+    let script = format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", prompt_dump.display());
     std::fs::write(&stub_path, script).unwrap();
     #[cfg(unix)]
     {
@@ -256,10 +253,7 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
     let dir = tempfile::tempdir().unwrap();
     let prompt_dump = dir.path().join("prompt-dump");
     let stub_path = dir.path().join("codex");
-    let script = format!(
-        "#!/bin/sh\ncat > \"{}\"\nexit 1\n",
-        prompt_dump.display()
-    );
+    let script = format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", prompt_dump.display());
     std::fs::write(&stub_path, script).unwrap();
     #[cfg(unix)]
     {

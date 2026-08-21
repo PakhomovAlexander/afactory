@@ -101,7 +101,10 @@ impl std::fmt::Display for CaptureError {
                 "worktree path {path} has a symlink or non-directory parent; refusing capture outside the checkout"
             ),
             CaptureError::Watch { detail } => {
-                write!(f, "worktree monitor could not establish a read boundary: {detail}")
+                write!(
+                    f,
+                    "worktree monitor could not establish a read boundary: {detail}"
+                )
             }
         }
     }
@@ -171,12 +174,11 @@ impl Snapshot {
             payload["artifact_manifest"] = serde_json::json!(manifest_id);
         }
         if !self.submodules.is_empty() {
-            payload["submodules"] =
-                serde_json::to_value(&self.submodules).map_err(|error| {
-                    CaptureError::SnapshotMismatch {
-                        detail: error.to_string(),
-                    }
-                })?;
+            payload["submodules"] = serde_json::to_value(&self.submodules).map_err(|error| {
+                CaptureError::SnapshotMismatch {
+                    detail: error.to_string(),
+                }
+            })?;
         }
         Ok(payload)
     }

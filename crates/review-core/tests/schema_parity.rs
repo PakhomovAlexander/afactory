@@ -7,12 +7,12 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, ChangeSetV1,
-    CampaignOpenedPayloadV1, ClaimRef, ClaimRefKind, EventType, FindingReport, Location,
-    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    PathRenameV1, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
+    CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
+    Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
+    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent,
+    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
@@ -162,8 +162,8 @@ fn source_snapshot_roundtrips_every_capture_kind() {
     ];
 
     for capture in captures {
-        let source_revision = matches!(&capture, Capture::Committed { .. })
-            .then(|| "bba24cb".to_string());
+        let source_revision =
+            matches!(&capture, Capture::Committed { .. }).then(|| "bba24cb".to_string());
         let snapshot = SourceSnapshot {
             repository_id: "example-org/project-hub".into(),
             vcs: Vcs::Git,
@@ -309,8 +309,7 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
 fn change_set_semantic_conformance_corpus_matches_the_permanent_reader() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../schemas/change-set-v1-conformance.json");
-    let corpus: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
         assert!(value.validate().is_ok(), "{}", case["name"]);

@@ -336,8 +336,7 @@ impl ReviewerInputs {
                 });
                 prompt.push_str("\n```json\n");
                 prompt.push_str(
-                    &serde_json::to_string_pretty(&metadata)
-                        .map_err(|error| error.to_string())?,
+                    &serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
                 );
                 prompt.push_str("\n```\n\nCanonical patch:\n\n");
                 if let Ok(rendered) = std::str::from_utf8(&patch) {

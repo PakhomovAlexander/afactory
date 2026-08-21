@@ -8,9 +8,9 @@ use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, EventType, ReviewerPackageV1,
-    ChangeSetV1, RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind,
-    SubjectV1, run_report_closes_round,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
+    run_report_closes_round,
 };
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
@@ -703,14 +703,13 @@ fn capture_round(
             if encoded.len() > MAX_CHANGE_SET_BYTES {
                 return Err(format!(
                     "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    encoded.len(), MAX_CHANGE_SET_BYTES
+                    encoded.len(),
+                    MAX_CHANGE_SET_BYTES
                 ));
             }
             Some(
-                cas.put_json(
-                    &serde_json::to_value(change_set).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?,
+                cas.put_json(&serde_json::to_value(change_set).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?,
             )
         }
         None => None,

@@ -66,18 +66,13 @@ impl ChangeSetV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if !crate::is_digest(&self.base_snapshot_id)
-            || !crate::is_digest(&self.head_snapshot_id)
-        {
+        if !crate::is_digest(&self.base_snapshot_id) || !crate::is_digest(&self.head_snapshot_id) {
             return Err("ChangeSet@1 has an invalid Base or head Snapshot ID".into());
         }
         if self.git_version.trim().is_empty() || self.diff_policy_version.trim().is_empty() {
             return Err("ChangeSet@1 requires Git build and diff-policy versions".into());
         }
-        if self
-            .changed_paths
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
+        if self.changed_paths.windows(2).any(|pair| pair[0] >= pair[1])
             || self.changed_paths.iter().any(|path| !valid_path(path))
         {
             return Err("ChangeSet@1 changed paths must be sorted, unique, and relative".into());
