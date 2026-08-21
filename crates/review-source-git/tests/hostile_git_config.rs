@@ -370,6 +370,15 @@ fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
     );
     std::fs::remove_file(&marker).unwrap();
 
+    // The old implementation adopted this predictable directory. A fresh temporary admin root
+    // must ignore every planted attribute, replacement ref, and config symlink here.
+    let planted = hostile.home_path().join("review-kernel-tree-diff.git");
+    std::fs::create_dir_all(planted.join("info")).unwrap();
+    std::fs::create_dir_all(planted.join("refs/replace")).unwrap();
+    std::fs::write(planted.join("info/attributes"), "* -diff\n").unwrap();
+    std::fs::write(planted.join("refs/replace/planted"), "invalid\n").unwrap();
+    std::os::unix::fs::symlink(&marker, planted.join("config")).unwrap();
+
     // A live attribute file is candidate-controlled but not one of the resolved tree inputs.
     hostile.write(".gitattributes", b"*.rs -diff\n");
 

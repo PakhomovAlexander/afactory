@@ -640,7 +640,9 @@ fn capture_round(
             cas,
             NewEvent::new(
                 EventType::SourceCapturedV1,
-                snapshot.to_payload(Some(&manifest_id)),
+                snapshot
+                    .to_payload(Some(&manifest_id))
+                    .map_err(|error| error.to_string())?,
             )
             .caused_by(campaign.opened_event_id.clone())
             .correlating(head_snapshot_id.clone())
@@ -913,7 +915,11 @@ fn publish_snapshot(snapshot: &Snapshot, cas: &Cas) -> Result<(String, String), 
         .put_json(&serde_json::to_value(&snapshot.manifest).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
     let snapshot_id = cas
-        .put_json(&snapshot.to_payload(Some(&manifest_id)))
+        .put_json(
+            &snapshot
+                .to_payload(Some(&manifest_id))
+                .map_err(|error| error.to_string())?,
+        )
         .map_err(|error| error.to_string())?;
     Ok((snapshot_id, manifest_id))
 }

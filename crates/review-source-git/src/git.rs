@@ -17,7 +17,8 @@
 //!    so neither a caller nor repository configuration can select a worktree diff.
 
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -76,6 +77,10 @@ impl std::error::Error for GitError {}
 /// command.
 pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
 
+/// The kernel-owned policy whose output M2.4 records with each Change Set.
+pub const TREE_DIFF_POLICY_VERSION: &str =
+    "review.kernel/git-tree-diff@1;binary=git-deflate-level-6";
+
 /// A tree object id admitted by [`Repo::resolve_tree`].
 ///
 /// The inner value is deliberately private: callers can select a revision, but cannot smuggle a
@@ -116,6 +121,7 @@ pub struct TreeChange {
 pub struct TreeDiff {
     pub changes: Vec<TreeChange>,
     pub git_version: String,
+    pub diff_policy: String,
     output: Vec<u8>,
     patch_start: usize,
 }
@@ -262,11 +268,13 @@ impl Repo {
         args: &[S],
     ) -> Result<(Output, String), GitError> {
         let mut version_cmd = self.command();
-        version_cmd.current_dir(&self.home).arg("--version");
+        version_cmd
+            .current_dir(&self.home)
+            .args(["version", "--build-options"]);
         let version_output = version_cmd.output().map_err(GitError::Spawn)?;
         if !version_output.status.success() {
             return Err(GitError::Failed {
-                args: vec!["--version".to_string()],
+                args: vec!["version".to_string(), "--build-options".to_string()],
                 stderr: String::from_utf8_lossy(&version_output.stderr).into_owned(),
             });
         }
@@ -275,12 +283,14 @@ impl Repo {
             .trim()
             .to_string();
 
-        let (git_dir, object_dir) = self.prepare_tree_diff_repository()?;
+        let (administration, object_dir) = self.prepare_tree_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
         let mut cmd = self.command();
         cmd.current_dir(&self.home)
             .arg("--git-dir")
             .arg(git_dir)
-            .env("GIT_OBJECT_DIRECTORY", object_dir);
+            .env("GIT_OBJECT_DIRECTORY", object_dir)
+            .env("GIT_NO_REPLACE_OBJECTS", "1");
         cmd.args(args);
         let output = cmd.output().map_err(GitError::Spawn)?;
         if !output.status.success() {
@@ -295,7 +305,7 @@ impl Repo {
         Ok((output, git_version))
     }
 
-    fn prepare_tree_diff_repository(&self) -> Result<(PathBuf, PathBuf), GitError> {
+    fn prepare_tree_diff_repository(&self) -> Result<(tempfile::TempDir, PathBuf), GitError> {
         let object_dir = PathBuf::from(self.line(&[
             "rev-parse",
             "--path-format=absolute",
@@ -309,21 +319,36 @@ impl Repo {
             });
         }
 
-        let git_dir = self.home.join("review-kernel-tree-diff.git");
-        fs::create_dir_all(git_dir.join("objects")).map_err(GitError::Io)?;
-        fs::create_dir_all(git_dir.join("refs/heads")).map_err(GitError::Io)?;
-        fs::write(
-            git_dir.join("HEAD"),
+        let administration = tempfile::Builder::new()
+            .prefix("review-kernel-tree-diff-")
+            .tempdir()
+            .map_err(GitError::Io)?;
+        let workdir = self.workdir.canonicalize().map_err(GitError::Io)?;
+        let admin_root = administration.path().canonicalize().map_err(GitError::Io)?;
+        if admin_root.starts_with(workdir) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "temporary tree-diff administration is inside the candidate checkout"
+                    .to_string(),
+            });
+        }
+        let git_dir = administration.path().join("repo.git");
+        fs::create_dir(&git_dir).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("objects")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs/heads")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("info")).map_err(GitError::Io)?;
+        write_new(
+            &git_dir.join("HEAD"),
             b"ref: refs/heads/review-kernel-unused\n",
-        )
-        .map_err(GitError::Io)?;
+        )?;
         let config = if object_format == "sha256" {
             "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
         } else {
             "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
         };
-        fs::write(git_dir.join("config"), config).map_err(GitError::Io)?;
-        Ok((git_dir, object_dir))
+        write_new(&git_dir.join("config"), config.as_bytes())?;
+        write_new(&git_dir.join("info/attributes"), b"")?;
+        Ok((administration, object_dir))
     }
 
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
@@ -552,15 +577,22 @@ fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, Git
                     .to_string(),
             });
         }
-        let header_count = 1 + patch
-            .windows(b"\ndiff --git ".len())
-            .filter(|window| *window == b"\ndiff --git ")
-            .count();
-        if header_count != changes.len() {
+        let actual_headers: Vec<&[u8]> = patch
+            .split(|byte| *byte == b'\n')
+            .filter(|line| line.starts_with(b"diff --git "))
+            .collect();
+        let expected_headers = expected_patch_headers(&changes);
+        if actual_headers.len() != expected_headers.len()
+            || actual_headers
+                .iter()
+                .zip(&expected_headers)
+                .any(|(actual, expected)| *actual != expected.as_slice())
+        {
             return Err(GitError::MalformedTreeDiff {
                 detail: format!(
-                    "raw change count {} disagrees with patch section count {header_count}",
-                    changes.len()
+                    "raw changes disagree with patch headers ({} expected, {} present)",
+                    expected_headers.len(),
+                    actual_headers.len()
                 ),
             });
         }
@@ -570,6 +602,7 @@ fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, Git
     Ok(TreeDiff {
         changes,
         git_version,
+        diff_policy: TREE_DIFF_POLICY_VERSION.to_string(),
         output,
         patch_start,
     })
@@ -602,6 +635,73 @@ fn parse_similarity(status: &str) -> Result<u8, GitError> {
 
 fn is_full_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn expected_patch_headers(changes: &[TreeChange]) -> Vec<Vec<u8>> {
+    let mut headers = Vec::new();
+    for change in changes {
+        let old_path = change
+            .old_path
+            .as_deref()
+            .or(change.new_path.as_deref())
+            .expect("validated raw change has a path");
+        let new_path = change
+            .new_path
+            .as_deref()
+            .or(change.old_path.as_deref())
+            .expect("validated raw change has a path");
+        let mut header = b"diff --git ".to_vec();
+        header.extend_from_slice(&quote_patch_path(b"a/", old_path));
+        header.push(b' ');
+        header.extend_from_slice(&quote_patch_path(b"b/", new_path));
+        let copies = if matches!(change.kind, TreeChangeKind::TypeChanged) {
+            2
+        } else {
+            1
+        };
+        for _ in 0..copies {
+            headers.push(header.clone());
+        }
+    }
+    headers
+}
+
+fn quote_patch_path(prefix: &[u8], path: &[u8]) -> Vec<u8> {
+    let bytes: Vec<u8> = prefix.iter().chain(path).copied().collect();
+    let quoted = bytes
+        .iter()
+        .any(|byte| !matches!(byte, b' '..=b'~') || matches!(byte, b'"' | b'\\'));
+    if !quoted {
+        return bytes;
+    }
+    let mut output = Vec::with_capacity(bytes.len() + 2);
+    output.push(b'"');
+    for byte in bytes {
+        match byte {
+            7 => output.extend_from_slice(b"\\a"),
+            8 => output.extend_from_slice(b"\\b"),
+            b'\t' => output.extend_from_slice(b"\\t"),
+            b'\n' => output.extend_from_slice(b"\\n"),
+            11 => output.extend_from_slice(b"\\v"),
+            12 => output.extend_from_slice(b"\\f"),
+            b'\r' => output.extend_from_slice(b"\\r"),
+            b'"' => output.extend_from_slice(b"\\\""),
+            b'\\' => output.extend_from_slice(b"\\\\"),
+            b' '..=b'~' => output.push(byte),
+            _ => output.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+        }
+    }
+    output.push(b'"');
+    output
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), GitError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(GitError::Io)?;
+    file.write_all(bytes).map_err(GitError::Io)
 }
 
 /// Split `-z` output into records without allocating a String — paths need not be UTF-8.
@@ -640,6 +740,11 @@ mod tests {
             raw("M", &[""]),
             raw("R100", &["old"]),
             b"unexpected\0bytes".to_vec(),
+            {
+                let mut mismatch = raw("M", &["safe"]);
+                mismatch.extend_from_slice(b"\0diff --git a/hidden b/hidden\n");
+                mismatch
+            },
         ];
         for bytes in cases {
             assert!(
@@ -649,6 +754,7 @@ mod tests {
         }
         raw_only.push(0);
         raw_only.extend_from_slice(b"diff --git a/file b/file\n");
-        assert!(parse_tree_diff(raw_only, "git version test".to_string()).is_ok());
+        let parsed = parse_tree_diff(raw_only, "git version test".to_string()).unwrap();
+        assert_eq!(parsed.diff_policy, super::TREE_DIFF_POLICY_VERSION);
     }
 }

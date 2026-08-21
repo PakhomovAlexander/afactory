@@ -101,7 +101,7 @@ pub struct Snapshot {
     pub manifest: Manifest,
     pub content_digest: String,
     pub repository_id: String,
-    pub tree_id: TreeId,
+    pub tree_id: Option<TreeId>,
     /// The commit this content corresponds to, when one exists. Provenance, not identity.
     pub source_revision: Option<String>,
     pub dirty: bool,
@@ -111,17 +111,23 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// The `SourceSnapshot@1` payload for this capture.
-    pub fn to_payload(&self, manifest_artifact: Option<&str>) -> serde_json::Value {
-        let capture = if self.dirty {
-            serde_json::json!({
-                "kind": "synthetic_worktree",
-                "tree_id": self.tree_id.as_str(),
-                "boundary": "revalidated",
-                "attempts": self.attempts,
-            })
-        } else {
-            serde_json::json!({ "kind": "committed", "tree_id": self.tree_id.as_str() })
-        };
+    pub fn to_payload(
+        &self,
+        manifest_artifact: Option<&str>,
+    ) -> Result<serde_json::Value, CaptureError> {
+        if self.dirty {
+            return Err(CaptureError::SnapshotMismatch {
+                detail: "synthetic worktree has no content-matching Git tree authority; M2.4 must derive one from its admitted manifest"
+                    .to_string(),
+            });
+        }
+        let tree_id = self
+            .tree_id
+            .as_ref()
+            .ok_or_else(|| CaptureError::SnapshotMismatch {
+                detail: "committed snapshot has no resolved tree authority".to_string(),
+            })?;
+        let capture = serde_json::json!({ "kind": "committed", "tree_id": tree_id.as_str() });
         let mut payload = serde_json::json!({
             "repository_id": self.repository_id,
             "vcs": "git",
@@ -134,7 +140,7 @@ impl Snapshot {
         if let Some(manifest_id) = manifest_artifact {
             payload["artifact_manifest"] = serde_json::json!(manifest_id);
         }
-        payload
+        Ok(payload)
     }
 }
 
@@ -238,7 +244,7 @@ impl<'a> Capture<'a> {
             content_digest: manifest.content_digest(),
             manifest,
             repository_id: self.repo.repository_id()?,
-            tree_id,
+            tree_id: Some(tree_id),
             source_revision: Some(commit),
             dirty: false,
             attempts: 1,
@@ -274,13 +280,17 @@ impl<'a> Capture<'a> {
             || source.content_digest != manifest.content_digest()
             || source.content_digest != captured.content_digest
             || manifest != &captured.manifest
-            || tree_id != captured.tree_id.as_str()
+            || captured.tree_id.as_ref().map(TreeId::as_str) != Some(tree_id.as_str())
         {
             return Err(CaptureError::SnapshotMismatch {
                 detail: "repository, tree, manifest, or content digest disagrees".to_string(),
             });
         }
-        Ok(captured.tree_id)
+        captured
+            .tree_id
+            .ok_or_else(|| CaptureError::SnapshotMismatch {
+                detail: "recaptured committed snapshot has no tree authority".to_string(),
+            })
     }
 
     /// Capture the live worktree behind a revalidated read boundary.
@@ -309,14 +319,12 @@ impl<'a> Capture<'a> {
                     });
                 }
                 let manifest = Manifest::new(entries);
-                let source_revision = self.repo.rev_parse("HEAD")?;
-                let tree_id = self.repo.resolve_tree(&source_revision)?;
                 return Ok(Snapshot {
                     content_digest: manifest.content_digest(),
                     manifest,
                     repository_id: self.repo.repository_id()?,
-                    tree_id,
-                    source_revision: Some(source_revision),
+                    tree_id: None,
+                    source_revision: self.repo.rev_parse("HEAD").ok(),
                     dirty: true,
                     attempts: attempt,
                 });
