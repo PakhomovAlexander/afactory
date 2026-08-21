@@ -527,6 +527,7 @@ fn prepare_round(
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
         (existing, _restart) => capture_round(
+            options,
             cas,
             store,
             repo,
@@ -556,6 +557,7 @@ fn prepare_round(
 }
 
 fn capture_round(
+    options: &Options,
     cas: &Cas,
     store: &mut EventStore,
     repo: &Repo,
@@ -848,6 +850,12 @@ fn capture_round(
             .correlating(subject_id.clone())
             .referencing(round_refs),
         );
+        store
+            .append_batch(run_id, cas, &batch)
+            .map_err(|error| error.to_string())?
+            .pop()
+            .ok_or("supersession batch did not publish its replacement Round")?
+    } else {
         let mut round_refs = vec![
             campaign.manifest.authority_snapshot_id.clone(),
             campaign.manifest_id.clone(),
@@ -858,12 +866,6 @@ fn capture_round(
         ];
         round_refs.extend(subject.base_snapshot_id.clone());
         round_refs.extend(subject.change_set_id.clone());
-        store
-            .append_batch(run_id, cas, &batch)
-            .map_err(|error| error.to_string())?
-            .pop()
-            .ok_or("supersession batch did not publish its replacement Round")?
-    } else {
         store
             .append(
                 run_id,
