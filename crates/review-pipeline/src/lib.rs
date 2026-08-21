@@ -231,7 +231,7 @@ impl RoundAuthority {
     }
 
     fn artifact_refs(&self) -> Vec<String> {
-        let mut refs = vec![
+        let refs = vec![
             self.authority_snapshot_id.clone(),
             self.campaign_manifest_id.clone(),
             self.subject_id.clone(),
