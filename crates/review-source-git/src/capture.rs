@@ -7,8 +7,8 @@
 //!   is no atomic read of a directory tree, so the boundary has to be established rather than
 //!   assumed: start a recursive monitor, fingerprint the index, take two complete passes,
 //!   fingerprint the index again, and admit the result only if all observations agree and the
-//!   monitor saw no event or watch failure. Any disagreement is retried, and a bounded number of
-//!   failures fails closed.
+//!   monitor saw no mutation event or watch failure. Any disagreement is retried, and a bounded
+//!   number of failures fails closed.
 //!
 //! The failure this prevents is a torn tree: half the files from before an edit, half from
 //! after, digested as though it were a state that existed. Every reviewer would then agree they
@@ -622,7 +622,17 @@ impl WorktreeMonitor {
     fn start(root: &Path) -> Result<Self, CaptureError> {
         let (send, events) = std::sync::mpsc::channel();
         let mut watcher = RecommendedWatcher::new(
-            move |event| {
+            move |event: notify::Result<notify::Event>| {
+                // Linux reports reads and close-after-read as access events. Capture itself
+                // necessarily causes those while hashing files and fingerprinting the index;
+                // they do not invalidate the read boundary. Every mutation class and every
+                // watcher error still reaches `changed` and fails the attempt closed.
+                if event
+                    .as_ref()
+                    .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+                {
+                    return;
+                }
                 let _ = send.send(event);
             },
             Config::default(),
