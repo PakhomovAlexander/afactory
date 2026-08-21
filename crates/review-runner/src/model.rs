@@ -384,7 +384,7 @@ fn patch_fence(patch: &str) -> String {
         .map(str::len)
         .max()
         .unwrap_or(0);
-    format!("{}", "~".repeat(longest.max(2) + 1))
+    "~".repeat(longest.max(2) + 1)
 }
 
 /// `Send + Sync` is part of the contract: the scheduler dispatches reviewers from worker
