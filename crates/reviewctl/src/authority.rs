@@ -1094,7 +1094,7 @@ fn captured_registry(
     Ok(packages)
 }
 
-fn review_dir(pipeline: &str) -> Result<String, String> {
+pub(crate) fn review_dir(pipeline: &str) -> Result<String, String> {
     Path::new(pipeline)
         .parent()
         .and_then(Path::parent)

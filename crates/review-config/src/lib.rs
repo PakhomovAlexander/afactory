@@ -15,6 +15,7 @@
 //! silently does nothing — the same rule the contracts use, for the same reason.
 
 pub mod lock;
+pub mod pipeline_edit;
 
 use std::collections::BTreeMap;
 
@@ -516,6 +517,17 @@ impl Definition {
                     budgets.attempt, budgets.run
                 )));
             }
+        }
+        if self.convergence.clean_rounds == 0 || self.convergence.max_rounds == 0 {
+            return Err(ConfigError::Binding(
+                "convergence round counts must be positive".to_string(),
+            ));
+        }
+        if self.convergence.clean_rounds > self.convergence.max_rounds {
+            return Err(ConfigError::Binding(format!(
+                "convergence requires {} clean rounds but permits only {} rounds",
+                self.convergence.clean_rounds, self.convergence.max_rounds
+            )));
         }
 
         let mut pipeline = Pipeline::default();

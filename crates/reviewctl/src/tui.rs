@@ -5,9 +5,10 @@
 //! and commits that patch, then starts a new campaign whose `--authority` names that commit.
 //! `r` always delegates to the ordinary pinned-authority run path.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Stdout, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -21,14 +22,18 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 use review_config::lock::{
-    Lockfile, PackageManifest, Registry, package_digest, reviewer_runner_settings,
-    update_reviewer_runner_settings,
+    Lockfile, PackageManifest, Registry, reviewer_runner_settings, update_reviewer_runner_settings,
+};
+use review_config::pipeline_edit::{
+    PipelineSetting, PipelineView, add_reviewer, pipeline_view, rebind_reviewer, remove_reviewer,
+    update_pipeline_setting, validate_pipeline, validate_pipeline_structure,
 };
 
 use crate::Options;
 
 const CONFIG_ROWS: usize = 3;
 const RUN_ROWS: usize = 6;
+const POLICY_ROWS: usize = 5;
 
 pub fn launch(options: Options) -> Result<(), String> {
     let mut app = App::load(options)?;
@@ -39,13 +44,18 @@ pub fn launch(options: Options) -> Result<(), String> {
 }
 
 fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), String> {
+    terminal.draw(app)?;
     loop {
-        terminal.draw(app)?;
         if !event::poll(Duration::from_millis(250)).map_err(|error| error.to_string())? {
             continue;
         }
-        let Event::Key(key) = event::read().map_err(|error| error.to_string())? else {
-            continue;
+        let key = match event::read().map_err(|error| error.to_string())? {
+            Event::Resize(_, _) => {
+                terminal.draw(app)?;
+                continue;
+            }
+            Event::Key(key) => key,
+            _ => continue,
         };
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             continue;
@@ -54,8 +64,9 @@ fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), Strin
             Action::Continue => {}
             Action::Quit => return Ok(()),
             Action::Export => match app.export_configuration() {
-                Ok((count, path)) => app.success(format!(
-                    "Exported {count} reviewer change(s) to {}; apply and commit before a new campaign",
+                Ok((reviewers, pipeline, path)) => app.success(format!(
+                    "Exported pipeline={} and {reviewers} reviewer change(s) to {}; apply and commit before a new campaign",
+                    yes_no(pipeline),
                     path.display()
                 )),
                 Err(error) => app.failure(error),
@@ -92,6 +103,7 @@ fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), Strin
                 }
             }
         }
+        terminal.draw(app)?;
     }
 }
 
@@ -177,155 +189,191 @@ impl TerminalSession {
             Paint::Muted,
         )?;
 
-        let footer = height - 3;
-        let left_width = (width / 3).clamp(24, 40);
-        for y in 2..footer {
-            paint(&mut self.stdout, y, left_width, 1, "|", Paint::Muted)?;
-        }
         paint(
             &mut self.stdout,
             2,
             1,
-            left_width - 2,
-            if app.pane == Pane::Reviewers {
+            14,
+            if app.tab == TopTab::Pipelines {
+                "[ PIPELINES ]"
+            } else {
+                "  PIPELINES  "
+            },
+            if app.tab == TopTab::Pipelines {
+                Paint::Focus
+            } else {
+                Paint::Normal
+            },
+        )?;
+        paint(
+            &mut self.stdout,
+            2,
+            16,
+            14,
+            if app.tab == TopTab::Reviewers {
                 "[ REVIEWERS ]"
             } else {
                 "  REVIEWERS  "
             },
-            if app.pane == Pane::Reviewers {
+            if app.tab == TopTab::Reviewers {
                 Paint::Focus
             } else {
                 Paint::Normal
             },
         )?;
-        let list_top = 4;
-        let capacity = usize::from(footer.saturating_sub(list_top));
-        let start = app
-            .selected_reviewer
-            .saturating_sub(capacity.saturating_sub(1));
-        for (row, (index, reviewer)) in app
-            .reviewers
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(capacity)
-            .enumerate()
-        {
-            let selected = index == app.selected_reviewer;
+
+        let footer = height - 3;
+        let left_width = (width / 3).clamp(24, 40);
+        if app.tab == TopTab::Reviewers {
+            for y in 3..footer {
+                paint(&mut self.stdout, y, left_width, 1, "|", Paint::Muted)?;
+            }
             paint(
                 &mut self.stdout,
-                list_top + row as u16,
+                3,
                 1,
                 left_width - 2,
-                &format!(
-                    "{} {}{}",
-                    if selected { ">" } else { " " },
-                    reviewer.name,
-                    if reviewer.dirty { " *" } else { "" }
-                ),
-                if selected {
-                    Paint::Selected
+                if app.pane == Pane::Reviewers {
+                    "[ REVIEWERS ]"
+                } else {
+                    "  REVIEWERS  "
+                },
+                if app.pane == Pane::Reviewers {
+                    Paint::Focus
                 } else {
                     Paint::Normal
                 },
             )?;
-        }
+            let list_top = 5;
+            let capacity = usize::from(footer.saturating_sub(list_top));
+            let start = app
+                .selected_reviewer
+                .saturating_sub(capacity.saturating_sub(1));
+            for (row, (index, reviewer)) in app
+                .reviewers
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(capacity)
+                .enumerate()
+            {
+                let selected = index == app.selected_reviewer;
+                paint(
+                    &mut self.stdout,
+                    list_top + row as u16,
+                    1,
+                    left_width - 2,
+                    &format!(
+                        "{} {}{}",
+                        if selected { ">" } else { " " },
+                        reviewer.name,
+                        if reviewer.dirty { " *" } else { "" }
+                    ),
+                    if selected {
+                        Paint::Selected
+                    } else {
+                        Paint::Normal
+                    },
+                )?;
+            }
 
-        let right_x = left_width + 2;
-        let right_width = width - right_x - 1;
-        let reviewer = &app.reviewers[app.selected_reviewer];
-        paint(
-            &mut self.stdout,
-            2,
-            right_x,
-            right_width,
-            if app.pane == Pane::Configuration {
-                "[ WORKTREE CONFIG PROPOSAL ]"
-            } else {
-                "  WORKTREE CONFIG PROPOSAL  "
-            },
-            if app.pane == Pane::Configuration {
-                Paint::Focus
-            } else {
-                Paint::Normal
-            },
-        )?;
-        paint(
-            &mut self.stdout,
-            3,
-            right_x,
-            right_width,
-            "Values below are worktree proposal inputs only; Run never executes them",
-            Paint::Muted,
-        )?;
-        let config_values = [
-            ("Backend (fixed)", reviewer.backend.as_str()),
-            ("Model (worktree)", reviewer.model.as_str()),
-            ("Effort (worktree)", reviewer.effort.as_str()),
-        ];
-        for (index, (label, value)) in config_values.iter().enumerate() {
-            setting_row(
+            let right_x = left_width + 2;
+            let right_width = width - right_x - 1;
+            let reviewer = &app.reviewers[app.selected_reviewer];
+            paint(
                 &mut self.stdout,
-                5 + index as u16,
+                3,
                 right_x,
                 right_width,
-                label,
-                value,
-                app.pane == Pane::Configuration && app.selected_config == index,
+                if app.pane == Pane::Configuration {
+                    "[ WORKTREE CONFIG PROPOSAL ]"
+                } else {
+                    "  WORKTREE CONFIG PROPOSAL  "
+                },
+                if app.pane == Pane::Configuration {
+                    Paint::Focus
+                } else {
+                    Paint::Normal
+                },
             )?;
-        }
-
-        paint(
-            &mut self.stdout,
-            10,
-            right_x,
-            right_width,
-            if app.pane == Pane::Run {
-                "[ PINNED-AUTHORITY RUN ]"
-            } else {
-                "  PINNED-AUTHORITY RUN  "
-            },
-            if app.pane == Pane::Run {
-                Paint::Focus
-            } else {
-                Paint::Normal
-            },
-        )?;
-        paint(
-            &mut self.stdout,
-            11,
-            right_x,
-            right_width,
-            "A resumed campaign keeps its original packages and ignores --authority",
-            Paint::Muted,
-        )?;
-        let state = app
-            .options
-            .state
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "(campaign default)".to_string());
-        let run_values = [
-            ("Campaign", optional(&app.options.campaign)),
-            ("Authority", optional(&app.options.authority)),
-            ("Focus", optional(&app.options.focus)),
-            ("State", state),
-            ("Uncommitted", yes_no(app.options.uncommitted).to_string()),
-            (
-                "Restart round",
-                yes_no(app.options.restart_round).to_string(),
-            ),
-        ];
-        for (index, (label, value)) in run_values.iter().enumerate() {
-            setting_row(
+            paint(
                 &mut self.stdout,
-                12 + index as u16,
+                4,
                 right_x,
                 right_width,
-                label,
-                value,
-                app.pane == Pane::Run && app.selected_run == index,
+                "Values below are worktree proposal inputs only; Run never executes them",
+                Paint::Muted,
             )?;
+            let config_values = [
+                ("Backend (fixed)", reviewer.backend.as_str()),
+                ("Model (worktree)", reviewer.model.as_str()),
+                ("Effort (worktree)", reviewer.effort.as_str()),
+            ];
+            for (index, (label, value)) in config_values.iter().enumerate() {
+                setting_row(
+                    &mut self.stdout,
+                    6 + index as u16,
+                    right_x,
+                    right_width,
+                    label,
+                    value,
+                    app.pane == Pane::Configuration && app.selected_config == index,
+                )?;
+            }
+            paint(
+                &mut self.stdout,
+                10,
+                right_x,
+                right_width,
+                if app.pane == Pane::Run {
+                    "[ PINNED-AUTHORITY RUN ]"
+                } else {
+                    "  PINNED-AUTHORITY RUN  "
+                },
+                if app.pane == Pane::Run {
+                    Paint::Focus
+                } else {
+                    Paint::Normal
+                },
+            )?;
+            paint(
+                &mut self.stdout,
+                11,
+                right_x,
+                right_width,
+                "A resumed campaign keeps its original packages and ignores --authority",
+                Paint::Muted,
+            )?;
+            let state = app
+                .options
+                .state
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(campaign default)".to_string());
+            let run_values = [
+                ("Campaign", optional(&app.options.campaign)),
+                ("Authority", optional(&app.options.authority)),
+                ("Focus", optional(&app.options.focus)),
+                ("State", state),
+                ("Uncommitted", yes_no(app.options.uncommitted).to_string()),
+                (
+                    "Restart round",
+                    yes_no(app.options.restart_round).to_string(),
+                ),
+            ];
+            for (index, (label, value)) in run_values.iter().enumerate() {
+                setting_row(
+                    &mut self.stdout,
+                    12 + index as u16,
+                    right_x,
+                    right_width,
+                    label,
+                    value,
+                    app.pane == Pane::Run && app.selected_run == index,
+                )?;
+            }
+        } else {
+            draw_pipeline_body(&mut self.stdout, app, width, footer, left_width)?;
         }
 
         paint(
@@ -371,7 +419,11 @@ impl TerminalSession {
                 footer + 2,
                 0,
                 width,
-                " j/k g/G C-u/C-d move | h/l/Tab panes | Enter edit | s export | R reload | r run | q quit",
+                if app.tab == TopTab::Pipelines {
+                    " j/k g/G move | h/l panes | Tab or H/L tabs | Enter edit | a add | d remove | s export | R reload | q"
+                } else {
+                    " j/k g/G C-u/C-d move | h/l panes | Tab or H/L tabs | Enter edit | s export | R reload | r run | q"
+                },
                 Paint::Muted,
             )?;
         }
@@ -382,6 +434,301 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.leave();
+    }
+}
+
+fn draw_pipeline_body(
+    stdout: &mut Stdout,
+    app: &App,
+    width: u16,
+    footer: u16,
+    left_width: u16,
+) -> Result<(), String> {
+    for y in 3..footer {
+        paint(stdout, y, left_width, 1, "|", Paint::Muted)?;
+    }
+    paint(
+        stdout,
+        3,
+        1,
+        left_width - 2,
+        if app.pipeline_pane == PipelinePane::Nodes {
+            "[ NODES ]"
+        } else {
+            "  NODES  "
+        },
+        if app.pipeline_pane == PipelinePane::Nodes {
+            Paint::Focus
+        } else {
+            Paint::Normal
+        },
+    )?;
+    let list_top = 5;
+    let capacity = usize::from(footer.saturating_sub(list_top));
+    let start = app.selected_node.saturating_sub(capacity.saturating_sub(1));
+    for (row, (index, node)) in app
+        .pipeline_view
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+        .enumerate()
+    {
+        let selected = index == app.selected_node;
+        paint(
+            stdout,
+            list_top + row as u16,
+            1,
+            left_width - 2,
+            &format!(
+                "{} {:<14} {}",
+                if selected { ">" } else { " " },
+                node.id,
+                node.kind
+            ),
+            if selected {
+                Paint::Selected
+            } else {
+                Paint::Normal
+            },
+        )?;
+    }
+
+    let right_x = left_width + 2;
+    let right_width = width - right_x - 1;
+    paint(
+        stdout,
+        3,
+        right_x,
+        right_width,
+        &format!(
+            " WORKTREE GRAPH PROPOSAL{}",
+            if app.pipeline_dirty { " *" } else { "" }
+        ),
+        Paint::Normal,
+    )?;
+    paint(
+        stdout,
+        4,
+        right_x,
+        right_width,
+        "Run executes pinned authority, not this draft",
+        Paint::Muted,
+    )?;
+    let visible_levels = if app.graph.levels.len() > 4 {
+        3
+    } else {
+        app.graph.levels.len()
+    };
+    for (row, level) in app.graph.levels.iter().take(visible_levels).enumerate() {
+        paint(
+            stdout,
+            5 + row as u16,
+            right_x,
+            right_width,
+            &format!("L{row}  {}", level.join("  ||  ")),
+            Paint::Muted,
+        )?;
+    }
+    if app.graph.levels.len() > 4 {
+        paint(
+            stdout,
+            8,
+            right_x,
+            right_width,
+            &format!("... +{} more levels", app.graph.levels.len() - 3),
+            Paint::Muted,
+        )?;
+    }
+
+    let node = &app.pipeline_view.nodes[app.selected_node];
+    let incoming = &app.graph.incoming[app.selected_node];
+    let outgoing = &app.graph.outgoing[app.selected_node];
+    paint(
+        stdout,
+        9,
+        right_x,
+        right_width,
+        &format!(
+            "NODE {} [{}] package={}",
+            node.id,
+            node.kind,
+            node.package.as_deref().unwrap_or("-")
+        ),
+        Paint::Selected,
+    )?;
+    paint(
+        stdout,
+        10,
+        right_x,
+        right_width,
+        &format!(
+            "IN   {}",
+            if incoming.is_empty() {
+                "-"
+            } else {
+                incoming.as_str()
+            }
+        ),
+        Paint::Muted,
+    )?;
+    paint(
+        stdout,
+        11,
+        right_x,
+        right_width,
+        &format!(
+            "OUT  {}",
+            if outgoing.is_empty() {
+                "-"
+            } else {
+                outgoing.as_str()
+            }
+        ),
+        Paint::Muted,
+    )?;
+
+    paint(
+        stdout,
+        12,
+        right_x,
+        right_width,
+        if app.pipeline_pane == PipelinePane::Policy {
+            "[ WORKTREE POLICY PROPOSAL ]"
+        } else {
+            "  WORKTREE POLICY PROPOSAL  "
+        },
+        if app.pipeline_pane == PipelinePane::Policy {
+            Paint::Focus
+        } else {
+            Paint::Normal
+        },
+    )?;
+    let policy = &app.pipeline_view.policy;
+    let values = [
+        (
+            "Attempt (worktree)",
+            policy
+                .attempt_budget
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "uncapped".into()),
+        ),
+        (
+            "Run (worktree)",
+            policy
+                .run_budget
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "uncapped".into()),
+        ),
+        ("Clean (worktree)", policy.clean_rounds.to_string()),
+        ("Max (worktree)", policy.max_rounds.to_string()),
+        ("Gate (worktree)", policy.gate.clone()),
+    ];
+    for (index, (label, value)) in values.iter().enumerate() {
+        setting_row(
+            stdout,
+            13 + index as u16,
+            right_x,
+            right_width,
+            label,
+            value,
+            app.pipeline_pane == PipelinePane::Policy && app.selected_policy == index,
+        )?;
+    }
+    Ok(())
+}
+
+struct PipelineGraph {
+    levels: Vec<Vec<String>>,
+    incoming: Vec<String>,
+    outgoing: Vec<String>,
+}
+
+impl PipelineGraph {
+    fn new(view: &PipelineView) -> Self {
+        let indexes: BTreeMap<&str, usize> = view
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id.as_str(), index))
+            .collect();
+        let mut indegree = vec![0_usize; view.nodes.len()];
+        let mut adjacency = vec![Vec::new(); view.nodes.len()];
+        let mut incoming = vec![Vec::new(); view.nodes.len()];
+        let mut outgoing = vec![Vec::new(); view.nodes.len()];
+        for edge in &view.edges {
+            let (Some(&from), Some(&to)) = (
+                indexes.get(edge.from_node.as_str()),
+                indexes.get(edge.to_node.as_str()),
+            ) else {
+                continue;
+            };
+            indegree[to] += 1;
+            adjacency[from].push(to);
+            incoming[to].push(format!("{}.{}", edge.from_node, edge.from_port));
+            outgoing[from].push(format!("{}.{}", edge.to_node, edge.to_port));
+        }
+        let mut queue: VecDeque<usize> = indegree
+            .iter()
+            .enumerate()
+            .filter_map(|(index, degree)| (*degree == 0).then_some(index))
+            .collect();
+        let mut node_levels = vec![0_usize; view.nodes.len()];
+        while let Some(from) = queue.pop_front() {
+            for &to in &adjacency[from] {
+                node_levels[to] = node_levels[to].max(node_levels[from].saturating_add(1));
+                indegree[to] -= 1;
+                if indegree[to] == 0 {
+                    queue.push_back(to);
+                }
+            }
+        }
+        let mut levels = vec![Vec::new(); node_levels.iter().copied().max().unwrap_or(0) + 1];
+        for (node, level) in view.nodes.iter().zip(node_levels) {
+            levels[level].push(format!("[{}]", node.id));
+        }
+        Self {
+            levels,
+            incoming: incoming
+                .into_iter()
+                .map(|items| items.join(" | "))
+                .collect(),
+            outgoing: outgoing
+                .into_iter()
+                .map(|items| items.join(" | "))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TopTab {
+    Pipelines,
+    Reviewers,
+}
+
+impl TopTab {
+    fn other(self) -> Self {
+        match self {
+            Self::Pipelines => Self::Reviewers,
+            Self::Reviewers => Self::Pipelines,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PipelinePane {
+    Nodes,
+    Policy,
+}
+
+impl PipelinePane {
+    fn other(self) -> Self {
+        match self {
+            Self::Nodes => Self::Policy,
+            Self::Policy => Self::Nodes,
+        }
     }
 }
 
@@ -422,6 +769,13 @@ enum Action {
 enum EditTarget {
     Model,
     Effort,
+    ReviewerPackage,
+    AddReviewer,
+    AttemptBudget,
+    RunBudget,
+    CleanRounds,
+    MaxRounds,
+    FindingGate,
     Campaign,
     Authority,
     Focus,
@@ -434,6 +788,7 @@ struct Editor {
     value: String,
 }
 
+#[derive(Clone)]
 struct ReviewerConfig {
     name: String,
     path: PathBuf,
@@ -449,10 +804,20 @@ struct App {
     options: Options,
     repository: PathBuf,
     review_root: PathBuf,
+    pipeline_path: PathBuf,
+    pipeline_original: String,
+    pipeline_text: String,
+    pipeline_view: PipelineView,
+    graph: PipelineGraph,
+    pipeline_dirty: bool,
     reviewers_root: PathBuf,
     lock_path: PathBuf,
     lock_original: String,
     reviewers: Vec<ReviewerConfig>,
+    tab: TopTab,
+    pipeline_pane: PipelinePane,
+    selected_node: usize,
+    selected_policy: usize,
     selected_reviewer: usize,
     selected_config: usize,
     selected_run: usize,
@@ -461,6 +826,8 @@ struct App {
     message: String,
     message_is_error: bool,
     confirm_quit: bool,
+    confirm_reload: bool,
+    confirm_remove: Option<String>,
     exported_path: Option<PathBuf>,
     export_sequence: u64,
 }
@@ -481,11 +848,12 @@ impl App {
         if !pipeline.starts_with(&repository) {
             return Err("the TUI pipeline must be inside --repo".to_string());
         }
-        let review_root = pipeline
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("pipeline must live below a review directory")?
-            .to_path_buf();
+        let relative_pipeline = pipeline
+            .strip_prefix(&repository)
+            .map_err(|_| "the TUI pipeline must be inside --repo".to_string())?
+            .to_str()
+            .ok_or_else(|| "the pipeline path must be UTF-8".to_string())?;
+        let review_root = repository.join(crate::authority::review_dir(relative_pipeline)?);
         let reviewers_root = review_root.join("reviewers");
         let lock_path = review_root.join("review.lock");
         refuse_symlink(&reviewers_root, "reviewer registry")?;
@@ -493,77 +861,39 @@ impl App {
 
         let pipeline_text = fs::read_to_string(&pipeline)
             .map_err(|error| format!("reading {}: {error}", pipeline.display()))?;
-        let definition: toml::Value = toml::from_str(&pipeline_text)
+        let pipeline_view = pipeline_view(&pipeline_text)
             .map_err(|error| format!("parsing {}: {error}", pipeline.display()))?;
-        let mut names = Vec::new();
-        for node in definition
-            .get("nodes")
-            .and_then(toml::Value::as_array)
-            .ok_or("pipeline has no nodes")?
-        {
-            if node.get("kind").and_then(toml::Value::as_str) != Some("reviewer") {
-                continue;
-            }
-            let Some(name) = node.get("package").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            if !safe_package_name(name) {
-                return Err(format!("pipeline reviewer package name `{name}` is unsafe"));
-            }
-            if !names.iter().any(|existing| existing == name) {
-                names.push(name.to_string());
-            }
-        }
-        if names.is_empty() {
-            return Err("pipeline selects no packaged reviewers to configure".to_string());
-        }
+        let names = selected_package_names(&pipeline_view)?;
 
         let lock_original = fs::read_to_string(&lock_path)
             .map_err(|error| format!("reading {}: {error}", lock_path.display()))?;
         let lock = Lockfile::from_toml(&lock_original).map_err(|error| error.to_string())?;
         let mut reviewers = Vec::with_capacity(names.len());
         for name in names {
-            let package = reviewers_root.join(&name);
-            refuse_symlink(&package, "reviewer package")?;
-            let path = package.join("reviewer.toml");
-            refuse_symlink(&path, "reviewer manifest")?;
-            let original = fs::read_to_string(&path)
-                .map_err(|error| format!("reading {}: {error}", path.display()))?;
-            let manifest: PackageManifest = toml::from_str(&original)
-                .map_err(|error| format!("parsing {}: {error}", path.display()))?;
-            let settings = reviewer_runner_settings(&original)
-                .map_err(|error| format!("reviewer `{name}` is not TUI-configurable: {error}"))?;
-            let original_digest =
-                package_digest(&name, &package).map_err(|error| error.to_string())?;
-            let pin = lock
-                .reviewers
-                .get(&name)
-                .ok_or_else(|| format!("reviewer `{name}` is absent from review.lock"))?;
-            if pin.version != manifest.version || pin.digest != original_digest {
-                return Err(format!(
-                    "reviewer `{name}` does not match review.lock; repair authority before opening the TUI"
-                ));
-            }
-            reviewers.push(ReviewerConfig {
-                name,
-                path,
-                original,
-                original_digest,
-                backend: settings.backend.to_string(),
-                model: settings.model,
-                effort: settings.effort,
-                dirty: false,
-            });
+            reviewers.push(load_reviewer_config(&name, &reviewers_root, &lock)?);
         }
+        let registry = Registry::new([reviewers_root.clone()]);
+        validate_pipeline(&pipeline_text, &lock, &registry)?;
+        let graph = PipelineGraph::new(&pipeline_view);
 
         Ok(Self {
             options,
             repository,
             review_root,
+            pipeline_path: pipeline,
+            pipeline_original: pipeline_text.clone(),
+            pipeline_text,
+            pipeline_view,
+            graph,
+            pipeline_dirty: false,
             reviewers_root,
             lock_path,
             lock_original,
             reviewers,
+            tab: TopTab::Pipelines,
+            pipeline_pane: PipelinePane::Nodes,
+            selected_node: 0,
+            selected_policy: 0,
             selected_reviewer: 0,
             selected_config: 0,
             selected_run: 0,
@@ -573,6 +903,8 @@ impl App {
                 .to_string(),
             message_is_error: false,
             confirm_quit: false,
+            confirm_reload: false,
+            confirm_remove: None,
             exported_path: None,
             export_sequence: 0,
         })
@@ -585,8 +917,8 @@ impl App {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('u') => self.move_selection(-5),
-                KeyCode::Char('d') => self.move_selection(5),
+                KeyCode::Char('u') => self.move_active_selection(-5),
+                KeyCode::Char('d') => self.move_active_selection(5),
                 KeyCode::Char('c') => return Action::Quit,
                 _ => {}
             }
@@ -595,20 +927,27 @@ impl App {
         if !matches!(key.code, KeyCode::Char('q')) {
             self.confirm_quit = false;
         }
+        if !matches!(key.code, KeyCode::Char('R')) {
+            self.confirm_reload = false;
+        }
+        if !matches!(key.code, KeyCode::Char('d')) {
+            self.confirm_remove = None;
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Char('g') | KeyCode::Home => self.selection_edge(false),
-            KeyCode::Char('G') | KeyCode::End => self.selection_edge(true),
-            KeyCode::Char('h') | KeyCode::BackTab | KeyCode::Left => {
-                self.pane = self.pane.previous()
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('H') | KeyCode::Char('L') => {
+                self.tab = self.tab.other();
             }
-            KeyCode::Char('l') | KeyCode::Tab | KeyCode::Right => self.pane = self.pane.next(),
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_selection(),
             KeyCode::Char('s') => return Action::Export,
-            KeyCode::Char('R') => return Action::Reload,
+            KeyCode::Char('R') => {
+                if self.has_pending_configuration() && !self.confirm_reload {
+                    self.confirm_reload = true;
+                    self.failure("Reload discards the pending draft; press R again to confirm");
+                } else {
+                    return Action::Reload;
+                }
+            }
             KeyCode::Char('r') => {
-                if self.reviewers.iter().any(|reviewer| reviewer.dirty) {
+                if self.has_pending_configuration() {
                     let message = if self.exported_path.is_some() {
                         "Run refused: the exported proposal is not authority; apply, commit, and relaunch a new campaign"
                     } else {
@@ -620,7 +959,7 @@ impl App {
                 }
             }
             KeyCode::Char('q') => {
-                if self.reviewers.iter().any(|reviewer| reviewer.dirty) && !self.confirm_quit {
+                if self.has_pending_configuration() && !self.confirm_quit {
                     self.confirm_quit = true;
                     let message = self
                         .exported_path
@@ -639,9 +978,43 @@ impl App {
                     return Action::Quit;
                 }
             }
-            _ => {}
+            _ => match self.tab {
+                TopTab::Pipelines => self.handle_pipeline_key(key),
+                TopTab::Reviewers => self.handle_reviewer_key(key),
+            },
         }
         Action::Continue
+    }
+
+    fn handle_reviewer_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.move_reviewer_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_reviewer_selection(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.reviewer_selection_edge(false),
+            KeyCode::Char('G') | KeyCode::End => self.reviewer_selection_edge(true),
+            KeyCode::Char('h') | KeyCode::Left => self.pane = self.pane.previous(),
+            KeyCode::Char('l') | KeyCode::Right => self.pane = self.pane.next(),
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_reviewer_selection(),
+            _ => {}
+        }
+    }
+
+    fn handle_pipeline_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.move_pipeline_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_pipeline_selection(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.pipeline_selection_edge(false),
+            KeyCode::Char('G') | KeyCode::End => self.pipeline_selection_edge(true),
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('l') | KeyCode::Right => {
+                self.pipeline_pane = self.pipeline_pane.other();
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_pipeline_selection(),
+            KeyCode::Char('a') => {
+                self.begin_edit(EditTarget::AddReviewer, "reviewer package", String::new());
+            }
+            KeyCode::Char('d') => self.remove_selected_reviewer(),
+            _ => {}
+        }
     }
 
     fn handle_editor_key(&mut self, key: KeyEvent) {
@@ -690,7 +1063,14 @@ impl App {
         self.editor = Some(editor);
     }
 
-    fn move_selection(&mut self, amount: isize) {
+    fn move_active_selection(&mut self, amount: isize) {
+        match self.tab {
+            TopTab::Pipelines => self.move_pipeline_selection(amount),
+            TopTab::Reviewers => self.move_reviewer_selection(amount),
+        }
+    }
+
+    fn move_reviewer_selection(&mut self, amount: isize) {
         let (selected, count) = match self.pane {
             Pane::Reviewers => (&mut self.selected_reviewer, self.reviewers.len()),
             Pane::Configuration => (&mut self.selected_config, CONFIG_ROWS),
@@ -701,7 +1081,7 @@ impl App {
             .min(count.saturating_sub(1));
     }
 
-    fn selection_edge(&mut self, end: bool) {
+    fn reviewer_selection_edge(&mut self, end: bool) {
         let (selected, count) = match self.pane {
             Pane::Reviewers => (&mut self.selected_reviewer, self.reviewers.len()),
             Pane::Configuration => (&mut self.selected_config, CONFIG_ROWS),
@@ -710,7 +1090,7 @@ impl App {
         *selected = if end { count.saturating_sub(1) } else { 0 };
     }
 
-    fn activate_selection(&mut self) {
+    fn activate_reviewer_selection(&mut self) {
         match self.pane {
             Pane::Reviewers => self.pane = Pane::Configuration,
             Pane::Configuration if self.selected_config == 0 => {
@@ -755,6 +1135,99 @@ impl App {
         }
     }
 
+    fn move_pipeline_selection(&mut self, amount: isize) {
+        let (selected, count) = match self.pipeline_pane {
+            PipelinePane::Nodes => (&mut self.selected_node, self.pipeline_view.nodes.len()),
+            PipelinePane::Policy => (&mut self.selected_policy, POLICY_ROWS),
+        };
+        *selected = selected
+            .saturating_add_signed(amount)
+            .min(count.saturating_sub(1));
+    }
+
+    fn pipeline_selection_edge(&mut self, end: bool) {
+        let (selected, count) = match self.pipeline_pane {
+            PipelinePane::Nodes => (&mut self.selected_node, self.pipeline_view.nodes.len()),
+            PipelinePane::Policy => (&mut self.selected_policy, POLICY_ROWS),
+        };
+        *selected = if end { count.saturating_sub(1) } else { 0 };
+    }
+
+    fn activate_pipeline_selection(&mut self) {
+        match self.pipeline_pane {
+            PipelinePane::Nodes => {
+                let node = &self.pipeline_view.nodes[self.selected_node];
+                let Some(package) = &node.package else {
+                    self.failure(
+                        "Only package-backed reviewer nodes are editable; typed infrastructure nodes remain TOML-owned",
+                    );
+                    return;
+                };
+                self.begin_edit(
+                    EditTarget::ReviewerPackage,
+                    "reviewer package",
+                    package.clone(),
+                );
+            }
+            PipelinePane::Policy => {
+                let policy = &self.pipeline_view.policy;
+                let (target, label, value) = match self.selected_policy {
+                    0 => (
+                        EditTarget::AttemptBudget,
+                        "attempt tokens",
+                        policy
+                            .attempt_budget
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    1 => (
+                        EditTarget::RunBudget,
+                        "run tokens",
+                        policy
+                            .run_budget
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    2 => (
+                        EditTarget::CleanRounds,
+                        "clean rounds",
+                        policy.clean_rounds.to_string(),
+                    ),
+                    3 => (
+                        EditTarget::MaxRounds,
+                        "max rounds",
+                        policy.max_rounds.to_string(),
+                    ),
+                    _ => (EditTarget::FindingGate, "finding gate", policy.gate.clone()),
+                };
+                self.begin_edit(target, label, value);
+            }
+        }
+    }
+
+    fn remove_selected_reviewer(&mut self) {
+        let node = &self.pipeline_view.nodes[self.selected_node];
+        if node.kind != "reviewer" {
+            self.failure("Only reviewer nodes have canonical removable wiring");
+            return;
+        }
+        let id = node.id.clone();
+        if self.confirm_remove.as_deref() != Some(&id) {
+            self.confirm_remove = Some(id.clone());
+            self.failure(format!(
+                "Press d again to remove reviewer node `{id}` and its edges"
+            ));
+            return;
+        }
+        self.confirm_remove = None;
+        match remove_reviewer(&self.pipeline_text, &id)
+            .and_then(|candidate| self.accept_pipeline(candidate))
+        {
+            Ok(()) => self.success(format!("Removed reviewer `{id}` in memory; s exports it")),
+            Err(error) => self.failure(error),
+        }
+    }
+
     fn begin_edit(&mut self, target: EditTarget, label: &'static str, value: String) {
         self.editor = Some(Editor {
             target,
@@ -765,6 +1238,9 @@ impl App {
 
     fn apply_edit(&mut self, target: EditTarget, value: String) -> Result<(), String> {
         let value = value.trim().to_string();
+        let mut success =
+            "Value updated in memory; s exports a patch, r never uses uncommitted config"
+                .to_string();
         match target {
             EditTarget::Model => {
                 let reviewer = &mut self.reviewers[self.selected_reviewer];
@@ -784,16 +1260,112 @@ impl App {
                 reviewer.dirty = rendered != reviewer.original;
                 self.exported_path = None;
             }
+            EditTarget::ReviewerPackage => {
+                let node_id = self.pipeline_view.nodes[self.selected_node].id.clone();
+                let candidate = rebind_reviewer(&self.pipeline_text, &node_id, &value)?;
+                self.accept_pipeline(candidate)?;
+            }
+            EditTarget::AddReviewer => {
+                let template = self
+                    .pipeline_view
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == "reviewer" && node.package.is_some())
+                    .map(|node| node.id.clone())
+                    .ok_or("membership editing requires a package-backed reviewer template")?;
+                let candidate = add_reviewer(&self.pipeline_text, &value)?;
+                self.accept_pipeline(candidate)?;
+                self.selected_node = self.pipeline_view.nodes.len().saturating_sub(1);
+                success = format!(
+                    "Added `{value}` by cloning reviewer `{template}` wiring; s exports the patch"
+                );
+            }
+            EditTarget::AttemptBudget => {
+                self.edit_pipeline_setting(PipelineSetting::AttemptBudget, &value)?;
+            }
+            EditTarget::RunBudget => {
+                self.edit_pipeline_setting(PipelineSetting::RunBudget, &value)?;
+            }
+            EditTarget::CleanRounds => {
+                self.edit_pipeline_setting(PipelineSetting::CleanRounds, &value)?;
+            }
+            EditTarget::MaxRounds => {
+                self.edit_pipeline_setting(PipelineSetting::MaxRounds, &value)?;
+            }
+            EditTarget::FindingGate => {
+                self.edit_pipeline_setting(PipelineSetting::Gate, &value)?;
+            }
             EditTarget::Campaign => self.options.campaign = nonempty(value),
             EditTarget::Authority => self.options.authority = nonempty(value),
             EditTarget::Focus => self.options.focus = nonempty(value),
             EditTarget::State => self.options.state = nonempty(value).map(PathBuf::from),
         }
-        self.success("Value updated in memory; s exports a patch, r never uses uncommitted config");
+        self.success(success);
         Ok(())
     }
 
-    fn export_configuration(&mut self) -> Result<(usize, PathBuf), String> {
+    fn edit_pipeline_setting(
+        &mut self,
+        setting: PipelineSetting,
+        value: &str,
+    ) -> Result<(), String> {
+        let candidate = update_pipeline_setting(&self.pipeline_text, setting, value)?;
+        self.accept_pipeline(candidate)
+    }
+
+    fn accept_pipeline(&mut self, candidate: String) -> Result<(), String> {
+        let lock = Lockfile::from_toml(&self.lock_original).map_err(|error| error.to_string())?;
+        let registry = Registry::new([self.reviewers_root.clone()]);
+        validate_pipeline_structure(&candidate)?;
+        let view = pipeline_view(&candidate)?;
+        let names = selected_package_names(&view)?;
+        for reviewer in &self.reviewers {
+            if reviewer.dirty && !names.contains(&reviewer.name) {
+                return Err(format!(
+                    "reviewer `{}` has an unexported draft; revert it before removing its pipeline binding",
+                    reviewer.name
+                ));
+            }
+        }
+        let mut reviewers = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(existing) = self.reviewers.iter().find(|reviewer| reviewer.name == name) {
+                reviewers.push(existing.clone());
+            } else {
+                lock.resolve_for_subject(&name, &registry, view.subject)
+                    .map_err(|error| error.to_string())?;
+                reviewers.push(load_reviewer_config(&name, &self.reviewers_root, &lock)?);
+            }
+        }
+        let graph = PipelineGraph::new(&view);
+        self.pipeline_text = candidate;
+        self.pipeline_view = view;
+        self.graph = graph;
+        self.reviewers = reviewers;
+        self.pipeline_dirty = self.pipeline_text != self.pipeline_original;
+        self.selected_node = self
+            .selected_node
+            .min(self.pipeline_view.nodes.len().saturating_sub(1));
+        self.selected_reviewer = self
+            .selected_reviewer
+            .min(self.reviewers.len().saturating_sub(1));
+        self.exported_path = None;
+        Ok(())
+    }
+
+    fn has_pending_configuration(&self) -> bool {
+        self.pipeline_dirty || self.reviewers.iter().any(|reviewer| reviewer.dirty)
+    }
+
+    fn export_configuration(&mut self) -> Result<(usize, bool, PathBuf), String> {
+        let current_pipeline = fs::read_to_string(&self.pipeline_path)
+            .map_err(|error| format!("reading {}: {error}", self.pipeline_path.display()))?;
+        if current_pipeline != self.pipeline_original {
+            return Err(format!(
+                "{} changed while the TUI was open; restart before exporting",
+                self.pipeline_path.display()
+            ));
+        }
         let current_lock = fs::read_to_string(&self.lock_path)
             .map_err(|error| format!("reading {}: {error}", self.lock_path.display()))?;
         if current_lock != self.lock_original {
@@ -807,13 +1379,21 @@ impl App {
             .iter()
             .filter(|reviewer| reviewer.dirty)
             .collect();
-        if dirty.is_empty() {
-            return Err("No reviewer configuration changes to export".to_string());
+        if dirty.is_empty() && !self.pipeline_dirty {
+            return Err("No pipeline or reviewer configuration changes to export".to_string());
         }
 
         let registry = Registry::new([self.reviewers_root.clone()]);
         let mut lock = Lockfile::from_toml(&current_lock).map_err(|error| error.to_string())?;
-        let mut files = Vec::with_capacity(dirty.len() + 1);
+        validate_pipeline(&self.pipeline_text, &lock, &registry)?;
+        let mut files = Vec::with_capacity(dirty.len() + 2);
+        if self.pipeline_dirty {
+            files.push((
+                self.pipeline_path.clone(),
+                self.pipeline_original.clone(),
+                self.pipeline_text.clone(),
+            ));
+        }
         for reviewer in &dirty {
             let current = fs::read_to_string(&reviewer.path)
                 .map_err(|error| format!("reading {}: {error}", reviewer.path.display()))?;
@@ -840,30 +1420,32 @@ impl App {
             lock.reviewers.insert(reviewer.name.clone(), pin);
             files.push((reviewer.path.clone(), reviewer.original.clone(), rendered));
         }
-        let rendered_lock = lock.to_toml();
-        files.push((
-            self.lock_path.clone(),
-            self.lock_original.clone(),
-            rendered_lock,
-        ));
+        if !dirty.is_empty() {
+            let rendered_lock = lock.to_toml();
+            files.push((
+                self.lock_path.clone(),
+                self.lock_original.clone(),
+                rendered_lock,
+            ));
+        }
 
         let mut patch = String::new();
         for (path, before, after) in files {
             let relative = path.strip_prefix(&self.repository).map_err(|_| {
                 format!("configuration path {} left the repository", path.display())
             })?;
-            append_full_file_patch(&mut patch, relative, &before, &after);
+            append_full_file_patch(&mut patch, relative, &before, &after)?;
         }
         let count = dirty.len();
         let directory = prepare_proposal_directory(
             &self.repository,
             &self.review_root,
-            &self.options.state_dir(),
+            &self.options.resolved_state_dir()?,
         )?;
         let path = publish_patch(&directory, patch.as_bytes(), self.export_sequence)?;
         self.export_sequence = self.export_sequence.wrapping_add(1);
         self.exported_path = Some(path.clone());
-        Ok((count, path))
+        Ok((count, self.pipeline_dirty, path))
     }
 
     fn success(&mut self, message: impl Into<String>) {
@@ -877,8 +1459,24 @@ impl App {
     }
 }
 
-fn append_full_file_patch(patch: &mut String, path: &Path, before: &str, after: &str) {
-    let path = path.to_string_lossy().replace('\\', "/");
+fn append_full_file_patch(
+    patch: &mut String,
+    path: &Path,
+    before: &str,
+    after: &str,
+) -> Result<(), String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("patch path {} is not UTF-8", path.display()))?;
+    if path.is_empty()
+        || !path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
+    {
+        return Err(format!(
+            "patch path `{path}` contains characters the proposal exporter does not encode"
+        ));
+    }
     let before_lines = patch_lines(before);
     let after_lines = patch_lines(after);
     let before_range = patch_range(before_lines.len());
@@ -888,6 +1486,7 @@ fn append_full_file_patch(patch: &mut String, path: &Path, before: &str, after: 
     ));
     append_patch_side(patch, '-', before_lines);
     append_patch_side(patch, '+', after_lines);
+    Ok(())
 }
 
 fn patch_lines(text: &str) -> Vec<(&str, bool)> {
@@ -928,14 +1527,11 @@ fn prepare_proposal_directory(
     state: &Path,
 ) -> Result<PathBuf, String> {
     let directory = proposal_directory(repository, review_root, state)?;
-    refuse_symlink_ancestors(&directory)?;
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("creating {}: {error}", directory.display()))?;
+    create_directories_durable(&directory)?;
     let canonical = fs::canonicalize(&directory)
         .map_err(|error| format!("opening {}: {error}", directory.display()))?;
     if canonical.starts_with(repository) {
-        let allowed = fs::canonicalize(review_root.join("runs"))
-            .map_err(|error| format!("opening review run state: {error}"))?;
+        let allowed = crate::resolve_filesystem_path(&review_root.join("runs"))?;
         if !canonical.starts_with(allowed) {
             return Err(
                 "configuration proposals may not overlap captured repository content".into(),
@@ -945,18 +1541,42 @@ fn prepare_proposal_directory(
     Ok(canonical)
 }
 
+fn create_directories_durable(path: &Path) -> Result<(), String> {
+    let mut current = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !current.exists() {
+        missing.push(current.clone());
+        if !current.pop() {
+            return Err(format!("path {} has no existing ancestor", path.display()));
+        }
+    }
+    for directory in missing.into_iter().rev() {
+        match fs::create_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("creating {}: {error}", directory.display())),
+        }
+        sync_directory(&directory)?;
+        if let Some(parent) = directory.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
 fn proposal_directory(
     repository: &Path,
     review_root: &Path,
     state: &Path,
 ) -> Result<PathBuf, String> {
-    let state = if state.is_absolute() {
-        state.to_path_buf()
-    } else {
-        repository.join(state)
-    };
-    let directory = normalize_absolute(&state)?.join("config-proposals");
-    let allowed = normalize_absolute(&review_root.join("runs"))?;
+    if !state.is_absolute() {
+        return Err(format!(
+            "resolved state {} is not absolute",
+            state.display()
+        ));
+    }
+    let directory = state.join("config-proposals");
+    let allowed = crate::resolve_filesystem_path(&review_root.join("runs"))?;
     if directory.starts_with(repository) && !directory.starts_with(allowed) {
         return Err(format!(
             "proposal directory {} overlaps captured repository content; use state outside --repo or below {}",
@@ -965,52 +1585,6 @@ fn proposal_directory(
         ));
     }
     Ok(directory)
-}
-
-fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(format!(
-                        "path {} escapes its filesystem root",
-                        path.display()
-                    ));
-                }
-            }
-        }
-    }
-    if !normalized.is_absolute() {
-        return Err(format!(
-            "path {} did not resolve absolutely",
-            path.display()
-        ));
-    }
-    Ok(normalized)
-}
-
-fn refuse_symlink_ancestors(path: &Path) -> Result<(), String> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "proposal path component {} is a symlink",
-                    current.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-            Err(error) => return Err(format!("opening {}: {error}", current.display())),
-        }
-    }
-    Ok(())
 }
 
 fn publish_patch(directory: &Path, bytes: &[u8], sequence: u64) -> Result<PathBuf, String> {
@@ -1087,6 +1661,64 @@ fn safe_package_name(name: &str) -> bool {
         })
 }
 
+fn selected_package_names(view: &PipelineView) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    for node in &view.nodes {
+        if node.kind != "reviewer" {
+            continue;
+        }
+        let Some(name) = &node.package else {
+            continue;
+        };
+        if !safe_package_name(name) {
+            return Err(format!("pipeline reviewer package name `{name}` is unsafe"));
+        }
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    if names.is_empty() {
+        return Err("pipeline selects no packaged reviewers to configure".to_string());
+    }
+    Ok(names)
+}
+
+fn load_reviewer_config(
+    name: &str,
+    reviewers_root: &Path,
+    lock: &Lockfile,
+) -> Result<ReviewerConfig, String> {
+    let package = reviewers_root.join(name);
+    refuse_symlink(&package, "reviewer package")?;
+    let path = package.join("reviewer.toml");
+    refuse_symlink(&path, "reviewer manifest")?;
+    let original = fs::read_to_string(&path)
+        .map_err(|error| format!("reading {}: {error}", path.display()))?;
+    let manifest: PackageManifest = toml::from_str(&original)
+        .map_err(|error| format!("parsing {}: {error}", path.display()))?;
+    let settings = reviewer_runner_settings(&original)
+        .map_err(|error| format!("reviewer `{name}` is not TUI-configurable: {error}"))?;
+    let pin = lock
+        .reviewers
+        .get(name)
+        .ok_or_else(|| format!("reviewer `{name}` is absent from review.lock"))?;
+    if pin.version != manifest.version {
+        return Err(format!(
+            "reviewer `{name}` does not match review.lock; repair authority before opening the TUI"
+        ));
+    }
+    Ok(ReviewerConfig {
+        name: name.to_string(),
+        path,
+        original,
+        original_digest: pin.digest.clone(),
+        backend: settings.backend.to_string(),
+        model: settings.model,
+        effort: settings.effort,
+        dirty: false,
+    })
+}
+
 fn optional(value: &Option<String>) -> String {
     value.clone().unwrap_or_else(|| "(none)".to_string())
 }
@@ -1141,10 +1773,20 @@ fn paint(
     text: &str,
     paint: Paint,
 ) -> Result<(), String> {
-    let mut visible: String = text.chars().take(usize::from(width)).collect();
+    let width = usize::from(width);
+    let text_width = text.chars().count();
+    let mut visible = if text_width > width {
+        if width <= 3 {
+            ".".repeat(width)
+        } else {
+            text.chars().take(width - 3).collect::<String>() + "..."
+        }
+    } else {
+        text.to_string()
+    };
     visible.extend(std::iter::repeat_n(
         ' ',
-        usize::from(width).saturating_sub(visible.chars().count()),
+        width.saturating_sub(visible.chars().count()),
     ));
     let (foreground, background, bold) = match paint {
         Paint::Normal => (Color::White, Color::Reset, false),
@@ -1184,7 +1826,8 @@ mod tests {
             std::path::Path::new(".review/review.lock"),
             "version = 1\n",
             "version = 2\n",
-        );
+        )
+        .unwrap();
         assert!(patch.contains("diff --git a/.review/review.lock b/.review/review.lock"));
         assert!(patch.contains("-version = 1"));
         assert!(patch.contains("+version = 2"));
@@ -1198,7 +1841,8 @@ mod tests {
             std::path::Path::new(".review/review.lock"),
             "version = 1",
             "version = 2",
-        );
+        )
+        .unwrap();
         assert_eq!(patch.matches("\\ No newline at end of file").count(), 2);
 
         let mut empty = String::new();
@@ -1207,7 +1851,8 @@ mod tests {
             std::path::Path::new(".review/review.lock"),
             "",
             "version = 1\n",
-        );
+        )
+        .unwrap();
         assert!(empty.contains("@@ -0,0 +1,1 @@"));
     }
 
@@ -1219,7 +1864,7 @@ mod tests {
             proposal_directory(
                 repository,
                 &review_root,
-                std::path::Path::new(".review/reviewers/architecture"),
+                std::path::Path::new("/repo/.review/reviewers/architecture"),
             )
             .is_err()
         );
@@ -1227,9 +1872,24 @@ mod tests {
             proposal_directory(
                 repository,
                 &review_root,
-                std::path::Path::new(".review/runs/campaign"),
+                std::path::Path::new("/repo/.review/runs/campaign"),
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn proposal_patch_refuses_unencoded_paths() {
+        let mut patch = String::new();
+        assert!(
+            append_full_file_patch(
+                &mut patch,
+                std::path::Path::new(".review/pipelines/bad name.toml"),
+                "before\n",
+                "after\n",
+            )
+            .is_err()
+        );
+        assert!(patch.is_empty());
     }
 }

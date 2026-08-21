@@ -517,9 +517,14 @@ fn runner_settings_refuse_ambiguous_shapes_and_unsafe_values() {
         "{ value = \"--model\" }, { value = \"other\" }, { value = \"--effort\" }",
     );
     assert!(reviewer_runner_settings(&duplicate).is_err());
-    let valueless = manifest.replace("{ value = \"--model\" }, { value = \"old\" }, ", "")
-        + "\n[[runner.args]]\nvalue = \"--model\"\n";
-    assert!(reviewer_runner_settings(&valueless).is_err());
+    let valueless = manifest
+        .replace("{ value = \"--model\" }, { value = \"old\" }, ", "")
+        .replace(
+            "{ value = \"--effort\" }, { value = \"high\" }",
+            "{ value = \"--effort\" }, { value = \"high\" }, { value = \"--model\" }",
+        );
+    let error = reviewer_runner_settings(&valueless).unwrap_err();
+    assert!(error.to_string().contains("has no value"));
 }
 
 #[test]
