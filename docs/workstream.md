@@ -1,7 +1,7 @@
 # Review Kernel — capability work (M0–M9)
 
-**Status:** M0, M1, M2.1, and M2.2's immutable authority bootstrap are complete. Resume with
-M2.3's typed Git tree diff and M2.4's wired Change Set.
+**Status:** M0, M1, M2.1, M2.2's immutable authority bootstrap, and M2.3 are complete. Resume
+with M2.4's wired Change Set.
 **Goal:** `reviewctl` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -110,11 +110,12 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0, M1, M2.1, and the M2.2 authority bootstrap are complete. Campaigns now publish one immutable
+M0, M1, M2.1, the M2.2 authority bootstrap, and M2.3 are complete. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,
 publish `Subject@1` and Subject-bound Round inputs, reuse incomplete Round inputs, and require an
-explicit epoch supersession to capture a changed head. Resume with M2.3's typed Git tree diff,
-then M2.4's Change Set artifact and port wiring. Continue in milestone order; do not pull Proposal
+explicit epoch supersession to capture a changed head. The Git adapter now resolves opaque tree
+ids and exposes one configuration-neutral, byte-safe typed tree diff while generic `diff` remains
+refused. Resume with M2.4's Change Set artifact and port wiring. Continue in milestone order; do not pull Proposal
 or scatter work forward past Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes

@@ -28,3 +28,13 @@ Campaign Manifest, Authority Snapshot, and Subject.
 
 The next slice is M2.3's typed, configuration-neutral Git tree diff, followed by M2.4 Change Set
 publication and port wiring. Diff Campaigns pin Authority/Base now but still fail before dispatch.
+
+## 2026-08-21 — M2.3 typed Git tree diff
+
+Added opaque, resolved Git tree ids and one private, single-call-site path for a completely fixed
+tree-to-tree diff. The generic Git runner still rejects `diff`; the typed path fixes algorithm,
+rename threshold, binary/full-index output, prefixes, quoting, locale-sensitive behavior, external
+drivers, text conversion, and NUL-delimited path parsing. Raw records become byte-safe typed path
+changes while patch bytes remain available for M2.4's Change Set artifact. Adversarial coverage
+proves candidate-selected textconv code does not execute and hostile diff configuration cannot
+change the result.

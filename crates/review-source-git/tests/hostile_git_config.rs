@@ -287,6 +287,76 @@ fn filtering_subcommands_are_refused_outright() {
     assert!(repo.text(&["rev-parse", "HEAD"]).is_ok());
 }
 
+/// Tree diff is a separate typed door: candidate attributes may select a configured textconv,
+/// but the adapter neither executes it nor lets hostile diff settings alter the patch.
+#[cfg(unix)]
+#[test]
+fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
+    fn history(fixture: &Fixture) -> (String, String) {
+        plant_content(fixture);
+        fixture.write(".gitattributes", b"* diff=evil\n");
+        let base = fixture.commit_all("base");
+        fixture.write("src/main.rs", b"fn main() { println!(\"changed\"); }\n");
+        let head = fixture.commit_all("head");
+        (base, head)
+    }
+
+    let clean = Fixture::new();
+    let (clean_base, clean_head) = history(&clean);
+    let clean_repo = repo_of(&clean);
+    let clean_diff = clean_repo
+        .tree_diff(
+            &clean_repo.resolve_tree(&clean_base).unwrap(),
+            &clean_repo.resolve_tree(&clean_head).unwrap(),
+        )
+        .unwrap();
+
+    let hostile = Fixture::new();
+    let (hostile_base, hostile_head) = history(&hostile);
+    let marker = marker_path(hostile.dir.path());
+    let textconv = hostile.dir.path().join("evil-textconv.sh");
+    std::fs::write(
+        &textconv,
+        format!(
+            "#!/bin/sh\necho textconv-ran >> \"{}\"\ncat \"$1\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&textconv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    hostile.git(&["config", "diff.evil.textconv", textconv.to_str().unwrap()]);
+    hostile.git(&["config", "diff.algorithm", "histogram"]);
+    hostile.git(&["config", "diff.renames", "false"]);
+    hostile.git(&["config", "diff.mnemonicPrefix", "true"]);
+    hostile.git(&["config", "core.quotePath", "false"]);
+    hostile.git(&["config", "color.ui", "always"]);
+
+    // Prove the fixture is armed, then clear the marker before entering the typed adapter.
+    hostile.git(&["diff", "--textconv", &hostile_base, &hostile_head, "--"]);
+    assert!(
+        marker.exists(),
+        "ordinary git diff did not execute textconv"
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    let hostile_repo = repo_of(&hostile);
+    let hostile_diff = hostile_repo
+        .tree_diff(
+            &hostile_repo.resolve_tree(&hostile_base).unwrap(),
+            &hostile_repo.resolve_tree(&hostile_head).unwrap(),
+        )
+        .unwrap();
+
+    assert!(!marker.exists(), "typed tree diff executed textconv");
+    assert_eq!(
+        hostile_diff, clean_diff,
+        "repository diff configuration changed the typed tree diff"
+    );
+}
+
 /// A weaponized repository where the marker would fire on a *single* filtering command, proving
 /// the boundary is what keeps it absent rather than luck about which commands git needs.
 #[test]

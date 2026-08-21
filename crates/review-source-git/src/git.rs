@@ -12,9 +12,9 @@
 //!    `GIT_ATTR_NOSYSTEM`, credential helpers and proxies cannot survive that.
 //! 2. Every invocation carries `-c` overrides that neutralize hooks, fsmonitor, filters,
 //!    external diff, CRLF translation and the attributes file.
-//! 3. Only plumbing that does not transform content is ever called — `ls-tree`, `cat-file`,
-//!    `ls-files`, `rev-parse`. Worktree bytes are read from the filesystem directly and hashed
-//!    here, never handed to git, so a clean filter has nothing to act on.
+//! 3. The generic runner admits only plumbing that does not transform content. The one exception
+//!    is [`Repo::tree_diff`]: it supplies two opaque, resolved tree ids and every option itself,
+//!    so neither a caller nor repository configuration can select a worktree diff.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,10 @@ pub enum GitError {
     UnsafeSubcommand {
         subcommand: String,
     },
+    /// Git's machine-readable tree-diff output violated the format requested by this adapter.
+    MalformedTreeDiff {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GitError {
@@ -47,6 +51,9 @@ impl std::fmt::Display for GitError {
                 f,
                 "refusing to run `git {subcommand}` during capture: it can apply candidate-controlled filters"
             ),
+            GitError::MalformedTreeDiff { detail } => {
+                write!(f, "git produced a malformed tree diff: {detail}")
+            }
         }
     }
 }
@@ -65,6 +72,48 @@ impl std::error::Error for GitError {}
 /// [`Repo::run_raw`] so a future edit cannot reintroduce the hole by reaching for the obvious
 /// command.
 pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
+
+/// A tree object id admitted by [`Repo::resolve_tree`].
+///
+/// The inner value is deliberately private: callers can select a revision, but cannot smuggle a
+/// flag, pathspec, or worktree operand into [`Repo::tree_diff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeId(String);
+
+impl TreeId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Git's classification of one changed path record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeChangeKind {
+    Added,
+    Copied { similarity: u8 },
+    Deleted,
+    Modified,
+    Renamed { similarity: u8 },
+    TypeChanged,
+    Unmerged,
+    Unknown,
+    BrokenPair,
+}
+
+/// One parsed `--raw -z` record. Paths remain bytes because Git permits non-UTF-8 names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeChange {
+    pub kind: TreeChangeKind,
+    pub old_path: Option<Vec<u8>>,
+    pub new_path: Option<Vec<u8>>,
+}
+
+/// The configuration-neutral result of comparing two resolved Git trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeDiff {
+    pub changes: Vec<TreeChange>,
+    pub patch: Vec<u8>,
+}
 
 /// A repository we may only read.
 pub struct Repo {
@@ -178,6 +227,27 @@ impl Repo {
         Ok(output)
     }
 
+    /// Run the one command that intentionally remains outside [`SAFE_SUBCOMMANDS`].
+    ///
+    /// This bypass is private and has exactly one call site, in [`Self::tree_diff`], where the
+    /// complete argv is built from constants and opaque [`TreeId`] values. Keeping it separate
+    /// from [`Self::run_raw`] prevents admitting caller-controlled `git diff` forms globally.
+    fn run_tree_diff_unchecked<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Output, GitError> {
+        let mut cmd = self.command();
+        cmd.args(args);
+        let output = cmd.output().map_err(GitError::Spawn)?;
+        if !output.status.success() {
+            return Err(GitError::Failed {
+                args: args
+                    .iter()
+                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+                    .collect(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok(output)
+    }
+
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
     pub fn bytes<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Vec<u8>, GitError> {
         Ok(self.run_raw(args)?.stdout)
@@ -192,7 +262,60 @@ impl Repo {
     }
 
     pub fn rev_parse(&self, rev: &str) -> Result<String, GitError> {
-        self.line(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+        self.line(&[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{rev}^{{commit}}"),
+        ])
+    }
+
+    /// Resolve a human-facing revision selector to an opaque tree object id.
+    pub fn resolve_tree(&self, rev: &str) -> Result<TreeId, GitError> {
+        let commit = self.rev_parse(rev)?;
+        let tree = self.line(&[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{commit}^{{tree}}"),
+        ])?;
+        if !matches!(tree.len(), 40 | 64) || !tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("resolved tree id is not a full object id: {tree:?}"),
+            });
+        }
+        Ok(TreeId(tree))
+    }
+
+    /// Compare two resolved trees without exposing Git's worktree-capable diff interface.
+    pub fn tree_diff(&self, base: &TreeId, head: &TreeId) -> Result<TreeDiff, GitError> {
+        let output = self.run_tree_diff_unchecked(&[
+            "diff",
+            "--patch-with-raw",
+            "-z",
+            "--no-abbrev",
+            "--full-index",
+            "--binary",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--find-renames=50%",
+            "--unified=3",
+            "--inter-hunk-context=0",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--line-prefix=",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--submodule=short",
+            "--ignore-submodules=none",
+            "-O/dev/null",
+            base.as_str(),
+            head.as_str(),
+            "--",
+        ])?;
+        parse_tree_diff(output.stdout)
     }
 
     /// A sanitized git invocation the caller will stream, rather than capture whole.
@@ -238,6 +361,112 @@ impl Repo {
         let id = roots.join(",");
         Ok(self.repository_id.get_or_init(|| id).clone())
     }
+}
+
+fn parse_tree_diff(output: Vec<u8>) -> Result<TreeDiff, GitError> {
+    let mut rest = output.as_slice();
+    let mut changes = Vec::new();
+
+    while rest.first() == Some(&b':') {
+        let (header, after_header) = take_nul(rest, "raw header")?;
+        rest = after_header;
+        let header = std::str::from_utf8(header).map_err(|_| GitError::MalformedTreeDiff {
+            detail: "raw header was not ASCII".to_string(),
+        })?;
+        let fields: Vec<&str> = header.split_ascii_whitespace().collect();
+        if fields.len() != 5
+            || !fields[0].starts_with(':')
+            || fields[0].len() != 7
+            || fields[1].len() != 6
+        {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("unexpected raw header {header:?}"),
+            });
+        }
+
+        let status = fields[4];
+        let code =
+            status
+                .as_bytes()
+                .first()
+                .copied()
+                .ok_or_else(|| GitError::MalformedTreeDiff {
+                    detail: "raw status was empty".to_string(),
+                })?;
+        let kind = match code {
+            b'A' => TreeChangeKind::Added,
+            b'C' => TreeChangeKind::Copied {
+                similarity: parse_similarity(status)?,
+            },
+            b'D' => TreeChangeKind::Deleted,
+            b'M' => TreeChangeKind::Modified,
+            b'R' => TreeChangeKind::Renamed {
+                similarity: parse_similarity(status)?,
+            },
+            b'T' => TreeChangeKind::TypeChanged,
+            b'U' => TreeChangeKind::Unmerged,
+            b'X' => TreeChangeKind::Unknown,
+            b'B' => TreeChangeKind::BrokenPair,
+            _ => {
+                return Err(GitError::MalformedTreeDiff {
+                    detail: format!("unknown raw status {status:?}"),
+                });
+            }
+        };
+        if !matches!(code, b'C' | b'R') && status.len() != 1 {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("unexpected score on raw status {status:?}"),
+            });
+        }
+
+        let (first_path, after_first) = take_nul(rest, "first path")?;
+        rest = after_first;
+        let (old_path, new_path) = match kind {
+            TreeChangeKind::Added => (None, Some(first_path.to_vec())),
+            TreeChangeKind::Deleted => (Some(first_path.to_vec()), None),
+            TreeChangeKind::Copied { .. } | TreeChangeKind::Renamed { .. } => {
+                let (second_path, after_second) = take_nul(rest, "second path")?;
+                rest = after_second;
+                (Some(first_path.to_vec()), Some(second_path.to_vec()))
+            }
+            _ => (Some(first_path.to_vec()), Some(first_path.to_vec())),
+        };
+        changes.push(TreeChange {
+            kind,
+            old_path,
+            new_path,
+        });
+    }
+
+    Ok(TreeDiff {
+        changes,
+        patch: rest.to_vec(),
+    })
+}
+
+fn take_nul<'a>(bytes: &'a [u8], field: &str) -> Result<(&'a [u8], &'a [u8]), GitError> {
+    let end =
+        bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| GitError::MalformedTreeDiff {
+                detail: format!("unterminated {field}"),
+            })?;
+    Ok((&bytes[..end], &bytes[end + 1..]))
+}
+
+fn parse_similarity(status: &str) -> Result<u8, GitError> {
+    let score = status[1..]
+        .parse::<u8>()
+        .map_err(|_| GitError::MalformedTreeDiff {
+            detail: format!("invalid similarity score in {status:?}"),
+        })?;
+    if score > 100 {
+        return Err(GitError::MalformedTreeDiff {
+            detail: format!("similarity score exceeds 100 in {status:?}"),
+        });
+    }
+    Ok(score)
 }
 
 /// Split `-z` output into records without allocating a String — paths need not be UTF-8.
