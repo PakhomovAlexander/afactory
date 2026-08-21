@@ -432,24 +432,41 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
 fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
+    let codex = home.join("codex");
+    std::fs::write(
+        &codex,
+        r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out=$2; shift 2; else shift; fi
+done
+cat >/dev/null
+printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let reviewers = repo.join(".review/reviewers");
     let package = reviewers.join("tester");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        r#"name = "tester"
+        format!(r#"name = "tester"
 version = "1.0.0"
 subjects = ["diff"]
 
 [runner]
-program = "/bin/sh"
-args = [
-  { value = "-c" },
-  { value = "printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'" },
-]
-"#,
+program = "{}"
+args = []
+"#, codex.display()),
     )
     .unwrap();
+    std::fs::write(package.join("reviewer.md"), "Review the exact Change Set.\n").unwrap();
     let registry = review_config::lock::Registry::new([&reviewers]);
     let mut lockfile = review_config::lock::Lockfile::empty();
     lockfile.reviewers.insert(
