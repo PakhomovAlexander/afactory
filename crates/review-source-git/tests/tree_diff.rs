@@ -40,11 +40,17 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
             && change.new_path.as_deref() == Some(b"odd\t\"name.txt".as_slice())
     }));
     assert!(
-        contains(&diff.patch, b"diff --git a/old-name.txt b/new-name.txt"),
-        "patch did not retain fixed a/ and b/ prefixes: {}",
-        String::from_utf8_lossy(&diff.patch)
+        diff.patch().starts_with(b"diff --git a/"),
+        "patch retained a raw/patch separator: {:?}",
+        diff.patch().first()
     );
-    assert!(contains(&diff.patch, b"similarity index 100%"));
+    assert!(
+        contains(diff.patch(), b"diff --git a/old-name.txt b/new-name.txt"),
+        "patch did not retain fixed a/ and b/ prefixes: {}",
+        String::from_utf8_lossy(diff.patch())
+    );
+    assert!(contains(diff.patch(), b"similarity index 100%"));
+    assert!(diff.git_version.starts_with("git version "));
 }
 
 #[test]

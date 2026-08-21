@@ -17,10 +17,12 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 
+use review_core::snapshot::Vcs;
+use review_core::{Capture as SourceCapture, SourceSnapshot};
 use review_store::Cas;
 use sha2::{Digest, Sha256};
 
-use crate::git::{GitError, Repo, split_nul};
+use crate::git::{GitError, Repo, TreeId, split_nul};
 use crate::manifest::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
 
 #[derive(Debug)]
@@ -47,6 +49,9 @@ pub enum CaptureError {
     Batch {
         detail: String,
     },
+    SnapshotMismatch {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for CaptureError {
@@ -68,6 +73,9 @@ impl std::fmt::Display for CaptureError {
             ),
             CaptureError::Batch { detail } => {
                 write!(f, "git cat-file --batch: {detail}")
+            }
+            CaptureError::SnapshotMismatch { detail } => {
+                write!(f, "persisted snapshot does not match Git source: {detail}")
             }
         }
     }
@@ -93,6 +101,7 @@ pub struct Snapshot {
     pub manifest: Manifest,
     pub content_digest: String,
     pub repository_id: String,
+    pub tree_id: TreeId,
     /// The commit this content corresponds to, when one exists. Provenance, not identity.
     pub source_revision: Option<String>,
     pub dirty: bool,
@@ -102,16 +111,16 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// The `SourceSnapshot@1` payload for this capture.
-    pub fn to_payload(&self, tree_id: &str, manifest_artifact: Option<&str>) -> serde_json::Value {
+    pub fn to_payload(&self, manifest_artifact: Option<&str>) -> serde_json::Value {
         let capture = if self.dirty {
             serde_json::json!({
                 "kind": "synthetic_worktree",
-                "tree_id": tree_id,
+                "tree_id": self.tree_id.as_str(),
                 "boundary": "revalidated",
                 "attempts": self.attempts,
             })
         } else {
-            serde_json::json!({ "kind": "committed", "tree_id": tree_id })
+            serde_json::json!({ "kind": "committed", "tree_id": self.tree_id.as_str() })
         };
         let mut payload = serde_json::json!({
             "repository_id": self.repository_id,
@@ -163,9 +172,10 @@ impl<'a> Capture<'a> {
     /// Capture a committed tree. Objects are immutable, so this needs no read boundary.
     pub fn committed(&self, rev: &str) -> Result<Snapshot, CaptureError> {
         let commit = self.repo.rev_parse(rev)?;
+        let tree_id = self.repo.resolve_tree(&commit)?;
         let listing = self
             .repo
-            .bytes(&["ls-tree", "-r", "-z", "--full-tree", &commit])?;
+            .bytes(&["ls-tree", "-r", "-z", "--full-tree", tree_id.as_str()])?;
 
         let mut oids: Vec<(String, EntryKind, String)> = Vec::new();
         for record in split_nul(&listing) {
@@ -228,10 +238,49 @@ impl<'a> Capture<'a> {
             content_digest: manifest.content_digest(),
             manifest,
             repository_id: self.repo.repository_id()?,
+            tree_id,
             source_revision: Some(commit),
             dirty: false,
             attempts: 1,
         })
+    }
+
+    /// Rehydrate a persisted committed snapshot into the opaque tree authority accepted by
+    /// [`Repo::tree_diff`], rejecting contradictory artifact state rather than trusting strings.
+    pub fn rehydrate_committed(
+        &self,
+        source: &SourceSnapshot,
+        manifest: &Manifest,
+    ) -> Result<TreeId, CaptureError> {
+        if source.vcs != Vcs::Git {
+            return Err(CaptureError::SnapshotMismatch {
+                detail: "source VCS is not Git".to_string(),
+            });
+        }
+        let SourceCapture::Committed { tree_id } = &source.capture else {
+            return Err(CaptureError::SnapshotMismatch {
+                detail: "source capture is not committed".to_string(),
+            });
+        };
+        let revision =
+            source
+                .source_revision
+                .as_deref()
+                .ok_or_else(|| CaptureError::SnapshotMismatch {
+                    detail: "committed source has no revision provenance".to_string(),
+                })?;
+        let captured = self.committed(revision)?;
+        if source.repository_id != captured.repository_id
+            || source.content_digest != manifest.content_digest()
+            || source.content_digest != captured.content_digest
+            || manifest != &captured.manifest
+            || tree_id != captured.tree_id.as_str()
+        {
+            return Err(CaptureError::SnapshotMismatch {
+                detail: "repository, tree, manifest, or content digest disagrees".to_string(),
+            });
+        }
+        Ok(captured.tree_id)
     }
 
     /// Capture the live worktree behind a revalidated read boundary.
@@ -260,11 +309,14 @@ impl<'a> Capture<'a> {
                     });
                 }
                 let manifest = Manifest::new(entries);
+                let source_revision = self.repo.rev_parse("HEAD")?;
+                let tree_id = self.repo.resolve_tree(&source_revision)?;
                 return Ok(Snapshot {
                     content_digest: manifest.content_digest(),
                     manifest,
                     repository_id: self.repo.repository_id()?,
-                    source_revision: self.repo.rev_parse("HEAD").ok(),
+                    tree_id,
+                    source_revision: Some(source_revision),
                     dirty: true,
                     attempts: attempt,
                 });

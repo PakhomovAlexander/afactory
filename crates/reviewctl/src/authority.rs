@@ -96,7 +96,7 @@ fn open_new(
     let snapshot = Capture::new(repo, cas)
         .committed(authority_ref)
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
-    let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, repo, cas)?;
+    let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
     let review_dir = review_dir(pipeline_path)?;
     let lock_path = format!("{review_dir}/review.lock");
@@ -633,14 +633,14 @@ fn capture_round(
             "candidate HEAD belongs to a different repository than the Campaign authority".into(),
         );
     }
-    let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, repo, cas)?;
+    let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
     store
         .append(
             run_id,
             cas,
             NewEvent::new(
                 EventType::SourceCapturedV1,
-                snapshot.to_payload(&tree_id(&snapshot, repo)?, Some(&manifest_id)),
+                snapshot.to_payload(Some(&manifest_id)),
             )
             .caused_by(campaign.opened_event_id.clone())
             .correlating(head_snapshot_id.clone())
@@ -908,27 +908,14 @@ fn prior_rows(
         .collect())
 }
 
-fn publish_snapshot(
-    snapshot: &Snapshot,
-    repo: &Repo,
-    cas: &Cas,
-) -> Result<(String, String), String> {
+fn publish_snapshot(snapshot: &Snapshot, cas: &Cas) -> Result<(String, String), String> {
     let manifest_id = cas
         .put_json(&serde_json::to_value(&snapshot.manifest).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
     let snapshot_id = cas
-        .put_json(&snapshot.to_payload(&tree_id(snapshot, repo)?, Some(&manifest_id)))
+        .put_json(&snapshot.to_payload(Some(&manifest_id)))
         .map_err(|error| error.to_string())?;
     Ok((snapshot_id, manifest_id))
-}
-
-fn tree_id(snapshot: &Snapshot, repo: &Repo) -> Result<String, String> {
-    let revision = snapshot
-        .source_revision
-        .as_deref()
-        .ok_or_else(|| "committed Snapshot has no source revision".to_string())?;
-    repo.line(&["rev-parse", &format!("{revision}^{{tree}}")])
-        .map_err(|error| error.to_string())
 }
 
 fn authority_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>, String> {

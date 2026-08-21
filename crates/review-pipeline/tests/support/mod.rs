@@ -4,7 +4,7 @@ use review_core::{
     RoundStartedPayloadV1, SubjectKind, SubjectV1,
 };
 use review_pipeline::{Kernel, RoundAuthority};
-use review_source_git::{Manifest, Snapshot};
+use review_source_git::Manifest;
 use review_store::{Cas, EventStore, NewEvent};
 
 const TEST_PIPELINE: &str = r#"
@@ -87,17 +87,17 @@ fn test_round_authority_with_prior(
         .put_json(&serde_json::to_value(snapshot).unwrap())
         .unwrap();
     let head_snapshot_id = cas
-        .put_json(
-            &Snapshot {
-                manifest: snapshot.clone(),
-                content_digest: snapshot.content_digest(),
-                repository_id: "test/repository".into(),
-                source_revision: Some("test".into()),
-                dirty: false,
-                attempts: 1,
-            }
-            .to_payload("test-tree", Some(&head_manifest_id)),
-        )
+        .put_json(&serde_json::json!({
+            "repository_id": "test/repository",
+            "vcs": "git",
+            "capture": {
+                "kind": "committed",
+                "tree_id": "test-tree",
+            },
+            "content_digest": snapshot.content_digest(),
+            "source_revision": "test",
+            "artifact_manifest": head_manifest_id,
+        }))
         .unwrap();
     let subject_id = cas
         .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head_snapshot_id)).unwrap())

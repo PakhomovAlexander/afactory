@@ -292,17 +292,38 @@ fn filtering_subcommands_are_refused_outright() {
 #[cfg(unix)]
 #[test]
 fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
-    fn history(fixture: &Fixture) -> (String, String) {
+    fn history(fixture: &Fixture, attributes: bool) -> (String, String) {
         plant_content(fixture);
-        fixture.write(".gitattributes", b"* diff=evil\n");
+        fixture.write("caf\u{e9}.txt", b"before\n");
+        for index in 0..5 {
+            fixture.write(
+                &format!("old-{index}.txt"),
+                format!("shared line one\nshared line two\nunique {index}\n").as_bytes(),
+            );
+        }
+        if attributes {
+            fixture.write(".gitattributes", b"* diff=evil\n");
+        }
         let base = fixture.commit_all("base");
         fixture.write("src/main.rs", b"fn main() { println!(\"changed\"); }\n");
+        fixture.write("caf\u{e9}.txt", b"after\n");
+        for index in 0..5 {
+            fixture.git(&[
+                "mv",
+                &format!("old-{index}.txt"),
+                &format!("new-{index}.txt"),
+            ]);
+            fixture.write(
+                &format!("new-{index}.txt"),
+                format!("shared line one\nshared line two changed\nunique {index}\n").as_bytes(),
+            );
+        }
         let head = fixture.commit_all("head");
         (base, head)
     }
 
     let clean = Fixture::new();
-    let (clean_base, clean_head) = history(&clean);
+    let (clean_base, clean_head) = history(&clean, false);
     let clean_repo = repo_of(&clean);
     let clean_diff = clean_repo
         .tree_diff(
@@ -312,7 +333,7 @@ fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
         .unwrap();
 
     let hostile = Fixture::new();
-    let (hostile_base, hostile_head) = history(&hostile);
+    let (hostile_base, hostile_head) = history(&hostile, true);
     let marker = marker_path(hostile.dir.path());
     let textconv = hostile.dir.path().join("evil-textconv.sh");
     std::fs::write(
@@ -329,9 +350,16 @@ fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
     }
     hostile.git(&["config", "diff.evil.textconv", textconv.to_str().unwrap()]);
     hostile.git(&["config", "diff.algorithm", "histogram"]);
-    hostile.git(&["config", "diff.renames", "false"]);
+    hostile.git(&["config", "diff.renames", "true"]);
+    hostile.git(&["config", "diff.renameLimit", "1"]);
+    hostile.git(&["config", "diff.suppressBlankEmpty", "true"]);
+    hostile.git(&["config", "diff.evil.binary", "true"]);
+    hostile.git(&["config", "diff.evil.xfuncname", "^hostile$"]);
     hostile.git(&["config", "diff.mnemonicPrefix", "true"]);
     hostile.git(&["config", "core.quotePath", "false"]);
+    hostile.git(&["config", "core.bigFileThreshold", "1"]);
+    hostile.git(&["config", "core.compression", "1"]);
+    hostile.git(&["config", "core.loosecompression", "1"]);
     hostile.git(&["config", "color.ui", "always"]);
 
     // Prove the fixture is armed, then clear the marker before entering the typed adapter.
@@ -341,6 +369,9 @@ fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
         "ordinary git diff did not execute textconv"
     );
     std::fs::remove_file(&marker).unwrap();
+
+    // A live attribute file is candidate-controlled but not one of the resolved tree inputs.
+    hostile.write(".gitattributes", b"*.rs -diff\n");
 
     let hostile_repo = repo_of(&hostile);
     let hostile_diff = hostile_repo
