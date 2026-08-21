@@ -533,8 +533,10 @@ fn prepare_round(
             repo,
             run_id,
             campaign,
-            target_round,
-            existing.as_ref().map(|(event, payload)| (*event, payload)),
+            RoundCaptureRequest {
+                round: target_round,
+                superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+            },
         )?,
     };
 
@@ -556,6 +558,11 @@ fn prepare_round(
     Ok(round)
 }
 
+struct RoundCaptureRequest<'a> {
+    round: u32,
+    superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
+}
+
 fn capture_round(
     options: &Options,
     cas: &Cas,
@@ -563,9 +570,9 @@ fn capture_round(
     repo: &Repo,
     run_id: &str,
     campaign: &OpenCampaign,
-    round: u32,
-    superseded: Option<(&review_core::RunEvent, &RoundStartedPayloadV1)>,
+    request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
+    let RoundCaptureRequest { round, superseded } = request;
     let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
         superseded
     {
