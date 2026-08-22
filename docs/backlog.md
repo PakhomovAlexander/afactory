@@ -1,6 +1,7 @@
-# Review Kernel — backlog
+# Afactory Review Kernel - backlog
 
-Work queued for `reviewctl` and the `/self-review-heavy` loop, in the order it should be done.
+Work queued for `af review`, in the order it should be done. Repository migration and private
+release parity precede M2.5; they must not alter the persisted Review Kernel contracts below.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
@@ -27,7 +28,7 @@ fixture together.
 ### M0.2 — `RunReport@2`, typed everywhere
 
 `publish_report` writes `format!("{verdict:?}")` and `format!("{reason:?}")` into the
-append-only log, while `reviewctl run` reads the verdict with `.starts_with("Incomplete")` to
+append-only log, while `af review run` reads the verdict with `.starts_with("Incomplete")` to
 count closed Rounds. A Rust variant rename can therefore consume a Round with no compile error.
 
 `RunReport@2` carries a verdict with a `kind` discriminant, missing nodes as data, and defined
@@ -64,7 +65,7 @@ the existing duplicated `@1` payload fields for compatibility and treat them onl
 for artifact-less legacy imports. Decision recorded in
 [ADR-0005](adr/0005-report-artifacts-are-projection-authority.md).
 
-### M1.2 — `reviewctl show --campaign NAME KEY`
+### M1.2 — `af review show --campaign NAME KEY`
 
 Dereference `AttachedReport.report_id` into the CAS and print every attached report whole:
 body, fix, confidence, per reviewer, per round — plus the full `history` and `current_note`.
@@ -76,12 +77,12 @@ An artifact-less legacy attachment renders the frozen projection fields and labe
 fields explicitly; it is not treated as CAS corruption because ADR-0005 reserves that fallback
 only for imported legacy rows.
 
-### M1.3 — `reviewctl ledger --long`
+### M1.3 — `af review ledger --long`
 
 The one-line form stays the default. `--long` adds body and fix under each row, so the common
 triage case needs one command and one glance.
 
-### M1.4 — `reviewctl report --campaign NAME [--format md]`
+### M1.4 — `af review report --campaign NAME [--format md]`
 
 Restores a v1 capability: `ledger.sh report` emitted a markdown summary and the kernel has no
 equivalent, so SKILL.md §5 currently asks the agent to hand-write a closing report from data it
@@ -255,7 +256,7 @@ disposition for every prior Finding assigned to a required reviewer: re-report/c
 Drops immutably with reviewer, Round, Subject, and reason; trusted resolution policy decides what
 they prove. Decision recorded in [ADR-0011](adr/0011-silence-is-not-a-drop.md).
 
-### M3.3 — `reviewctl group <from> <into>` and `ungroup`
+### M3.3 — `af review group <from> <into>` and `ungroup`
 
 The escape hatch for reports that omit a corroboration relation or for genuinely ambiguous
 duplicates. Grouping is operator-driven and event-recorded; it retains both IDs as aliases,
@@ -280,14 +281,14 @@ as required or advisory. Required open Demands block convergence and carry into 
 Each demand barrier emits a deterministic `DemandSet@1` from the prior Set plus canonical selected
 Demand, Evidence Satisfaction, and waiver artifact IDs; downstream nodes consume that exact view.
 
-### M4.2 — `reviewctl evidence add` and explicit Demand waiver
+### M4.2 — `af review evidence add` and explicit Demand waiver
 
-`reviewctl evidence add <demand-id> <file>` stores the measurement content-addressed and links it
+`af review evidence add <demand-id> <file>` stores the measurement content-addressed and links it
 to the exact Demand and Subject snapshot. Trusted policy records satisfaction; the CLI cannot turn
 an unrelated file into success merely by storing it. A head-Snapshot change makes prior
 satisfaction stale unless policy explicitly admits reuse.
 
-`reviewctl demand waive <demand-id> --reason ...` is the authenticated escape hatch. Resolving a
+`af review demand waive <demand-id> --reason ...` is the authenticated escape hatch. Resolving a
 Finding, including as `wontfix`, never implicitly satisfies or waives a Demand. Finding resolution
 may separately reference Evidence, but only an explicit Demand link changes Demand state.
 
@@ -298,14 +299,14 @@ bar. Decision recorded in
 
 ### M4.3 — External change attestation and Fix Verification
 
-`reviewctl resolve ... fixed` currently lets an operator assert the terminal state directly.
-Replace that path with `reviewctl attest-change <finding-id>`, naming the prior claim view, exact
+`af review resolve ... fixed` currently lets an operator assert the terminal state directly.
+Replace that path with `af review attest-change <finding-id>`, naming the prior claim view, exact
 current Subject/Change Set, changed regions, actor, reason, and Evidence IDs. The Attestation
 moves covered claims to `pending-verification`; it grants no resolution by itself.
 
 A trusted verifier consumes the current Finding view, explicit reviewer Drops/disputes/reports,
 required checks, and snapshot-current Evidence. Only a positive `FixVerification@1` may produce
-`Resolution(fixed)`. `reviewctl resolve` remains the authenticated ingress for `rejected` and
+`Resolution(fixed)`. `af review resolve` remains the authenticated ingress for `rejected` and
 `wontfix-tracked`; neither state bypasses independent Demands. This same verification path is
 reused by later kernel-integrated Proposals. Decision recorded in
 [ADR-0012](adr/0012-fixed-requires-current-subject-verification.md).
@@ -350,12 +351,12 @@ explicit formatter rather than `{:?}`, so both surfaces are deliberate and testa
 Pure query work; the data is already in the log, tagged by node. `AttemptAdmitted@1` carries
 `{selection, cost_tokens}`, `AttemptFenced@1` carries `{reason, charged}`, both stamped
 `.node(node_id)`. `Kernel::attempts()` returns the whole `AttemptLedger` and its doc comment
-reads "the operator's view" — `reviewctl` never calls it, so an operator cannot see that they
+reads "the operator's view" — `af review` never calls it, so an operator cannot see that they
 paid for a fenced attempt, which `review-attempt`'s own docs say is "something an operator needs
 to see".
 
 SKILL.md §5 already demands "spend per round" and the agent currently has no way to get it.
-Feeds `reviewctl report` (M1.4).
+Feeds `af review report` (M1.4).
 
 ### M5.3 — Campaign enumeration
 
@@ -447,7 +448,7 @@ ADR-0004 is refined and superseded by
 ### M7.1 — Reviewers author proposals; the kernel verifies
 
 `PatchProposal@1` is fully typed in `review-core` with a schema and parity tests, and has zero
-call sites in `review-pipeline` or `reviewctl`. Most of the machinery is already in place:
+call sites in `review-pipeline` or `af review`. Most of the machinery is already in place:
 reviewers get `Mode::EphemeralWrite` sandboxes, sealing already derives what a node changed, and
 the README already states the rule that derivation exists to enforce — "a proposal must equal the
 kernel-computed diff, so an unreverted debug probe fails it rather than riding along".
@@ -460,7 +461,7 @@ A refused Proposal is absent, never stored carrying an unrelated edit.
 SKILL.md's boundary turns out to be exactly right as written: reviewers never edit anything that
 is *integrated*.
 
-### M7.2 — `reviewctl export <proposal-id>`
+### M7.2 — `af review export <proposal-id>`
 
 `show <finding-id>` lists every linked Proposal ID and whether it is currently applicable. Export
 names one Proposal exactly; `--finding` is only a convenience when exactly one current Proposal
@@ -583,5 +584,5 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
   produce; marked and non-blocking instead.
 - **`--only <node>`.** A pipeline defines what a review is; `--pipeline quick.toml` with its own
   campaign already does this correctly and without touching the heavy campaign's convergence.
-- **`reviewctl apply`.** `export <proposal-id>` plus `git apply` keeps `main.rs:15` true verbatim,
+- **`af review apply`.** `export <proposal-id>` plus `git apply` keeps `main.rs:15` true verbatim,
   and git handles a stale patch better than the kernel could. See ADR-0010.

@@ -4,7 +4,7 @@
 [ADR-0010](0010-proposals-are-exported-by-id-and-base-bound.md) (2026-08-20)
 
 `PatchProposal@1` is fully typed in `review-core`, has a schema and parity tests, and has zero
-call sites in `review-pipeline` or `reviewctl`. The seal layer derives what a node changed
+call sites in `review-pipeline` or `af review`. The seal layer derives what a node changed
 specifically so a proposal can be checked against reality, and the README states the rule that
 derivation exists to enforce: "a proposal must equal the kernel-computed diff, so an unreverted
 debug probe fails it rather than riding along". Nothing produces a proposal, so nothing enforces
@@ -16,7 +16,7 @@ actually changed; and a proposal that does not equal that diff is refused rather
 The proposal attaches to its Finding as an artifact.
 
 Getting it into a working tree is a separate step and stays outside the kernel:
-`reviewctl export <key>` emits the patch on stdout and the operator pipes it to `git apply`.
+`af review export <key>` emits the patch on stdout and the operator pipes it to `git apply`.
 
 ## Considered options
 
@@ -29,14 +29,14 @@ Getting it into a working tree is a separate step and stays outside the kernel:
   it would make the code agree with SKILL.md's "you are the only fixer" everywhere. Rejected: it
   throws away a designed contract, including one of the three properties the README lists as
   deliberately unrepresentable ("a patch proposal cannot name zero claims").
-- **Wire it, with `reviewctl apply` writing the working tree.** Best ergonomics, and the kernel
+- **Wire it, with `af review apply` writing the working tree.** Best ergonomics, and the kernel
   knows things git does not — which snapshot the proposal was verified against, and which claims
   it covers. Rejected for the boundary it costs; see below.
 - **Wire it, applying onto a branch cut from the reviewed snapshot.** Staleness becomes impossible
   by construction, since the patch is applied to exactly the tree it was computed from, and the
   working tree is untouched. Rejected for this round: it still writes refs and objects, so the
   invariant still needs rewording, and it produces one branch per accepted proposal.
-- **Wire it, with `reviewctl export` and `git apply` (chosen).** Keeps `main.rs`'s claim — "Nothing
+- **Wire it, with `af review export` and `git apply` (chosen).** Keeps `main.rs`'s claim — "Nothing
   here mutates any repository" — true verbatim, with no exception to maintain. Git handles
   staleness better than the kernel could: it fails loudly when the patch no longer matches, offers
   three-way merge, and the operator sees the patch before it lands.

@@ -23,7 +23,7 @@ head makes the Proposal stale rather than re-verified or invalidating its histor
 
 ## Consequences
 
-- `reviewctl show` lists linked Proposal IDs, base Snapshot IDs, and current/stale applicability.
-- `reviewctl export <proposal-id>` refuses stale output unless `--allow-stale` is supplied.
+- `af review show` lists linked Proposal IDs, base Snapshot IDs, and current/stale applicability.
+- `af review export <proposal-id>` refuses stale output unless `--allow-stale` is supplied.
 - The v1 kernel still does not mutate a repository. Automatic integration into internal derived
   Snapshots remains a later milestone rather than being ruled out by this export boundary.

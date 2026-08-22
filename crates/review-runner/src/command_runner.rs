@@ -118,14 +118,21 @@ impl<'a> CommandRunner<'a> {
             let mut child = cmd
                 .spawn()
                 .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
-            if let Some(mut stdin) = child.stdin.take()
-                && let Err(error) = stdin.write_all(input)
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunnerError::Unavailable(format!(
-                    "delivering reviewer inputs: {error}"
-                )));
+            if let Some(mut stdin) = child.stdin.take() {
+                match stdin.write_all(input) {
+                    Ok(()) => {}
+                    // Command reviewers may deliberately ignore wired inputs. If such a
+                    // reviewer exits before the pipe is full, its real exit status and output
+                    // remain authoritative; EPIPE is not provider unavailability.
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(RunnerError::Unavailable(format!(
+                            "delivering reviewer inputs: {error}"
+                        )));
+                    }
+                }
             }
             child
                 .wait_with_output()
@@ -186,6 +193,19 @@ mod tests {
         let (dir, cas) = runner_dir();
         let runner = CommandRunner::new(&cas, dir.path());
         let result = runner.invoke(&emitting(EMPTY_RESULT)).unwrap();
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn a_reviewer_may_ignore_wired_inputs() {
+        let (dir, cas) = runner_dir();
+        let runner = CommandRunner::new(&cas, dir.path());
+        // Larger than an OS pipe, so a command that never reads stdin closes it while the
+        // parent is still writing. Its valid answer must win over that expected EPIPE.
+        let input = vec![b'x'; 1024 * 1024];
+        let (result, _) = runner
+            .invoke_raw_with_input(&emitting(EMPTY_RESULT), &input)
+            .unwrap();
         assert!(result.findings.is_empty());
     }
 

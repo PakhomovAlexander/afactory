@@ -279,8 +279,7 @@ outputs = ["decision"]
 /// this shape is asserted instead, and each assertion below would fail on a real mistake.
 #[test]
 fn the_checked_in_pipeline_loads() {
-    let review_dir =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../.review");
+    let review_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.review");
     let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
     let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
     let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();

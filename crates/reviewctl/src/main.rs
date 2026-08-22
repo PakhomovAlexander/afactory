@@ -1,4 +1,4 @@
-//! `reviewctl` — reviews from a definition file to a verdict, and the campaign loop.
+//! `af review` - reviews from a definition file to a verdict, and the campaign loop.
 //!
 //! Six subcommands:
 //!
@@ -207,14 +207,15 @@ struct ResolveOptions {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
+        "usage: af review run     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
-        \x20      reviewctl tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
+        \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
-        \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
-        \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
-        \x20      reviewctl report  --campaign NAME [--state DIR] [--format md]\n\
-        \x20      reviewctl resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
+        \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
+        \x20      af review show    --campaign NAME [--state DIR] KEY\n\
+        \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
+        \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
+        \x20      af --version\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
     );
@@ -361,6 +362,14 @@ fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
 fn main() {
     let mut args = std::env::args();
     args.next();
+    let namespace = args.next();
+    if matches!(namespace.as_deref(), Some("--version" | "-V")) {
+        println!("af {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if namespace.as_deref() != Some("review") {
+        usage();
+    }
     let result = match args.next().as_deref() {
         Some("run") => run(&parse_run(args)).map(exit_for_verdict),
         Some("ledger") => print_ledger(&parse_ledger(args)),
@@ -371,7 +380,7 @@ fn main() {
         _ => usage(),
     };
     if let Err(error) = result {
-        eprintln!("reviewctl: {error}");
+        eprintln!("af review: {error}");
         std::process::exit(1);
     }
 }
@@ -379,7 +388,7 @@ fn main() {
 fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
         return Err(format!(
-            "no campaign state at {}; a campaign starts with `reviewctl run --campaign`",
+            "no campaign state at {}; a campaign starts with `af review run --campaign`",
             state.display()
         ));
     }
@@ -750,7 +759,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                     }
                     other => {
                         return Err(format!(
-                            "node `{node}`: no adapter drives `{other}`; this reviewctl knows \
+                            "node `{node}`: no adapter drives `{other}`; this af release knows \
                              claude and codex"
                         ));
                     }

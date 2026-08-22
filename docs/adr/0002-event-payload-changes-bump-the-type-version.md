@@ -3,7 +3,7 @@
 **Status:** accepted (2026-08-20)
 
 `RunReport@1` persists `format!("{verdict:?}")` and `format!("{reason:?}")` — Rust `Debug`
-output — into the append-only event log, and `reviewctl run` reads the verdict back with
+output — into the append-only event log, and `af review run` reads the verdict back with
 `.starts_with("Incomplete")` to decide how many rounds have closed. A Rust enum variant name is
 therefore load-bearing for convergence arithmetic, through a `Debug` impl, in the system of
 record. Renaming `RunVerdict::Incomplete` would make incomplete rounds start *closing* rounds and
@@ -22,7 +22,7 @@ type enum from the M3.8 work lists both.
   versioned contract exists to prevent, and the schema would have to permit both — so it could
   reject neither. That is the same criticism the README already levels at one-directional schema
   tests: "a schema that accepts everything passes".
-- **Break in-flight campaigns.** Refuse to replay a campaign written by an older `reviewctl`, and
+- **Break in-flight campaigns.** Refuse to replay a campaign written by an older `af review`, and
   require open campaigns to be finished or abandoned before upgrading. Cleanest code by far — one
   shape, one schema, no legacy arm. Rejected because it sets the precedent that "append-only and
   replayable" holds only within a release, and it lands the cost on an operator who is mid-way

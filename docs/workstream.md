@@ -1,7 +1,8 @@
-# Review Kernel — capability work (M0–M9)
+# Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0, M1, and M2.1-M2.4 are complete. Resume with M2.5 Report Scope.
-**Goal:** `reviewctl` reviews a *change* rather than a whole tree, and every finding it produces
+**Status:** M0, M1, and M2.1-M2.4 are complete. Repository extraction and the `af review`
+release boundary must reach parity before work resumes with M2.5 Report Scope.
+**Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
 
@@ -68,10 +69,10 @@ corrections from the second audit are:
 
 ## Scope
 
-In: `template/tools/review-kernel/` and the pipeline definitions in `.review/` (both the repo
-root's own and `template/.review/`). Out: the shell harness under
-`template/.agents/skills/self-review-heavy/scripts/`, which is retired as an orchestrator but
-**must keep working** — it regenerates the synthetic fixture corpus and CI gates on that.
+In: this repository's Review Kernel crates, schemas, fixtures, CLI, and generic pipeline
+contracts. Out: project-specific `.review/` pipelines, reviewer packages, campaign state, and
+private corpora. The retired shell harness under `compat/legacy-harness/` remains only as the
+executable specification that regenerates the synthetic fixture corpus.
 
 **Sequencing is deliberate.** M0 freezes append-only contracts; M1 makes current evidence usable;
 M2 adds the trusted Subject; M3 establishes canonical claim identity and explicit dispositions;
@@ -84,7 +85,7 @@ identity, authority, isolation, and verification prerequisites exist.
 - [x] M0 — every event type is a Rust/schema enum member; `RunReport@2` is structural; ports
       validate type/cardinality/snapshot affinity; exact invocation inputs and output receipts are
       persisted; legacy replay remains pinned by fixtures.
-- [x] M1 — `reviewctl show` prints every attached report whole; `ledger --long` carries body and
+- [x] M1 — `af review show` prints every attached report whole; `ledger --long` carries body and
       fix; `report --format md` emits what SKILL.md §5 asks the agent to produce.
 - [ ] M2 — Campaign authority and Base are pinned before candidate capture; committed and
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses

@@ -1,11 +1,15 @@
 [package]
 name = "reviewctl"
-description = "The Review Kernel's CLI: run a pipeline definition against a repository"
+description = "Afactory's Review Kernel CLI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "af"
+path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29.0"
