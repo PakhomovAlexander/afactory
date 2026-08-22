@@ -10,7 +10,7 @@ positive verification covering every active claim into `Resolution(fixed)`.
 
 ## Considered options
 
-- **Keep `reviewctl resolve ... fixed`.** Rejected because a note can become terminal state with
+- **Keep `af review resolve ... fixed`.** Rejected because a note can become terminal state with
   no machine-checkable relationship to changed content or evidence.
 - **Treat one clean reviewer Round as proof.** Rejected because absence is not a disposition and
   one reviewer's Drop may not cover corroborating claims or required checks.
@@ -19,8 +19,8 @@ positive verification covering every active claim into `Resolution(fixed)`.
 
 ## Consequences
 
-- `reviewctl resolve` directly admits only policy-authorized non-fixed dispositions such as
+- `af review resolve` directly admits only policy-authorized non-fixed dispositions such as
   `rejected` and `wontfix`.
-- External fixes use `reviewctl attest-change`; stale lineage or stale Finding views fail closed.
+- External fixes use `af review attest-change`; stale lineage or stale Finding views fail closed.
 - Every active attached Report claim needs coverage. Verification of one claim cannot terminally
   resolve a distinct corroborating claim.

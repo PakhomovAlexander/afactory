@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "self-review-heavy findings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings", "benchmark_demands", "disputes"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "request-changes", "block"]
+    },
+    "summary": {
+      "type": ["string", "null"],
+      "description": "One paragraph: what the change does and the reviewer's overall judgement."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "file", "line", "title", "body", "fix", "confidence"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "file": { "type": "string", "description": "Repo-relative path" },
+          "line": { "type": ["integer", "null"] },
+          "title": {
+            "type": "string",
+            "description": "One sentence, stable wording — used to fingerprint the finding across rounds"
+          },
+          "body": {
+            "type": "string",
+            "description": "Evidence: the concrete failure scenario or step-by-step trace that makes this real, not hypothetical"
+          },
+          "fix": { "type": ["string", "null"], "description": "Suggested fix, minimal" },
+          "confidence": { "type": "number", "description": "0.0 to 1.0" }
+        }
+      }
+    },
+    "benchmark_demands": {
+      "type": "array",
+      "description": "Performance claims that must be proven by measurement before the verdict can improve",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "why", "suggested_method"],
+        "properties": {
+          "claim": { "type": "string" },
+          "why": { "type": "string" },
+          "suggested_method": { "type": "string" }
+        }
+      }
+    },
+    "disputes": {
+      "type": "array",
+      "description": "Positions on findings from earlier stages (given in the prompt as fp=... entries)",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fp", "position", "reason"],
+        "properties": {
+          "fp": { "type": "string" },
+          "position": { "type": "string", "enum": ["confirm", "refute"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

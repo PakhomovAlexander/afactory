@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # generate.sh — rebuild the synthetic Phase 0 fixtures by RUNNING the real harness.
 #
-#   tools/review-kernel/fixtures/synthetic/generate.sh [--check]
+#   fixtures/synthetic/generate.sh [--check]
 #
 # The legacy corpus under ../legacy/ only ever exercised report -> fixed (see its
 # README). Every other case Phase 0 needs is produced here, by driving the actual
@@ -21,9 +21,9 @@ set -euo pipefail
 export LC_ALL=C
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-HUB="$(cd -- "$HERE/../../../.." && pwd)"
-LEDGER="$HUB/.agents/skills/self-review-heavy/scripts/ledger.sh"
-CHECKS="$HUB/.agents/skills/self-review-heavy/scripts/checks.sh"
+ROOT="$(cd -- "$HERE/../.." && pwd)"
+LEDGER="$ROOT/compat/legacy-harness/ledger.sh"
+CHECKS="$ROOT/compat/legacy-harness/checks.sh"
 [ -x "$LEDGER" ] || { echo "generate.sh: not found: $LEDGER" >&2; exit 2; }
 [ -x "$CHECKS" ] || { echo "generate.sh: not found: $CHECKS" >&2; exit 2; }
 command -v jq >/dev/null || { echo "generate.sh: jq is required" >&2; exit 2; }

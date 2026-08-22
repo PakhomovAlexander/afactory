@@ -27,8 +27,9 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
 }
 
 fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reviewctl"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
     command
+        .arg("review")
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test");

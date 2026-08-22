@@ -175,12 +175,12 @@ fn registry_path() -> Result<Option<PathBuf>, String> {
             if !config.is_absolute() {
                 return Err("XDG_CONFIG_HOME must be absolute".to_string());
             }
-            return Ok(Some(config.join("reviewctl/providers.toml")));
+            return Ok(Some(config.join("afactory/providers.toml")));
         }
     }
     let path = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".config/reviewctl/providers.toml"));
+        .map(|home| home.join(".config/afactory/providers.toml"));
     if path.as_ref().is_some_and(|path| !path.is_absolute()) {
         return Err("HOME must be absolute to locate the provider registry".to_string());
     }

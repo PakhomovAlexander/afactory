@@ -1,4 +1,4 @@
-//! Interactive configuration proposals and launch surface for `reviewctl`.
+//! Interactive configuration proposals and launch surface for `af review`.
 //!
 //! The TUI never turns working-tree bytes into execution authority. Reviewer edits stay in
 //! memory and `s` exports an explicit patch under review state. The operator applies, reviews,
@@ -94,12 +94,12 @@ fn event_loop(terminal: &mut TerminalSession, app: &mut App) -> Result<(), Strin
             Action::Run => {
                 terminal.leave()?;
                 println!(
-                    "reviewctl tui: terminal released; starting the ordinary pinned-authority run path\n"
+                    "af review tui: terminal released; starting the ordinary pinned-authority run path\n"
                 );
                 let result = crate::run(&app.options);
                 match &result {
-                    Ok(verdict) => println!("\nreviewctl tui: run completed: {verdict:?}"),
-                    Err(error) => println!("\nreviewctl tui: run failed: {error}"),
+                    Ok(verdict) => println!("\naf review tui: run completed: {verdict:?}"),
+                    Err(error) => println!("\naf review tui: run failed: {error}"),
                 }
                 print!("Press Enter to return to the TUI...");
                 io::stdout().flush().map_err(|error| error.to_string())?;
@@ -172,7 +172,7 @@ impl TerminalSession {
                 0,
                 0,
                 width,
-                "reviewctl tui needs at least 72x22",
+                "af review tui needs at least 72x22",
                 Paint::Error,
             )?;
             self.stdout.flush().map_err(|error| error.to_string())?;

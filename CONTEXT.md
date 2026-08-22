@@ -1,6 +1,6 @@
 # Review Kernel — shared language
 
-The vocabulary of `/self-review-heavy` and the `reviewctl` binary behind it. These words are
+The vocabulary of Afactory's Review Kernel and the `af review` command behind it. These words are
 load-bearing: the kernel's guarantees are stated in them, and several of its invariants are
 only expressible because two nearby concepts are kept apart. The mechanism itself is
 documented in [`../../docs/self-review-heavy.md`](../../docs/self-review-heavy.md); this file
@@ -90,7 +90,7 @@ name continues the same review.
 One immutable Subject/input-Set execution of the pipeline within a Campaign. Only a Round that
 reaches a real verdict *closes*; an incomplete one resumes those exact inputs unless explicitly
 superseded, and never consumes a clean/cap slot merely for failing to complete.
-_Avoid_: "run" as a synonym — a `reviewctl run` invocation may fail to close a Round at all.
+_Avoid_: "run" as a synonym - an `af review run` invocation may fail to close a Round at all.
 
 **Gate**:
 The Check nodes that must pass before any reviewer is dispatched. A Check that could not run

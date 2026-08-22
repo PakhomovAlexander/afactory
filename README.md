@@ -1,10 +1,8 @@
-# Review Kernel
+# Afactory
 
-The deterministic runtime behind `/self-review-heavy`: `reviewctl` runs a sandboxed,
-budgeted reviewer pipeline against committed HEAD and folds the results into a findings
-ledger with convergence. The human-facing guide — how a round executes, the worked ledger
-example, and every configuration knob — is
-[`docs/self-review-heavy.md`](../../docs/self-review-heavy.md). The boundary it enforces:
+A multi-agent coding factory. Its first capability is the Review Kernel: `af review` runs a
+sandboxed, budgeted reviewer pipeline against committed HEAD and folds the results into a
+findings ledger with convergence. The boundary it enforces:
 reviewers only ever mutate a private sandbox; they return typed findings, and only the
 kernel integrates anything. Publishing to a branch or PR stays an explicit human action.
 
@@ -20,8 +18,9 @@ orchestrator but kept deliberately: it is the reference implementation that rege
 the synthetic fixture corpus, gated in CI.
 
 ```sh
-make review-kernel            # fmt + clippy + test
-make review-kernel-fixtures   # prove the synthetic corpus still reproduces byte-for-byte
+make check       # fmt + clippy + tests + fixture reproduction
+make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
+cargo run -p reviewctl --bin af -- review tui
 ```
 
 Pinned toolchain (`rust-toolchain.toml`), committed lockfile, `unsafe_code = "forbid"` — the
