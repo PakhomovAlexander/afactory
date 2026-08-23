@@ -1,6 +1,6 @@
 //! `af review` - reviews from a definition file to a verdict, and the campaign loop.
 //!
-//! Six subcommands:
+//! The review namespace has six subcommands:
 //!
 //! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
 //!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
@@ -215,6 +215,7 @@ fn usage() -> ! {
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
+        \x20      af provider status\n\
         \x20      af --version\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
@@ -365,6 +366,13 @@ fn main() {
     let namespace = args.next();
     if matches!(namespace.as_deref(), Some("--version" | "-V")) {
         println!("af {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if namespace.as_deref() == Some("provider") {
+        if args.next().as_deref() != Some("status") || args.next().is_some() {
+            usage();
+        }
+        providers::print_status();
         return;
     }
     if namespace.as_deref() != Some("review") {

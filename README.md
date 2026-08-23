@@ -21,7 +21,15 @@ the synthetic fixture corpus, gated in CI.
 make check       # fmt + clippy + tests + fixture reproduction
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
 cargo run -p reviewctl --bin af -- review tui
+cargo run -p reviewctl --bin af -- provider status
 ```
+
+`af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
+authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
+quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude
+Code currently exposes subscription authentication but not plan utilization to headless callers;
+Afactory reports that limitation explicitly and does not start a model session merely to scrape
+the interactive `/usage` screen.
 
 Pinned toolchain (`rust-toolchain.toml`), committed lockfile, `unsafe_code = "forbid"` — the
 conventions for hub-owned Rust.

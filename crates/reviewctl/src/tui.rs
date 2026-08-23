@@ -484,10 +484,10 @@ fn draw_provider_body(
         5,
         content_x,
         content_width,
-        "  ID                     KIND      STATUS              AUTH TYPE",
+        "  ID                     KIND      STATUS              SUBSCRIPTION",
         Paint::Muted,
     )?;
-    let detail_top = footer - 6;
+    let detail_top = footer - 10;
     let list_top = 6;
     let capacity = usize::from(detail_top.saturating_sub(list_top));
     if app.providers.providers.is_empty() {
@@ -525,7 +525,7 @@ fn draw_provider_body(
                 provider.id,
                 provider.kind,
                 provider.status,
-                provider.auth_type
+                provider.subscription
             ),
             if selected {
                 Paint::Navigation
@@ -548,7 +548,7 @@ fn draw_provider_body(
         detail_top + 1,
         content_x,
         content_width,
-        &format!("COMMAND      {}", provider.command),
+        &format!("AUTH         {} / {}", provider.status, provider.auth_type),
         Paint::Muted,
     )?;
     paint(
@@ -556,12 +556,49 @@ fn draw_provider_body(
         detail_top + 2,
         content_x,
         content_width,
+        &format!("SUBSCRIPTION {}", provider.subscription),
+        Paint::Muted,
+    )?;
+    for row in 0..3 {
+        let value = provider
+            .limits
+            .get(row)
+            .map(providers::format_limit)
+            .unwrap_or_else(|| {
+                if row == 0 {
+                    "not exposed by provider CLI".to_string()
+                } else {
+                    String::new()
+                }
+            });
+        paint(
+            stdout,
+            detail_top + 3 + row as u16,
+            content_x,
+            content_width,
+            &format!("LIMIT {:<2}     {value}", row + 1),
+            Paint::Muted,
+        )?;
+    }
+    paint(
+        stdout,
+        detail_top + 6,
+        content_x,
+        content_width,
+        &format!("COMMAND      {}", provider.command),
+        Paint::Muted,
+    )?;
+    paint(
+        stdout,
+        detail_top + 7,
+        content_x,
+        content_width,
         &format!("AUTH CONTEXT {}", provider.auth_context),
         Paint::Muted,
     )?;
     paint(
         stdout,
-        detail_top + 3,
+        detail_top + 8,
         content_x,
         content_width,
         &format!("SOURCE       {}", provider.source),
@@ -569,7 +606,7 @@ fn draw_provider_body(
     )?;
     paint(
         stdout,
-        detail_top + 4,
+        detail_top + 9,
         content_x,
         content_width,
         &format!(
