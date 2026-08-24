@@ -427,18 +427,32 @@ fn main() {
         usage();
     }
     let result = match args.next().as_deref() {
-        Some("run") => run(&parse_run(args)).map(exit_for_verdict),
+        Some("run") => {
+            init_review_workers();
+            run(&parse_run(args)).map(exit_for_verdict)
+        }
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
-        Some("tui") => tui::launch(parse_run(args)),
+        Some("tui") => {
+            init_review_workers();
+            tui::launch(parse_run(args))
+        }
         _ => usage(),
     };
     if let Err(error) = result {
         eprintln!("af review: {error}");
         std::process::exit(1);
     }
+}
+
+fn init_review_workers() {
+    let worker_limit = std::thread::available_parallelism()
+        .map(|workers| workers.get())
+        .unwrap_or(1);
+    review_parallel::init_worker_limit(worker_limit)
+        .expect("review worker executor is initialized once before execution");
 }
 
 fn open_campaign_store(state: &Path) -> Result<EventStore, String> {

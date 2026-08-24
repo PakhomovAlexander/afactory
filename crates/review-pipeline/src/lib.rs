@@ -911,6 +911,7 @@ impl<'a> Kernel<'a> {
         reservation: Option<&Reservation>,
         error: &str,
         charged: u64,
+        raw_artifact: Option<&str>,
     ) -> Result<(), String> {
         if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
             budgets
@@ -923,14 +924,16 @@ impl<'a> Kernel<'a> {
             .lock()
             .expect("attempt ledger")
             .charge(attempt, charged);
-        self.append(
-            NewEvent::new(
-                EventType::AttemptFailedV1,
-                serde_json::json!({ "error": error, "charged": charged }),
-            )
-            .node(node_id)
-            .attempt(attempt.to_string()),
+        let mut event = NewEvent::new(
+            EventType::AttemptFailedV1,
+            serde_json::json!({ "error": error, "charged": charged }),
         )
+        .node(node_id)
+        .attempt(attempt.to_string());
+        if let Some(raw_artifact) = raw_artifact {
+            event = event.referencing(vec![raw_artifact.to_string()]);
+        }
+        self.append(event)
     }
 
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
@@ -1309,6 +1312,7 @@ impl<'a> Kernel<'a> {
                         reservation.as_ref(),
                         &error,
                         charged,
+                        None,
                     )?;
                     return Err(error);
                 }
@@ -1325,6 +1329,7 @@ impl<'a> Kernel<'a> {
                                 reservation.as_ref(),
                                 &error,
                                 returned.cost_tokens,
+                                Some(&returned.raw_artifact),
                             )?;
                             retry_failures.push(format!(
                                 "attempt {attempt} returned an invalid result: {error}"
@@ -1373,6 +1378,7 @@ impl<'a> Kernel<'a> {
                                 reservation.as_ref(),
                                 &error,
                                 returned.cost_tokens,
+                                Some(&returned.raw_artifact),
                             )?;
                             return Err(error);
                         }
@@ -1645,9 +1651,9 @@ impl<'a> Kernel<'a> {
 }
 
 fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value, String> {
-    for (index, finding) in stage.findings.iter().cloned().enumerate() {
+    for (index, finding) in stage.findings.iter().enumerate() {
         finding
-            .into_report(index)
+            .validate(index)
             .map_err(|error| format!("ReviewerResult@1 is not admissible: {error}"))?;
     }
     let mut object = serde_json::to_value(stage)

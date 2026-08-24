@@ -35,7 +35,7 @@ pub use seal::{MutationSet, SealedSandbox};
 
 use std::path::{Path, PathBuf};
 
-use review_source_git::{Manifest, materialize_with_workers};
+use review_source_git::{Manifest, materialize};
 use review_store::Cas;
 
 /// What a provider genuinely enforces. Ordered: a stronger level satisfies a weaker requirement.
@@ -151,78 +151,36 @@ fn restore_writable_dirs(root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let mut level = vec![root.to_path_buf()];
     while !level.is_empty() {
-        let workers = review_parallel::worker_limit().min(level.len());
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let children = std::sync::Mutex::new(Vec::new());
-        std::thread::scope(|scope| {
-            for _ in 0..workers {
-                scope.spawn(|| {
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(dir) = level.get(index) else { return };
-                        let _permit = review_parallel::acquire_worker_permit();
-                        let _ =
-                            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
-                        let Ok(entries) = std::fs::read_dir(dir) else {
-                            continue;
-                        };
-                        let mut local = Vec::new();
-                        for entry in entries.flatten() {
-                            if entry
-                                .file_type()
-                                .map(|kind| kind.is_dir() && !kind.is_symlink())
-                                .unwrap_or(false)
-                            {
-                                local.push(entry.path());
-                            }
-                        }
-                        children
-                            .lock()
-                            .expect("writable directory children")
-                            .extend(local);
+        let children = review_parallel::try_map_owned(level, |dir| {
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+            let mut children = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if entry
+                        .file_type()
+                        .map(|kind| kind.is_dir() && !kind.is_symlink())
+                        .unwrap_or(false)
+                    {
+                        children.push(entry.path());
                     }
-                });
+                }
             }
-        });
-        level = children.into_inner().expect("writable directory children");
+            Ok::<_, ()>(children)
+        })
+        .expect("best-effort writable-directory walk is infallible");
+        level = children.into_iter().flatten().collect();
     }
 }
 
 #[cfg(not(unix))]
 fn restore_writable_dirs(_root: &Path) {}
 
-/// Restore directories already discovered by sealing without walking the tree a second time.
-#[cfg(unix)]
-pub(crate) fn restore_known_dirs(dirs: &[PathBuf]) {
-    use std::os::unix::fs::PermissionsExt;
-    if dirs.is_empty() {
-        return;
-    }
-    let workers = review_parallel::worker_limit().min(dirs.len());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(dir) = dirs.get(index) else { return };
-                    let _permit = review_parallel::acquire_worker_permit();
-                    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
-                }
-            });
-        }
-    });
-}
-
-#[cfg(not(unix))]
-pub(crate) fn restore_known_dirs(_dirs: &[PathBuf]) {}
-
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
 /// recreated (a clone is a fresh writable tree), symlinks are recreated as symlinks (they must
 /// not be dereferenced), and regular files are reflinked — sharing blocks until one side
 /// writes — with a plain copy where the filesystem does not support reflinks. Both preserve
 /// the source permissions, so the exec bit survives.
-fn clone_tree(src: &Path, dst: &Path, workers: usize) -> std::io::Result<()> {
+fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
     let mut files = Vec::new();
@@ -240,31 +198,13 @@ fn clone_tree(src: &Path, dst: &Path, workers: usize) -> std::io::Result<()> {
             }
         }
     }
-    let workers = workers.max(1).min(files.len().max(1));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| -> std::io::Result<()> {
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((from, to, is_symlink)) = files.get(index) else {
-                            return Ok(());
-                        };
-                        let _permit = review_parallel::acquire_worker_permit();
-                        if *is_symlink {
-                            symlink_raw(&std::fs::read_link(from)?, to)?;
-                        } else {
-                            reflink_copy::reflink_or_copy(from, to)?;
-                        }
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("sandbox clone worker")?;
+    review_parallel::try_for_each(&files, |(from, to, is_symlink)| {
+        if *is_symlink {
+            symlink_raw(&std::fs::read_link(from)?, to)?;
+        } else {
+            reflink_copy::reflink_or_copy(from, to)?;
         }
-        Ok(())
+        Ok::<_, std::io::Error>(())
     })
 }
 
@@ -281,7 +221,7 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 /// A snapshot materialized once, to be cloned per sandbox.
 ///
 /// Materialization prepares paths serially, then verifies each distinct CAS object once and
-/// writes independent content groups through the process-wide worker pool. A template is built
+/// writes independent content groups through the process-wide executor. A template is built
 /// exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which shares
 /// blocks instead of re-reading and re-writing the tree while keeping writes isolated.
 pub struct SandboxTemplate {
@@ -294,8 +234,7 @@ impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize_with_workers(manifest, cas, &root, review_parallel::worker_limit())
-            .map_err(std::io::Error::other)?;
+        materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
             manifest: manifest.clone(),
             root,
@@ -317,8 +256,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize_with_workers(manifest, cas, &root, review_parallel::worker_limit())
-            .map_err(std::io::Error::other)?;
+        materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
 
         let sandbox = Sandbox {
             root,
@@ -341,7 +279,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root, review_parallel::worker_limit())?;
+        clone_tree(&template.root, &root)?;
 
         let sandbox = Sandbox {
             root,
@@ -413,27 +351,8 @@ impl Sandbox {
             }
             seen_dirs.push(dir);
         }
-        let workers = review_parallel::worker_limit().min(files.len().max(1));
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    scope.spawn(|| -> std::io::Result<()> {
-                        loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some((path, mode)) = files.get(index) else {
-                                return Ok(());
-                            };
-                            let _permit = review_parallel::acquire_worker_permit();
-                            std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))?;
-                        }
-                    })
-                })
-                .collect();
-            for handle in handles {
-                handle.join().expect("read-only permission worker")?;
-            }
-            Ok::<(), std::io::Error>(())
+        review_parallel::try_for_each(&files, |(path, mode)| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))
         })?;
         for dir in seen_dirs.into_iter().rev() {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))?;
@@ -457,8 +376,8 @@ impl Sandbox {
     }
 
     pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, tempfile::TempDir) {
-        // Sealing discovers every populated directory while scanning and restores that exact set
-        // without a second walk. The residual `self` (emptied below) then drops as a no-op.
+        // Seal restores traversal permissions as it scans. The residual `self` (emptied below)
+        // then drops as a no-op.
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);

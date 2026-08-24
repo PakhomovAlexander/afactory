@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use review_source_git::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
 use review_store::canonical::blob_content_id_reader_with_buffer;
 
-use crate::{Mode, Sandbox, restore_known_dirs, restore_writable_dirs};
+use crate::{Mode, Sandbox, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,7 +69,6 @@ impl SealedSandbox {
 }
 
 struct CleanupDir {
-    plan: CleanupPlan,
     dir: Option<tempfile::TempDir>,
 }
 
@@ -77,36 +76,31 @@ impl Drop for CleanupDir {
     fn drop(&mut self) {
         let Some(dir) = self.dir.take() else { return };
         let temp_root = dir.keep();
-        remove_tree_parallel(&self.plan);
-        // The recorded plan is exact at seal time. This fallback handles a caller that writes
-        // through `root()` afterwards and any per-path removal failure without losing cleanup.
-        let _ = std::fs::remove_dir_all(temp_root);
+        remove_tree_parallel(&temp_root);
+        // The drop-time walk is an optimization. This fallback handles a caller that writes
+        // through `root()` concurrently and any per-path removal failure without losing cleanup.
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     let (root, baseline, mode, dir) = sandbox.into_parts();
-    let (final_manifest, mutations, directories, cleanup) =
-        match scan_and_diff(&root, &baseline, mode, review_parallel::worker_limit()) {
-            Ok(result) => result,
-            Err(error) => {
-                // A mutable reviewer may remove directory permissions. Restore best-effort before
-                // returning so TempDir cleanup still has a chance to remove the hostile tree.
-                restore_writable_dirs(&root);
-                return Err(error);
-            }
-        };
-    restore_known_dirs(&directories);
+    let (final_manifest, mutations) = match scan_and_diff(&root, &baseline) {
+        Ok(result) => result,
+        Err(error) => {
+            // A mutable reviewer may remove directory permissions. Restore best-effort before
+            // returning so TempDir cleanup still has a chance to remove the hostile tree.
+            restore_writable_dirs(&root);
+            return Err(error);
+        }
+    };
     Ok(SealedSandbox {
         root,
         mode,
         baseline,
         final_manifest,
         mutations,
-        _cleanup: CleanupDir {
-            plan: cleanup,
-            dir: Some(dir),
-        },
+        _cleanup: CleanupDir { dir: Some(dir) },
     })
 }
 
@@ -122,9 +116,7 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
 fn scan_and_diff(
     root: &Path,
     baseline: &Manifest,
-    mode: Mode,
-    worker_budget: usize,
-) -> Result<(Manifest, MutationSet, Vec<PathBuf>, CleanupPlan), std::io::Error> {
+) -> Result<(Manifest, MutationSet), std::io::Error> {
     let index: BTreeMap<&str, &Entry> = baseline
         .entries
         .iter()
@@ -135,15 +127,10 @@ fn scan_and_diff(
     let mut mutations = MutationSet::default();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut baseline_candidates = Vec::new();
-    let mut directories = Vec::new();
-    let mut cleanup = CleanupPlan::default();
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        cleanup.directories.push(dir.clone());
-        if mode == Mode::ReadOnly || directory_needs_restore(&dir)? {
-            directories.push(dir.clone());
-        }
+        restore_directory_for_scan(&dir)?;
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
             let meta = std::fs::symlink_metadata(&path)?;
@@ -151,7 +138,6 @@ fn scan_and_diff(
                 stack.push(path);
                 continue;
             }
-            cleanup.files.push(path.clone());
             // The manifest key must be capture's *encoding* of the raw path bytes, not
             // `to_string_lossy`, which collapses two distinct non-UTF-8 names to one key.
             let relative_path = path.strip_prefix(root).expect("walked path is under root");
@@ -182,14 +168,13 @@ fn scan_and_diff(
                         path,
                         relative,
                         kind,
-                        previous_content: previous.content.clone(),
-                        previous_kind: previous.kind,
+                        previous,
                     });
                 }
             }
         }
     }
-    for (entry, modified) in hash_baseline_candidates(&baseline_candidates, worker_budget)? {
+    for (entry, modified) in hash_baseline_candidates(baseline_candidates)? {
         if modified {
             mutations.modified.push(entry.path.clone());
         }
@@ -203,107 +188,94 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    Ok((Manifest::new(entries), mutations, directories, cleanup))
+    Ok((Manifest::new(entries), mutations))
 }
 
-#[derive(Default)]
-struct CleanupPlan {
-    files: Vec<PathBuf>,
-    directories: Vec<PathBuf>,
-}
-
-fn remove_tree_parallel(plan: &CleanupPlan) {
-    let workers = review_parallel::worker_limit().min(plan.files.len().max(1));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(path) = plan.files.get(index) else {
-                        return;
-                    };
-                    let _permit = review_parallel::acquire_worker_permit();
-                    let _ = std::fs::remove_file(path);
-                }
-            });
+fn remove_tree_parallel(root: &Path) {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let _ = restore_directory_for_scan(&directory);
+        directories.push(directory.clone());
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry
+                .file_type()
+                .map(|kind| kind.is_dir() && !kind.is_symlink())
+                .unwrap_or(false)
+            {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
         }
+    }
+    let _ = review_parallel::try_for_each_owned(files, |path| {
+        let _ = std::fs::remove_file(path);
+        Ok::<_, ()>(())
     });
-    let mut directories: Vec<&PathBuf> = plan.directories.iter().collect();
-    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    for directory in directories {
+    // The DFS records every child after its parent, so reverse order is already deepest-first.
+    for directory in directories.into_iter().rev() {
         let _ = std::fs::remove_dir(directory);
     }
 }
 
 #[cfg(unix)]
-fn directory_needs_restore(path: &Path) -> Result<bool, std::io::Error> {
+fn restore_directory_for_scan(path: &Path) -> Result<(), std::io::Error> {
     use std::os::unix::fs::PermissionsExt;
-    Ok(std::fs::symlink_metadata(path)?.permissions().mode() & 0o200 == 0)
+    let mode = std::fs::symlink_metadata(path)?.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn directory_needs_restore(_path: &Path) -> Result<bool, std::io::Error> {
-    Ok(false)
+fn restore_directory_for_scan(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
-struct BaselineCandidate {
+struct BaselineCandidate<'a> {
     path: PathBuf,
     relative: String,
     kind: EntryKind,
-    previous_content: String,
-    previous_kind: EntryKind,
+    previous: &'a Entry,
 }
 
 fn hash_baseline_candidates(
-    candidates: &[BaselineCandidate],
-    worker_budget: usize,
+    candidates: Vec<BaselineCandidate<'_>>,
 ) -> Result<Vec<(Entry, bool)>, std::io::Error> {
-    let workers = worker_budget.max(1).min(candidates.len().max(1));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| -> Result<Vec<(Entry, bool)>, std::io::Error> {
-                    let mut hashed = Vec::new();
-                    let mut buffer = [0u8; 64 * 1024];
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(candidate) = candidates.get(index) else {
-                            return Ok(hashed);
-                        };
-                        let _permit = review_parallel::acquire_worker_permit();
-                        let (content, size) = if candidate.kind == EntryKind::Symlink {
-                            let target = std::fs::read_link(&candidate.path)?;
-                            let bytes = path_bytes(&target);
-                            (digest_bytes(bytes), bytes.len() as u64)
-                        } else {
-                            blob_content_id_reader_with_buffer(
-                                std::fs::File::open(&candidate.path)?,
-                                &mut buffer,
-                            )?
-                        };
-                        let modified = candidate.previous_content != content
-                            || candidate.previous_kind != candidate.kind;
-                        hashed.push((
-                            Entry {
-                                path: candidate.relative.clone(),
-                                kind: candidate.kind,
-                                content,
-                                size,
-                            },
-                            modified,
-                        ));
-                    }
-                })
-            })
-            .collect();
-        let mut hashed = Vec::with_capacity(candidates.len());
-        for handle in handles {
-            hashed.extend(handle.join().expect("sandbox hash worker")?);
-        }
-        Ok(hashed)
-    })
+    review_parallel::try_map_owned_with(
+        candidates,
+        || vec![0u8; 64 * 1024],
+        |buffer, candidate| {
+            let (content, size) = if candidate.kind == EntryKind::Symlink {
+                let target = std::fs::read_link(&candidate.path)?;
+                let bytes = path_bytes(&target);
+                (digest_bytes(bytes), bytes.len() as u64)
+            } else {
+                blob_content_id_reader_with_buffer(
+                    std::fs::File::open(&candidate.path)?,
+                    buffer.as_mut_slice(),
+                )?
+            };
+            let modified =
+                candidate.previous.content != content || candidate.previous.kind != candidate.kind;
+            Ok((
+                Entry {
+                    path: candidate.relative,
+                    kind: candidate.kind,
+                    content,
+                    size,
+                },
+                modified,
+            ))
+        },
+    )
 }
 
 #[cfg(unix)]

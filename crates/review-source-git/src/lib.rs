@@ -18,4 +18,4 @@ pub mod materialize;
 pub use capture::{Capture, CaptureError, CaptureObserver, NoObserver, Snapshot, worktree_state};
 pub use git::{GitError, Repo, TreeChange, TreeChangeKind, TreeDiff, TreeId};
 pub use manifest::{Entry, EntryKind, Manifest, decode_path, digest_bytes, encode_path, fs_path};
-pub use materialize::{MaterializeError, materialize, materialize_with_workers};
+pub use materialize::{MaterializeError, materialize};

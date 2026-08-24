@@ -74,6 +74,26 @@ fn a_node_that_changed_nothing_seals_clean() {
     );
 }
 
+/// A mutable node may leave a directory unreadable. Seal restores traversal permissions before
+/// reading it, so a completed review is not discarded merely because its sandbox was hostile.
+#[test]
+#[cfg(unix)]
+fn an_unreadable_directory_does_not_prevent_sealing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, sandbox, _cas) = sandbox_of(Mode::EphemeralWrite);
+    let source = sandbox.root().join("src");
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let sealed = sandbox.seal().unwrap();
+    assert!(sealed.unchanged(), "directory modes are not file mutations");
+    let restored = std::fs::metadata(sealed.root().join("src"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(restored & 0o700, 0o700);
+}
+
 /// A diagnostic mutation left behind is visible, which is what makes the auto-apply rule
 /// checkable: the patch must equal the computed diff, so an unreverted probe fails it.
 #[test]
@@ -259,6 +279,10 @@ fn added_files_are_not_hashed() {
 #[test]
 #[ignore = "manual 5,000-file / 200 MiB sandbox measurement"]
 fn unchanged_large_tree_sandbox_measurement() {
+    eprintln!(
+        "shared infrastructure workers: {}",
+        review_parallel::worker_limit()
+    );
     let dir = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
     let mut entries = Vec::with_capacity(5_000);
@@ -324,6 +348,38 @@ fn unchanged_large_tree_sandbox_measurement() {
     let _repeated_template = review_sandbox::SandboxTemplate::materialize(&repeated, &cas).unwrap();
     eprintln!(
         "5,000 repeated-content files / 199 MiB: materialize {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
+}
+
+/// Manual growth-shape evidence: many distinct duplicated blobs must not become one resident
+/// cache. Run this test under `/usr/bin/time -l` to record maximum resident set size.
+#[test]
+#[ignore = "manual 256 MiB many-distinct-repeated materialization measurement"]
+fn many_distinct_repeated_blobs_have_bounded_resident_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+    let mut entries = Vec::with_capacity(256);
+    for index in 0_u64..128 {
+        let mut bytes = vec![0xC3; 1024 * 1024];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        let content = cas.put(&bytes).unwrap();
+        for copy in 0..2 {
+            entries.push(Entry {
+                path: format!("pairs/{index:03}-{copy}.bin"),
+                kind: EntryKind::File,
+                content: content.clone(),
+                size: bytes.len() as u64,
+            });
+        }
+    }
+    let manifest = Manifest::new(entries);
+    let started = std::time::Instant::now();
+    let template = review_sandbox::SandboxTemplate::materialize(&manifest, &cas).unwrap();
+    let sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite).unwrap();
+    assert!(sandbox.root().join("pairs/127-1.bin").is_file());
+    eprintln!(
+        "128 distinct duplicated 1 MiB blobs / 256 MiB output: materialize {:.3}s",
         started.elapsed().as_secs_f64()
     );
 }

@@ -871,17 +871,33 @@ fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
         .iter()
         .enumerate()
     {
-        let legacy: review_core::legacy::LegacyFinding = serde_json::from_value(report.clone())
-            .map_err(|error| {
+        if report.get("locations").is_some() {
+            let typed: review_core::FindingReport = serde::Deserialize::deserialize(report)
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "ReviewerResult@1 typed report {index} violates its payload contract: {error}"
+                    ))
+                })?;
+            typed.validate().map_err(|error| {
                 StoreError::Conflict(format!(
-                    "ReviewerResult@1 report {index} violates its payload contract: {error}"
+                    "ReviewerResult@1 typed report {index} is not admissible: {error}"
                 ))
             })?;
-        legacy.into_report(index).map_err(|error| {
-            StoreError::Conflict(format!(
-                "ReviewerResult@1 report is not admissible: {error}"
-            ))
-        })?;
+        } else {
+            let legacy: review_core::legacy::LegacyFinding = serde::Deserialize::deserialize(
+                report,
+            )
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "ReviewerResult@1 legacy report {index} violates its payload contract: {error}"
+                ))
+            })?;
+            legacy.validate(index).map_err(|error| {
+                StoreError::Conflict(format!(
+                    "ReviewerResult@1 legacy report is not admissible: {error}"
+                ))
+            })?;
+        }
     }
     for demand in value
         .get("benchmark_demands")
@@ -1899,6 +1915,39 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn reviewer_result_admission_accepts_both_bridge_report_shapes() {
+        let result = |report| {
+            json!({
+                "verdict": "request-changes",
+                "summary": null,
+                "reports": [report],
+                "benchmark_demands": [],
+                "disputes": [],
+            })
+        };
+        let legacy = json!({
+            "severity": "major",
+            "file": "src/a.rs",
+            "line": 1,
+            "title": "legacy",
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9,
+        });
+        let typed = json!({
+            "title": "typed",
+            "severity": "major",
+            "locations": [{"path": "src/a.rs", "line": 1}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9,
+        });
+
+        assert!(validate_reviewer_result(&result(legacy)).is_ok());
+        assert!(validate_reviewer_result(&result(typed)).is_ok());
     }
 
     #[test]

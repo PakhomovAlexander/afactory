@@ -117,14 +117,10 @@ impl std::fmt::Display for LegacyImportError {
 impl std::error::Error for LegacyImportError {}
 
 impl LegacyFinding {
-    /// Validate one legacy finding against the `FindingReport@1` contract and convert it.
-    /// The live ledger ingest calls this per finding so the contract governs what a run
-    /// actually produces, not only the acceptance corpus.
-    pub fn into_report(self, index: usize) -> Result<FindingReport, LegacyImportError> {
+    /// Validate one legacy-shaped report without cloning or converting its owned text.
+    pub fn validate(&self, index: usize) -> Result<(), LegacyImportError> {
         let err = |reason| LegacyImportError { index, reason };
-
-        let fix = self.fix.unwrap_or_default();
-        if fix.trim().is_empty() {
+        if self.fix.as_deref().is_none_or(|fix| fix.trim().is_empty()) {
             return Err(err(ImportReason::MissingFix));
         }
         if self.title.trim().is_empty() {
@@ -133,30 +129,51 @@ impl LegacyFinding {
         if self.body.trim().is_empty() {
             return Err(err(ImportReason::EmptyBody));
         }
-
-        let confidence = self.confidence.unwrap_or(0.0);
-        if !(0.0..=1.0).contains(&confidence) {
+        if self
+            .confidence
+            .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
+        {
             return Err(err(ImportReason::ConfidenceOutOfRange));
         }
+        let line = self
+            .line
+            .map(|line| u32::try_from(line).map_err(|_| err(ImportReason::InvalidLine)))
+            .transpose()?;
+        if line == Some(0) {
+            return Err(err(ImportReason::InvalidLine));
+        }
+        let path = self.file.trim();
+        if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
+            if line.is_some() {
+                return Err(err(ImportReason::InvalidLine));
+            }
+        } else if !crate::is_valid_repo_path(path) {
+            return Err(err(ImportReason::InvalidPath));
+        }
+        Ok(())
+    }
+
+    /// Validate one legacy finding against the `FindingReport@1` contract and convert it.
+    /// The live ledger ingest calls this per finding so the contract governs what a run
+    /// actually produces, not only the acceptance corpus.
+    pub fn into_report(self, index: usize) -> Result<FindingReport, LegacyImportError> {
+        let err = |reason| LegacyImportError { index, reason };
+
+        self.validate(index)?;
+
+        let fix = self.fix.unwrap_or_default();
+
+        let confidence = self.confidence.unwrap_or(0.0);
 
         let line = match self.line {
             None => None,
             Some(n) => Some(u32::try_from(n).map_err(|_| err(ImportReason::InvalidLine))?),
         };
-        if line == Some(0) {
-            return Err(err(ImportReason::InvalidLine));
-        }
 
         let path = self.file.trim();
         let locations = if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
-            if line.is_some() {
-                return Err(err(ImportReason::InvalidLine));
-            }
             Vec::new()
         } else {
-            if !crate::is_valid_repo_path(path) {
-                return Err(err(ImportReason::InvalidPath));
-            }
             vec![Location {
                 path: path.to_string(),
                 line,

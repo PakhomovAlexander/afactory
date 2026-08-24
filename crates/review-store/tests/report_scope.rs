@@ -175,7 +175,7 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
         title: "multi-location claim".into(),
         severity: Severity::Major,
         locations: vec![
-            Location::file("src/untouched.rs"),
+            Location::file("src/a-untouched.rs"),
             Location::file("src/new.rs"),
         ],
         body: "body".into(),
@@ -206,6 +206,7 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
         .unwrap();
 
     let finding = ledger.get("multi").unwrap();
+    assert_eq!(finding.identity_file, "src/a-untouched.rs");
     assert_eq!(finding.file, "src/new.rs");
     assert_eq!(finding.reports[0].scope, Some(ReportScope::In));
     assert_eq!(finding.reports[0].file, "src/new.rs");
@@ -262,6 +263,49 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
         convergence(&ledger, Severity::Major).verdict,
         Verdict::NotConverged
     );
+}
+
+#[test]
+fn a_readable_report_replaces_an_unreadable_first_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_whole_tree_round(&mut ledger, &cas, 1);
+
+    let unreadable_id = cas
+        .put_json(&serde_json::json!({
+            "title": "invalid placeholder source",
+            "severity": "blocker",
+            "locations": [{"path": "./src/a.rs"}],
+            "body": "invalid body",
+            "fix": "invalid fix",
+            "confidence": 1.0
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "claim",
+                    "round": 1,
+                    "source": "broken",
+                    "report_id": unreadable_id,
+                }),
+                vec![unreadable_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+    assert!(ledger.get("claim").unwrap().authority_diagnostic);
+
+    apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
+    let finding = ledger.get("claim").unwrap();
+    assert!(!finding.authority_diagnostic);
+    assert_eq!(finding.severity, Severity::Major);
+    assert_eq!(finding.title, "claim");
+    assert_eq!(finding.body, "body");
+    assert_eq!(finding.convergence_severity, Some(Severity::Major));
 }
 
 #[test]

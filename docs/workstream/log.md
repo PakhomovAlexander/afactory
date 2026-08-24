@@ -150,3 +150,31 @@ writable/read-only clone+permissions, 0.699/0.694 s seal, and 0.131/0.130 s tear
 and measurements pass; `scripts/verify.sh` and markdownlint pass over the full workspace. Because the
 first Campaign is durably exhausted, convergence now requires a fresh Campaign under the same
 unchanged policy, not a larger round cap or weaker gate.
+
+## 2026-08-24 — M2 fresh dogfood Campaign Round 1 corrections
+
+Fresh Campaign `m2-rename-scope-final` Round 1 spent 396,132 tokens and opened sixteen Reports,
+including the same unbounded repeated-content cache diagnosis from both reviewers. Repeated
+materialization now holds one duplicated digest at a time while scheduling that digest's
+occurrences independently; symlink containment skips the ancestor scan when no symlink exists and
+never climbs above the materialization root. The permanent ReviewerResult reader and schema name
+both legacy-flat and typed Report shapes, validate either without deep-cloning JSON, and retain the
+raw answer as a failed-attempt artifact reference when live admission refuses it.
+
+The Ledger keeps a bridge identity path separate from its Scope-selected presentation location,
+and a readable Report replaces an unreadable first-Report placeholder regardless of severity.
+Allocation-free canonical-base64 validation is cross-checked against the configured decoder over
+20,000 generated inputs. Sandbox scan restores owner traversal permissions before `read_dir`, drops
+its retained per-file cleanup plan, re-walks only during teardown, removes directories in reverse
+DFS order, and moves baseline path/digest data rather than cloning it.
+
+ADR-0018 replaces transferable, per-item worker permits and per-phase thread creation with one
+process-owned bounded executor initialized by `reviewctl`; nested and overlapping phases share its
+fourteen workers. The 5,000-entry / 199 MiB measurement recorded 2.126 s distinct-content and 2.448
+s repeated-content materialization, 0.712/1.121 s writable/read-only clone+permissions, 0.982/0.987
+s seal, and 0.197/0.231 s teardown. The current drop-time re-walk remains slightly faster than the
+0.203/0.270 s serial baseline without retaining file paths for the sealed sandbox's lifetime. A
+separate 128-distinct-pairs / 256 MiB output workload materialized in 5.567 s; `/usr/bin/time -l`
+reported 238,354,432 bytes maximum command RSS and a 37,421,608-byte Darwin peak memory footprint.
+Affected tests, full-workspace clippy, `scripts/verify.sh`, and byte-identical fixture reproduction
+pass.

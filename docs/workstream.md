@@ -1,7 +1,8 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2's first dogfood Campaign exhausted after Round 4 opened 12
-further claims; fix its Ledger and converge a fresh unchanged-policy Campaign before M3.1.
+**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed; fresh
+Campaign Round 1 opened 16 further claims whose corrections are locally implemented and under
+verification. Converge that unchanged-policy Campaign before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -10,7 +11,7 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
+current contracts. The corrected roadmap has M0–M9 and eighteen ADR records; ADR-0003 and ADR-0004
 are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood; its first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
@@ -126,11 +127,13 @@ contexts, run a real inference smoke, fence exact continuations, and charge fail
 dispatch. Change Sets include both rename endpoints, so Reports at either path project `in`
 without rewriting the existing Finding key. Dogfood Rounds 1–3 produced 33 Findings whose
 corrections are committed and fully verified. Round 4 retained all 33 as fixed, opened twelve
-further claims, and exhausted Campaign `m2-rename-scope`. Their corrections are locally implemented
-and `scripts/verify.sh`, markdownlint, affected tests, and measurements pass. Commit and resolve the
-exhausted Ledger, then open a fresh Campaign under the unchanged two-clean-Round/four-Round policy.
-Only then resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
-Subject, authority, isolation, and verification prerequisites.
+further claims, and exhausted Campaign `m2-rename-scope`; all 45 are fixed and its Round 4
+corrections are committed and verified. Fresh Campaign `m2-rename-scope-final` Round 1 spent 396,132
+tokens and opened sixteen further claims. Their corrections are locally implemented; affected tests,
+measurements, and `scripts/verify.sh` pass. Commit, resolve the fresh Ledger, and continue under the
+unchanged two-clean-Round/four-Round policy. Only then resume M3.1. Continue in milestone order; do
+not pull Proposal or scatter work forward past Subject, authority, isolation, and verification
+prerequisites.
 
 ## Risks / notes
 

@@ -44,3 +44,5 @@ options you rejected and why — that is the part future-you needs.
   operation](0016-provider-preflight-is-a-fenced-operation.md)
 - [0017 — Record rename truncation and continue the diff
   Subject](0017-record-rename-truncation-and-continue.md)
+- [0018 — Share one bounded infrastructure
+  executor](0018-share-one-bounded-infrastructure-executor.md)

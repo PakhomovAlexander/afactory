@@ -13,11 +13,20 @@ use review_runner::parse_stage_output;
 use serde_json::{Value, json};
 
 fn validator(name: &str) -> jsonschema::Validator {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas")
-        .join(name);
+    let schema_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let path = schema_root.join(name);
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    jsonschema::validator_for(&schema).unwrap()
+    let finding_report: Value = serde_json::from_str(
+        &std::fs::read_to_string(schema_root.join("finding-report-v1.json")).unwrap(),
+    )
+    .unwrap();
+    jsonschema::options()
+        .with_resource(
+            "urn:review-kernel:schema:finding-report:1",
+            jsonschema::Resource::from_contents(finding_report).unwrap(),
+        )
+        .build(&schema)
+        .unwrap()
 }
 
 fn assert_valid(name: &str, instance: &Value) {

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use review_check::{Arg, CheckDefinition, Command};
-use review_core::LegacyStageOutput;
+use review_core::{EventType, LegacyStageOutput};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
 use review_pipeline::{RunVerdict, run_verdict};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
@@ -433,6 +433,20 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
         .collect();
     assert_eq!(alpha_attempts.len(), 2);
     assert!(run_verdict(&report, &kernel.convergence(ConvergencePolicy::default())).passed());
+    drop(kernel);
+
+    let failed = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == EventType::AttemptFailedV1)
+        .expect("the inadmissible first answer records a failed attempt");
+    assert!(failed.artifact_refs.iter().any(|artifact| {
+        run.cas
+            .get(artifact)
+            .is_ok_and(|bytes| bytes == b"invalid answer")
+    }));
 }
 
 /// Exhaustion by repeated hangs: with the run cap equal to two reservations, a reviewer that

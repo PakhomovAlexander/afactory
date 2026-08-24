@@ -1040,7 +1040,7 @@ fn prior_rows(
                 "last_seen_round": finding.last_seen_round,
             });
             let object = row.as_object_mut().expect("prior row is an object");
-            let (file, location_unrecorded) = prior_location(&finding.file);
+            let (file, location_unrecorded) = prior_location(&finding.identity_file);
             object.insert("file".into(), file);
             if location_unrecorded {
                 object.insert("location_unrecorded".into(), serde_json::Value::Bool(true));

@@ -19,7 +19,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 16] = [
+const SCHEMAS: [&str; 17] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -30,6 +30,7 @@ const SCHEMAS: [&str; 16] = [
     "patch-proposal-v1.json",
     "provider-operation-transition-v1.json",
     "reviewer-package-v1.json",
+    "reviewer-result-v1.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
@@ -47,7 +48,12 @@ fn schema(name: &str) -> Value {
 }
 
 fn validator(name: &str) -> jsonschema::Validator {
-    jsonschema::validator_for(&schema(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+    let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
+        .expect("FindingReport@1 is a schema resource");
+    jsonschema::options()
+        .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
+        .build(&schema(name))
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 fn assert_valid(name: &str, instance: &Value) {
@@ -76,6 +82,52 @@ fn every_schema_is_a_valid_json_schema() {
     for name in SCHEMAS {
         let _ = validator(name);
     }
+}
+
+#[test]
+fn reviewer_result_schema_names_both_bridge_report_shapes() {
+    let result = |report| {
+        json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [report],
+            "benchmark_demands": [],
+            "disputes": [],
+        })
+    };
+    assert_valid(
+        "reviewer-result-v1.json",
+        &result(json!({
+            "severity": "major",
+            "file": "src/a.rs",
+            "line": 1,
+            "title": "legacy",
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        })),
+    );
+    assert_valid(
+        "reviewer-result-v1.json",
+        &result(json!({
+            "title": "typed",
+            "severity": "major",
+            "locations": [{"path": "src/a.rs"}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        })),
+    );
+    assert_invalid(
+        "reviewer-result-v1.json",
+        &result(json!({"title": "no shape discriminator"})),
+        "a report must be legacy-flat or typed",
+    );
+    assert_invalid(
+        "reviewer-result-v1.json",
+        &result(json!({"file": "src/a.rs", "locations": []})),
+        "a report cannot claim both bridge shapes",
+    );
 }
 
 #[test]

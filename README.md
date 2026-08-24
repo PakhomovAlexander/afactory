@@ -40,7 +40,7 @@ conventions for hub-owned Rust.
 schemas/     the language-neutral contracts (JSON Schema 2020-12)
 crates/
   review-core/   the Rust view of those contracts, plus the legacy importer
-  review-parallel/ configurable, re-entrant worker permits shared by
+  review-parallel/ configurable bounded executor shared by
                  filesystem-heavy infrastructure
   review-store/  canonical identity, the artifact CAS, the append-only log,
                  and the rebuildable Findings Ledger projection

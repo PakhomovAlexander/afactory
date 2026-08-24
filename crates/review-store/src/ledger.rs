@@ -143,6 +143,8 @@ pub enum TransitionKind {
     Reopened,
     /// Severity adopted in place on a declined finding; status deliberately unchanged.
     AdoptedWhileDeclined,
+    /// Readable claim content replaced an authority-failure placeholder for the same key.
+    AuthorityRecovered,
     Resolved(Status),
 }
 
@@ -156,6 +158,9 @@ pub struct Finding {
     pub news_round: u32,
     pub last_seen_round: u32,
     pub source: String,
+    /// Path used by the legacy path/title bridge key. Stable even when Scope selects another
+    /// location for presentation from a multi-location Report.
+    pub identity_file: String,
     pub file: String,
     pub line: Option<i64>,
     pub title: String,
@@ -163,6 +168,9 @@ pub struct Finding {
     /// The currently adopted remedy. Absent only for artifact-less legacy imports.
     pub fix: Option<String>,
     pub confidence: Option<f64>,
+    /// The claim content is an actionable placeholder for unreadable Report authority. The first
+    /// readable Report for this key replaces it regardless of relative severity.
+    pub authority_diagnostic: bool,
     /// Aggregate of active Report claims for presentation, never Scope stamped onto identity.
     /// `None` means exact Scope authority was unavailable.
     pub convergence_scope: Option<ReportScope>,
@@ -375,6 +383,7 @@ impl Ledger {
         };
         let severity = report.severity;
         let unreadable = report.unreadable;
+        let identity_file = report.identity_file();
         let (scope, selected_location) = self.report_scope(round, &report.location);
         report.select_location(selected_location);
         let attached = AttachedReport {
@@ -388,8 +397,8 @@ impl Ledger {
         };
 
         // Authority failure evidence must not replace readable claim content. If this key has
-        // readable history, retain the diagnostic attachment without adopting it; if it does not,
-        // the authority-failure list itself blocks convergence without inventing a Finding.
+        // readable history, retain only the diagnostic attachment. A first unreadable Report gets
+        // an actionable placeholder that the first readable Report replaces unconditionally.
         if unreadable && self.findings.contains_key(&key) {
             if let Some(existing) = self.findings.get_mut(&key) {
                 existing.reports.push(attached);
@@ -409,12 +418,14 @@ impl Ledger {
                     news_round: round,
                     last_seen_round: round,
                     source,
+                    identity_file,
                     file: report.file,
                     line: report.line,
                     title: report.title,
                     body: report.body,
                     fix: report.fix,
                     confidence: report.confidence,
+                    authority_diagnostic: unreadable,
                     convergence_scope: scope,
                     convergence_severity,
                     scoped_news_round: convergence_severity.map(|_| round),
@@ -429,12 +440,40 @@ impl Ledger {
             return Ok(());
         };
 
+        // Every report is kept, whatever the projection then decides about it.
+        existing.reports.push(attached);
+
+        if existing.authority_diagnostic {
+            existing.authority_diagnostic = false;
+            existing.last_seen_round = round;
+            let reopened = existing.status == Status::Fixed;
+            if reopened {
+                existing.status = Status::Open;
+            }
+            if !existing.status.is_declined() {
+                existing.news_round = round;
+            }
+            adopt(existing, &report, &source);
+            existing.convergence_scope = scope;
+            existing.convergence_severity = (scope != Some(ReportScope::Out)).then_some(severity);
+            existing.scoped_news_round = existing.convergence_severity.map(|_| round);
+            existing.history.push(Transition {
+                round,
+                kind: if reopened {
+                    TransitionKind::Reopened
+                } else {
+                    TransitionKind::AuthorityRecovered
+                },
+                note: Some(format!(
+                    "authority recovered: readable Report supplied by {source} in round {round}"
+                )),
+            });
+            return Ok(());
+        }
+
         let previous_scoped_severity = existing.convergence_severity;
         let scoped_news = scope != Some(ReportScope::Out)
             && previous_scoped_severity.is_none_or(|previous| severity.rank() > previous.rank());
-
-        // Every report is kept, whatever the projection then decides about it.
-        existing.reports.push(attached);
 
         let higher = severity.rank() > existing.severity.rank();
         let kind = if existing.status.is_declined() {
@@ -748,6 +787,19 @@ impl ReportLocation {
 }
 
 impl ReportProjection {
+    fn identity_file(&self) -> String {
+        match &self.location {
+            ReportLocation::ChangeWide => "(change-wide)".to_string(),
+            ReportLocation::Paths(locations) => locations
+                .iter()
+                .map(|location| location.path.as_str())
+                .min()
+                .unwrap_or(self.file.as_str())
+                .to_string(),
+            ReportLocation::Unrecorded => self.file.clone(),
+        }
+    }
+
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
         if value.get("locations").is_some() {
             let report: review_core::FindingReport = serde_json::from_value(value.clone())

@@ -174,6 +174,7 @@ fn valid_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::validate_canonical_base64;
+    use base64::{Engine, engine::general_purpose::STANDARD};
 
     #[test]
     fn canonical_base64_is_checked_without_decoding_the_patch() {
@@ -182,6 +183,29 @@ mod tests {
         }
         for invalid in ["Z", "Zh==", "Zm9=", "Zm=v", "Zm9v="] {
             assert!(validate_canonical_base64(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn allocation_free_validation_matches_the_canonical_engine() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for sample in 0..20_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let len = (state as usize) % 96;
+            let mut candidate = String::with_capacity(len);
+            for _ in 0..len {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                candidate.push(char::from((state >> 32) as u8 & 0x7f));
+            }
+            assert_eq!(
+                validate_canonical_base64(&candidate).is_ok(),
+                STANDARD.decode(&candidate).is_ok(),
+                "validator drift on generated sample {sample}: {candidate:?}"
+            );
         }
     }
 }

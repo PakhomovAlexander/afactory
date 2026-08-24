@@ -1,23 +1,15 @@
-//! Shared worker permits for filesystem-heavy infrastructure.
+//! One bounded executor shared by filesystem-heavy Review Kernel infrastructure.
 //!
-//! The limit may be initialized once by an embedder before any work starts. Otherwise the first
-//! use adopts `available_parallelism`. Permits are re-entrant per thread: nested infrastructure
-//! work does not deadlock a one-core process or consume a second slot.
+//! The CLI initializes the executor once from the host's available parallelism. Library-only
+//! embedders may do the same before first use; otherwise the first operation adopts that default.
+//! Concurrent and nested phases submit work to the same worker threads, so scheduler concurrency
+//! does not multiply OS threads and no transferable RAII permit can corrupt capacity accounting.
 
-use std::cell::Cell;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::OnceLock;
 
-struct WorkerPool {
-    available: Mutex<usize>,
-    changed: Condvar,
-    limit: usize,
-}
+use rayon::prelude::*;
 
-static POOL: OnceLock<WorkerPool> = OnceLock::new();
-
-thread_local! {
-    static HELD_PERMITS: Cell<usize> = const { Cell::new(0) };
-}
+static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 fn default_limit() -> usize {
     std::thread::available_parallelism()
@@ -25,26 +17,26 @@ fn default_limit() -> usize {
         .unwrap_or(1)
 }
 
-fn configured_pool(limit: usize) -> WorkerPool {
-    let limit = limit.max(1);
-    WorkerPool {
-        available: Mutex::new(limit),
-        changed: Condvar::new(),
-        limit,
-    }
+fn configured_pool(limit: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(limit.max(1))
+        .stack_size(2 * 1024 * 1024)
+        .thread_name(|index| format!("review-worker-{index}"))
+        .build()
+        .expect("a positive Review Kernel worker limit builds")
 }
 
-fn pool() -> &'static WorkerPool {
+fn pool() -> &'static rayon::ThreadPool {
     POOL.get_or_init(|| configured_pool(default_limit()))
 }
 
-/// Returned when an embedder tries to configure the pool after its first use.
+/// Returned when an embedder tries to configure the executor after its first use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlreadyInitialized;
 
 impl std::fmt::Display for AlreadyInitialized {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("worker limit is already initialized")
+        formatter.write_str("worker executor is already initialized")
     }
 }
 
@@ -56,61 +48,95 @@ pub fn init_worker_limit(limit: usize) -> Result<(), AlreadyInitialized> {
         .map_err(|_| AlreadyInitialized)
 }
 
-/// Maximum active worker items across participating infrastructure phases.
+/// Maximum active worker tasks across all participating infrastructure phases.
 pub fn worker_limit() -> usize {
-    pool().limit
+    pool().current_num_threads()
 }
 
-/// A permit for one active work item.
-pub struct WorkerPermit {
-    pool: &'static WorkerPool,
+/// Apply a fallible operation to borrowed items on the shared executor.
+pub fn try_for_each<T, E, F>(items: &[T], operation: F) -> Result<(), E>
+where
+    T: Sync,
+    E: Send,
+    F: Fn(&T) -> Result<(), E> + Send + Sync,
+{
+    pool().install(|| items.par_iter().try_for_each(operation))
 }
 
-/// Wait for one process-wide worker slot.
-///
-/// Re-entrant acquisition on a thread that already holds a permit is a no-op against global
-/// capacity. The slot is returned when the last permit held by that thread is dropped.
-pub fn acquire_worker_permit() -> WorkerPermit {
-    let pool = pool();
-    let already_held = HELD_PERMITS.with(|held| {
-        let count = held.get();
-        held.set(count + 1);
-        count > 0
-    });
-    if !already_held {
-        let mut available = pool.available.lock().expect("worker permit pool");
-        while *available == 0 {
-            available = pool.changed.wait(available).expect("worker permit pool");
-        }
-        *available -= 1;
-    }
-    WorkerPermit { pool }
+/// Apply a fallible operation to owned items on the shared executor.
+pub fn try_for_each_owned<T, E, F>(items: Vec<T>, operation: F) -> Result<(), E>
+where
+    T: Send,
+    E: Send,
+    F: Fn(T) -> Result<(), E> + Send + Sync,
+{
+    pool().install(|| items.into_par_iter().try_for_each(operation))
 }
 
-impl Drop for WorkerPermit {
-    fn drop(&mut self) {
-        let release = HELD_PERMITS.with(|held| {
-            let count = held.get();
-            debug_assert!(count > 0, "dropping an unheld worker permit");
-            held.set(count.saturating_sub(1));
-            count == 1
-        });
-        if release {
-            let mut available = self.pool.available.lock().expect("worker permit pool");
-            *available += 1;
-            self.pool.changed.notify_one();
-        }
-    }
+/// Transform owned items on the shared executor, retaining indexed input order.
+pub fn try_map_owned<T, R, E, F>(items: Vec<T>, operation: F) -> Result<Vec<R>, E>
+where
+    T: Send,
+    R: Send,
+    E: Send,
+    F: Fn(T) -> Result<R, E> + Send + Sync,
+{
+    pool().install(|| items.into_par_iter().map(operation).collect())
+}
+
+/// Transform owned items with worker-local reusable state on the shared executor.
+pub fn try_map_owned_with<T, S, R, E, I, F>(
+    items: Vec<T>,
+    initialize: I,
+    operation: F,
+) -> Result<Vec<R>, E>
+where
+    T: Send,
+    S: Send,
+    R: Send,
+    E: Send,
+    I: Fn() -> S + Send + Sync,
+    F: Fn(&mut S, T) -> Result<R, E> + Send + Sync,
+{
+    pool().install(|| {
+        items
+            .into_par_iter()
+            .map_init(initialize, operation)
+            .collect()
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
     #[test]
-    fn nested_acquisition_on_one_thread_is_reentrant() {
-        let outer = super::acquire_worker_permit();
-        let inner = super::acquire_worker_permit();
-        drop(outer);
-        drop(inner);
-        let _again = super::acquire_worker_permit();
+    fn nested_work_reuses_the_same_executor() {
+        let outer = vec![1, 2, 3];
+        super::try_for_each(&outer, |_| {
+            super::try_for_each(&[4, 5], |_| Ok::<_, ()>(()))
+        })
+        .unwrap();
+        assert_eq!(super::worker_limit(), super::pool().current_num_threads());
+    }
+
+    #[test]
+    fn concurrent_phases_use_only_the_shared_worker_threads() {
+        let threads = Mutex::new(HashSet::new());
+        let items = vec![(); super::worker_limit() * 8];
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    super::try_for_each(&items, |_| {
+                        threads.lock().unwrap().insert(std::thread::current().id());
+                        std::thread::yield_now();
+                        Ok::<_, ()>(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert!(threads.into_inner().unwrap().len() <= super::worker_limit());
     }
 }

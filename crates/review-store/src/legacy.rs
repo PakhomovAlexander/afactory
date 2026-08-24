@@ -296,9 +296,11 @@ impl<'a> Ingest<'a> {
                     Some(TransitionKind::Escalated) => summary.escalated += 1,
                     // `AdoptedWhileDeclined` counts as a duplicate in the harness's tally, even
                     // though it adopts the higher severity — the entry did not become actionable.
-                    Some(TransitionKind::Duplicate | TransitionKind::AdoptedWhileDeclined) => {
-                        summary.dup += 1
-                    }
+                    Some(
+                        TransitionKind::Duplicate
+                        | TransitionKind::AdoptedWhileDeclined
+                        | TransitionKind::AuthorityRecovered,
+                    ) => summary.dup += 1,
                     _ => {}
                 }
             }

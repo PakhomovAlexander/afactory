@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 
 use review_store::Cas;
 
@@ -75,18 +74,6 @@ pub fn materialize(
     cas: &Cas,
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
-    let workers = review_parallel::worker_limit();
-    materialize_with_workers(manifest, cas, root, workers)
-}
-
-/// Materialize with an explicit per-phase worker cap. Every worker also acquires a process-wide
-/// permit, so concurrent phases share actual CPU capacity without throttling a lone phase.
-pub fn materialize_with_workers(
-    manifest: &Manifest,
-    cas: &Cas,
-    root: impl AsRef<Path>,
-    workers: usize,
-) -> Result<(), MaterializeError> {
     let root = root.as_ref();
     fs::create_dir_all(root)?;
 
@@ -118,20 +105,24 @@ pub fn materialize_with_workers(
         .filter(|(_, entry)| entry.kind == EntryKind::Symlink)
         .map(|(target, _)| target.as_path())
         .collect();
-    if let Some((_, entry)) = targets.iter().find(|(target, _)| {
-        target
-            .ancestors()
-            .skip(1)
-            .any(|ancestor| symlinks.contains(ancestor))
-    }) {
-        return Err(MaterializeError::Escape {
-            path: entry.path.clone(),
-        });
+    if !symlinks.is_empty() {
+        if let Some((_, entry)) = targets.iter().find(|(target, _)| {
+            target
+                .ancestors()
+                .skip(1)
+                .take_while(|ancestor| *ancestor != root)
+                .any(|ancestor| symlinks.contains(ancestor))
+        }) {
+            return Err(MaterializeError::Escape {
+                path: entry.path.clone(),
+            });
+        }
     }
 
-    // One verified CAS read per distinct digest. Repeated bytes are cached once, then every
-    // occurrence becomes an independent work item; singleton digests remain bounded-memory tasks
-    // that read and write together.
+    // One verified CAS read per distinct digest. Singleton digests read and write in parallel.
+    // Repeated digests are loaded one group at a time and their occurrences write in parallel,
+    // retaining occurrence-level concurrency without making resident memory the sum of every
+    // duplicated blob in a candidate-controlled manifest.
     let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for (target, entry) in targets {
         grouped
@@ -140,94 +131,28 @@ pub fn materialize_with_workers(
             .push((target, entry.kind));
     }
     let groups: Vec<_> = grouped.into_iter().collect();
-    let repeated: Vec<usize> = groups
+    let singletons: Vec<_> = groups
         .iter()
-        .enumerate()
-        .filter_map(|(index, (_, targets))| (targets.len() > 1).then_some(index))
+        .filter_map(|(content, targets)| (targets.len() == 1).then_some((*content, &targets[0])))
         .collect();
-    let loaded: Vec<OnceLock<Result<Arc<Vec<u8>>, String>>> =
-        (0..groups.len()).map(|_| OnceLock::new()).collect();
-    let load_workers = workers.max(1).min(repeated.len().max(1));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..load_workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(group_index) = repeated.get(index).copied() else {
-                            return;
-                        };
-                        let _permit = review_parallel::acquire_worker_permit();
-                        let bytes = cas
-                            .get(groups[group_index].0)
-                            .map(Arc::new)
-                            .map_err(|error| error.to_string());
-                        loaded[group_index]
-                            .set(bytes)
-                            .expect("one loader owns each repeated digest");
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("materialize CAS loader");
-        }
-    });
+    review_parallel::try_for_each(&singletons, |(content, (target, kind))| {
+        let bytes = cas
+            .get(content)
+            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+        write_entry(&bytes, target, *kind)?;
+        Ok::<_, MaterializeError>(())
+    })?;
 
-    enum Task<'a> {
-        Singleton(&'a str, &'a Path, EntryKind),
-        Repeated(Arc<Vec<u8>>, &'a Path, EntryKind),
+    for (content, targets) in groups.iter().filter(|(_, targets)| targets.len() > 1) {
+        let bytes = cas
+            .get(content)
+            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+        review_parallel::try_for_each(targets, |(target, kind)| {
+            write_entry(&bytes, target, *kind)?;
+            Ok::<_, MaterializeError>(())
+        })?;
     }
-    let mut tasks = Vec::with_capacity(manifest.entries.len());
-    for (index, (content, targets)) in groups.iter().enumerate() {
-        if targets.len() == 1 {
-            let (target, kind) = &targets[0];
-            tasks.push(Task::Singleton(content, target, *kind));
-        } else {
-            let bytes = loaded[index]
-                .get()
-                .expect("repeated digest was loaded")
-                .as_ref()
-                .map_err(|error| MaterializeError::Cas(error.clone()))?;
-            for (target, kind) in targets {
-                tasks.push(Task::Repeated(bytes.clone(), target, *kind));
-            }
-        }
-    }
-
-    let workers = workers.max(1).min(tasks.len().max(1));
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| -> Result<(), MaterializeError> {
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(task) = tasks.get(index) else {
-                            return Ok(());
-                        };
-                        let _permit = review_parallel::acquire_worker_permit();
-                        match task {
-                            Task::Singleton(content, target, kind) => {
-                                let bytes = cas
-                                    .get(content)
-                                    .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-                                write_entry(&bytes, target, *kind)?;
-                            }
-                            Task::Repeated(bytes, target, kind) => {
-                                write_entry(bytes, target, *kind)?;
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("materialize worker")?;
-        }
-        Ok(())
-    })
+    Ok(())
 }
 
 fn write_entry(bytes: &[u8], target: &Path, kind: EntryKind) -> std::io::Result<()> {
