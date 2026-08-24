@@ -1,7 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0, M1, and M2.1-M2.5 are complete. Repository extraction, private release, Project
-Hub external cutover, and bounded resumable Provider Operations are complete. Resume M2.6.
+**Status:** M0 and M1 are complete. M2.1-M2.6 implementation is complete and `make check` is
+green; complete the M2 dogfood Campaign before resuming M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -11,9 +11,9 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0, M1, and M2.1-M2.5 are complete. The repository/release migration and Project
-Hub external cutover and the bounded Provider Operation dogfood slice are also complete. Work
-resumes at M2.6 and then continues in milestone order.
+are superseded. M0, M1, and M2.1-M2.6 implementation are complete. The repository/release
+migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
+complete. The M2 dogfood Campaign must converge before work resumes at M3.1.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -88,7 +88,7 @@ identity, authority, isolation, and verification prerequisites exist.
       persisted; legacy replay remains pinned by fixtures.
 - [x] M1 — `af review show` prints every attached report whole; `ledger --long` carries body and
       fix; `report --format md` emits what SKILL.md §5 asks the agent to produce.
-- [ ] M2 — Campaign authority and Base are pinned before candidate capture; committed and
+- [x] M2 — Campaign authority and Base are pinned before candidate capture; committed and
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses
       `diff`; renames do not alter canonical Finding identity.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
@@ -111,7 +111,7 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0, M1, and M2.1-M2.5 are complete. Campaigns now publish one immutable
+M0, M1, and M2.1-M2.6 implementation are complete. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,
 publish `Subject@1` and Subject-bound Round inputs, reuse incomplete Round inputs, and require an
 explicit epoch supersession to capture a changed head. The Git adapter now resolves opaque tree
@@ -121,8 +121,10 @@ into every diff reviewer. Ledger replay now derives each attached Report's `in`/
 its exact Round Subject; convergence excludes wholly out-of-set Findings and fails closed on
 legacy `unknown` evidence. Bounded, resumable Provider Operations now probe explicit machine-local
 contexts, run a real inference smoke, fence exact continuations, and charge failed work before
-dispatch. Resume M2.6. Continue in milestone order; do not pull Proposal or scatter work
-forward past Subject, authority, isolation, and verification prerequisites.
+dispatch. Change Sets include both rename endpoints, so Reports at either path project `in`
+without rewriting the existing Finding key. `make check` is green. Run the M2 dogfood Campaign
+to convergence, then resume M3.1. Continue in milestone order; do not pull Proposal or scatter
+work forward past Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes
 

@@ -57,3 +57,12 @@ transient failures receive at most one automatic retry; repeated normalized fail
 circuit. Persistent state is a closed, versioned schema containing only IDs, classification,
 fingerprint, timing, spend, next action, and a non-secret continuation handle. Provider labels
 remain outside pinned Campaign authority. M2.6 is next.
+
+## 2026-08-24 — M2.6 rename-aware Report Scope
+
+Closed the acceptance gap across the existing M2.3-M2.5 production path: the typed Git diff
+publishes both sides of a rename in `ChangeSet@1.changed_paths`, Change Set validation requires
+both endpoints, and Ledger replay consequently projects Reports against either path as `in`.
+Acceptance coverage also proves an unrelated path remains `out` and replay does not rewrite an
+existing legacy Finding key. No persisted contract changed. `make check` passed, including
+fixture reproduction; the M2 dogfood Campaign is the gate before M3.1.

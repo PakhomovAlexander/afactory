@@ -80,6 +80,25 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
         diff.diff_policy,
         review_source_git::git::TREE_DIFF_POLICY_VERSION
     );
+
+    let change_set = diff
+        .change_set(
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        )
+        .unwrap();
+    assert_eq!(
+        change_set.changed_paths,
+        [
+            "modified.txt",
+            "new-name.txt",
+            "odd\t\"name.txt",
+            "old-name.txt"
+        ]
+    );
+    assert_eq!(change_set.renames.len(), 1);
+    assert_eq!(change_set.renames[0].old_path, "old-name.txt");
+    assert_eq!(change_set.renames[0].new_path, "new-name.txt");
 }
 
 #[cfg(unix)]

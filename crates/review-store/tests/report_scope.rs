@@ -1,4 +1,6 @@
-use review_core::{ChangeSetV1, EventType, RoundStartedPayloadV1, RunEvent, Severity, SubjectV1};
+use review_core::{
+    ChangeSetV1, EventType, PathRenameV1, RoundStartedPayloadV1, RunEvent, Severity, SubjectV1,
+};
 use review_store::{Cas, ConvergencePolicy, Ledger, ReportScope, Status, Verdict};
 
 fn digest(byte: char) -> String {
@@ -26,13 +28,23 @@ fn event(
 }
 
 fn apply_diff_round(ledger: &mut Ledger, cas: &Cas, round: u32, paths: &[&str]) {
+    apply_diff_round_with_renames(ledger, cas, round, paths, Vec::new());
+}
+
+fn apply_diff_round_with_renames(
+    ledger: &mut Ledger,
+    cas: &Cas,
+    round: u32,
+    paths: &[&str],
+    renames: Vec<PathRenameV1>,
+) {
     let base = digest('a');
     let head = digest('b');
     let change_set = ChangeSetV1::new(
         &base,
         &head,
         paths.iter().map(|path| (*path).to_string()).collect(),
-        Vec::new(),
+        renames,
         b"",
         "git version test",
         "test-policy-v1",
@@ -46,6 +58,65 @@ fn apply_diff_round(ledger: &mut Ledger, cas: &Cas, round: u32, paths: &[&str]) 
         .put_json(&serde_json::to_value(subject).unwrap())
         .unwrap();
     apply_round(ledger, cas, round, subject_id);
+}
+
+#[test]
+fn rename_endpoints_are_in_scope_without_rekeying_the_finding() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round_with_renames(
+        &mut ledger,
+        &cas,
+        1,
+        &["src/new.rs", "src/old.rs"],
+        vec![PathRenameV1 {
+            old_path: "src/old.rs".into(),
+            new_path: "src/new.rs".into(),
+            similarity: 100,
+        }],
+    );
+    apply_report(
+        &mut ledger,
+        &cas,
+        "stable-legacy-key",
+        1,
+        Severity::Major,
+        "src/old.rs",
+    );
+    apply_report(
+        &mut ledger,
+        &cas,
+        "stable-legacy-key",
+        1,
+        Severity::Major,
+        "src/new.rs",
+    );
+    apply_report(
+        &mut ledger,
+        &cas,
+        "outside",
+        1,
+        Severity::Major,
+        "src/other.rs",
+    );
+
+    assert_eq!(ledger.len(), 2);
+    let renamed = ledger.get("stable-legacy-key").unwrap();
+    assert_eq!(renamed.key, "stable-legacy-key");
+    assert_eq!(renamed.reports.len(), 2);
+    assert!(
+        renamed
+            .reports
+            .iter()
+            .all(|report| report.scope == Some(ReportScope::In))
+    );
+    assert_eq!(renamed.convergence_scope, Some(ReportScope::In));
+    assert_eq!(
+        ledger.get("outside").unwrap().convergence_scope,
+        Some(ReportScope::Out)
+    );
+    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
 }
 
 fn apply_whole_tree_round(ledger: &mut Ledger, cas: &Cas, round: u32) {
