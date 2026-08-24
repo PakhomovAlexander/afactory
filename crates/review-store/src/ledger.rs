@@ -498,13 +498,10 @@ impl Ledger {
     }
 
     fn report_scope(&self, round: u32, location: &ReportLocation) -> Option<ReportScope> {
-        let Some(active) = self
+        let active = self
             .active_scope
             .as_ref()
-            .filter(|active| active.round == round)
-        else {
-            return None;
-        };
+            .filter(|active| active.round == round)?;
         match (&active.subject, location) {
             (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => None,
             (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
