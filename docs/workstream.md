@@ -1,7 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed; fresh
-Campaign Round 1 opened 16 further claims whose corrections are locally implemented and under
+Campaign Rounds 1–2 opened 27 further claims whose corrections are locally implemented and under
 verification. Converge that unchanged-policy Campaign before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
@@ -129,8 +129,9 @@ without rewriting the existing Finding key. Dogfood Rounds 1–3 produced 33 Fin
 corrections are committed and fully verified. Round 4 retained all 33 as fixed, opened twelve
 further claims, and exhausted Campaign `m2-rename-scope`; all 45 are fixed and its Round 4
 corrections are committed and verified. Fresh Campaign `m2-rename-scope-final` Round 1 spent 396,132
-tokens and opened sixteen further claims. Their corrections are locally implemented; affected tests,
-measurements, and `scripts/verify.sh` pass. Commit, resolve the fresh Ledger, and continue under the
+tokens and opened sixteen further claims; Round 2 retained those fixes and spent 473,552 tokens on
+eleven further claims. Round 2 corrections are locally implemented; measurements, full verification,
+and markdownlint pass. Commit, resolve the fresh Ledger, and continue under the
 unchanged two-clean-Round/four-Round policy. Only then resume M3.1. Continue in milestone order; do
 not pull Proposal or scatter work forward past Subject, authority, isolation, and verification
 prerequisites.

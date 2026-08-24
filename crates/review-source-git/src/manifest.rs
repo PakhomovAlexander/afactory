@@ -126,6 +126,14 @@ pub fn digest_bytes(bytes: &[u8]) -> String {
     review_store::canonical::blob_content_id(bytes)
 }
 
+/// Stream manifest content identity through the same domain as [`digest_bytes`].
+pub fn digest_reader_with_buffer(
+    reader: impl std::io::Read,
+    buffer: &mut [u8],
+) -> std::io::Result<(String, u64)> {
+    review_store::canonical::blob_content_id_reader_with_buffer(reader, buffer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

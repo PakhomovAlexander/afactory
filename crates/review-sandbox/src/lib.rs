@@ -181,6 +181,7 @@ fn restore_writable_dirs(_root: &Path) {}
 /// writes — with a plain copy where the filesystem does not support reflinks. Both preserve
 /// the source permissions, so the exec bit survives.
 fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    const TASKS_PER_WORKER: usize = 64;
     std::fs::create_dir_all(dst)?;
     let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
     let mut files = Vec::new();
@@ -195,14 +196,21 @@ fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
                 stack.push((from, to));
             } else {
                 files.push((from, to, file_type.is_symlink()));
+                if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
+                    clone_file_batch(std::mem::take(&mut files))?;
+                }
             }
         }
     }
-    review_parallel::try_for_each(&files, |(from, to, is_symlink)| {
-        if *is_symlink {
-            symlink_raw(&std::fs::read_link(from)?, to)?;
+    clone_file_batch(files)
+}
+
+fn clone_file_batch(files: Vec<(PathBuf, PathBuf, bool)>) -> std::io::Result<()> {
+    review_parallel::try_for_each_owned(files, |(from, to, is_symlink)| {
+        if is_symlink {
+            symlink_raw(&std::fs::read_link(&from)?, &to)?;
         } else {
-            reflink_copy::reflink_or_copy(from, to)?;
+            reflink_copy::reflink_or_copy(&from, &to)?;
         }
         Ok::<_, std::io::Error>(())
     })
@@ -328,6 +336,7 @@ impl Sandbox {
     #[cfg(unix)]
     fn apply_read_only(&self) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
+        const TASKS_PER_WORKER: usize = 64;
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
         let mut dirs = vec![self.root.clone()];
         let mut seen_dirs = Vec::new();
@@ -347,13 +356,14 @@ impl Sandbox {
                     let executable = meta.permissions().mode() & 0o111 != 0;
                     let mode = if executable { 0o555 } else { 0o444 };
                     files.push((path, mode));
+                    if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
+                        apply_file_permissions(std::mem::take(&mut files))?;
+                    }
                 }
             }
             seen_dirs.push(dir);
         }
-        review_parallel::try_for_each(&files, |(path, mode)| {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))
-        })?;
+        apply_file_permissions(files)?;
         for dir in seen_dirs.into_iter().rev() {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))?;
         }
@@ -383,4 +393,12 @@ impl Sandbox {
         let baseline = std::mem::take(&mut self.baseline);
         (root, baseline, self.mode, dir)
     }
+}
+
+#[cfg(unix)]
+fn apply_file_permissions(files: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    review_parallel::try_for_each_owned(files, |(path, mode)| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    })
 }

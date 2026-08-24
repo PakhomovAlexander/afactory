@@ -161,6 +161,9 @@ pub struct Finding {
     /// Path used by the legacy path/title bridge key. Stable even when Scope selects another
     /// location for presentation from a multi-location Report.
     pub identity_file: String,
+    /// Line paired with `identity_file`, from the same canonical identity location.
+    #[serde(default)]
+    pub identity_line: Option<i64>,
     pub file: String,
     pub line: Option<i64>,
     pub title: String,
@@ -212,7 +215,7 @@ pub struct Ledger {
     active_scope: Option<ActiveScope>,
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
-    subject_scope_cache: BTreeMap<String, Result<SubjectScope, String>>,
+    subject_scope_cache: BTreeMap<String, Result<Arc<SubjectScope>, String>>,
     pub round: u32,
 }
 
@@ -220,7 +223,7 @@ pub struct Ledger {
 struct ActiveScope {
     round: u32,
     subject_id: String,
-    subject: SubjectScope,
+    subject: Arc<SubjectScope>,
 }
 
 #[derive(Debug, Clone)]
@@ -383,7 +386,7 @@ impl Ledger {
         };
         let severity = report.severity;
         let unreadable = report.unreadable;
-        let identity_file = report.identity_file();
+        let (identity_file, identity_line) = report.identity_location();
         let (scope, selected_location) = self.report_scope(round, &report.location);
         report.select_location(selected_location);
         let attached = AttachedReport {
@@ -419,6 +422,7 @@ impl Ledger {
                     last_seen_round: round,
                     source,
                     identity_file,
+                    identity_line,
                     file: report.file,
                     line: report.line,
                     title: report.title,
@@ -446,26 +450,20 @@ impl Ledger {
         if existing.authority_diagnostic {
             existing.authority_diagnostic = false;
             existing.last_seen_round = round;
-            let reopened = existing.status == Status::Fixed;
-            if reopened {
-                existing.status = Status::Open;
-            }
-            if !existing.status.is_declined() {
-                existing.news_round = round;
-            }
+            existing.status = Status::Open;
+            existing.news_round = round;
+            existing.identity_file = identity_file;
+            existing.identity_line = identity_line;
             adopt(existing, &report, &source);
             existing.convergence_scope = scope;
             existing.convergence_severity = (scope != Some(ReportScope::Out)).then_some(severity);
             existing.scoped_news_round = existing.convergence_severity.map(|_| round);
             existing.history.push(Transition {
                 round,
-                kind: if reopened {
-                    TransitionKind::Reopened
-                } else {
-                    TransitionKind::AuthorityRecovered
-                },
+                kind: TransitionKind::AuthorityRecovered,
                 note: Some(format!(
-                    "authority recovered: readable Report supplied by {source} in round {round}"
+                    "authority recovered: readable Report supplied by {source} in round {round}; \
+                     any prior resolution applied only to the authority placeholder"
                 )),
             });
             return Ok(());
@@ -545,28 +543,28 @@ impl Ledger {
         started
             .validate()
             .map_err(|error| malformed("RoundStarted@1", &error))?;
-        let resolved_scope =
-            if let Some(cached) = self.subject_scope_cache.get(&started.subject_id) {
-                cached.clone()
-            } else {
-                let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
-                    .map_err(|error| error.to_string())
-                    .and_then(|resolved| match resolved.subject.kind {
-                        SubjectKind::WholeTree => Ok(SubjectScope::WholeTree),
-                        SubjectKind::Diff => resolved
-                            .changed_paths
-                            .map(SubjectScope::Diff)
-                            .ok_or_else(|| {
-                                format!(
-                                    "diff Subject {} resolved without changed paths",
-                                    started.subject_id
-                                )
-                            }),
-                    });
-                self.subject_scope_cache
-                    .insert(started.subject_id.clone(), resolved.clone());
-                resolved
-            };
+        let resolved_scope = if let Some(cached) = self.subject_scope_cache.get(&started.subject_id)
+        {
+            cached.clone()
+        } else {
+            let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
+                .map_err(|error| error.to_string())
+                .and_then(|resolved| match resolved.subject.kind {
+                    SubjectKind::WholeTree => Ok(Arc::new(SubjectScope::WholeTree)),
+                    SubjectKind::Diff => resolved
+                        .changed_paths
+                        .map(|paths| Arc::new(SubjectScope::Diff(paths)))
+                        .ok_or_else(|| {
+                            format!(
+                                "diff Subject {} resolved without changed paths",
+                                started.subject_id
+                            )
+                        }),
+                });
+            self.subject_scope_cache
+                .insert(started.subject_id.clone(), resolved.clone());
+            resolved
+        };
         let subject_scope = match resolved_scope {
             Ok(scope) => scope,
             Err(reason) => {
@@ -576,7 +574,7 @@ impl Ledger {
                     &started.subject_id,
                     &reason,
                 );
-                SubjectScope::Unavailable
+                Arc::new(SubjectScope::Unavailable)
             }
         };
         self.active_scope = Some(ActiveScope {
@@ -608,7 +606,7 @@ impl Ledger {
         let Some(active) = self.active_scope.as_ref() else {
             return (None, location.first_index());
         };
-        match (&active.subject, location) {
+        match (active.subject.as_ref(), location) {
             (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => {
                 (None, location.first_index())
             }
@@ -787,16 +785,17 @@ impl ReportLocation {
 }
 
 impl ReportProjection {
-    fn identity_file(&self) -> String {
+    fn identity_location(&self) -> (String, Option<i64>) {
         match &self.location {
-            ReportLocation::ChangeWide => "(change-wide)".to_string(),
+            ReportLocation::ChangeWide => ("(change-wide)".to_string(), None),
             ReportLocation::Paths(locations) => locations
                 .iter()
-                .map(|location| location.path.as_str())
-                .min()
-                .unwrap_or(self.file.as_str())
-                .to_string(),
-            ReportLocation::Unrecorded => self.file.clone(),
+                .min_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()))
+                .map_or_else(
+                    || (self.file.clone(), self.line),
+                    |location| (location.path.clone(), location.line),
+                ),
+            ReportLocation::Unrecorded => (self.file.clone(), self.line),
         }
     }
 
@@ -933,7 +932,7 @@ impl ReportProjection {
     fn unreadable(report_id: &str, reason: &str) -> Self {
         Self {
             severity: Severity::Blocker,
-            file: "(unavailable)".into(),
+            file: String::new(),
             location: ReportLocation::Unrecorded,
             line: None,
             title: format!("Unreadable Report artifact {report_id}"),

@@ -1951,6 +1951,27 @@ mod tests {
     }
 
     #[test]
+    fn reviewer_result_legacy_conformance_corpus_matches_durable_reader() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas/reviewer-result-v1-conformance.json");
+        let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for case in corpus["valid"].as_array().unwrap() {
+            assert!(
+                validate_reviewer_result(&case["payload"]).is_ok(),
+                "{}",
+                case["name"]
+            );
+        }
+        for case in corpus["invalid"].as_array().unwrap() {
+            assert!(
+                validate_reviewer_result(&case["payload"]).is_err(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
     fn event_ids_are_derived_so_replay_reproduces_them() {
         let (_dir, mut store, cas) = fixture();
         let first = store

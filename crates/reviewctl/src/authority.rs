@@ -1033,7 +1033,7 @@ fn prior_rows(
                 "key": finding.key,
                 "severity": severity,
                 "status": finding.status.as_str(),
-                "line": finding.line,
+                "line": finding.identity_line,
                 "title": finding.title,
                 "body": finding.body,
                 "source": finding.source,
@@ -1060,6 +1060,9 @@ fn prior_rows(
 }
 
 fn prior_location(file: &str) -> (serde_json::Value, bool) {
+    if file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+        return (serde_json::Value::Null, false);
+    }
     if review_core::is_valid_repo_path(file) {
         (serde_json::Value::String(file.to_string()), false)
     } else {
@@ -1179,6 +1182,10 @@ mod tests {
         assert_eq!(
             super::prior_location("./src/main.rs"),
             (serde_json::Value::Null, true)
+        );
+        assert_eq!(
+            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL),
+            (serde_json::Value::Null, false)
         );
     }
 }

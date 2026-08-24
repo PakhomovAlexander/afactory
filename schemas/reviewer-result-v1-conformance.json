@@ -1,0 +1,64 @@
+{
+  "valid": [
+    {
+      "name": "canonical legacy report",
+      "payload": {
+        "verdict": "request-changes",
+        "summary": null,
+        "reports": [{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":"fix","confidence":0.9}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
+    },
+    {
+      "name": "empty file is change-wide",
+      "payload": {
+        "verdict": "approve",
+        "summary": "clear",
+        "reports": [{"severity":"minor","file":"","line":null,"title":"title","body":"body","fix":"fix","confidence":null}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
+    },
+    {
+      "name": "legacy change-wide sentinel remains readable",
+      "payload": {
+        "verdict": "approve",
+        "summary": null,
+        "reports": [{"severity":"blocker","file":"(change-wide)","line":null,"title":"title","body":"body","fix":"fix","confidence":0}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "null fix",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":null,"confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "empty fix",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":"","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "zero line",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":0,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "line exceeds u32",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":4294967296,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "confidence exceeds one",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":"fix","confidence":1.1}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "noncanonical path",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"./src/a.rs","line":1,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "change-wide report has a line",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"","line":1,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    }
+  ]
+}

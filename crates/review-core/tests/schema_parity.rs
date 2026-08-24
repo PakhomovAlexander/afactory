@@ -131,6 +131,23 @@ fn reviewer_result_schema_names_both_bridge_report_shapes() {
 }
 
 #[test]
+fn reviewer_result_legacy_conformance_corpus_matches_schema() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/reviewer-result-v1-conformance.json");
+    let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        assert_valid("reviewer-result-v1.json", &case["payload"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        assert_invalid(
+            "reviewer-result-v1.json",
+            &case["payload"],
+            case["name"].as_str().unwrap(),
+        );
+    }
+}
+
+#[test]
 fn finding_report_roundtrips() {
     let report = FindingReport {
         title: "Retry loop can spin forever".into(),

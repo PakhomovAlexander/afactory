@@ -59,14 +59,34 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["severity", "file", "line", "title", "body", "fix", "confidence"],
+      "allOf": [
+        {
+          "if": { "properties": { "file": { "enum": ["", "(change-wide)"] } } },
+          "then": { "properties": { "line": { "type": "null" } } }
+        }
+      ],
       "properties": {
         "severity": { "enum": ["blocker", "major", "minor"] },
-        "file": { "type": "string" },
-        "line": { "type": ["integer", "null"] },
-        "title": { "type": "string" },
-        "body": { "type": "string" },
-        "fix": { "type": ["string", "null"] },
-        "confidence": { "type": ["number", "null"] }
+        "file": {
+          "type": "string",
+          "anyOf": [
+            { "enum": ["", "(change-wide)"] },
+            { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" }
+          ]
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "fix": { "type": "string", "minLength": 1 },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
       }
     }
   }

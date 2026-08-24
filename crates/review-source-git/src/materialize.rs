@@ -119,10 +119,11 @@ pub fn materialize(
         }
     }
 
-    // One verified CAS read per distinct digest. Singleton digests read and write in parallel.
-    // Repeated digests are loaded one group at a time and their occurrences write in parallel,
-    // retaining occurrence-level concurrency without making resident memory the sum of every
-    // duplicated blob in a candidate-controlled manifest.
+    // One verified CAS read per distinct digest. Load at most one group per executor worker,
+    // then fan every occurrence in that bounded window out through the executor. This retains
+    // occurrence-level concurrency for a single heavily repeated blob while bounding resident
+    // content to worker_limit × largest group blob rather than the sum of candidate-controlled
+    // distinct content.
     let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for (target, entry) in targets {
         grouped
@@ -131,24 +132,26 @@ pub fn materialize(
             .push((target, entry.kind));
     }
     let groups: Vec<_> = grouped.into_iter().collect();
-    let singletons: Vec<_> = groups
-        .iter()
-        .filter_map(|(content, targets)| (targets.len() == 1).then_some((*content, &targets[0])))
-        .collect();
-    review_parallel::try_for_each(&singletons, |(content, (target, kind))| {
-        let bytes = cas
-            .get(content)
-            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-        write_entry(&bytes, target, *kind)?;
-        Ok::<_, MaterializeError>(())
-    })?;
-
-    for (content, targets) in groups.iter().filter(|(_, targets)| targets.len() > 1) {
-        let bytes = cas
-            .get(content)
-            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-        review_parallel::try_for_each(targets, |(target, kind)| {
-            write_entry(&bytes, target, *kind)?;
+    for window in groups.chunks(review_parallel::worker_limit()) {
+        let loads: Vec<_> = window
+            .iter()
+            .map(|(content, targets)| (*content, targets))
+            .collect();
+        let loaded = review_parallel::try_map_owned(loads, |(content, targets)| {
+            cas.get(content)
+                .map(|bytes| (bytes, targets))
+                .map_err(|error| MaterializeError::Cas(error.to_string()))
+        })?;
+        let occurrences: Vec<_> = loaded
+            .iter()
+            .flat_map(|(bytes, targets)| {
+                targets
+                    .iter()
+                    .map(move |(target, kind)| (bytes.as_slice(), target, *kind))
+            })
+            .collect();
+        review_parallel::try_for_each(&occurrences, |(bytes, target, kind)| {
+            write_entry(bytes, target, *kind)?;
             Ok::<_, MaterializeError>(())
         })?;
     }

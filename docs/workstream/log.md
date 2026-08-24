@@ -178,3 +178,29 @@ separate 128-distinct-pairs / 256 MiB output workload materialized in 5.567 s; `
 reported 238,354,432 bytes maximum command RSS and a 37,421,608-byte Darwin peak memory footprint.
 Affected tests, full-workspace clippy, `scripts/verify.sh`, and byte-identical fixture reproduction
 pass.
+
+## 2026-08-24 — M2 fresh dogfood Campaign Round 2 corrections
+
+Fresh Campaign Round 2 spent 473,552 tokens, retained all sixteen Round 1 resolutions, and opened
+eleven Reports. Authority recovery now treats a readable claim as new content: it reopens any
+resolution made against the synthetic unreadable-artifact placeholder and restores the claim's
+identity path and paired line. Prior-Finding rows likewise keep identity path/line together and
+encode change-wide identity as a null row path whose required reviewer output is an empty `file`.
+The legacy ReviewerResult schema is aligned with durable reader bounds through a shared
+conformance corpus. Subject Scope cache entries and active scopes share immutable authority with
+`Arc` rather than deep-cloning changed-path sets.
+
+Manifest byte and streaming identity now share the source adapter's single digest API. Seal scans
+repair only missing read/traverse permission on a best-effort basis, while teardown separately
+restores write access. Baseline membership uses one bit per manifest position rather than copied
+path strings. Clone, read-only permission, known-file teardown, and baseline hashing drain bounded
+task batches during their walks. Materialization loads at most one distinct digest per executor
+worker, then fans all occurrences in that bounded window across the shared executor.
+
+The 128-distinct-pairs / 256 MiB workload improved from 5.567 s to 1.332 s while
+`/usr/bin/time -l` reported 52,723,712 bytes maximum command RSS and a 35,930,616-byte Darwin peak
+memory footprint. The 5,000-entry / 199 MiB measurement recorded 2.008 s distinct-content and
+0.992 s repeated-content materialization, 0.670/1.037 s writable/read-only clone+permissions,
+0.680/0.693 s seal, and 0.127/0.130 s teardown. Focused contract, ledger, source, sandbox, cleanup,
+and prompt tests pass. Full workspace clippy, tests, byte-identical fixture reproduction, and
+markdownlint pass before the Round 2 correction commit.

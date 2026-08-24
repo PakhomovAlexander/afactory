@@ -175,8 +175,8 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
         title: "multi-location claim".into(),
         severity: Severity::Major,
         locations: vec![
-            Location::file("src/a-untouched.rs"),
-            Location::file("src/new.rs"),
+            Location::at("src/a-untouched.rs", 11),
+            Location::at("src/new.rs", 22),
         ],
         body: "body".into(),
         fix: "fix".into(),
@@ -207,7 +207,9 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
 
     let finding = ledger.get("multi").unwrap();
     assert_eq!(finding.identity_file, "src/a-untouched.rs");
+    assert_eq!(finding.identity_line, Some(11));
     assert_eq!(finding.file, "src/new.rs");
+    assert_eq!(finding.line, Some(22));
     assert_eq!(finding.reports[0].scope, Some(ReportScope::In));
     assert_eq!(finding.reports[0].file, "src/new.rs");
     assert_eq!(finding.convergence_scope, Some(ReportScope::In));
@@ -298,6 +300,7 @@ fn a_readable_report_replaces_an_unreadable_first_report() {
         )
         .unwrap();
     assert!(ledger.get("claim").unwrap().authority_diagnostic);
+    assert_eq!(ledger.get("claim").unwrap().identity_file, "");
 
     apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
     let finding = ledger.get("claim").unwrap();
@@ -306,6 +309,54 @@ fn a_readable_report_replaces_an_unreadable_first_report() {
     assert_eq!(finding.title, "claim");
     assert_eq!(finding.body, "body");
     assert_eq!(finding.convergence_severity, Some(Severity::Major));
+}
+
+#[test]
+fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_whole_tree_round(&mut ledger, &cas, 1);
+    let unreadable_id = cas
+        .put_json(&serde_json::json!({
+            "title": "invalid placeholder source",
+            "severity": "blocker",
+            "locations": [{"path": "./src/a.rs"}],
+            "body": "invalid body",
+            "fix": "invalid fix",
+            "confidence": 1.0
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "claim",
+                    "round": 1,
+                    "source": "broken",
+                    "report_id": unreadable_id,
+                }),
+                vec![unreadable_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+    apply_resolution(&mut ledger, &cas, "claim", 1, Status::Wontfix);
+
+    apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
+
+    let finding = ledger.get("claim").unwrap();
+    assert_eq!(finding.status, Status::Open);
+    assert_eq!(finding.news_round, 1);
+    assert_eq!(finding.identity_file, "src/a.rs");
+    assert_eq!(finding.identity_line, Some(1));
+    assert!(
+        finding
+            .current_note()
+            .unwrap()
+            .contains("authority placeholder")
+    );
 }
 
 #[test]
