@@ -10,6 +10,8 @@ use crate::{Cas, StoreError};
 pub struct ResolvedSubject {
     pub subject: SubjectV1,
     pub changed_paths: Option<Arc<[String]>>,
+    pub change_set: Option<Arc<ChangeSetV1>>,
+    pub change_set_bytes: Option<usize>,
 }
 
 pub fn resolve_subject(cas: &Cas, subject_id: &str) -> Result<ResolvedSubject, StoreError> {
@@ -35,8 +37,8 @@ fn resolve(
         StoreError::Artifact(format!("Subject {subject_id} is invalid: {error}"))
     })?;
 
-    let changed_paths = match subject.kind {
-        SubjectKind::WholeTree => None,
+    let (changed_paths, change_set, change_set_bytes) = match subject.kind {
+        SubjectKind::WholeTree => (None, None, None),
         SubjectKind::Diff => {
             let change_set_id = subject.change_set_id.as_deref().ok_or_else(|| {
                 StoreError::Artifact(format!("diff Subject {subject_id} has no Change Set"))
@@ -67,11 +69,18 @@ fn resolve(
                     "Change Set {change_set_id} contradicts Subject {subject_id}"
                 )));
             }
-            Some(Arc::from(change_set.changed_paths))
+            let changed_paths = Arc::from(change_set.changed_paths.clone());
+            (
+                Some(changed_paths),
+                Some(Arc::new(change_set)),
+                Some(change_set_bytes.len()),
+            )
         }
     };
     Ok(ResolvedSubject {
         subject,
         changed_paths,
+        change_set,
+        change_set_bytes,
     })
 }

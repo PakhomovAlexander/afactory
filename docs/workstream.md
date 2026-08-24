@@ -1,9 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0 and M1 are complete. Three M2 dogfood Campaigns exhausted with all 126 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` Round 1 opened nine further
-Findings; its corrections pass the full kernel gate. The Campaign still needs two consecutive
-clean Rounds before M3.1.
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` retained all nine Round 1 fixes in
+Round 2 and opened seven further Findings; their corrections pass the full kernel gate. Rounds 3
+and 4 must both be clean for this Campaign to converge before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -162,8 +162,13 @@ Subject CAS authority every Round, centralize the flat ReviewerResult validator,
 whitespace-only claims, recognize only Git's exact rename-limit warnings, share one non-following
 permission implementation, overlap clone/chmod/cleanup directory discovery with bounded work, and
 count serialized Change Set bytes without retaining a second allocation. ADR-0021 and ADR-0022
-record the contract decisions. The full kernel gate passes; commit and resolve these nine claims,
-then establish two consecutive clean Rounds in this Campaign before M3.1.
+record the contract decisions. Round 2 spent 755,944 tokens, retained all nine fixes, and opened
+seven claims. Their corrections keep active unreadable-report authority blockers fail-closed
+beyond the original clean window, reject whitespace-only legacy paths, accumulate durable retry
+history across process resume, stream exact CAS comparisons, parallelize dirty-worktree hashing,
+share validated Change Set authority, and share sandbox baseline manifests. The full kernel gate
+and release measurements pass; commit and resolve these seven claims, then run Rounds 3 and 4.
+Both must be clean for this Campaign to converge before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

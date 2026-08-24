@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use review_check::{Arg, CheckDefinition, Command};
+use review_config::Definition;
 use review_core::event::AttemptInputPayloadV1;
 use review_core::{EventType, LegacyStageOutput};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
-use review_pipeline::{RunVerdict, run_verdict};
+use review_pipeline::{Kernel, RoundAuthority, RunVerdict, run_verdict};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, ConvergencePolicy, EventStore};
@@ -226,6 +227,78 @@ impl ReviewerAdapter for InvalidOnce {
                     b"invalid answer"
                 } else {
                     b"valid answer"
+                })
+                .unwrap(),
+        })
+    }
+}
+
+struct InvalidThenUnavailable {
+    calls: AtomicU32,
+    cost: u64,
+}
+
+impl ReviewerAdapter for InvalidThenUnavailable {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        _inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(RunnerError::Unavailable("simulated process stop".into()));
+        }
+        Ok(ReviewerReturn {
+            output: serde_json::from_str(
+                r#"{"verdict":"request-changes","summary":null,
+                    "findings":[{"severity":"major","file":"./src/main.rs","line":1,
+                    "title":"first bad path","body":"body","fix":"fix","confidence":0.9}],
+                    "benchmark_demands":[],"disputes":[]}"#,
+            )
+            .unwrap(),
+            cost_tokens: self.cost,
+            raw_artifact: cas.put(b"first invalid answer").unwrap(),
+        })
+    }
+}
+
+struct InvalidAfterResume {
+    calls: AtomicU32,
+    cost: u64,
+}
+
+impl ReviewerAdapter for InvalidAfterResume {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            assert_eq!(inputs.refused_attempts.len(), 1);
+        } else {
+            assert_eq!(inputs.refused_attempts.len(), 2);
+        }
+        let output = if call == 0 {
+            serde_json::from_str(
+                r#"{"verdict":"request-changes","summary":null,
+                    "findings":[{"severity":"major","file":"/src/main.rs","line":1,
+                    "title":"second bad path","body":"body","fix":"fix","confidence":0.9}],
+                    "benchmark_demands":[],"disputes":[]}"#,
+            )
+            .unwrap()
+        } else {
+            clean_output()
+        };
+        Ok(ReviewerReturn {
+            output,
+            cost_tokens: self.cost,
+            raw_artifact: cas
+                .put(if call == 0 {
+                    b"second invalid answer"
+                } else {
+                    b"valid resumed answer"
                 })
                 .unwrap(),
         })
@@ -517,6 +590,88 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
     assert_eq!(refusal_history.len(), 1);
     assert!(refusal_history[0].contains("canonical repository-relative path"));
     assert_ne!(retry_input.attempt_id, failed.attempt_id);
+}
+
+#[test]
+fn resumed_retry_history_accumulates_instead_of_truncating() {
+    let mut run = run_fixture();
+    let first = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(InvalidThenUnavailable {
+            calls: AtomicU32::new(0),
+            cost: 20_000,
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    let first_report = Scheduler::new(&plan).with_parallelism(1).run(&first);
+    assert!(!first_report.complete());
+    drop(first);
+
+    let round_event_id = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.event_type == EventType::RoundStartedV1)
+        .unwrap()
+        .event_id;
+    let authority = RoundAuthority::load(&run.store, &run.cas, "run", &round_event_id).unwrap();
+    let loaded = Definition::from_toml(BUDGET_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let resumed = Kernel::from_loaded(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(InvalidAfterResume {
+            calls: AtomicU32::new(0),
+            cost: 20_000,
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&resumed);
+    assert!(
+        report.complete(),
+        "resumed retry should complete: {report:?}"
+    );
+    drop(resumed);
+
+    let histories: Vec<Vec<String>> = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == EventType::AttemptInputV1)
+        .map(|event| {
+            let payload: AttemptInputPayloadV1 = serde_json::from_value(event.payload).unwrap();
+            serde_json::from_value(run.cas.get_json(&payload.refusal_history_id).unwrap()).unwrap()
+        })
+        .collect();
+    assert_eq!(histories.last().unwrap().len(), 2);
 }
 
 #[test]

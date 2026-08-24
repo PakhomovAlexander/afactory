@@ -10,6 +10,7 @@
 //! turns a class of crash-corruption into an immediate error.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -135,6 +136,10 @@ impl NewEvent {
 
 pub struct EventStore {
     conn: Connection,
+    /// Parsed Change Sets keyed by their content digest. A cache hit is accepted only after the
+    /// current on-disk object is streamed and verified again; this removes repeated JSON/base64
+    /// allocations without turning process history into integrity authority.
+    validated_change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
 }
 
 impl EventStore {
@@ -175,7 +180,10 @@ impl EventStore {
              CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
                  ON events (run_id, causation_id, type, sequence);",
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
     }
 
     /// Append one event, assigning it the next sequence for its run.
@@ -263,7 +271,14 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-        validate_campaign_transition(&tx, cas, run_id, events, first)?;
+        validate_campaign_transition(
+            &tx,
+            cas,
+            run_id,
+            events,
+            first,
+            &mut self.validated_change_sets,
+        )?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)
@@ -666,6 +681,7 @@ fn load_authority_plan_id(
 
 fn validate_plan_ports(
     cas: &Cas,
+    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
     expected: &[AuthorityPort],
     actual: &[review_core::PortArtifactsV1],
     subject_snapshot_id: &str,
@@ -717,8 +733,12 @@ fn validate_plan_ports(
         }
         let mut validated_change_set = None;
         for artifact in &port.artifact_ids {
-            if let Some(change_set) = validate_artifact_payload(cas, &port.artifact_type, artifact)?
-            {
+            if let Some(change_set) = validate_artifact_payload(
+                cas,
+                validated_change_sets,
+                &port.artifact_type,
+                artifact,
+            )? {
                 validated_change_set = Some(change_set);
             }
         }
@@ -749,13 +769,23 @@ fn validate_plan_ports(
 
 fn validate_artifact_payload(
     cas: &Cas,
+    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
     artifact_type: &str,
     artifact_id: &str,
-) -> Result<Option<review_core::ChangeSetV1>, StoreError> {
+) -> Result<Option<Arc<review_core::ChangeSetV1>>, StoreError> {
     if artifact_type == "review.kernel/Opaque@1" {
         cas.get(artifact_id)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         return Ok(None);
+    }
+    if artifact_type == review_core::contract::CHANGE_SET_V1
+        && let Some(change_set) = validated_change_sets.get(artifact_id)
+    {
+        // The cache removes JSON/base64 reconstruction only. Integrity is still re-established
+        // from the current object bytes for every reference.
+        cas.verify(artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        return Ok(Some(Arc::clone(change_set)));
     }
     let value = cas
         .get_json(artifact_id)
@@ -768,6 +798,8 @@ fn validate_artifact_payload(
             let change_set: review_core::ChangeSetV1 = serde_json::from_value(value)
                 .map_err(|error| StoreError::Conflict(error.to_string()))?;
             change_set.validate().map_err(StoreError::Conflict)?;
+            let change_set = Arc::new(change_set);
+            validated_change_sets.insert(artifact_id.to_string(), Arc::clone(&change_set));
             return Ok(Some(change_set));
         }
         "review.kernel/GateDecision@1" => {
@@ -914,6 +946,7 @@ fn validate_campaign_transition(
     run_id: &str,
     events: &[NewEvent],
     first_sequence: i64,
+    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
 ) -> Result<(), StoreError> {
     let campaign_opened: i64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1'",
@@ -1188,6 +1221,7 @@ fn validate_campaign_transition(
                                 })?;
                                 validate_plan_ports(
                                     cas,
+                                    validated_change_sets,
                                     &expected.inputs,
                                     &invocation.inputs,
                                     &subject_snapshot_id,
@@ -1457,6 +1491,7 @@ fn validate_campaign_transition(
                                 })?;
                                 validate_plan_ports(
                                     cas,
+                                    validated_change_sets,
                                     &expected.outputs,
                                     &receipt.outputs,
                                     &subject_snapshot_id,
@@ -1957,6 +1992,58 @@ mod tests {
                 case["name"]
             );
         }
+    }
+
+    #[test]
+    fn cached_change_set_validation_still_detects_later_cas_corruption() {
+        let (directory, _store, cas) = fixture();
+        let change_set = review_core::ChangeSetV1::new(
+            crate::canonical::blob_content_id(b"base"),
+            crate::canonical::blob_content_id(b"head"),
+            vec!["src/lib.rs".into()],
+            vec![],
+            b"diff --git a/src/lib.rs b/src/lib.rs\n",
+            "git version test",
+            "test-policy@1",
+        )
+        .unwrap();
+        let artifact_id = cas
+            .put_json(&serde_json::to_value(change_set).unwrap())
+            .unwrap();
+        let mut cache = std::collections::BTreeMap::new();
+
+        assert!(
+            validate_artifact_payload(
+                &cas,
+                &mut cache,
+                review_core::contract::CHANGE_SET_V1,
+                &artifact_id,
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        let hex = artifact_id.strip_prefix("sha256:").unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+            b"tampered after validation",
+        )
+        .unwrap();
+        let error = validate_artifact_payload(
+            &cas,
+            &mut cache,
+            review_core::contract::CHANGE_SET_V1,
+            &artifact_id,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match its digest"),
+            "{error}"
+        );
     }
 
     #[test]

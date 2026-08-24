@@ -23,7 +23,7 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
@@ -133,6 +133,9 @@ pub struct RoundAuthority {
     prior_finding_set_id: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
+    change_set: Option<Arc<review_core::ChangeSetV1>>,
+    change_set_value: Option<Arc<serde_json::Value>>,
+    change_set_bytes: Option<usize>,
 }
 
 impl RoundAuthority {
@@ -164,6 +167,16 @@ impl RoundAuthority {
         }
         let resolved = review_store::resolve_subject(cas, &payload.subject_id)
             .map_err(|error| error.to_string())?;
+        let change_set = resolved.change_set;
+        let change_set_bytes = resolved.change_set_bytes;
+        let change_set_value = change_set
+            .as_ref()
+            .map(|change_set| {
+                serde_json::to_value(change_set.as_ref())
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
         let subject = resolved.subject;
         let change_set_id = subject.change_set_id.clone();
         let source: SourceSnapshot = serde_json::from_value(
@@ -194,7 +207,7 @@ impl RoundAuthority {
         required.extend(subject.base_snapshot_id.clone());
         required.extend(change_set_id.clone());
         for artifact in required {
-            cas.get(&artifact).map_err(|error| error.to_string())?;
+            cas.verify(&artifact).map_err(|error| error.to_string())?;
             if !round.artifact_refs.contains(&artifact) {
                 return Err(format!(
                     "RoundStarted@1 does not publish required authority artifact `{artifact}`"
@@ -214,6 +227,9 @@ impl RoundAuthority {
             prior_finding_set_id: payload.prior_finding_set_id,
             subject_kind: subject.kind,
             change_set_id,
+            change_set,
+            change_set_value,
+            change_set_bytes,
         })
     }
 
@@ -1283,6 +1299,36 @@ impl<'a> Kernel<'a> {
             }
             let mut resolved = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
+                if port == "change_set"
+                    && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
+                {
+                    let encoded_bytes = self
+                        .authority
+                        .change_set_bytes
+                        .ok_or("Round authority has no Change Set byte length")?;
+                    if encoded_bytes > MAX_CHANGE_SET_BYTES {
+                        return Err(format!(
+                            "reviewer input port '{port}' artifact {artifact} exceeds {MAX_CHANGE_SET_BYTES} bytes"
+                        ));
+                    }
+                    resolved.push(ReviewerInputArtifact {
+                        artifact_id: artifact.clone(),
+                        value: Arc::clone(
+                            self.authority
+                                .change_set_value
+                                .as_ref()
+                                .ok_or("Round authority has no Change Set JSON")?,
+                        ),
+                        validated_change_set: Some(Arc::clone(
+                            self.authority
+                                .change_set
+                                .as_ref()
+                                .ok_or("Round authority has no validated Change Set")?,
+                        )),
+                        encoded_bytes: Some(encoded_bytes),
+                    });
+                    continue;
+                }
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
                 let limit = if port == "change_set" {
                     MAX_CHANGE_SET_BYTES
@@ -1297,7 +1343,9 @@ impl<'a> Kernel<'a> {
                 let value = serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
                 resolved.push(ReviewerInputArtifact {
                     artifact_id: artifact.clone(),
-                    value,
+                    value: Arc::new(value),
+                    validated_change_set: None,
+                    encoded_bytes: Some(encoded.len()),
                 });
             }
             inputs.artifacts.insert(port.clone(), resolved);
@@ -1384,6 +1432,7 @@ impl<'a> Kernel<'a> {
                 .map_err(|error| error.to_string())?,
                 None => Vec::new(),
             };
+            retry_failures.clone_from(&inputs.refused_attempts);
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the

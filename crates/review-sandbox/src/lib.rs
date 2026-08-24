@@ -34,6 +34,7 @@ pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use review_source_git::{Manifest, materialize};
 use review_store::Cas;
@@ -127,7 +128,7 @@ pub struct Sandbox {
     isolation: Isolation,
     /// The manifest as materialized. Sealing diffs against this, so "what did the reviewer
     /// change" is computed rather than reported by the reviewer.
-    baseline: Manifest,
+    baseline: Arc<Manifest>,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
     /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
     _dir: Option<tempfile::TempDir>,
@@ -329,7 +330,7 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 /// exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which shares
 /// blocks instead of re-reading and re-writing the tree while keeping writes isolated.
 pub struct SandboxTemplate {
-    manifest: Manifest,
+    manifest: Arc<Manifest>,
     root: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -340,7 +341,7 @@ impl SandboxTemplate {
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
-            manifest: manifest.clone(),
+            manifest: Arc::new(manifest.clone()),
             root,
             _dir: dir,
         })
@@ -366,7 +367,7 @@ impl Sandbox {
             root,
             mode,
             isolation: Isolation::None,
-            baseline: manifest.clone(),
+            baseline: Arc::new(manifest.clone()),
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -389,7 +390,7 @@ impl Sandbox {
             root,
             mode,
             isolation: Isolation::None,
-            baseline: template.manifest.clone(),
+            baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -412,7 +413,7 @@ impl Sandbox {
     }
 
     pub fn baseline(&self) -> &Manifest {
-        &self.baseline
+        self.baseline.as_ref()
     }
 
     /// The environment a node runs with: rebuilt from an allowlist, never inherited.
@@ -469,7 +470,7 @@ impl Sandbox {
         seal::seal(self)
     }
 
-    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, tempfile::TempDir) {
+    pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, Mode, tempfile::TempDir) {
         // Seal restores traversal permissions as it scans. The residual `self` (emptied below)
         // then drops as a no-op.
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");

@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 review-core = { path = "../review-core" }
 review-store = { path = "../review-store" }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 
 # killpg without unsafe in this crate: nix wraps the libc call behind a safe API. Unix-only,

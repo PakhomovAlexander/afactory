@@ -31,16 +31,6 @@
       }
     },
     {
-      "name": "spaces are a literal repository path",
-      "payload": {
-        "verdict": "request-changes",
-        "summary": null,
-        "reports": [{"severity":"minor","file":"  ","line":5,"title":"title","body":"body","fix":"fix","confidence":0.5}],
-        "benchmark_demands": [],
-        "disputes": []
-      }
-    },
-    {
       "name": "line and confidence may be omitted",
       "payload": {
         "verdict": "request-changes",
@@ -52,6 +42,10 @@
     }
   ],
   "invalid": [
+    {
+      "name": "whitespace-only file is not a repository path",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"  ","line":null,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
     {
       "name": "whitespace-only title",
       "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":" ","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use review_core::ChangeSetV1;
 use review_runner::{ReviewerInputArtifact, ReviewerInputs};
@@ -9,7 +10,9 @@ fn inputs_with_change_set(change_set: serde_json::Value) -> ReviewerInputs {
             "change_set".into(),
             vec![ReviewerInputArtifact {
                 artifact_id: format!("sha256:{}", "c".repeat(64)),
-                value: change_set,
+                value: Arc::new(change_set),
+                validated_change_set: None,
+                encoded_bytes: None,
             }],
         )]),
         ..ReviewerInputs::default()

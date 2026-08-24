@@ -10,6 +10,7 @@
 //! before completion. Neither is checkable without computing the diff independently.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use review_source_git::{
     Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path,
@@ -49,7 +50,7 @@ impl MutationSet {
 pub struct SealedSandbox {
     root: PathBuf,
     pub mode: Mode,
-    pub baseline: Manifest,
+    pub baseline: Arc<Manifest>,
     /// The tree as it stood at seal time.
     pub final_manifest: Manifest,
     pub mutations: MutationSet,
@@ -85,7 +86,7 @@ impl Drop for CleanupDir {
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     let (root, baseline, mode, dir) = sandbox.into_parts();
-    let (final_manifest, mutations) = match scan_and_diff(&root, &baseline) {
+    let (final_manifest, mutations) = match scan_and_diff(&root, baseline.as_ref()) {
         Ok(result) => result,
         Err(error) => {
             // A mutable reviewer may remove directory permissions. Restore best-effort before

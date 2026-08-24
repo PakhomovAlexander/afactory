@@ -454,3 +454,30 @@ fn a_percent_in_a_filename_survives_capture_and_materialize() {
         "the encoded name must not leak to the filesystem"
     );
 }
+
+#[test]
+#[ignore = "release measurement; run with --release -- --ignored --nocapture"]
+fn dirty_capture_large_tree_measurement() {
+    let fixture = Fixture::new();
+    fixture.write("seed.txt", b"tracked seed\n");
+    fixture.commit_all("seed");
+
+    let count = 5_000_u32;
+    let mut bytes = vec![0x42_u8; 40 * 1024];
+    for index in 0..count {
+        bytes[..4].copy_from_slice(&index.to_le_bytes());
+        fixture.write(&format!("large/{index:05}.bin"), &bytes);
+    }
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let start = std::time::Instant::now();
+    let snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(snapshot.manifest.len(), count as usize + 1);
+    eprintln!(
+        "dirty capture: {count} x 40KiB ({:.1} MiB) in {elapsed:?}",
+        f64::from(count) * 40.0 / 1024.0
+    );
+}

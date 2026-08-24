@@ -333,6 +333,40 @@ fn typed_report_semantic_failures_are_unreadable_authority() {
 }
 
 #[test]
+fn an_active_unreadable_report_blocks_after_its_original_clean_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_whole_tree_round(&mut ledger, &cas, 1);
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "severity": "major", "locations": [], "body": "body",
+            "fix": "fix", "confidence": 0.9
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "unreadable", "round": 1, "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+    apply_whole_tree_round(&mut ledger, &cas, 2);
+
+    let summary = convergence(&ledger, Severity::Major);
+    assert_eq!(summary.open_blocking, 0);
+    assert_eq!(summary.new_recent, 0);
+    assert_eq!(summary.authority_failures_recent, 1);
+    assert_eq!(summary.verdict, Verdict::NotConverged);
+}
+
+#[test]
 fn a_readable_report_replaces_an_unreadable_first_report() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
@@ -428,7 +462,7 @@ fn frozen_flat_noncanonical_paths_remain_readable_and_fail_closed_unknown() {
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
     apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
-    for (index, path) in ["./src/a.rs", "/sandbox/src/a.rs", "src/../a.rs"]
+    for (index, path) in ["./src/a.rs", "/sandbox/src/a.rs", "src/../a.rs", "   "]
         .into_iter()
         .enumerate()
     {
@@ -443,7 +477,7 @@ fn frozen_flat_noncanonical_paths_remain_readable_and_fail_closed_unknown() {
         assert_eq!(finding.convergence_scope, None);
         assert_eq!(finding.convergence_scope_label(), "unknown");
     }
-    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 3);
+    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 4);
 }
 
 #[test]

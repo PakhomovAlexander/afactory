@@ -30,6 +30,9 @@ use sha2::{Digest, Sha256};
 use crate::git::{GitError, Repo, TreeId, split_nul};
 use crate::manifest::{Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path};
 
+type WorktreeFingerprint = (EntryKind, String, u64);
+type ScannedWorktreeEntry = (String, WorktreeFingerprint);
+
 #[derive(Debug)]
 pub enum CaptureError {
     Git(GitError),
@@ -414,7 +417,7 @@ impl<'a> Capture<'a> {
     fn scan_worktree(
         &self,
         publish: bool,
-    ) -> Result<BTreeMap<String, (EntryKind, String, u64)>, CaptureError> {
+    ) -> Result<BTreeMap<String, WorktreeFingerprint>, CaptureError> {
         let mut paths: Vec<String> = Vec::new();
         for args in [
             vec!["ls-files", "-z", "--cached"],
@@ -427,45 +430,77 @@ impl<'a> Capture<'a> {
         paths.sort();
         paths.dedup();
 
+        let scanned = review_parallel::try_map_owned_with(
+            paths,
+            || vec![0_u8; 64 * 1024],
+            |buffer, path| self.scan_worktree_path(publish, buffer, path),
+        )?;
         let mut out = BTreeMap::new();
-        for path in paths {
-            // `path` is the encoded manifest key; the filesystem read needs the raw bytes.
-            let relative = crate::manifest::fs_path(&path);
-            let Some(full) = checked_worktree_path(self.repo.workdir(), &relative, &path)? else {
-                continue;
-            };
-            let Ok(meta) = std::fs::symlink_metadata(&full) else {
-                // Tracked but deleted from the worktree: it is not part of what is there.
-                continue;
-            };
-            let (kind, bytes) = if meta.file_type().is_symlink() {
-                (EntryKind::Symlink, read_link_bytes(&full)?)
-            } else if meta.is_file() {
-                let bytes = std::fs::read(&full)?;
-                (
-                    if is_executable(&meta) {
-                        EntryKind::Executable
-                    } else {
-                        EntryKind::File
-                    },
-                    bytes,
-                )
-            } else {
-                continue;
-            };
-            if checked_worktree_path(self.repo.workdir(), &relative, &path)?.as_deref()
-                != Some(full.as_path())
-            {
-                return Err(CaptureError::UnsafePath { path });
-            }
-            let digest = if publish {
-                self.store(&bytes)?
-            } else {
-                digest_bytes(&bytes)
-            };
-            out.insert(path, (kind, digest, bytes.len() as u64));
-        }
+        out.extend(scanned.into_iter().flatten());
         Ok(out)
+    }
+
+    fn scan_worktree_path(
+        &self,
+        publish: bool,
+        buffer: &mut [u8],
+        path: String,
+    ) -> Result<Option<ScannedWorktreeEntry>, CaptureError> {
+        // `path` is the encoded manifest key; the filesystem read needs the raw bytes.
+        let relative = crate::manifest::fs_path(&path);
+        let Some(full) = checked_worktree_path(self.repo.workdir(), &relative, &path)? else {
+            return Ok(None);
+        };
+        let Ok(metadata) = std::fs::symlink_metadata(&full) else {
+            // Tracked but deleted from the worktree: it is not part of what is there.
+            return Ok(None);
+        };
+        let kind = if metadata.file_type().is_symlink() {
+            EntryKind::Symlink
+        } else if metadata.is_file() {
+            if is_executable(&metadata) {
+                EntryKind::Executable
+            } else {
+                EntryKind::File
+            }
+        } else {
+            return Ok(None);
+        };
+
+        let bytes = (publish || kind == EntryKind::Symlink)
+            .then(|| {
+                if kind == EntryKind::Symlink {
+                    read_link_bytes(&full)
+                } else {
+                    std::fs::read(&full)
+                }
+            })
+            .transpose()?;
+        let fingerprint = if bytes.is_some() {
+            None
+        } else {
+            let mut file = std::fs::File::open(&full)?;
+            Some(review_store::canonical::blob_content_id_reader_with_buffer(
+                &mut file, buffer,
+            )?)
+        };
+        if checked_worktree_path(self.repo.workdir(), &relative, &path)?.as_deref()
+            != Some(full.as_path())
+        {
+            return Err(CaptureError::UnsafePath { path });
+        }
+        let (digest, size) = match bytes {
+            Some(bytes) => {
+                let digest = if publish {
+                    self.store(&bytes)?
+                } else {
+                    digest_bytes(&bytes)
+                };
+                (digest, bytes.len() as u64)
+            }
+            None => fingerprint.expect("a non-publishing regular file was fingerprinted"),
+        };
+        Ok(Some((path, (kind, digest, size))))
     }
 
     /// Publish the bytes and return the digest they are filed under — the same value the

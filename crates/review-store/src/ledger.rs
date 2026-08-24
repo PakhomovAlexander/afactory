@@ -753,11 +753,26 @@ impl Ledger {
             })
             .count();
 
-        let authority_failures_recent = self
+        let recent_authority_failures: Vec<&ScopeAuthorityFailure> = self
             .scope_authority_failures
             .iter()
             .filter(|failure| i64::from(failure.round) > since)
+            .collect();
+        let stale_active_diagnostics = self
+            .findings
+            .values()
+            .filter(|finding| {
+                finding.authority_diagnostic
+                    && finding.status.is_active()
+                    && !finding.reports.iter().any(|report| {
+                        !report.report_id.is_empty()
+                            && recent_authority_failures
+                                .iter()
+                                .any(|failure| failure.authority_id == report.report_id)
+                    })
+            })
             .count();
+        let authority_failures_recent = recent_authority_failures.len() + stale_active_diagnostics;
         let verdict = if authority_failures_recent == 0
             && open_blocking == 0
             && new_recent == 0
@@ -946,10 +961,10 @@ impl ReportProjection {
                     })?,
             ),
         };
-        let scope_authority_reason = (!file.is_empty()
+        let invalid_location = !file.is_empty()
             && file != review_core::legacy::CHANGE_WIDE_SENTINEL
-            && !review_core::is_valid_repo_path(file))
-        .then(|| {
+            && (file.trim().is_empty() || !review_core::is_valid_repo_path(file));
+        let scope_authority_reason = invalid_location.then(|| {
             format!(
                 "report {report_id} has noncanonical legacy location `{file}`; \
                  claim content remains readable with unknown Scope"
@@ -957,7 +972,7 @@ impl ReportProjection {
         });
         let location = if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
             ReportLocation::ChangeWide
-        } else if !review_core::is_valid_repo_path(file) {
+        } else if invalid_location {
             ReportLocation::Unrecorded
         } else {
             ReportLocation::Paths(vec![ProjectedLocation {

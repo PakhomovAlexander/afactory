@@ -401,3 +401,30 @@ uses the same bounded executor; no phase introduces an independent worker pool. 
 clone plus permissions, 0.133/0.126 s seal, and 0.148/0.119 s teardown. A 5,000-entry baseline plus
 10,000 added files sealed in 0.145 s. Focused regressions pass. Full workspace formatting,
 all-target clippy, tests, doc tests, and byte-identical fixture reproduction pass before commit.
+
+## 2026-08-25 — M2 clean Campaign Round 2 corrections
+
+Round 2 spent 755,944 tokens, retained all nine Round 1 resolutions, and opened seven Reports.
+An active unreadable-report diagnostic now remains an authority blocker after its originating
+failure falls outside the ordinary clean window, without double-counting it while that failure is
+still recent. Live flat Reports reject whitespace-only paths before their frozen trimmed identity
+could alias change-wide scope; frozen projections preserve the readable claim with unknown Scope
+and fail closed. Retry refusal history is seeded from durable `AttemptInput@1` state after resume,
+and a process-restart regression proves later refusals append instead of truncating that history.
+
+Idempotent CAS puts now compare the existing object to caller bytes through a fixed 64 KiB buffer,
+including exact EOF, rather than allocating and hashing a second whole object. Dirty-worktree
+fingerprinting runs path work on the shared bounded executor and streams non-publishing regular
+files through one worker-local 64 KiB buffer. The admitted publishing pass still revalidates every
+path and publishes the exact bytes it read. A release measurement captured 5,000 distinct 40 KiB
+files (195.3 MiB) in 1.522 s.
+
+Diff authority is parsed once and shared through the Round, reviewer input, and renderer. Event
+admission caches validated Change Sets by content ID but streams and verifies current CAS bytes on
+every reference; a corruption-after-cache regression proves process history never substitutes for
+integrity authority. Sandbox templates and instances share one immutable `Arc<Manifest>` rather
+than cloning all entries per node. The 5,000-entry / 199 MiB sandbox measurement recorded 1.092 s
+materialization, 0.831/1.096 s writable/read-only clone plus permissions, 0.136/0.127 s seal, and
+0.150/0.142 s teardown. A 5,000-entry baseline plus 10,000 added files sealed in 0.146 s. Full
+workspace formatting, all-target clippy, tests, doc tests, and byte-identical fixture reproduction
+pass before commit. Rounds 3 and 4 must both be clean for this four-Round Campaign to converge.

@@ -108,7 +108,7 @@ impl Cas {
         if final_path.exists() {
             // Durability is cacheable, integrity is not: an external mutation after a prior
             // publication must still be detected before idempotent put accepts this object.
-            self.get(&digest)?;
+            verify_exact_bytes(&final_path, &digest, bytes)?;
             if !self
                 .durable
                 .lock()
@@ -321,6 +321,21 @@ impl Cas {
         })
     }
 
+    /// Stream and verify an object without retaining its bytes.
+    pub fn verify(&self, digest: &str) -> Result<u64, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let path = self.path_for(digest);
+        let mut file = fs::File::open(&path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => CasError::NotFound {
+                digest: digest.to_string(),
+            },
+            _ => CasError::Io(error),
+        })?;
+        Self::verify_reader(digest, &mut file)
+    }
+
     /// Verify an object and schedule its bytes and directory entries for the next publication
     /// barrier. A reopened process cannot infer durability from existence, so every new event
     /// reference must pass through this method before commit.
@@ -328,7 +343,7 @@ impl Cas {
         let path = self.path_for(digest);
         // Hash verification is mandatory for every new reference. The cache below suppresses
         // redundant fsyncs only; it must never turn existence into an integrity assertion.
-        self.get(digest)?;
+        self.verify(digest)?;
         if self.durable.lock().expect("cas durable").contains(&path) {
             return Ok(());
         }
@@ -339,6 +354,40 @@ impl Cas {
     pub fn contains(&self, digest: &str) -> bool {
         self.get(digest).is_ok()
     }
+}
+
+fn verify_exact_bytes(path: &Path, digest: &str, expected: &[u8]) -> Result<(), CasError> {
+    let mut file = fs::File::open(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => CasError::NotFound {
+            digest: digest.to_string(),
+        },
+        _ => CasError::Io(error),
+    })?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut offset = 0usize;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let Some(end) = offset.checked_add(read) else {
+            return Err(CasError::Corrupt {
+                digest: digest.to_string(),
+            });
+        };
+        if expected.get(offset..end) != Some(&buffer[..read]) {
+            return Err(CasError::Corrupt {
+                digest: digest.to_string(),
+            });
+        }
+        offset = end;
+    }
+    if offset != expected.len() {
+        return Err(CasError::Corrupt {
+            digest: digest.to_string(),
+        });
+    }
+    Ok(())
 }
 
 struct CopyingReader<'a, R, W> {
@@ -436,6 +485,21 @@ mod tests {
         let path = cas.path_for(&digest);
         fs::write(&path, b"tampered").unwrap();
         assert!(matches!(cas.get(&digest), Err(CasError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn idempotent_put_stream_compares_content_and_exact_length() {
+        for tampered in [
+            b"the original bytez".as_slice(),
+            b"short".as_slice(),
+            b"the original bytes with a suffix".as_slice(),
+        ] {
+            let (_dir, cas) = cas();
+            let expected = b"the original bytes";
+            let digest = cas.put(expected).unwrap();
+            fs::write(cas.path_for(&digest), tampered).unwrap();
+            assert!(matches!(cas.put(expected), Err(CasError::Corrupt { .. })));
+        }
     }
 
     #[test]
