@@ -4,16 +4,18 @@
 //! environment variables. Explicit review bindings are admitted through durable, fenced provider
 //! operations before dispatch. Status is obtained from
 //! the two fixed adapter CLIs with bounded output and wall time. Codex exposes its plan and quota
-//! windows through the official local app-server protocol. Claude exposes authentication but has
-//! no headless usage-status surface, so the inventory says so instead of scraping credentials or
-//! starting a billable model session. Accepted response shapes are pinned by fixtures.
+//! windows through the official local app-server protocol. Claude has no headless usage-status
+//! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
+//! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
+//! model session. Accepted response shapes are pinned by fixtures.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -37,8 +39,16 @@ const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_CONCURRENT_PROBES: usize = 4;
 const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
+const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAUDE_READERS;
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(45);
 const SMOKE_RESERVATION: u64 = 4_096;
+
+static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
+    OnceLock::new();
+static CLAUDE_READER_SLOTS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct ProviderAdmission {
     auth_dir: PathBuf,
@@ -207,7 +217,12 @@ pub fn format_limit(limit: &ProviderLimit) -> String {
         .resets_at
         .map(format_reset)
         .unwrap_or_else(|| "reset unavailable".to_string());
-    format!("{}: {}% used, {reset}", limit.name, limit.used_percent)
+    format!(
+        "{}: {}% used, {}% left, {reset}",
+        limit.name,
+        limit.used_percent,
+        100_u8.saturating_sub(limit.used_percent)
+    )
 }
 
 fn format_reset(resets_at: u64) -> String {
@@ -563,7 +578,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
     let Some(program) = resolve_program(spec.kind.command()) else {
         return unavailable_status(&spec, &format!("{} is not on PATH", spec.kind.command()));
     };
-    let output = match run_probe(&program, &spec, cancelled) {
+    let probe_path = sanitized_path();
+    let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
         Err(error) => return unavailable_status(&spec, &error),
     };
@@ -578,8 +594,25 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         ProviderKind::Codex => "-".to_string(),
     };
     let mut limits = Vec::new();
+    if spec.kind == ProviderKind::Claude
+        && status == "authenticated"
+        && claude_subscription_usage_supported(&output.stdout)
+    {
+        // Keep this sequential: only a fresh first-party subscription result authorizes opening
+        // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
+        // and third-party contexts merely to hide one provider-process startup.
+        match cached_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+            Ok(claude_limits) => limits.extend(claude_limits),
+            Err(error) => {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!("weekly limit unavailable: {error}"));
+            }
+        }
+    }
     if spec.kind == ProviderKind::Codex && status == "authenticated" && auth_type == "ChatGPT" {
-        match probe_codex_subscription(&program, &spec, cancelled) {
+        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
@@ -668,11 +701,392 @@ struct SubscriptionSnapshot {
     warning: Option<String>,
 }
 
-fn configure_probe_environment(command: &mut Command, spec: &ProviderSpec) {
+struct ParsedClaudeUsage {
+    limits: Vec<ProviderLimit>,
+    complete: bool,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ClaudeUsageCacheKey {
+    program: PathBuf,
+    auth_dir: Option<PathBuf>,
+}
+
+struct CachedClaudeUsage {
+    captured_at: Instant,
+    limits: Vec<ProviderLimit>,
+}
+
+struct ClaudeReaderSlot;
+
+impl ClaudeReaderSlot {
+    fn acquire() -> Result<Self, String> {
+        CLAUDE_READER_SLOTS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+                (slots < MAX_CLAUDE_READER_SLOTS).then_some(slots + 1)
+            })
+            .map(|_| Self)
+            .map_err(|_| "Claude usage terminal is still held by earlier probes".to_string())
+    }
+}
+
+impl Drop for ClaudeReaderSlot {
+    fn drop(&mut self) {
+        CLAUDE_READER_SLOTS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn claude_subscription_usage_supported(auth_status: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(auth_status) else {
+        return false;
+    };
+    parsed.get("loggedIn").and_then(serde_json::Value::as_bool) == Some(true)
+        && matches!(
+            parsed.get("authMethod").and_then(serde_json::Value::as_str),
+            Some("claude.ai" | "oauth")
+        )
+        && parsed
+            .get("apiProvider")
+            .and_then(serde_json::Value::as_str)
+            == Some("firstParty")
+}
+
+#[cfg(unix)]
+fn cached_claude_weekly_limits(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    let key = ClaudeUsageCacheKey {
+        program: program.to_path_buf(),
+        auth_dir: spec
+            .explicit_selector
+            .then(|| spec.auth_dir.clone())
+            .flatten(),
+    };
+    let cache = CLAUDE_USAGE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some(cached) = cache.get(&key)
+        && cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL
+    {
+        return Ok(cached.limits.clone());
+    }
+    let limits = probe_claude_weekly_limits(program, spec, probe_path, cancelled)?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.retain(|_, cached| cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL);
+        if cache.len() < MAX_PROVIDERS || cache.contains_key(&key) {
+            cache.insert(
+                key,
+                CachedClaudeUsage {
+                    captured_at: Instant::now(),
+                    limits: limits.clone(),
+                },
+            );
+        }
+    }
+    Ok(limits)
+}
+
+#[cfg(not(unix))]
+fn cached_claude_weekly_limits(
+    _program: &Path,
+    _spec: &ProviderSpec,
+    _probe_path: &std::ffi::OsStr,
+    _cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    Err("Claude usage probes require a Unix pseudo-terminal".to_string())
+}
+
+#[cfg(unix)]
+fn probe_claude_weekly_limits(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+
+    let reader_slot = ClaudeReaderSlot::acquire()?;
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 50,
+            cols: 160,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("cannot create Claude usage terminal: {error}"))?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("cannot read Claude usage terminal: {error}"))?;
+    let mut command = CommandBuilder::new(program.as_os_str());
+    command.args(["--setting-sources", "user", "/usage"]);
+    command.env_clear();
+    command.cwd("/");
+    command.env("PATH", probe_path);
+    if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
+        command.env("HOME", home);
+    }
+    if let Some(user) = std::env::var_os("USER") {
+        command.env("USER", user);
+    }
+    if spec.explicit_selector
+        && let Some(auth_dir) = &spec.auth_dir
+    {
+        command.env("CLAUDE_CONFIG_DIR", auth_dir);
+    }
+    command.env("TERM", "xterm-256color");
+    command.env("LC_ALL", "C");
+    command.env("TZ", "UTC");
+    // The fixed local command has no model turn or tools. Marking this narrow subprocess as
+    // sandboxed avoids mutating Claude's trust registry just to inspect account usage.
+    command.env("CLAUDE_CODE_SANDBOXED", "1");
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("cannot start Claude usage probe: {error}"))?;
+    let process_group = child.process_id();
+    drop(pair.slave);
+
+    // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
+    let (sender, receiver) = sync_channel(1);
+    let (recycle_sender, recycle_receiver) = sync_channel(1);
+    let (reader_done_sender, reader_done_receiver) = sync_channel(1);
+    let reader_thread = thread::spawn(move || {
+        let _reader_slot = reader_slot;
+        let mut chunk = vec![0_u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if sender.send(Ok((chunk, count))).is_err() {
+                        break;
+                    }
+                    chunk = match recycle_receiver.recv() {
+                        Ok(chunk) => chunk,
+                        Err(_) => break,
+                    };
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    break;
+                }
+            }
+        }
+        let _ = reader_done_sender.send(());
+    });
+
+    let deadline = Instant::now() + CLAUDE_USAGE_PROBE_TIMEOUT;
+    let mut next_parse = Instant::now();
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT * 2);
+    let mut dirty = false;
+    let result = loop {
+        let quiet = match receiver.recv_timeout(Duration::from_millis(25)) {
+            Ok(Ok((chunk, count))) => {
+                append_bounded_window(&mut captured, &chunk[..count], MAX_PROBE_OUTPUT);
+                let _ = recycle_sender.send(chunk);
+                dirty = true;
+                false
+            }
+            Ok(Err(error)) => {
+                break Err(format!("cannot read Claude usage terminal: {error}"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break Err("Claude usage terminal closed without a weekly limit".to_string());
+            }
+            Err(RecvTimeoutError::Timeout) => true,
+        };
+        if dirty && (quiet || Instant::now() >= next_parse) {
+            if let Ok(usage) = parse_claude_weekly_limits(bounded_tail(&captured, MAX_PROBE_OUTPUT))
+                && usage.complete
+            {
+                break Ok(usage.limits);
+            }
+            dirty = false;
+            next_parse = Instant::now() + Duration::from_millis(250);
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                break Err("Claude usage screen exited without a weekly limit".to_string());
+            }
+            Ok(None) => {}
+            Err(error) => break Err(format!("Claude usage probe failed: {error}")),
+        }
+        if cancelled.load(Ordering::Acquire) {
+            break Err("provider status refresh cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            break Err(format!(
+                "Claude usage probe timed out after {} seconds",
+                CLAUDE_USAGE_PROBE_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    if let Some(process_group) = process_group {
+        terminate_probe_group(process_group);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pair.master);
+    drop(receiver);
+    drop(recycle_sender);
+    // A descendant that escaped the process group may retain the PTY slave. Never let that turn
+    // cancellation or TUI shutdown into an unbounded join.
+    match reader_done_receiver.recv_timeout(Duration::from_millis(250)) {
+        Ok(()) => {
+            let _ = reader_thread.join();
+        }
+        Err(_) if reader_done_receiver.try_recv().is_ok() => {
+            let _ = reader_thread.join();
+        }
+        Err(_) => {}
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn probe_claude_weekly_limits(
+    _program: &Path,
+    _spec: &ProviderSpec,
+    _probe_path: &std::ffi::OsStr,
+    _cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    Err("Claude usage probes require a Unix pseudo-terminal".to_string())
+}
+
+fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String> {
+    // Ink uses cursor-position controls instead of literal spaces in recent releases. Compacting
+    // whitespace after removing terminal controls gives old and new screen renderers one stable
+    // text shape without attempting to emulate a terminal.
+    let screen = compact_terminal_text(output);
+    let sections = [
+        ("Currentweek(allmodels)", "Claude all models 1w"),
+        ("Currentweek(Fable)", "Claude Fable 1w"),
+        ("Currentweek(Sonnetonly)", "Claude Sonnet 1w"),
+        ("Currentweek(Opusonly)", "Claude Opus 1w"),
+    ];
+    let mut limits = Vec::with_capacity(sections.len());
+    for (section, name) in sections {
+        if let Some(used_percent) = percent_used_after(&screen, section) {
+            limits.push(ProviderLimit {
+                name: name.to_string(),
+                used_percent,
+                // Claude renders a localized wall-clock string rather than an epoch. Do not
+                // guess a timestamp; the percentage is the stable compatibility surface.
+                resets_at: None,
+            });
+        }
+    }
+    if limits
+        .first()
+        .is_none_or(|limit| limit.name != "Claude all models 1w")
+    {
+        return Err("unrecognized Claude usage screen".to_string());
+    }
+    let after_weekly_limit = screen
+        .rsplit_once("Currentweek(allmodels)")
+        .map(|(_, after)| after)
+        .unwrap_or_default();
+    Ok(ParsedClaudeUsage {
+        limits,
+        complete: after_weekly_limit.contains("Usagecredits")
+            || after_weekly_limit.contains("Extrausage")
+            || after_weekly_limit.contains("Esctocancel"),
+    })
+}
+
+fn percent_used_after(text: &str, section: &str) -> Option<u8> {
+    let section = text.rsplit_once(section)?.1;
+    let percent_sign = section.match_indices('%').find_map(|(index, _)| {
+        section[index + 1..]
+            .trim_start()
+            .starts_with("used")
+            .then_some(index)
+    })?;
+    let before_marker = &section[..percent_sign];
+    let digits_reversed: String = before_marker
+        .chars()
+        .rev()
+        .skip_while(|character| character.is_whitespace())
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let digits: String = digits_reversed.chars().rev().collect();
+    digits.parse::<u8>().ok().filter(|percent| *percent <= 100)
+}
+
+fn compact_terminal_text(output: &[u8]) -> String {
+    let mut clean = Vec::with_capacity(output.len());
+    let mut index = 0;
+    while index < output.len() {
+        match output[index] {
+            0x1b if output.get(index + 1) == Some(&b'[') => {
+                index += 2;
+                while index < output.len() {
+                    let byte = output[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            0x1b if output.get(index + 1) == Some(&b']') => {
+                index += 2;
+                while index < output.len() {
+                    if output[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if output[index] == 0x1b && output.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            0x1b => index += usize::from(output.get(index + 1).is_some()) + 1,
+            byte if byte.is_ascii_whitespace() => index += 1,
+            byte if byte >= 0x20 => {
+                clean.push(byte);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    match String::from_utf8(clean) {
+        Ok(clean) => clean,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
+}
+
+fn append_bounded_window(buffer: &mut Vec<u8>, chunk: &[u8], window: usize) {
+    if chunk.len() >= window {
+        buffer.clear();
+        buffer.extend_from_slice(&chunk[chunk.len() - window..]);
+        return;
+    }
+    if buffer.len().saturating_add(chunk.len()) > window.saturating_mul(2) {
+        let keep_from = buffer.len().saturating_sub(window);
+        buffer.copy_within(keep_from.., 0);
+        buffer.truncate(buffer.len() - keep_from);
+    }
+    buffer.extend_from_slice(chunk);
+}
+
+fn bounded_tail(buffer: &[u8], window: usize) -> &[u8] {
+    &buffer[buffer.len().saturating_sub(window)..]
+}
+
+fn configure_probe_environment(
+    command: &mut Command,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+) {
     command
         .env_clear()
         .current_dir(Path::new("/"))
-        .env("PATH", sanitized_path());
+        .env("PATH", probe_path);
     if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
         command.env("HOME", home);
     }
@@ -696,11 +1110,12 @@ fn configure_probe_environment(command: &mut Command, spec: &ProviderSpec) {
 fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
     let mut command = Command::new(program);
     command.args(["app-server", "--stdio"]);
-    configure_probe_environment(&mut command, spec);
+    configure_probe_environment(&mut command, spec, probe_path);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -788,6 +1203,7 @@ fn probe_codex_subscription(
 fn probe_codex_subscription(
     _program: &Path,
     _spec: &ProviderSpec,
+    _probe_path: &std::ffi::OsStr,
     _cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
     Err("provider probes require Unix process-group isolation".to_string())
@@ -1305,7 +1721,8 @@ fn perform_preflight(
     let program = PathBuf::from(&reviewer.program);
     if !structural_probes.contains(&spec.id) {
         let cancelled = AtomicBool::new(false);
-        let probe = run_probe(&program, spec, &cancelled)
+        let probe_path = sanitized_path();
+        let probe = run_probe(&program, spec, &probe_path, &cancelled)
             .map_err(|error| classify_failure(&error, "structural_probe", 0))?;
         let authenticated = match spec.kind {
             ProviderKind::Claude => parse_claude_status(probe.status.success(), &probe.stdout).0,
@@ -1563,10 +1980,9 @@ fn run_smoke(
     let args = smoke_command.resolve().map_err(|error| error.to_string())?;
     let mut command = Command::new(program);
     command.args(args);
-    configure_probe_environment(&mut command, spec);
-    command
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("LC_ALL", "C");
+    let probe_path = sanitized_path();
+    configure_probe_environment(&mut command, spec, &probe_path);
+    command.env("LC_ALL", "C");
     if spec.kind == ProviderKind::Codex {
         command.env("HOME", &smoke_dir);
     }
@@ -1908,6 +2324,7 @@ pub fn format_window(minutes: u64) -> String {
 fn run_probe(
     program: &Path,
     spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
     let mut command = Command::new(program);
@@ -1919,7 +2336,7 @@ fn run_probe(
             command.args(["login", "status"]);
         }
     }
-    configure_probe_environment(&mut command, spec);
+    configure_probe_environment(&mut command, spec, probe_path);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2030,6 +2447,7 @@ fn stop_probe(child: &mut Child) {
 fn run_probe(
     _program: &Path,
     _spec: &ProviderSpec,
+    _probe_path: &std::ffi::OsStr,
     _cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
     Err("provider probes require Unix process-group isolation".to_string())
@@ -2368,6 +2786,161 @@ auth_dir = "{}"
     }
 
     #[test]
+    fn claude_weekly_limit_and_remaining_percentage_are_parsed_from_usage_screen() {
+        // Captured from Claude Code 2.1.101 `/usage` on 2026-08-24. The provider adapter opens
+        // this local screen in a PTY; it does not read the OAuth credential or call a model.
+        let usage = parse_claude_weekly_limits(include_bytes!(
+            "../tests/fixtures/providers/claude-2.1.101-usage.txt"
+        ))
+        .unwrap();
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 1);
+        let limit = &limits[0];
+        assert_eq!(limit.name, "Claude all models 1w");
+        assert_eq!(limit.used_percent, 88);
+        assert_eq!(
+            format_limit(limit),
+            "Claude all models 1w: 88% used, 12% left, reset unavailable"
+        );
+    }
+
+    #[test]
+    fn claude_usage_parser_ignores_terminal_formatting_sequences() {
+        let output = b"\x1b]0;Claude Code\x07\x1b[1mCurrent week (all models)\x1b[0m\r\n\
+                       \x1b[48;5;102m89\x1b[0m%\x1b[2Kused\r\n";
+        let limits = parse_claude_weekly_limits(output).unwrap().limits;
+        assert_eq!(limits[0].used_percent, 89);
+    }
+
+    #[test]
+    fn claude_usage_parser_handles_cursor_positioned_words() {
+        let output = b"Current\x1b[11Gweek\x1b[16G(all\x1b[20Gmodels)\r\n\
+                       \x1b[54G90%\x1b[58Gused\r\n\
+                       Current\x1b[11Gweek\x1b[16G(Fable)\r\n\
+                       \x1b[54G96%\x1b[58Gused\r\n\
+                       Usage\x1b[6Gcredits\r\nEsc\x1b[5Gto\x1b[8Gcancel\r\n";
+        let usage = parse_claude_weekly_limits(output).unwrap();
+        assert!(usage.complete);
+        assert_eq!(usage.limits[0].used_percent, 90);
+        assert_eq!(usage.limits[1].used_percent, 96);
+    }
+
+    #[test]
+    fn claude_usage_capture_retains_only_the_newest_bounded_bytes() {
+        let mut captured = b"abcdef".to_vec();
+        append_bounded_window(&mut captured, b"ghi", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"defghi");
+
+        append_bounded_window(&mut captured, b"0123456789", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"456789");
+    }
+
+    #[test]
+    fn claude_fable_and_all_model_weekly_limits_are_parsed_from_usage_screen() {
+        let usage = parse_claude_weekly_limits(include_bytes!(
+            "../tests/fixtures/providers/claude-2.1.241-usage.txt"
+        ))
+        .unwrap();
+        assert!(usage.complete);
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].name, "Claude all models 1w");
+        assert_eq!(limits[0].used_percent, 90);
+        assert_eq!(limits[1].name, "Claude Fable 1w");
+        assert_eq!(limits[1].used_percent, 96);
+        assert_eq!(
+            format_limit(&limits[1]),
+            "Claude Fable 1w: 96% used, 4% left, reset unavailable"
+        );
+    }
+
+    #[test]
+    fn claude_usage_probe_is_only_enabled_for_first_party_subscription_auth() {
+        assert!(claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+        ));
+        assert!(!claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty"}"#
+        ));
+        assert!(!claude_subscription_usage_supported(
+            r#"{"loggedIn":true,"authMethod":"oauth","apiProvider":"bedrock"}"#
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_usage_probe_reads_the_fixed_screen_and_reaps_the_session() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("claude");
+        fs::write(
+            &program,
+            "#!/bin/sh\n[ \"$3\" = /usage ] || exit 2\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "claude-test".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: None,
+            explicit_selector: false,
+            source: "test".to_string(),
+            registry_declared: false,
+        };
+
+        let probe_path = sanitized_path();
+        let limits =
+            probe_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].used_percent, 42);
+        assert_eq!(limits[0].resets_at, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_usage_cache_skips_a_second_interactive_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("claude");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf x >> \"$0.count\"\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "claude-cache-test".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: Some(directory.path().to_path_buf()),
+            explicit_selector: true,
+            source: "test".to_string(),
+            registry_declared: false,
+        };
+        let probe_path = sanitized_path();
+
+        let first =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        let second =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+
+        assert_eq!(first[0].used_percent, 42);
+        assert_eq!(second[0].used_percent, 42);
+        assert_eq!(
+            fs::read_to_string(program.with_extension("count")).unwrap(),
+            "x"
+        );
+    }
+
+    #[test]
     fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
         let response: serde_json::Value = serde_json::from_str(include_str!(
             "../tests/fixtures/providers/codex-0.149.0-rate-limits-mixed.json"
@@ -2431,7 +3004,10 @@ auth_dir = "{}"
             source: "test".to_string(),
         };
 
-        let Err(error) = probe_codex_subscription(&program, &spec, &AtomicBool::new(false)) else {
+        let probe_path = sanitized_path();
+        let Err(error) =
+            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
+        else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
         assert!(error.contains("exited without a rate-limit response"));
