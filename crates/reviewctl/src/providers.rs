@@ -8,12 +8,13 @@
 //! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
 //! model session. Accepted response shapes are pinned by fixtures.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -29,6 +30,13 @@ const MAX_CONCURRENT_PROBES: usize = 4;
 const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
+const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAUDE_READERS;
+
+static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
+    OnceLock::new();
+static CLAUDE_READER_SLOTS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct ProviderInventory {
     pub providers: Vec<ProviderStatus>,
@@ -551,7 +559,7 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         // Keep this sequential: only a fresh first-party subscription result authorizes opening
         // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
         // and third-party contexts merely to hide one provider-process startup.
-        match probe_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+        match cached_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
             Ok(claude_limits) => limits.extend(claude_limits),
             Err(error) => {
                 if !detail.is_empty() {
@@ -656,6 +664,36 @@ struct ParsedClaudeUsage {
     complete: bool,
 }
 
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ClaudeUsageCacheKey {
+    program: PathBuf,
+    auth_dir: Option<PathBuf>,
+}
+
+struct CachedClaudeUsage {
+    captured_at: Instant,
+    limits: Vec<ProviderLimit>,
+}
+
+struct ClaudeReaderSlot;
+
+impl ClaudeReaderSlot {
+    fn acquire() -> Result<Self, String> {
+        CLAUDE_READER_SLOTS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |slots| {
+                (slots < MAX_CLAUDE_READER_SLOTS).then_some(slots + 1)
+            })
+            .map(|_| Self)
+            .map_err(|_| "Claude usage terminal is still held by earlier probes".to_string())
+    }
+}
+
+impl Drop for ClaudeReaderSlot {
+    fn drop(&mut self) {
+        CLAUDE_READER_SLOTS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 fn claude_subscription_usage_supported(auth_status: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(auth_status) else {
         return false;
@@ -672,6 +710,53 @@ fn claude_subscription_usage_supported(auth_status: &str) -> bool {
 }
 
 #[cfg(unix)]
+fn cached_claude_weekly_limits(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    let key = ClaudeUsageCacheKey {
+        program: program.to_path_buf(),
+        auth_dir: spec
+            .explicit_selector
+            .then(|| spec.auth_dir.clone())
+            .flatten(),
+    };
+    let cache = CLAUDE_USAGE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some(cached) = cache.get(&key)
+        && cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL
+    {
+        return Ok(cached.limits.clone());
+    }
+    let limits = probe_claude_weekly_limits(program, spec, probe_path, cancelled)?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.retain(|_, cached| cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL);
+        if cache.len() < MAX_PROVIDERS || cache.contains_key(&key) {
+            cache.insert(
+                key,
+                CachedClaudeUsage {
+                    captured_at: Instant::now(),
+                    limits: limits.clone(),
+                },
+            );
+        }
+    }
+    Ok(limits)
+}
+
+#[cfg(not(unix))]
+fn cached_claude_weekly_limits(
+    _program: &Path,
+    _spec: &ProviderSpec,
+    _probe_path: &std::ffi::OsStr,
+    _cancelled: &AtomicBool,
+) -> Result<Vec<ProviderLimit>, String> {
+    Err("Claude usage probes require a Unix pseudo-terminal".to_string())
+}
+
+#[cfg(unix)]
 fn probe_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
@@ -681,6 +766,7 @@ fn probe_claude_weekly_limits(
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
+    let reader_slot = ClaudeReaderSlot::acquire()?;
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 50,
@@ -727,6 +813,7 @@ fn probe_claude_weekly_limits(
     let (recycle_sender, recycle_receiver) = sync_channel(1);
     let (reader_done_sender, reader_done_receiver) = sync_channel(1);
     let reader_thread = thread::spawn(move || {
+        let _reader_slot = reader_slot;
         let mut chunk = vec![0_u8; 8192];
         loop {
             match reader.read(&mut chunk) {
@@ -751,12 +838,12 @@ fn probe_claude_weekly_limits(
 
     let deadline = Instant::now() + CLAUDE_USAGE_PROBE_TIMEOUT;
     let mut next_parse = Instant::now();
-    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(8192));
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT * 2);
     let mut dirty = false;
     let result = loop {
         let quiet = match receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(Ok((chunk, count))) => {
-                retain_bounded_tail(&mut captured, &chunk[..count], MAX_PROBE_OUTPUT);
+                append_bounded_window(&mut captured, &chunk[..count], MAX_PROBE_OUTPUT);
                 let _ = recycle_sender.send(chunk);
                 dirty = true;
                 false
@@ -770,7 +857,7 @@ fn probe_claude_weekly_limits(
             Err(RecvTimeoutError::Timeout) => true,
         };
         if dirty && (quiet || Instant::now() >= next_parse) {
-            if let Ok(usage) = parse_claude_weekly_limits(&captured)
+            if let Ok(usage) = parse_claude_weekly_limits(bounded_tail(&captured, MAX_PROBE_OUTPUT))
                 && usage.complete
             {
                 break Ok(usage.limits);
@@ -805,11 +892,14 @@ fn probe_claude_weekly_limits(
     drop(recycle_sender);
     // A descendant that escaped the process group may retain the PTY slave. Never let that turn
     // cancellation or TUI shutdown into an unbounded join.
-    if reader_done_receiver
-        .recv_timeout(Duration::from_millis(250))
-        .is_ok()
-    {
-        let _ = reader_thread.join();
+    match reader_done_receiver.recv_timeout(Duration::from_millis(250)) {
+        Ok(()) => {
+            let _ = reader_thread.join();
+        }
+        Err(_) if reader_done_receiver.try_recv().is_ok() => {
+            let _ = reader_thread.join();
+        }
+        Err(_) => {}
     }
     result
 }
@@ -928,21 +1018,22 @@ fn compact_terminal_text(output: &[u8]) -> String {
     }
 }
 
-fn retain_bounded_tail(buffer: &mut Vec<u8>, chunk: &[u8], capacity: usize) {
-    if chunk.len() >= capacity {
+fn append_bounded_window(buffer: &mut Vec<u8>, chunk: &[u8], window: usize) {
+    if chunk.len() >= window {
         buffer.clear();
-        buffer.extend_from_slice(&chunk[chunk.len() - capacity..]);
+        buffer.extend_from_slice(&chunk[chunk.len() - window..]);
         return;
     }
-    let overflow = buffer
-        .len()
-        .saturating_add(chunk.len())
-        .saturating_sub(capacity);
-    if overflow > 0 {
-        buffer.copy_within(overflow.., 0);
-        buffer.truncate(buffer.len() - overflow);
+    if buffer.len().saturating_add(chunk.len()) > window.saturating_mul(2) {
+        let keep_from = buffer.len().saturating_sub(window);
+        buffer.copy_within(keep_from.., 0);
+        buffer.truncate(buffer.len() - keep_from);
     }
     buffer.extend_from_slice(chunk);
+}
+
+fn bounded_tail(buffer: &[u8], window: usize) -> &[u8] {
+    &buffer[buffer.len().saturating_sub(window)..]
 }
 
 fn configure_probe_environment(
@@ -1741,11 +1832,11 @@ auth_dir = "{}"
     #[test]
     fn claude_usage_capture_retains_only_the_newest_bounded_bytes() {
         let mut captured = b"abcdef".to_vec();
-        retain_bounded_tail(&mut captured, b"ghi", 6);
-        assert_eq!(captured, b"defghi");
+        append_bounded_window(&mut captured, b"ghi", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"defghi");
 
-        retain_bounded_tail(&mut captured, b"0123456789", 6);
-        assert_eq!(captured, b"456789");
+        append_bounded_window(&mut captured, b"0123456789", 6);
+        assert_eq!(bounded_tail(&captured, 6), b"456789");
     }
 
     #[test]
@@ -1810,6 +1901,45 @@ auth_dir = "{}"
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].used_percent, 42);
         assert_eq!(limits[0].resets_at, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_usage_cache_skips_a_second_interactive_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("claude");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf x >> \"$0.count\"\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "claude-cache-test".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: Some(directory.path().to_path_buf()),
+            explicit_selector: true,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+
+        let first =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        let second =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+
+        assert_eq!(first[0].used_percent, 42);
+        assert_eq!(second[0].used_percent, 42);
+        assert_eq!(
+            fs::read_to_string(program.with_extension("count")).unwrap(),
+            "x"
+        );
     }
 
     #[test]
