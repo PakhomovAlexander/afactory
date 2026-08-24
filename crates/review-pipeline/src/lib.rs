@@ -123,6 +123,7 @@ pub struct RoundAuthority {
     run_id: String,
     round_event_id: String,
     round: u32,
+    epoch: u32,
     authority_snapshot_id: String,
     campaign_manifest_id: String,
     subject_id: String,
@@ -203,6 +204,7 @@ impl RoundAuthority {
             run_id: run_id.to_string(),
             round_event_id: round.event_id.clone(),
             round: payload.round,
+            epoch: payload.epoch,
             authority_snapshot_id: opened.authority_snapshot_id,
             campaign_manifest_id: payload.campaign_manifest_id,
             subject_id: payload.subject_id,
@@ -212,6 +214,18 @@ impl RoundAuthority {
             subject_kind: subject.kind,
             change_set_id,
         })
+    }
+
+    pub fn round_event_id(&self) -> &str {
+        &self.round_event_id
+    }
+
+    pub fn round(&self) -> u32 {
+        self.round
+    }
+
+    pub fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     fn artifact_refs(&self) -> Vec<String> {
@@ -257,6 +271,7 @@ fn replay_execution(
     let mut replayed = ReplayedExecution::default();
     let mut reservations = BTreeMap::new();
     let mut terminal_attempts = BTreeSet::new();
+    let mut provider_operations = BTreeMap::new();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut round_lineage = BTreeSet::new();
     for event in &events {
@@ -443,7 +458,26 @@ fn replay_execution(
                 }
                 reservations.remove(&attempt);
             }
+            EventType::ProviderOperationTransitionV1 => {
+                let payload: review_core::ProviderOperationTransitionPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                replayed.committed_tokens = replayed
+                    .committed_tokens
+                    .checked_add(payload.charged_tokens)
+                    .ok_or("replayed provider token charge overflow")?;
+                provider_operations.insert(payload.operation_id.clone(), payload);
+            }
             _ => {}
+        }
+    }
+    for provider in provider_operations.values() {
+        if provider.state == review_core::ProviderOperationStateV1::Running
+            && provider.failure_class.is_none()
+        {
+            replayed.committed_tokens = replayed
+                .committed_tokens
+                .checked_add(provider.reserved_tokens)
+                .ok_or("replayed provider reservation overflow")?;
         }
     }
     for (attempt, (node, reserved, active_epoch)) in reservations {

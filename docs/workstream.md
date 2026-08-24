@@ -1,8 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0, M1, and M2.1-M2.5 are complete. Repository extraction, private release, and the
-Project Hub external cutover are complete. Implement bounded, resumable provider authentication
-operations before resuming M2.6.
+**Status:** M0, M1, and M2.1-M2.5 are complete. Repository extraction, private release, Project
+Hub external cutover, and bounded resumable Provider Operations are complete. Resume M2.6.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -11,10 +10,10 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and fifteen ADR records; ADR-0003 and ADR-0004
+current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
 are superseded. M0, M1, and M2.1-M2.5 are complete. The repository/release migration and Project
-Hub external cutover are also complete; the provider-authentication dogfood slice now precedes
-M2.6, after which work continues in milestone order.
+Hub external cutover and the bounded Provider Operation dogfood slice are also complete. Work
+resumes at M2.6 and then continues in milestone order.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -120,8 +119,9 @@ ids and exposes one configuration-neutral, byte-safe typed tree diff while gener
 refused. Committed and revalidated dirty heads now publish one exact Change Set artifact wired
 into every diff reviewer. Ledger replay now derives each attached Report's `in`/`out` Scope from
 its exact Round Subject; convergence excludes wholly out-of-set Findings and fails closed on
-legacy `unknown` evidence. Resume with bounded, resumable provider authentication operations from
-GitHub issue #3, then M2.6. Continue in milestone order; do not pull Proposal or scatter work
+legacy `unknown` evidence. Bounded, resumable Provider Operations now probe explicit machine-local
+contexts, run a real inference smoke, fence exact continuations, and charge failed work before
+dispatch. Resume M2.6. Continue in milestone order; do not pull Proposal or scatter work
 forward past Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes

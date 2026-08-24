@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:provider-operation-transition:1",
+  "title": "ProviderOperationTransition@1 payload",
+  "description": "A redacted, Round-bound provider setup/preflight transition. Secret-bearing continuation material and raw command output are forbidden by the closed shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operation_id", "provider_id", "capability_id", "node_id", "round", "round_epoch",
+    "operation_epoch", "state", "reserved_tokens", "charged_tokens", "elapsed_ms",
+    "retry_permitted", "circuit_open"
+  ],
+  "properties": {
+    "operation_id": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
+    "provider_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$" },
+    "capability_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "node_id": { "type": "string", "minLength": 1 },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "round_epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "operation_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "state": { "enum": ["running", "waiting_for_human", "resumed", "done", "failed"] },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "attempt_id": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
+    "failure_class": {
+      "enum": [
+        "invalid_or_expired_authentication", "interactive_login_required",
+        "transient_transport_failure", "rate_limit_or_quota_exhaustion",
+        "unavailable_model_or_capability", "smoke_timeout", "unknown_provider_failure"
+      ]
+    },
+    "failure_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "continuation_handle": { "type": "string", "pattern": "^[a-z0-9]{26}$" },
+    "reserved_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "charged_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "retry_permitted": { "type": "boolean" },
+    "circuit_open": { "type": "boolean" },
+    "next_action": {
+      "enum": [
+        "complete_interactive_login", "refresh_authentication", "retry_explicitly",
+        "check_transport", "wait_for_quota", "select_available_model",
+        "increase_smoke_timeout", "inspect_provider_failure"
+      ]
+    }
+  }
+}

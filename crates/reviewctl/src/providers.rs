@@ -1,13 +1,14 @@
 //! Machine-local provider inventory for the TUI.
 //!
-//! Providers are display-only in this iteration. The registry names auth directories, never
-//! credentials, arbitrary commands, arguments, or environment variables. Status is obtained from
+//! The registry names auth directories, never credentials, arbitrary commands, arguments, or
+//! environment variables. Explicit review bindings are admitted through durable, fenced provider
+//! operations before dispatch. Status is obtained from
 //! the two fixed adapter CLIs with bounded output and wall time. Codex exposes its plan and quota
 //! windows through the official local app-server protocol. Claude exposes authentication but has
 //! no headless usage-status surface, so the inventory says so instead of scraping credentials or
 //! starting a billable model session. Accepted response shapes are pinned by fixtures.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -15,6 +16,15 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use review_attempt::{BudgetLedger, Reservation, Scope};
+use review_core::{
+    Command as ReviewerCommand, EventType, ProviderFailureClassV1, ProviderNextActionV1,
+    ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
+};
+use review_pipeline::RoundAuthority;
+use review_store::{Cas, EventStore, NewEvent};
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -27,6 +37,34 @@ const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_CONCURRENT_PROBES: usize = 4;
 const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const SMOKE_TIMEOUT: Duration = Duration::from_secs(45);
+const SMOKE_RESERVATION: u64 = 4_096;
+
+pub struct ProviderAdmission {
+    auth_dir: PathBuf,
+}
+
+pub struct AdmissionRequest<'a> {
+    pub node_id: &'a str,
+    pub reviewer: &'a ReviewerCommand,
+    pub state_dir: &'a Path,
+    pub run_id: &'a str,
+    pub authority: &'a RoundAuthority,
+    pub cas: &'a Cas,
+    pub store: &'a mut EventStore,
+    pub resumes: &'a mut BTreeMap<String, u64>,
+    pub budget: &'a mut BudgetLedger,
+    pub structural_probes: &'a mut BTreeSet<String>,
+}
+
+impl ProviderAdmission {
+    pub fn auth_dir_string(&self) -> Result<String, String> {
+        self.auth_dir
+            .to_str()
+            .map(str::to_string)
+            .ok_or_else(|| "provider auth directory must be valid UTF-8".to_string())
+    }
+}
 
 pub struct ProviderInventory {
     pub providers: Vec<ProviderStatus>,
@@ -87,6 +125,7 @@ struct ProviderSpec {
     kind: ProviderKind,
     auth_dir: Option<PathBuf>,
     explicit_selector: bool,
+    registry_declared: bool,
     source: String,
 }
 
@@ -331,6 +370,7 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
             kind: ProviderKind::Claude,
             auth_dir: std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             explicit_selector: std::env::var_os("CLAUDE_CONFIG_DIR").is_some(),
+            registry_declared: false,
             source: "ambient CLI candidate; unstable local context label".to_string(),
         });
     }
@@ -345,6 +385,7 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
                     .or_else(|| home.map(|home| home.join(".codex"))),
             ),
             explicit_selector: configured_home.is_some(),
+            registry_declared: false,
             source: "ambient CLI candidate; unstable local context label".to_string(),
         });
     }
@@ -482,6 +523,7 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
             kind,
             auth_dir: Some(auth_dir),
             explicit_selector: true,
+            registry_declared: true,
             source: path.display().to_string(),
         });
     }
@@ -880,6 +922,960 @@ fn normalize_codex_plan(value: &str) -> Option<&'static str> {
         "edu" | "edu_plus" | "edu_pro" => Some("Education"),
         "unknown" => Some("Unknown"),
         _ => None,
+    }
+}
+
+pub fn operation_id_for(
+    provider_id: &str,
+    node_id: &str,
+    reviewer: &ReviewerCommand,
+    authority: &RoundAuthority,
+) -> Result<String, String> {
+    let spec = configured_spec(provider_id)?;
+    operation_identity(&spec, node_id, reviewer, authority).map(|(_, operation_id)| operation_id)
+}
+
+fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+    let (specs, _, warning) = load_specs();
+    specs
+        .into_iter()
+        .find(|spec| spec.id == provider_id && spec.registry_declared)
+        .ok_or_else(|| {
+            warning.unwrap_or_else(|| {
+                format!(
+                    "provider `{provider_id}` is not an explicit entry in the machine-local registry"
+                )
+            })
+        })
+}
+
+fn operation_identity(
+    spec: &ProviderSpec,
+    node_id: &str,
+    reviewer: &ReviewerCommand,
+    authority: &RoundAuthority,
+) -> Result<(String, String), String> {
+    let reviewer_kind = Path::new(&reviewer.program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if reviewer_kind != spec.kind.name() {
+        return Err(format!(
+            "node `{node_id}` runs `{reviewer_kind}` but provider `{}` is {}",
+            spec.id,
+            spec.kind.name()
+        ));
+    }
+    let argv = reviewer
+        .resolve()
+        .map_err(|error| format!("node `{node_id}` has invalid runner arguments: {error}"))?;
+    let capability_id = digest_parts(
+        std::iter::once(reviewer.program.as_str()).chain(argv.iter().map(String::as_str)),
+    );
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .and_then(Path::to_str)
+        .ok_or_else(|| format!("provider `{}` auth directory must be UTF-8", spec.id))?;
+    let auth_context_id = digest_parts([auth_dir]);
+    let operation_id = short_id(&[
+        authority.round_event_id(),
+        &spec.id,
+        node_id,
+        &capability_id,
+        &auth_context_id,
+    ]);
+    Ok((capability_id, operation_id))
+}
+
+pub fn admit(
+    provider_id: &str,
+    request: AdmissionRequest<'_>,
+) -> Result<ProviderAdmission, String> {
+    let AdmissionRequest {
+        node_id,
+        reviewer,
+        state_dir,
+        run_id,
+        authority,
+        cas,
+        store,
+        resumes,
+        budget,
+        structural_probes,
+    } = request;
+    let spec = configured_spec(provider_id)?;
+    let auth_dir = spec
+        .auth_dir
+        .clone()
+        .ok_or_else(|| format!("provider `{provider_id}` has no explicit auth directory"))?;
+    let (capability_id, operation_id) = operation_identity(&spec, node_id, reviewer, authority)?;
+    let identity = OperationIdentity {
+        operation_id: &operation_id,
+        spec: &spec,
+        capability_id: &capability_id,
+        node_id,
+        authority,
+    };
+    let mut history = store
+        .provider_operation_transitions(run_id, &operation_id)
+        .map_err(|error| error.to_string())?;
+
+    if history
+        .last()
+        .is_some_and(|transition| transition.state == ProviderOperationStateV1::Done)
+    {
+        if resumes.remove(&operation_id).is_some() {
+            return Err(format!(
+                "--resume-provider `{operation_id}` is stale; the provider operation is already done"
+            ));
+        }
+        return Ok(ProviderAdmission { auth_dir });
+    }
+
+    let mut epoch = 1_u64;
+    let mut attempt = 1_u32;
+    let mut resumed = false;
+    if let Some(previous) = history.last().cloned() {
+        epoch = previous.operation_epoch;
+        attempt = previous.attempt.unwrap_or(0);
+        match previous.state {
+            ProviderOperationStateV1::WaitingForHuman => {
+                let supplied = resumes.remove(&operation_id).ok_or_else(|| {
+                    continuation_error(&spec, &operation_id, previous.operation_epoch)
+                })?;
+                if supplied != previous.operation_epoch || !previous.retry_permitted {
+                    return Err(format!(
+                        "stale or superseded provider continuation `{operation_id}:{supplied}`"
+                    ));
+                }
+                epoch = previous
+                    .operation_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| "provider operation epoch overflow".to_string())?;
+                attempt = previous
+                    .attempt
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| "provider operation attempt overflow".to_string())?;
+                let attempt_id =
+                    short_id(&[&operation_id, &epoch.to_string(), &attempt.to_string()]);
+                let resumed_transition = transition(
+                    &identity,
+                    epoch,
+                    ProviderOperationStateV1::Resumed,
+                    Some(attempt),
+                    Some(attempt_id),
+                );
+                let mut resumed_transition = resumed_transition;
+                resumed_transition.continuation_handle = previous.continuation_handle.clone();
+                append_transition(store, cas, run_id, authority, resumed_transition.clone())?;
+                history.push(resumed_transition);
+                resumed = true;
+            }
+            ProviderOperationStateV1::Failed => {
+                if !previous.retry_permitted {
+                    return Err(format!(
+                        "provider operation `{operation_id}` is terminal for this Round: {:?}; next action: {:?}; circuit_open={}; rerun with --restart-round after correction",
+                        previous.failure_class, previous.next_action, previous.circuit_open
+                    ));
+                }
+                let supplied = resumes.remove(&operation_id).ok_or_else(|| {
+                    format!(
+                        "provider operation `{operation_id}` failed but permits one explicit retry; rerun with --resume-provider {operation_id}:{}",
+                        previous.operation_epoch
+                    )
+                })?;
+                if supplied != previous.operation_epoch {
+                    return Err(format!(
+                        "stale or superseded provider continuation `{operation_id}:{supplied}`"
+                    ));
+                }
+                epoch = previous
+                    .operation_epoch
+                    .checked_add(1)
+                    .ok_or_else(|| "provider operation epoch overflow".to_string())?;
+                attempt = previous
+                    .attempt
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| "provider operation attempt overflow".to_string())?;
+                let attempt_id =
+                    short_id(&[&operation_id, &epoch.to_string(), &attempt.to_string()]);
+                let mut resumed_transition = transition(
+                    &identity,
+                    epoch,
+                    ProviderOperationStateV1::Resumed,
+                    Some(attempt),
+                    Some(attempt_id),
+                );
+                resumed_transition.continuation_handle = previous.continuation_handle.clone();
+                append_transition(store, cas, run_id, authority, resumed_transition.clone())?;
+                history.push(resumed_transition);
+                resumed = true;
+            }
+            ProviderOperationStateV1::Running if previous.failure_class.is_none() => {
+                let failure = ProviderFailure::new(
+                    ProviderFailureClassV1::UnknownProviderFailure,
+                    "abandoned_running_operation",
+                    true,
+                    ProviderNextActionV1::RetryExplicitly,
+                    SMOKE_RESERVATION,
+                );
+                let failed = failed_transition(
+                    &previous,
+                    failure,
+                    SMOKE_RESERVATION,
+                    previous.elapsed_ms,
+                    false,
+                    previous.attempt == Some(1),
+                );
+                append_transition(store, cas, run_id, authority, failed)?;
+                return Err(format!(
+                    "provider operation `{operation_id}` was abandoned and charged; resume explicitly with --resume-provider {operation_id}:{epoch}"
+                ));
+            }
+            ProviderOperationStateV1::Running => {
+                if previous.retry_permitted && previous.attempt == Some(1) {
+                    attempt = 2;
+                } else {
+                    let failed = failed_transition_from_recorded(&previous);
+                    append_transition(store, cas, run_id, authority, failed)?;
+                    return Err(format!(
+                        "provider operation `{operation_id}` failed with its retry exhausted"
+                    ));
+                }
+            }
+            ProviderOperationStateV1::Resumed => {
+                resumed = true;
+            }
+            ProviderOperationStateV1::Done => unreachable!(),
+        }
+    } else if let Some(supplied) = resumes.remove(&operation_id) {
+        return Err(format!(
+            "stale provider continuation `{operation_id}:{supplied}`; the operation has not started"
+        ));
+    }
+
+    loop {
+        let reservation = budget
+            .reserve(&[Scope::Run], SMOKE_RESERVATION)
+            .map_err(|error| format!("provider operation `{operation_id}` refused: {error}"))?;
+        let attempt_id = short_id(&[&operation_id, &epoch.to_string(), &attempt.to_string()]);
+        let running = transition(
+            &identity,
+            epoch,
+            ProviderOperationStateV1::Running,
+            Some(attempt),
+            Some(attempt_id),
+        );
+        if let Err(error) = append_transition(store, cas, run_id, authority, running.clone()) {
+            budget.release(&reservation);
+            return Err(error);
+        }
+        history.push(running.clone());
+
+        let started = Instant::now();
+        match perform_preflight(&spec, reviewer, state_dir, structural_probes) {
+            Ok(charged_tokens) => {
+                let mut done = running;
+                done.state = ProviderOperationStateV1::Done;
+                done.charged_tokens = charged_tokens;
+                done.elapsed_ms = elapsed_ms(started);
+                append_transition(store, cas, run_id, authority, done)?;
+                settle_provider_budget(budget, &reservation, charged_tokens);
+                return Ok(ProviderAdmission { auth_dir });
+            }
+            Err(failure) => {
+                let elapsed = elapsed_ms(started);
+                let repeated = history
+                    .iter()
+                    .filter(|transition| {
+                        transition.failure_fingerprint.as_deref()
+                            == Some(failure.fingerprint.as_str())
+                    })
+                    .count()
+                    >= 1;
+                if failure.class == ProviderFailureClassV1::InvalidOrExpiredAuthentication
+                    || failure.class == ProviderFailureClassV1::InteractiveLoginRequired
+                {
+                    if !resumed && !repeated {
+                        let mut waiting = running;
+                        waiting.state = ProviderOperationStateV1::WaitingForHuman;
+                        waiting.failure_class = Some(failure.class);
+                        waiting.failure_fingerprint = Some(failure.fingerprint);
+                        waiting.continuation_handle = Some(short_id(&[
+                            &operation_id,
+                            &epoch.to_string(),
+                            "interactive-login",
+                        ]));
+                        waiting.charged_tokens = failure.charged_tokens;
+                        waiting.elapsed_ms = elapsed;
+                        waiting.retry_permitted = true;
+                        waiting.next_action = Some(ProviderNextActionV1::CompleteInteractiveLogin);
+                        append_transition(store, cas, run_id, authority, waiting)?;
+                        settle_provider_budget(budget, &reservation, failure.charged_tokens);
+                        return Err(continuation_error(&spec, &operation_id, epoch));
+                    }
+                } else if failure.retryable && attempt == 1 && !repeated {
+                    let mut recorded = running;
+                    recorded.failure_class = Some(failure.class);
+                    recorded.failure_fingerprint = Some(failure.fingerprint);
+                    recorded.charged_tokens = failure.charged_tokens;
+                    recorded.elapsed_ms = elapsed;
+                    recorded.retry_permitted = true;
+                    append_transition(store, cas, run_id, authority, recorded.clone())?;
+                    settle_provider_budget(budget, &reservation, failure.charged_tokens);
+                    history.push(recorded);
+                    attempt = 2;
+                    continue;
+                }
+                let circuit_open = repeated;
+                let failure_class = failure.class;
+                let next_action = failure.next_action;
+                let charged_tokens = failure.charged_tokens;
+                let failed = failed_transition(
+                    &running,
+                    failure,
+                    charged_tokens,
+                    elapsed,
+                    circuit_open,
+                    false,
+                );
+                append_transition(store, cas, run_id, authority, failed)?;
+                settle_provider_budget(budget, &reservation, charged_tokens);
+                return Err(if circuit_open {
+                    format!(
+                        "provider operation `{operation_id}` opened its circuit after {failure_class:?}; next action: {next_action:?}; restart the Round after correction"
+                    )
+                } else {
+                    format!(
+                        "provider operation `{operation_id}` failed preflight: {failure_class:?}; next action: {next_action:?}; restart the Round after correction"
+                    )
+                });
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProviderFailure {
+    class: ProviderFailureClassV1,
+    fingerprint: String,
+    retryable: bool,
+    next_action: ProviderNextActionV1,
+    charged_tokens: u64,
+}
+
+impl ProviderFailure {
+    fn new(
+        class: ProviderFailureClassV1,
+        code: &'static str,
+        retryable: bool,
+        next_action: ProviderNextActionV1,
+        charged_tokens: u64,
+    ) -> Self {
+        let fingerprint = digest_parts([format!("{class:?}").as_str(), code]);
+        Self {
+            class,
+            fingerprint,
+            retryable,
+            next_action,
+            charged_tokens,
+        }
+    }
+}
+
+fn settle_provider_budget(
+    budget: &mut BudgetLedger,
+    reservation: &Reservation,
+    charged_tokens: u64,
+) {
+    if charged_tokens == 0 {
+        budget.release(reservation);
+    } else {
+        budget.charge(reservation, charged_tokens);
+    }
+}
+
+fn perform_preflight(
+    spec: &ProviderSpec,
+    reviewer: &ReviewerCommand,
+    state_dir: &Path,
+    structural_probes: &mut BTreeSet<String>,
+) -> Result<u64, ProviderFailure> {
+    let program = PathBuf::from(&reviewer.program);
+    if !structural_probes.contains(&spec.id) {
+        let cancelled = AtomicBool::new(false);
+        let probe = run_probe(&program, spec, &cancelled)
+            .map_err(|error| classify_failure(&error, "structural_probe", 0))?;
+        let authenticated = match spec.kind {
+            ProviderKind::Claude => parse_claude_status(probe.status.success(), &probe.stdout).0,
+            ProviderKind::Codex => parse_codex_status(probe.status.success(), &probe.stdout).0,
+        };
+        if authenticated != "authenticated" {
+            return Err(ProviderFailure::new(
+                ProviderFailureClassV1::InvalidOrExpiredAuthentication,
+                "structural_auth_rejected",
+                false,
+                ProviderNextActionV1::RefreshAuthentication,
+                0,
+            ));
+        }
+        structural_probes.insert(spec.id.clone());
+    }
+    let smoke = run_smoke(&program, spec, reviewer, state_dir).map_err(|error| {
+        let charged = if error.starts_with("cannot start provider smoke") {
+            0
+        } else {
+            SMOKE_RESERVATION
+        };
+        classify_failure(&error, "smoke_transport", charged)
+    })?;
+    let assessment = assess_smoke(spec.kind, &smoke.stdout);
+    if !smoke.status.success() {
+        let stderr = String::from_utf8_lossy(&smoke.stderr);
+        let detail = assessment
+            .error
+            .as_deref()
+            .or_else(|| stderr.lines().last())
+            .unwrap_or("provider smoke failed without a structured error");
+        return Err(classify_failure(
+            detail,
+            "smoke_exit",
+            assessment.cost_tokens,
+        ));
+    }
+    if !assessment.acknowledged {
+        return Err(ProviderFailure::new(
+            ProviderFailureClassV1::UnknownProviderFailure,
+            "smoke_missing_acknowledgement",
+            true,
+            ProviderNextActionV1::RetryExplicitly,
+            assessment.cost_tokens,
+        ));
+    }
+    Ok(assessment.cost_tokens.max(1))
+}
+
+fn classify_failure(detail: &str, code: &'static str, charged_tokens: u64) -> ProviderFailure {
+    let lower = detail.to_ascii_lowercase();
+    if [
+        "login",
+        "logged out",
+        "unauthorized",
+        "authentication",
+        "expired",
+        "401",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        ProviderFailure::new(
+            ProviderFailureClassV1::InvalidOrExpiredAuthentication,
+            code,
+            false,
+            ProviderNextActionV1::RefreshAuthentication,
+            charged_tokens,
+        )
+    } else if [
+        "quota",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "429",
+        "usage limit",
+        "usage_limit",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        ProviderFailure::new(
+            ProviderFailureClassV1::RateLimitOrQuotaExhaustion,
+            code,
+            false,
+            ProviderNextActionV1::WaitForQuota,
+            charged_tokens,
+        )
+    } else if ["model", "capability", "not available", "unsupported"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        ProviderFailure::new(
+            ProviderFailureClassV1::UnavailableModelOrCapability,
+            code,
+            false,
+            ProviderNextActionV1::SelectAvailableModel,
+            charged_tokens,
+        )
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        ProviderFailure::new(
+            ProviderFailureClassV1::SmokeTimeout,
+            code,
+            true,
+            ProviderNextActionV1::IncreaseSmokeTimeout,
+            charged_tokens,
+        )
+    } else if [
+        "network",
+        "connection",
+        "dns",
+        "transport",
+        "broken pipe",
+        "unreachable",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        ProviderFailure::new(
+            ProviderFailureClassV1::TransientTransportFailure,
+            code,
+            true,
+            ProviderNextActionV1::CheckTransport,
+            charged_tokens,
+        )
+    } else {
+        ProviderFailure::new(
+            ProviderFailureClassV1::UnknownProviderFailure,
+            code,
+            false,
+            ProviderNextActionV1::InspectProviderFailure,
+            charged_tokens,
+        )
+    }
+}
+
+#[derive(Default)]
+struct SmokeAssessment {
+    acknowledged: bool,
+    cost_tokens: u64,
+    error: Option<String>,
+}
+
+fn assess_smoke(kind: ProviderKind, stdout: &[u8]) -> SmokeAssessment {
+    match kind {
+        ProviderKind::Claude => assess_claude_smoke(stdout),
+        ProviderKind::Codex => assess_codex_smoke(stdout),
+    }
+}
+
+fn assess_claude_smoke(stdout: &[u8]) -> SmokeAssessment {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+        return SmokeAssessment::default();
+    };
+    let usage = value.get("usage");
+    let count = |key: &str| {
+        usage
+            .and_then(|usage| usage.get(key))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    let result = value.get("result").and_then(serde_json::Value::as_str);
+    let is_error = value
+        .get("is_error")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    SmokeAssessment {
+        acknowledged: !is_error && result.is_some_and(smoke_acknowledgement),
+        cost_tokens: count("input_tokens")
+            + count("cache_creation_input_tokens")
+            + count("output_tokens"),
+        error: value
+            .pointer("/error/type")
+            .or_else(|| value.get("subtype"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| is_error.then(|| result.unwrap_or("claude_error").to_string())),
+    }
+}
+
+fn assess_codex_smoke(stdout: &[u8]) -> SmokeAssessment {
+    let mut assessment = SmokeAssessment::default();
+    let mut final_message = None;
+    for line in stdout.split(|byte| *byte == b'\n') {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("turn.completed") => {
+                if let Some(usage) = value.get("usage") {
+                    let count = |key: &str| {
+                        usage
+                            .get(key)
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0)
+                    };
+                    assessment.cost_tokens = count("input_tokens")
+                        .saturating_sub(count("cached_input_tokens"))
+                        + count("output_tokens");
+                }
+            }
+            Some("item.completed") => {
+                if let Some(item) = value.get("item")
+                    && item.get("type").and_then(serde_json::Value::as_str) == Some("agent_message")
+                {
+                    final_message = item
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                }
+            }
+            Some("error") | Some("turn.failed") => {
+                assessment.error = value
+                    .pointer("/error/type")
+                    .or_else(|| value.get("message"))
+                    .or_else(|| value.pointer("/error/message"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+    assessment.acknowledged = final_message.as_deref().is_some_and(smoke_acknowledgement);
+    assessment
+}
+
+fn smoke_acknowledgement(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("OK")
+}
+
+struct SmokeOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[cfg(unix)]
+fn run_smoke(
+    program: &Path,
+    spec: &ProviderSpec,
+    reviewer: &ReviewerCommand,
+    state_dir: &Path,
+) -> Result<SmokeOutput, String> {
+    let smoke_dir = state_dir.join("provider-smoke");
+    fs::create_dir_all(&smoke_dir)
+        .map_err(|error| format!("cannot create provider smoke directory: {error}"))?;
+    let smoke_command = match spec.kind {
+        ProviderKind::Claude => review_runner_claude::smoke_command(reviewer),
+        ProviderKind::Codex => review_runner_codex::smoke_command(reviewer, &smoke_dir),
+    }?;
+    let args = smoke_command.resolve().map_err(|error| error.to_string())?;
+    let mut command = Command::new(program);
+    command.args(args);
+    configure_probe_environment(&mut command, spec);
+    command
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("LC_ALL", "C");
+    if spec.kind == ProviderKind::Codex {
+        command.env("HOME", &smoke_dir);
+    }
+    command
+        .current_dir(&smoke_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot start provider smoke: {error}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(error) = stdin.write_all(b"Reply with exactly: OK\n") {
+            stop_probe(&mut child);
+            return Err(format!("cannot write provider smoke prompt: {error}"));
+        }
+    }
+    let mut stdout = child.stdout.take().expect("provider stdout was piped");
+    let mut stderr = child.stderr.take().expect("provider stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
+        stop_probe(&mut child);
+        return Err(error);
+    }
+    let deadline = Instant::now() + SMOKE_TIMEOUT;
+    let mut stdout_output = Vec::with_capacity(4096);
+    let mut stderr_output = Vec::with_capacity(1024);
+    let mut captured = 0_usize;
+    let mut exceeded = false;
+    let status = loop {
+        let stdout_read = drain_smoke_available(
+            &mut stdout,
+            &mut stdout_output,
+            &mut captured,
+            &mut exceeded,
+        )?;
+        let stderr_read = drain_smoke_available(
+            &mut stderr,
+            &mut stderr_output,
+            &mut captured,
+            &mut exceeded,
+        )?;
+        if exceeded {
+            stop_probe(&mut child);
+            return Err(format!(
+                "provider smoke output exceeds {MAX_PROBE_OUTPUT} bytes"
+            ));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_probe(&mut child);
+                return Err(format!("provider smoke failed: {error}"));
+            }
+        }
+        if Instant::now() >= deadline {
+            stop_probe(&mut child);
+            return Err(format!(
+                "provider smoke timed out after {} seconds",
+                SMOKE_TIMEOUT.as_secs()
+            ));
+        }
+        if !stdout_read && !stderr_read {
+            thread::sleep(Duration::from_millis(25));
+        }
+    };
+    terminate_probe_group(child.id());
+    loop {
+        let stdout_read = drain_smoke_available(
+            &mut stdout,
+            &mut stdout_output,
+            &mut captured,
+            &mut exceeded,
+        )?;
+        let stderr_read = drain_smoke_available(
+            &mut stderr,
+            &mut stderr_output,
+            &mut captured,
+            &mut exceeded,
+        )?;
+        if exceeded || (!stdout_read && !stderr_read) {
+            break;
+        }
+    }
+    if exceeded {
+        return Err(format!(
+            "provider smoke output exceeds {MAX_PROBE_OUTPUT} bytes"
+        ));
+    }
+    Ok(SmokeOutput {
+        status,
+        stdout: stdout_output,
+        stderr: stderr_output,
+    })
+}
+
+fn drain_smoke_available(
+    stream: &mut impl Read,
+    output: &mut Vec<u8>,
+    captured: &mut usize,
+    exceeded: &mut bool,
+) -> Result<bool, String> {
+    let mut chunk = [0_u8; 8192];
+    match stream.read(&mut chunk) {
+        Ok(0) => Ok(false),
+        Ok(count) => {
+            let remaining = MAX_PROBE_OUTPUT.saturating_sub(*captured);
+            let kept = count.min(remaining);
+            output.extend_from_slice(&chunk[..kept]);
+            *captured += kept;
+            *exceeded |= count > remaining;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(format!("cannot read provider smoke output: {error}")),
+    }
+}
+
+#[cfg(not(unix))]
+fn run_smoke(
+    _program: &Path,
+    _spec: &ProviderSpec,
+    _reviewer: &ReviewerCommand,
+    _state_dir: &Path,
+) -> Result<SmokeOutput, String> {
+    Err("provider smoke requires Unix process-group isolation".to_string())
+}
+
+struct OperationIdentity<'a> {
+    operation_id: &'a str,
+    spec: &'a ProviderSpec,
+    capability_id: &'a str,
+    node_id: &'a str,
+    authority: &'a RoundAuthority,
+}
+
+fn transition(
+    identity: &OperationIdentity<'_>,
+    operation_epoch: u64,
+    state: ProviderOperationStateV1,
+    attempt: Option<u32>,
+    attempt_id: Option<String>,
+) -> ProviderOperationTransitionPayloadV1 {
+    ProviderOperationTransitionPayloadV1 {
+        operation_id: identity.operation_id.to_string(),
+        provider_id: identity.spec.id.clone(),
+        capability_id: identity.capability_id.to_string(),
+        node_id: identity.node_id.to_string(),
+        round: identity.authority.round(),
+        round_epoch: identity.authority.epoch(),
+        operation_epoch,
+        state,
+        attempt,
+        attempt_id,
+        failure_class: None,
+        failure_fingerprint: None,
+        continuation_handle: None,
+        reserved_tokens: if state == ProviderOperationStateV1::Resumed {
+            0
+        } else {
+            SMOKE_RESERVATION
+        },
+        charged_tokens: 0,
+        elapsed_ms: 0,
+        retry_permitted: false,
+        circuit_open: false,
+        next_action: None,
+    }
+}
+
+fn failed_transition(
+    running: &ProviderOperationTransitionPayloadV1,
+    failure: ProviderFailure,
+    charged_tokens: u64,
+    elapsed_ms: u64,
+    circuit_open: bool,
+    retry_permitted: bool,
+) -> ProviderOperationTransitionPayloadV1 {
+    let mut failed = running.clone();
+    failed.state = ProviderOperationStateV1::Failed;
+    failed.failure_class = Some(failure.class);
+    failed.failure_fingerprint = Some(failure.fingerprint);
+    failed.charged_tokens = charged_tokens;
+    failed.elapsed_ms = elapsed_ms;
+    failed.retry_permitted = retry_permitted;
+    failed.circuit_open = circuit_open;
+    failed.next_action = Some(failure.next_action);
+    failed
+}
+
+fn failed_transition_from_recorded(
+    recorded: &ProviderOperationTransitionPayloadV1,
+) -> ProviderOperationTransitionPayloadV1 {
+    let mut failed = recorded.clone();
+    failed.state = ProviderOperationStateV1::Failed;
+    failed.charged_tokens = 0;
+    failed.retry_permitted = false;
+    failed.circuit_open = true;
+    failed.next_action = Some(ProviderNextActionV1::InspectProviderFailure);
+    failed
+}
+
+fn append_transition(
+    store: &mut EventStore,
+    cas: &Cas,
+    run_id: &str,
+    authority: &RoundAuthority,
+    transition: ProviderOperationTransitionPayloadV1,
+) -> Result<(), String> {
+    let mut event = NewEvent::new(
+        EventType::ProviderOperationTransitionV1,
+        serde_json::to_value(&transition).map_err(|error| error.to_string())?,
+    )
+    .node(transition.node_id.clone())
+    .caused_by(authority.round_event_id())
+    .correlating(transition.operation_id.clone());
+    if let Some(attempt_id) = &transition.attempt_id {
+        event = event.attempt(attempt_id.clone());
+    }
+    store
+        .append(run_id, cas, event)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn continuation_error(spec: &ProviderSpec, operation_id: &str, epoch: u64) -> String {
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .map(Path::display)
+        .map(|path| path.to_string())
+        .unwrap_or_else(|| "<configured-auth-dir>".to_string());
+    let login = match spec.kind {
+        ProviderKind::Claude => format!("CLAUDE_CONFIG_DIR={auth_dir} claude auth login"),
+        ProviderKind::Codex => format!("CODEX_HOME={auth_dir} codex login"),
+    };
+    format!(
+        "provider operation `{operation_id}` is waiting_for_human; run `{login}` in a persistent terminal, then rerun with --resume-provider {operation_id}:{epoch}"
+    )
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn short_id(parts: &[&str]) -> String {
+    digest_hex(parts.iter().copied())[..26].to_string()
+}
+
+fn digest_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    format!("sha256:{}", digest_hex(parts))
+}
+
+fn digest_hex<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+#[cfg(test)]
+mod provider_operation_tests {
+    use super::*;
+
+    #[test]
+    fn claude_usage_metadata_is_not_a_smoke_acknowledgement() {
+        let rejected = assess_claude_smoke(
+            br#"{"is_error":false,"result":"","usage":{"input_tokens":8,"output_tokens":1}}"#,
+        );
+        assert!(!rejected.acknowledged);
+        assert_eq!(rejected.cost_tokens, 9);
+
+        let accepted = assess_claude_smoke(
+            br#"{"is_error":false,"result":" OK\n","usage":{"input_tokens":8,"cache_creation_input_tokens":3,"output_tokens":1}}"#,
+        );
+        assert!(accepted.acknowledged);
+        assert_eq!(accepted.cost_tokens, 12);
+    }
+
+    #[test]
+    fn codex_smoke_uses_the_final_message_and_final_cumulative_usage() {
+        let assessment = assess_codex_smoke(
+            br#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":2}}
+{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":3}}
+"#,
+        );
+        assert!(assessment.acknowledged);
+        assert_eq!(assessment.cost_tokens, 33);
+    }
+
+    #[test]
+    fn normalized_failure_fingerprint_never_contains_provider_detail() {
+        let first = classify_failure(
+            "authentication failed with oauth-code-value",
+            "smoke_exit",
+            0,
+        );
+        let second = classify_failure(
+            "authentication failed with access-token-value",
+            "smoke_exit",
+            0,
+        );
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert!(!first.fingerprint.contains("oauth"));
+        assert!(!first.fingerprint.contains("token"));
     }
 }
 
@@ -1431,6 +2427,7 @@ auth_dir = "{}"
             kind: ProviderKind::Codex,
             auth_dir: None,
             explicit_selector: false,
+            registry_declared: false,
             source: "test".to_string(),
         };
 

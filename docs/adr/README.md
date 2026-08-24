@@ -40,3 +40,5 @@ options you rejected and why — that is the part future-you needs.
   challengeable](0014-non-fixed-resolutions-are-challengeable.md)
 - [0015 — Safe attempts receive handles, not reusable
   secrets](0015-safe-attempts-receive-handles-not-secrets.md)
+- [0016 — Provider preflight is a fenced, charged
+  operation](0016-provider-preflight-is-a-fenced-operation.md)

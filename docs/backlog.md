@@ -205,6 +205,20 @@ third Report Scope value and cannot produce a passing scoped verdict.
 
 Decision recorded in [ADR-0013](adr/0013-scope-is-evaluated-per-active-claim.md).
 
+### Completed prerequisite — bounded Provider Operations
+
+Explicit machine-local Provider bindings are admitted before reviewer dispatch by a structural
+authentication probe and bounded real-inference smoke. Durable Round-bound transitions fence stale
+continuations, allow at most one automatic transient retry, open a circuit on repeated normalized
+failure, and charge failed or abandoned work without persisting secrets or raw provider output.
+Provider labels remain outside pinned pipeline authority. See
+[ADR-0016](adr/0016-provider-preflight-is-a-fenced-operation.md) and GitHub issue #3.
+
+Known operating limit: admissions are serialized in canonical node order so budget reservations
+and event IDs remain deterministic. Bounded parallel preflight is an M5 latency optimization only
+after the durable prepare/execute/settle split is explicit; it is not part of this correctness
+prerequisite.
+
 ### M2.6 — Rename-aware Report Scope, identity untouched
 
 The Change Set's path set includes both sides of every rename. A Report is `in` when it is
