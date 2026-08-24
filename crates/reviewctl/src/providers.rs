@@ -676,7 +676,7 @@ fn probe_claude_weekly_limits(
     cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -719,7 +719,9 @@ fn probe_claude_weekly_limits(
     let process_group = child.process_id();
     drop(pair.slave);
 
-    let (sender, receiver) = channel();
+    // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
+    let (sender, receiver) = sync_channel(1);
+    let (reader_done_sender, reader_done_receiver) = sync_channel(1);
     let reader_thread = thread::spawn(move || {
         loop {
             let mut chunk = vec![0_u8; 8192];
@@ -737,22 +739,19 @@ fn probe_claude_weekly_limits(
                 }
             }
         }
+        let _ = reader_done_sender.send(());
     });
 
     let deadline = Instant::now() + CLAUDE_USAGE_PROBE_TIMEOUT;
+    let mut next_parse = Instant::now();
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(8192));
     let mut dirty = false;
     let result = loop {
-        match receiver.recv_timeout(Duration::from_millis(25)) {
+        let quiet = match receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(Ok(chunk)) => {
-                let remaining = MAX_PROBE_OUTPUT.saturating_sub(captured.len());
-                captured.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                if chunk.len() > remaining {
-                    break Err(format!(
-                        "Claude usage output exceeds {MAX_PROBE_OUTPUT} bytes"
-                    ));
-                }
+                retain_bounded_tail(&mut captured, &chunk, MAX_PROBE_OUTPUT);
                 dirty = true;
+                false
             }
             Ok(Err(error)) => {
                 break Err(format!("cannot read Claude usage terminal: {error}"));
@@ -760,15 +759,16 @@ fn probe_claude_weekly_limits(
             Err(RecvTimeoutError::Disconnected) => {
                 break Err("Claude usage terminal closed without a weekly limit".to_string());
             }
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-        if dirty {
+            Err(RecvTimeoutError::Timeout) => true,
+        };
+        if dirty && (quiet || Instant::now() >= next_parse) {
             if let Ok(usage) = parse_claude_weekly_limits(&captured)
                 && usage.complete
             {
                 break Ok(usage.limits);
             }
             dirty = false;
+            next_parse = Instant::now() + Duration::from_millis(250);
         }
         match child.try_wait() {
             Ok(Some(_)) => {
@@ -793,7 +793,15 @@ fn probe_claude_weekly_limits(
     let _ = child.kill();
     let _ = child.wait();
     drop(pair.master);
-    let _ = reader_thread.join();
+    drop(receiver);
+    // A descendant that escaped the process group may retain the PTY slave. Never let that turn
+    // cancellation or TUI shutdown into an unbounded join.
+    if reader_done_receiver
+        .recv_timeout(Duration::from_millis(250))
+        .is_ok()
+    {
+        let _ = reader_thread.join();
+    }
     result
 }
 
@@ -811,10 +819,7 @@ fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String
     // Ink uses cursor-position controls instead of literal spaces in recent releases. Compacting
     // whitespace after removing terminal controls gives old and new screen renderers one stable
     // text shape without attempting to emulate a terminal.
-    let screen: String = strip_terminal_controls(output)
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect();
+    let screen = compact_terminal_text(output);
     let sections = [
         ("Currentweek(allmodels)", "Claude all models 1w"),
         ("Currentweek(Fable)", "Claude Fable 1w"),
@@ -870,7 +875,7 @@ fn percent_used_after(text: &str, section: &str) -> Option<u8> {
     digits.parse::<u8>().ok().filter(|percent| *percent <= 100)
 }
 
-fn strip_terminal_controls(output: &[u8]) -> String {
+fn compact_terminal_text(output: &[u8]) -> String {
     let mut clean = Vec::with_capacity(output.len());
     let mut index = 0;
     while index < output.len() {
@@ -900,18 +905,35 @@ fn strip_terminal_controls(output: &[u8]) -> String {
                 }
             }
             0x1b => index += usize::from(output.get(index + 1).is_some()) + 1,
-            b'\r' => {
-                clean.push(b'\n');
-                index += 1;
-            }
-            byte if byte == b'\n' || byte == b'\t' || byte >= 0x20 => {
+            byte if byte.is_ascii_whitespace() => index += 1,
+            byte if byte >= 0x20 => {
                 clean.push(byte);
                 index += 1;
             }
             _ => index += 1,
         }
     }
-    String::from_utf8_lossy(&clean).into_owned()
+    match String::from_utf8(clean) {
+        Ok(clean) => clean,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
+}
+
+fn retain_bounded_tail(buffer: &mut Vec<u8>, chunk: &[u8], capacity: usize) {
+    if chunk.len() >= capacity {
+        buffer.clear();
+        buffer.extend_from_slice(&chunk[chunk.len() - capacity..]);
+        return;
+    }
+    let overflow = buffer
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(capacity);
+    if overflow > 0 {
+        buffer.copy_within(overflow.., 0);
+        buffer.truncate(buffer.len() - overflow);
+    }
+    buffer.extend_from_slice(chunk);
 }
 
 fn configure_probe_environment(
@@ -1705,6 +1727,16 @@ auth_dir = "{}"
         assert!(usage.complete);
         assert_eq!(usage.limits[0].used_percent, 90);
         assert_eq!(usage.limits[1].used_percent, 96);
+    }
+
+    #[test]
+    fn claude_usage_capture_retains_only_the_newest_bounded_bytes() {
+        let mut captured = b"abcdef".to_vec();
+        retain_bounded_tail(&mut captured, b"ghi", 6);
+        assert_eq!(captured, b"defghi");
+
+        retain_bounded_tail(&mut captured, b"0123456789", 6);
+        assert_eq!(captured, b"456789");
     }
 
     #[test]
