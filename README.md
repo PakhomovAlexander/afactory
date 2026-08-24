@@ -28,7 +28,8 @@ cargo run -p reviewctl --bin af -- provider status
 authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
 quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude
 Code has no headless usage command, so Afactory opens the fixed local `/usage` screen in a bounded
-pseudo-terminal and reports the all-model weekly percentage. This compatibility probe does not
+pseudo-terminal and reports the all-model and available model-specific weekly percentages (for
+example, Fable). This compatibility probe does not
 read OAuth credentials or start a billable model session. Both providers show used and remaining
 percentages; Claude's localized reset text is deliberately not converted into a guessed epoch.
 

@@ -5,8 +5,8 @@
 //! the two fixed adapter CLIs with bounded output and wall time. Codex exposes its plan and quota
 //! windows through the official local app-server protocol. Claude has no headless usage-status
 //! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
-//! weekly percentage is parsed. The probe neither reads credentials nor starts a billable model
-//! session. Accepted response shapes are pinned by fixtures.
+//! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
+//! model session. Accepted response shapes are pinned by fixtures.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -548,8 +548,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         && status == "authenticated"
         && claude_subscription_usage_supported(&output.stdout)
     {
-        match probe_claude_weekly_limit(&program, &spec, &probe_path, cancelled) {
-            Ok(limit) => limits.push(limit),
+        match probe_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+            Ok(claude_limits) => limits.extend(claude_limits),
             Err(error) => {
                 if !detail.is_empty() {
                     detail.push_str("; ");
@@ -648,6 +648,11 @@ struct SubscriptionSnapshot {
     warning: Option<String>,
 }
 
+struct ParsedClaudeUsage {
+    limits: Vec<ProviderLimit>,
+    complete: bool,
+}
+
 fn claude_subscription_usage_supported(auth_status: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(auth_status) else {
         return false;
@@ -664,12 +669,12 @@ fn claude_subscription_usage_supported(auth_status: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn probe_claude_weekly_limit(
+fn probe_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
-) -> Result<ProviderLimit, String> {
+) -> Result<Vec<ProviderLimit>, String> {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, channel};
 
@@ -686,7 +691,7 @@ fn probe_claude_weekly_limit(
         .try_clone_reader()
         .map_err(|error| format!("cannot read Claude usage terminal: {error}"))?;
     let mut command = CommandBuilder::new(program.as_os_str());
-    command.args(["--setting-sources", "user", "--", "/usage"]);
+    command.args(["--setting-sources", "user", "/usage"]);
     command.env_clear();
     command.cwd("/");
     command.env("PATH", probe_path);
@@ -758,8 +763,10 @@ fn probe_claude_weekly_limit(
             Err(RecvTimeoutError::Timeout) => {}
         }
         if dirty {
-            if let Ok(limit) = parse_claude_weekly_limit(&captured) {
-                break Ok(limit);
+            if let Ok(usage) = parse_claude_weekly_limits(&captured)
+                && usage.complete
+            {
+                break Ok(usage.limits);
             }
             dirty = false;
         }
@@ -791,25 +798,56 @@ fn probe_claude_weekly_limit(
 }
 
 #[cfg(not(unix))]
-fn probe_claude_weekly_limit(
+fn probe_claude_weekly_limits(
     _program: &Path,
     _spec: &ProviderSpec,
     _probe_path: &std::ffi::OsStr,
     _cancelled: &AtomicBool,
-) -> Result<ProviderLimit, String> {
+) -> Result<Vec<ProviderLimit>, String> {
     Err("Claude usage probes require a Unix pseudo-terminal".to_string())
 }
 
-fn parse_claude_weekly_limit(output: &[u8]) -> Result<ProviderLimit, String> {
-    let screen = strip_terminal_controls(output);
-    let used_percent = percent_used_after(&screen, "Current week (all models)")
-        .ok_or_else(|| "unrecognized Claude usage screen".to_string())?;
-    Ok(ProviderLimit {
-        name: "Claude all models 1w".to_string(),
-        used_percent,
-        // Claude's screen renders a localized wall-clock string rather than an epoch. Do not
-        // guess a timestamp; the percentage is the stable part of this compatibility adapter.
-        resets_at: None,
+fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String> {
+    // Ink uses cursor-position controls instead of literal spaces in recent releases. Compacting
+    // whitespace after removing terminal controls gives old and new screen renderers one stable
+    // text shape without attempting to emulate a terminal.
+    let screen: String = strip_terminal_controls(output)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    let sections = [
+        ("Currentweek(allmodels)", "Claude all models 1w"),
+        ("Currentweek(Fable)", "Claude Fable 1w"),
+        ("Currentweek(Sonnetonly)", "Claude Sonnet 1w"),
+        ("Currentweek(Opusonly)", "Claude Opus 1w"),
+    ];
+    let mut limits = Vec::with_capacity(sections.len());
+    for (section, name) in sections {
+        if let Some(used_percent) = percent_used_after(&screen, section) {
+            limits.push(ProviderLimit {
+                name: name.to_string(),
+                used_percent,
+                // Claude renders a localized wall-clock string rather than an epoch. Do not
+                // guess a timestamp; the percentage is the stable compatibility surface.
+                resets_at: None,
+            });
+        }
+    }
+    if limits
+        .first()
+        .is_none_or(|limit| limit.name != "Claude all models 1w")
+    {
+        return Err("unrecognized Claude usage screen".to_string());
+    }
+    let after_weekly_limit = screen
+        .rsplit_once("Currentweek(allmodels)")
+        .map(|(_, after)| after)
+        .unwrap_or_default();
+    Ok(ParsedClaudeUsage {
+        limits,
+        complete: after_weekly_limit.contains("Usagecredits")
+            || after_weekly_limit.contains("Extrausage")
+            || after_weekly_limit.contains("Esctocancel"),
     })
 }
 
@@ -1633,14 +1671,17 @@ auth_dir = "{}"
     fn claude_weekly_limit_and_remaining_percentage_are_parsed_from_usage_screen() {
         // Captured from Claude Code 2.1.101 `/usage` on 2026-08-24. The provider adapter opens
         // this local screen in a PTY; it does not read the OAuth credential or call a model.
-        let limit = parse_claude_weekly_limit(include_bytes!(
+        let usage = parse_claude_weekly_limits(include_bytes!(
             "../tests/fixtures/providers/claude-2.1.101-usage.txt"
         ))
         .unwrap();
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 1);
+        let limit = &limits[0];
         assert_eq!(limit.name, "Claude all models 1w");
         assert_eq!(limit.used_percent, 88);
         assert_eq!(
-            format_limit(&limit),
+            format_limit(limit),
             "Claude all models 1w: 88% used, 12% left, reset unavailable"
         );
     }
@@ -1649,8 +1690,40 @@ auth_dir = "{}"
     fn claude_usage_parser_ignores_terminal_formatting_sequences() {
         let output = b"\x1b]0;Claude Code\x07\x1b[1mCurrent week (all models)\x1b[0m\r\n\
                        \x1b[48;5;102m89\x1b[0m%\x1b[2Kused\r\n";
-        let limit = parse_claude_weekly_limit(output).unwrap();
-        assert_eq!(limit.used_percent, 89);
+        let limits = parse_claude_weekly_limits(output).unwrap().limits;
+        assert_eq!(limits[0].used_percent, 89);
+    }
+
+    #[test]
+    fn claude_usage_parser_handles_cursor_positioned_words() {
+        let output = b"Current\x1b[11Gweek\x1b[16G(all\x1b[20Gmodels)\r\n\
+                       \x1b[54G90%\x1b[58Gused\r\n\
+                       Current\x1b[11Gweek\x1b[16G(Fable)\r\n\
+                       \x1b[54G96%\x1b[58Gused\r\n\
+                       Usage\x1b[6Gcredits\r\nEsc\x1b[5Gto\x1b[8Gcancel\r\n";
+        let usage = parse_claude_weekly_limits(output).unwrap();
+        assert!(usage.complete);
+        assert_eq!(usage.limits[0].used_percent, 90);
+        assert_eq!(usage.limits[1].used_percent, 96);
+    }
+
+    #[test]
+    fn claude_fable_and_all_model_weekly_limits_are_parsed_from_usage_screen() {
+        let usage = parse_claude_weekly_limits(include_bytes!(
+            "../tests/fixtures/providers/claude-2.1.241-usage.txt"
+        ))
+        .unwrap();
+        assert!(usage.complete);
+        let limits = usage.limits;
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].name, "Claude all models 1w");
+        assert_eq!(limits[0].used_percent, 90);
+        assert_eq!(limits[1].name, "Claude Fable 1w");
+        assert_eq!(limits[1].used_percent, 96);
+        assert_eq!(
+            format_limit(&limits[1]),
+            "Claude Fable 1w: 96% used, 4% left, reset unavailable"
+        );
     }
 
     #[test]
@@ -1675,7 +1748,7 @@ auth_dir = "{}"
         let program = directory.path().join("claude");
         fs::write(
             &program,
-            "#!/bin/sh\nprintf 'Current week (all models)\\r\\n42%%used\\r\\n'\nsleep 30\n",
+            "#!/bin/sh\n[ \"$3\" = /usage ] || exit 2\nprintf 'Current week (all models)\\r\\n42%%used\\r\\nExtra usage\\r\\n'\nsleep 30\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&program).unwrap().permissions();
@@ -1690,11 +1763,12 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let limit =
-            probe_claude_weekly_limit(&program, &spec, &probe_path, &AtomicBool::new(false))
+        let limits =
+            probe_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
                 .unwrap();
-        assert_eq!(limit.used_percent, 42);
-        assert_eq!(limit.resets_at, None);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].used_percent, 42);
+        assert_eq!(limits[0].resets_at, None);
     }
 
     #[test]
