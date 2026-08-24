@@ -17,9 +17,14 @@ pub mod cas;
 pub mod ledger;
 pub mod legacy;
 pub mod store;
+pub mod subject;
 
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
 pub use cas::{Cas, CasError};
-pub use ledger::{Convergence, ConvergencePolicy, Finding, Ledger, Status, Verdict};
+pub use ledger::{
+    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, ReportScope,
+    ScopeAuthorityFailure, Status, Verdict,
+};
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
 pub use store::{EventStore, NewEvent, StoreError};
+pub use subject::{ResolvedSubject, resolve_subject, resolve_subject_scope};

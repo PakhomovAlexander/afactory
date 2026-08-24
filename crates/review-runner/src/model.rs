@@ -301,7 +301,9 @@ impl ReviewerInputs {
                  each one against the current snapshot. A defect that still exists: re-report \
                  it with the same file and title. A claim you believe is wrong: dispute it with \
                  claim_id set to the finding's key, position set to `refute`, and a concrete \
-                 reason. A finding the current code no longer \
+                 reason. `scope` defaults to `in`; `effective_severity` defaults to `severity`, \
+                 while a null effective severity means the finding is recorded and triageable \
+                 but does not block this Subject. A finding the current code no longer \
                  exhibits: do not re-report it.\n\n```json\n{rendered}\n```"
             ));
         }

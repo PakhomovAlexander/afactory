@@ -179,8 +179,12 @@ distort Report Scope or patch applicability.
 
 ### M2.5 — Report Scope
 
-Each Report is stamped `in` / `out` — whether its location falls inside the Change Set of the
-round it was made under. The kernel derives it; the reviewer never reports it. Convergence
+**Status: complete (2026-08-24).** Scope is rebuilt per attached Report from its exact Round
+Subject and Change Set; convergence and CLI presentation consume that projection without changing
+the frozen `FindingReport@1` or `FindingReported@1` contracts.
+
+Each attached Report projects `in` / `out` — whether its location falls inside the Change Set of
+the round it was made under. The kernel derives it; the reviewer never reports it. Convergence
 evaluates active Report claims independently: a Finding blocks when any active claim is `in` at
 the configured severity gate and is wholly `out` only when all active claims are `out`. Effective
 blocking severity is the maximum severity among in-scope active claims, never an arrival-order

@@ -34,11 +34,10 @@ use review_core::event::{
     AttemptFencedPayloadV1, AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, ChangeSetV1, EventType, LegacyStageOutput, MissingNodeV2,
-    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1,
-    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
-    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectV1,
-    run_report_closes_round,
+    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
+    SnapshotAffinity, SourceSnapshot, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{
@@ -161,27 +160,10 @@ impl RoundAuthority {
         if payload.campaign_manifest_id != opened.campaign_manifest_id {
             return Err("RoundStarted@1 does not reference the opened CampaignManifest".into());
         }
-        let subject: SubjectV1 = serde_json::from_value(
-            cas.get_json(&payload.subject_id)
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        subject.validate()?;
-        let change_set_id = subject.change_set_id.clone();
-        if let Some(change_set_id) = &change_set_id {
-            let change_set: ChangeSetV1 = serde_json::from_value(
-                cas.get_json(change_set_id)
-                    .map_err(|error| error.to_string())?,
-            )
+        let resolved = review_store::resolve_subject(cas, &payload.subject_id)
             .map_err(|error| error.to_string())?;
-            change_set.validate()?;
-            if change_set.base_snapshot_id
-                != subject.base_snapshot_id.as_deref().unwrap_or_default()
-                || change_set.head_snapshot_id != subject.head_snapshot_id
-            {
-                return Err("Round Change Set does not match its Subject".into());
-            }
-        }
+        let subject = resolved.subject;
+        let change_set_id = subject.change_set_id.clone();
         let source: SourceSnapshot = serde_json::from_value(
             cas.get_json(&subject.head_snapshot_id)
                 .map_err(|error| error.to_string())?,
