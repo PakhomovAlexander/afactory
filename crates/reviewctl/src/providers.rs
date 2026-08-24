@@ -779,9 +779,9 @@ fn parse_codex_subscription_response(
     let mut snapshots: Vec<&serde_json::Value> = result
         .get("rateLimitsByLimitId")
         .and_then(serde_json::Value::as_object)
-        .filter(|snapshots| !snapshots.is_empty())
         .map(|snapshots| snapshots.values().collect())
-        .unwrap_or_else(|| result.get("rateLimits").into_iter().collect());
+        .unwrap_or_default();
+    snapshots.extend(result.get("rateLimits"));
     snapshots.sort_by_key(|snapshot| {
         snapshot
             .get("limitId")
@@ -795,6 +795,7 @@ fn parse_codex_subscription_response(
             .and_then(normalize_codex_plan)
     });
     let mut limits = Vec::new();
+    let mut seen_limits = BTreeSet::new();
     let mut skipped_windows = 0_usize;
     let mut truncated = false;
     for snapshot in snapshots {
@@ -823,6 +824,9 @@ fn parse_codex_subscription_response(
             let window_minutes = window
                 .get("windowDurationMins")
                 .and_then(serde_json::Value::as_u64);
+            if !seen_limits.insert((bucket.clone(), window_minutes)) {
+                continue;
+            }
             if limits.len() == MAX_PROVIDER_LIMITS {
                 truncated = true;
                 continue;
@@ -1380,6 +1384,22 @@ auth_dir = "{}"
         assert_eq!(
             snapshot.warning.as_deref(),
             Some("skipped 2 malformed rate-limit windows")
+        );
+    }
+
+    #[test]
+    fn unusable_per_limit_map_falls_back_to_legacy_snapshot() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-fallback.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 1 malformed rate-limit windows")
         );
     }
 
