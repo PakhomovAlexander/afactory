@@ -26,5 +26,5 @@ pub use ledger::{
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
-pub use store::{EventStore, NewEvent, StoreError};
+pub use store::{EventStore, NewEvent, StoreError, validate_reviewer_result};
 pub use subject::{ResolvedSubject, resolve_subject, resolve_subject_scope};

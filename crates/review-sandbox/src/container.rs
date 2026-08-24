@@ -36,6 +36,7 @@ const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
 /// Capability detection runs in every full verification gate. A wedged daemon is unavailable,
 /// not authority to keep the gate open forever.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const EXEC_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The default sandbox image, pinned by manifest digest — the same never-`latest` rule as
 /// reviewer packages. The digest names a multi-arch manifest list (amd64 CI, arm64 laptops),
@@ -192,26 +193,42 @@ impl ContainerProvider {
         program: &str,
         args: &[String],
     ) -> Result<std::process::Output, String> {
+        self.exec_with_timeout(sandbox_root, program, args, EXEC_TIMEOUT)
+    }
+
+    fn exec_with_timeout(
+        &self,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<std::process::Output, String> {
         let Availability::Usable { runtime } = &self.availability else {
             return Err(format!(
                 "refusing to run outside a container: {}",
                 self.availability.reason()
             ));
         };
-        std::process::Command::new(runtime)
-            .args(self.invocation(sandbox_root, program, args))
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| e.to_string())
+        let mut command = std::process::Command::new(runtime);
+        command.args(self.invocation(sandbox_root, program, args));
+        run_bounded(command, timeout, "container command").map_err(|error| error.to_string())
     }
 }
 
 fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std::io::Error> {
+    let mut command = std::process::Command::new(path);
+    command.arg("info");
+    run_bounded(command, timeout, "runtime info probe")
+}
+
+fn run_bounded(
+    mut command: std::process::Command,
+    timeout: Duration,
+    operation: &str,
+) -> Result<std::process::Output, std::io::Error> {
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut command = std::process::Command::new(path);
     command
-        .arg("info")
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
@@ -227,12 +244,15 @@ fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std
             break status;
         }
         if Instant::now() >= deadline {
-            kill_probe_group(child.id());
+            kill_process_group(child.id());
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("`info` did not finish within {}s", timeout.as_secs_f64()),
+                format!(
+                    "{operation} did not finish within {}s",
+                    timeout.as_secs_f64()
+                ),
             ));
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -251,7 +271,7 @@ fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std
 }
 
 #[cfg(unix)]
-fn kill_probe_group(pid: u32) {
+fn kill_process_group(pid: u32) {
     let _ = nix::sys::signal::killpg(
         nix::unistd::Pid::from_raw(pid as i32),
         nix::sys::signal::Signal::SIGKILL,
@@ -259,7 +279,7 @@ fn kill_probe_group(pid: u32) {
 }
 
 #[cfg(not(unix))]
-fn kill_probe_group(_pid: u32) {}
+fn kill_process_group(_pid: u32) {}
 
 fn which(name: &str) -> Result<PathBuf, ()> {
     let path = std::env::var_os("PATH").ok_or(())?;
@@ -345,6 +365,31 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(matches!(availability, Availability::Unusable { .. }));
         assert!(availability.reason().contains("did not finish"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wedged_container_execution_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("runtime");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nsleep 60\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let provider = ContainerProvider::with_runtime(&fake);
+
+        let started = Instant::now();
+        let error = provider
+            .exec_with_timeout(dir.path(), "/bin/true", &[], Duration::from_millis(100))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.contains("container command did not finish"),
+            "{error}"
+        );
     }
 
     #[test]

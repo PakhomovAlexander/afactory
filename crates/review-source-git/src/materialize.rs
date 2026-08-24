@@ -9,9 +9,11 @@
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 
 use review_store::Cas;
 
@@ -71,77 +73,128 @@ pub fn materialize(
     // A manifest-declared symlink must never become the parent of another entry. Decode this
     // preflight only when the tree actually contains symlinks; ordinary manifests decode every
     // path exactly once, in `prepare_target` immediately before the write.
-    if manifest
+    let decoded_paths = if manifest
         .entries
         .iter()
         .any(|entry| entry.kind == EntryKind::Symlink)
     {
+        let paths: Vec<PathBuf> = manifest
+            .entries
+            .iter()
+            .map(|entry| checked_relative_path(&entry.path))
+            .collect::<Result<_, _>>()?;
         let mut symlinks = HashSet::new();
-        for entry in &manifest.entries {
-            let path = checked_relative_path(&entry.path)?;
+        for (entry, path) in manifest.entries.iter().zip(&paths) {
             if path.ancestors().skip(1).any(|path| symlinks.contains(path)) {
                 return Err(MaterializeError::Escape {
                     path: entry.path.clone(),
                 });
             }
             if entry.kind == EntryKind::Symlink {
-                symlinks.insert(path);
+                symlinks.insert(path.clone());
+            }
+        }
+        Some(paths)
+    } else {
+        None
+    };
+
+    // Preserve first-occurrence order while grouping in O(entries): the hash map is lookup only,
+    // never an iteration authority. Sources and duplicates run as two non-nested executor phases,
+    // so one heavily repeated digest can use the full worker budget without publishing bytes
+    // before its source was verified.
+    let mut group_by_content = HashMap::new();
+    let mut groups: Vec<ContentGroup> = Vec::new();
+    for (index, entry) in manifest.entries.iter().enumerate() {
+        let group = if let Some(group) = group_by_content.get(entry.content.as_str()) {
+            *group
+        } else {
+            let group = groups.len();
+            group_by_content.insert(entry.content.as_str(), group);
+            groups.push(ContentGroup::default());
+            group
+        };
+        groups[group].indexes.push(index);
+        if groups[group].regular_source.is_none() && entry.kind != EntryKind::Symlink {
+            groups[group].regular_source = Some(index);
+        }
+    }
+    if decoded_paths.is_none() {
+        for group in &mut groups {
+            if let Some(source) = group.regular_source {
+                group.source_relative =
+                    Some(checked_relative_path(&manifest.entries[source].path)?);
             }
         }
     }
-
-    // Sort compact entry indexes into digest groups. One bounded executor pass overlaps groups;
-    // each group streams one verified regular file from CAS and reflinks/copies its duplicates.
-    // No worker waits on another worker and resident content is O(workers × 64 KiB), independent
-    // of object size and duplicate count.
-    let mut order: Vec<usize> = (0..manifest.entries.len()).collect();
-    order.sort_by(|left, right| {
-        manifest.entries[*left]
-            .content
-            .cmp(&manifest.entries[*right].content)
-            .then_with(|| left.cmp(right))
-    });
-    let mut groups = Vec::new();
-    let mut start = 0;
-    while start < order.len() {
-        let content = &manifest.entries[order[start]].content;
-        let mut end = start + 1;
-        while end < order.len() && manifest.entries[order[end]].content == *content {
-            end += 1;
-        }
-        groups.push(start..end);
-        start = end;
-    }
-    review_parallel::try_for_each(&groups, |range| {
-        let indexes = &order[range.clone()];
-        let content = &manifest.entries[indexes[0]].content;
-        materialize_group(manifest, indexes, content, cas, root)
+    let prepared = PreparedDirectories::new(root);
+    review_parallel::try_for_each(&groups, |group| {
+        materialize_group_source(
+            manifest,
+            group,
+            decoded_paths.as_deref(),
+            cas,
+            root,
+            &prepared,
+        )
+    })?;
+    let duplicates: Vec<(usize, usize, usize)> = groups
+        .iter()
+        .enumerate()
+        .flat_map(|(group_index, group)| {
+            group.regular_source.into_iter().flat_map(move |source| {
+                group.indexes.iter().copied().filter_map(move |index| {
+                    (index != source && manifest.entries[index].kind != EntryKind::Symlink)
+                        .then_some((index, source, group_index))
+                })
+            })
+        })
+        .collect();
+    review_parallel::try_for_each(&duplicates, |(index, source, group_index)| {
+        let entry = &manifest.entries[*index];
+        let relative = entry_relative(manifest, decoded_paths.as_deref(), *index)?;
+        let target = prepare_relative(root, &relative, &entry.path, &prepared)?;
+        let source_relative = match groups[*group_index].source_relative.as_deref() {
+            Some(path) => path,
+            None => decoded_paths
+                .as_deref()
+                .expect("symlink manifest paths are predecoded")[*source]
+                .as_path(),
+        };
+        reflink_copy::reflink_or_copy(root.join(source_relative), &target)?;
+        set_executable(&target, entry.kind == EntryKind::Executable)?;
+        Ok::<_, MaterializeError>(())
     })?;
     Ok(())
 }
 
-fn materialize_group(
+#[derive(Default)]
+struct ContentGroup {
+    indexes: Vec<usize>,
+    regular_source: Option<usize>,
+    source_relative: Option<PathBuf>,
+}
+
+fn materialize_group_source(
     manifest: &Manifest,
-    indexes: &[usize],
-    content: &str,
+    group: &ContentGroup,
+    decoded_paths: Option<&[PathBuf]>,
     cas: &Cas,
     root: &Path,
+    prepared: &PreparedDirectories,
 ) -> Result<(), MaterializeError> {
-    let regular = indexes
-        .iter()
-        .copied()
-        .find(|index| manifest.entries[*index].kind != EntryKind::Symlink);
-    let mut source = None;
+    let content = &manifest.entries[group.indexes[0]].content;
     let mut symlink_bytes = None;
-    let actual_size = if let Some(index) = regular {
+    let actual_size = if let Some(index) = group.regular_source {
         let entry = &manifest.entries[index];
-        let target = prepare_target(root, &entry.path)?;
-        let mut file = fs::File::create(&target)?;
+        let relative = group.source_relative.as_deref().unwrap_or_else(|| {
+            decoded_paths.expect("symlink manifest paths are predecoded")[index].as_path()
+        });
+        let target = prepare_relative(root, relative, &entry.path, prepared)?;
         let size = cas
-            .copy_verified_to(content, &mut file)
+            .materialize_verified(content, &target)
             .map_err(|error| MaterializeError::Cas(error.to_string()))?;
         set_executable(&target, entry.kind == EntryKind::Executable)?;
-        source = Some((index, target));
         size
     } else {
         let bytes = cas
@@ -152,7 +205,7 @@ fn materialize_group(
         size
     };
 
-    for index in indexes {
+    for index in &group.indexes {
         let entry = &manifest.entries[*index];
         if entry.size != actual_size {
             return Err(MaterializeError::Manifest(format!(
@@ -162,30 +215,33 @@ fn materialize_group(
         }
     }
 
-    for index in indexes {
+    for index in &group.indexes {
         let entry = &manifest.entries[*index];
-        if source.as_ref().is_some_and(|(source, _)| source == index) {
+        if group.regular_source.as_ref() == Some(index) || entry.kind != EntryKind::Symlink {
             continue;
         }
-        let target = prepare_target(root, &entry.path)?;
-        match entry.kind {
-            EntryKind::Symlink => {
-                if symlink_bytes.is_none() {
-                    symlink_bytes = Some(
-                        cas.get_bounded(content, MAX_SYMLINK_TARGET_BYTES)
-                            .map_err(|error| MaterializeError::Cas(error.to_string()))?,
-                    );
-                }
-                symlink(symlink_bytes.as_deref().expect("loaded above"), &target)?;
-            }
-            EntryKind::File | EntryKind::Executable => {
-                let (_, source) = source.as_ref().expect("regular source exists");
-                reflink_copy::reflink_or_copy(source, &target)?;
-                set_executable(&target, entry.kind == EntryKind::Executable)?;
-            }
+        let relative = &decoded_paths.expect("symlink manifest paths are predecoded")[*index];
+        let target = prepare_relative(root, relative, &entry.path, prepared)?;
+        if symlink_bytes.is_none() {
+            symlink_bytes = Some(
+                cas.get_bounded(content, MAX_SYMLINK_TARGET_BYTES)
+                    .map_err(|error| MaterializeError::Cas(error.to_string()))?,
+            );
         }
+        symlink(symlink_bytes.as_deref().expect("loaded above"), &target)?;
     }
     Ok(())
+}
+
+fn entry_relative<'a>(
+    manifest: &'a Manifest,
+    decoded_paths: Option<&'a [PathBuf]>,
+    index: usize,
+) -> Result<Cow<'a, Path>, MaterializeError> {
+    decoded_paths.map_or_else(
+        || checked_relative_path(&manifest.entries[index].path).map(Cow::Owned),
+        |paths| Ok(Cow::Borrowed(paths[index].as_path())),
+    )
 }
 
 fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
@@ -209,12 +265,36 @@ fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
     Ok(raw)
 }
 
-fn prepare_target(root: &Path, encoded: &str) -> Result<PathBuf, MaterializeError> {
-    let relative = checked_relative_path(encoded)?;
+struct PreparedDirectories {
+    paths: Mutex<HashSet<PathBuf>>,
+}
+
+impl PreparedDirectories {
+    fn new(root: &Path) -> Self {
+        Self {
+            paths: Mutex::new(HashSet::from([root.to_path_buf()])),
+        }
+    }
+}
+
+fn prepare_relative(
+    root: &Path,
+    relative: &Path,
+    encoded: &str,
+    prepared: &PreparedDirectories,
+) -> Result<PathBuf, MaterializeError> {
     let mut parent = root.to_path_buf();
     if let Some(components) = relative.parent() {
         for component in components.components() {
             parent.push(component);
+            if prepared
+                .paths
+                .lock()
+                .expect("prepared directories")
+                .contains(&parent)
+            {
+                continue;
+            }
             loop {
                 match fs::symlink_metadata(&parent) {
                     Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
@@ -237,6 +317,11 @@ fn prepare_target(root: &Path, encoded: &str) -> Result<PathBuf, MaterializeErro
                     Err(error) => return Err(error.into()),
                 }
             }
+            prepared
+                .paths
+                .lock()
+                .expect("prepared directories")
+                .insert(parent.clone());
         }
     }
     Ok(root.join(relative))

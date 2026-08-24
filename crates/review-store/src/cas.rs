@@ -239,9 +239,20 @@ impl Cas {
         Ok(bytes)
     }
 
-    /// Stream one object into `writer` while verifying the content identity.
-    /// Memory is bounded by the fixed hash buffer regardless of object size.
-    pub fn copy_verified_to(&self, digest: &str, writer: &mut impl Write) -> Result<u64, CasError> {
+    /// Atomically materialize one verified object at `target`.
+    /// Unverified bytes remain in a sibling temporary file and are never published at the
+    /// caller-visible path. Memory is bounded by the fixed hash buffer regardless of object size.
+    pub fn materialize_verified(&self, digest: &str, target: &Path) -> Result<u64, CasError> {
+        let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        let size = self.copy_to_and_verify(digest, temporary.as_file_mut())?;
+        temporary
+            .persist(target)
+            .map_err(|error| CasError::Io(error.error))?;
+        Ok(size)
+    }
+
+    fn copy_to_and_verify(&self, digest: &str, writer: &mut impl Write) -> Result<u64, CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
@@ -338,11 +349,7 @@ fn sync_concurrently<'p>(
 ) -> Result<(), CasError> {
     let paths: Vec<&Path> = paths.collect();
     const MAX_SYNC_WORKERS: usize = 16;
-    let workers = std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(1)
-        .min(MAX_SYNC_WORKERS)
-        .min(paths.len().max(1));
+    let workers = MAX_SYNC_WORKERS.min(paths.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
@@ -402,16 +409,30 @@ mod tests {
         let digest = cas.put(&bytes).unwrap();
         let mut copied = Vec::new();
         assert_eq!(
-            cas.copy_verified_to(&digest, &mut copied).unwrap(),
+            cas.copy_to_and_verify(&digest, &mut copied).unwrap(),
             bytes.len() as u64
         );
         assert_eq!(copied, bytes);
 
+        let target = _dir.path().join("published");
+        assert_eq!(
+            cas.materialize_verified(&digest, &target).unwrap(),
+            bytes.len() as u64
+        );
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+
         fs::write(cas.path_for(&digest), b"tampered").unwrap();
         assert!(matches!(
-            cas.copy_verified_to(&digest, &mut Vec::new()),
+            cas.copy_to_and_verify(&digest, &mut Vec::new()),
             Err(CasError::Corrupt { .. })
         ));
+
+        let target = _dir.path().join("corrupt-published");
+        assert!(matches!(
+            cas.materialize_verified(&digest, &target),
+            Err(CasError::Corrupt { .. })
+        ));
+        assert!(!target.exists(), "corrupt bytes must never be published");
     }
 
     #[test]

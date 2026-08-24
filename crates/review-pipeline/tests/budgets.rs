@@ -215,6 +215,44 @@ impl ReviewerAdapter for InvalidOnce {
     }
 }
 
+/// A reviewer whose first typed answer has an empty non-finding metadata field.
+struct InvalidMetadataOnce {
+    calls: AtomicU32,
+    cost: u64,
+}
+
+impl ReviewerAdapter for InvalidMetadataOnce {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        _inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let output = if first {
+            serde_json::from_str(
+                r#"{"verdict":"approve","summary":null,"findings":[],
+                    "benchmark_demands":[{"claim":"","why":"reason",
+                    "suggested_method":"measure"}],"disputes":[]}"#,
+            )
+            .unwrap()
+        } else {
+            clean_output()
+        };
+        Ok(ReviewerReturn {
+            output,
+            cost_tokens: self.cost,
+            raw_artifact: cas
+                .put(if first {
+                    b"invalid metadata answer"
+                } else {
+                    b"valid metadata answer"
+                })
+                .unwrap(),
+        })
+    }
+}
+
 /// gate → three reviewers → gather → ledger.
 fn three_reviewer_pipeline() -> Pipeline {
     let mut pipeline = Pipeline::default()
@@ -447,6 +485,48 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
             .get(artifact)
             .is_ok_and(|bytes| bytes == b"invalid answer")
     }));
+}
+
+#[test]
+fn invalid_non_finding_metadata_is_refused_before_admission_and_retried() {
+    let mut run = run_fixture();
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(InvalidMetadataOnce {
+            calls: AtomicU32::new(0),
+            cost: 20_000,
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
+    assert!(
+        report.complete(),
+        "the corrected retry must complete: {report:?}"
+    );
+    assert_eq!(kernel.spent(), Some(20_000 + 20_000 + 10_000 + 10_000));
+    assert_eq!(
+        kernel
+            .attempts()
+            .attempts()
+            .into_iter()
+            .filter(|attempt| attempt.node == "r-alpha")
+            .count(),
+        2
+    );
+    assert!(run_verdict(&report, &kernel.convergence(ConvergencePolicy::default())).passed());
 }
 
 /// Exhaustion by repeated hangs: with the run cap equal to two reservations, a reviewer that

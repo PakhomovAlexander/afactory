@@ -284,9 +284,10 @@ the result incomplete.
   gate, closure, and budget state; it never queries ambient latest projections.
 - A **Subject** is always anchored to one head **Snapshot**; a `diff` Subject additionally
   names a **Base** Snapshot and derives a **Change Set** from the pair.
-- Snapshot materialization streams verified CAS bytes under a fixed per-worker buffer and clones
-  duplicate regular files; candidate-controlled object size never becomes resident allocation or
-  a reason to park the shared infrastructure executor. See
+- Snapshot materialization atomically publishes CAS bytes only after fixed-buffer verification,
+  then clones duplicate regular files in a separate bounded phase; candidate-controlled object
+  size never becomes resident allocation or a reason to park the shared infrastructure executor.
+  See
   [ADR-0020](docs/adr/0020-stream-cas-materialization-and-clone-duplicates.md).
 - A **Proposal** applies only to its **Proposal Base**, which is the Subject's head Snapshot for
   that Attempt and is not the diff Subject's Base.

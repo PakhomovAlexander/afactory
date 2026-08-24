@@ -1673,11 +1673,10 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
             .validate(index)
             .map_err(|error| format!("ReviewerResult@1 is not admissible: {error}"))?;
     }
-    let mut object = serde_json::to_value(stage)
-        .map_err(|error| error.to_string())?
-        .as_object()
-        .cloned()
-        .ok_or("reviewer result did not serialize as an object")?;
+    let mut object = match serde_json::to_value(stage).map_err(|error| error.to_string())? {
+        serde_json::Value::Object(object) => object,
+        _ => return Err("reviewer result did not serialize as an object".into()),
+    };
     let reports = object
         .remove("findings")
         .ok_or("reviewer result has no findings field")?;
@@ -1702,7 +1701,9 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
             }
         }
     }
-    Ok(serde_json::Value::Object(object))
+    let value = serde_json::Value::Object(object);
+    review_store::validate_reviewer_result(&value).map_err(|error| error.to_string())?;
+    Ok(value)
 }
 
 fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {

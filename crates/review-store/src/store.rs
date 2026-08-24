@@ -839,7 +839,7 @@ fn validate_artifact_payload(
     Ok(None)
 }
 
-fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
+pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
     let object = value
         .as_object()
         .ok_or_else(|| StoreError::Conflict("ReviewerResult@1 is not an object".into()))?;
@@ -1732,6 +1732,7 @@ fn round_has_terminal_report(
     let mut statement = tx.prepare(
         "SELECT type, payload FROM events
          WHERE run_id = ?1 AND causation_id = ?2
+           AND type LIKE 'RunReport@%'
          ORDER BY sequence",
     )?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {

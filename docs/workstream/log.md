@@ -291,3 +291,32 @@ truncation, sealing uses binary search over the already sorted baseline, reviewe
 moves rather than clones JSON, and CAS fsync fan-out has an explicit sixteen-worker ceiling.
 The release measurements recorded 0.943 s for 5,000 distinct entries / 199 MiB, 0.510 s for the
 same output with repeated content, and 0.467 s for 128 distinct duplicated 1 MiB blobs / 256 MiB.
+
+## 2026-08-24 — M2 convergence Campaign Round 2 corrections
+
+Round 2 spent 615,571 tokens, retained fourteen Round 1 resolutions, reopened the CPU-derived CAS
+fsync fan-out, and opened ten further Reports. CAS durability now always uses at most sixteen I/O
+workers independent of reported CPU count. Reviewer results pass the durable store's complete
+validator before any result artifact or receipt is admitted, so invalid demands and disputes are
+charged and retried by the same path as invalid Reports. Container execution now shares the
+probe's process-group supervision and has a fixed fifteen-minute deadline. Run-report append
+checks narrow their SQL scan to the stable type family before typed structural classification;
+deserialized manifest lookup remains correct even before callers validate canonical ordering, and
+reviewer output conversion moves its serialized object rather than cloning it.
+
+CAS materialization writes unverified bytes only to a sibling temporary file and atomically
+renames the target into view after fixed-buffer digest verification. Entry grouping is linear and
+first-occurrence preserving. Distinct verified sources and regular-file duplicates run in two
+non-nested bounded executor phases, allowing one repeated digest to use the whole worker budget.
+Symlink manifests decode paths once, ordinary source paths are retained once per digest, and a
+shared prepared-directory set avoids restating every ancestor for every entry. ADR-0020 and the
+materialization invariant now record those boundaries.
+
+The final release measurements recorded 1.776 s for 5,000 distinct entries / 199 MiB and 0.845 s
+for the same output with repeated content. The 128-distinct-pairs / 256 MiB workload recorded
+0.876 s, 51,707,904 bytes maximum command RSS, and a 34,914,808-byte Darwin peak footprint. The
+extra source-publication cost buys the invariant that corrupt bytes never exist at a declared
+target path. Focused contract, source, store, sandbox, and pipeline regressions pass. Full
+workspace clippy, tests, and byte-identical fixture reproduction pass before the correction
+commit. Because Round 2 was not clean, this Campaign cannot establish two clean Rounds within its
+four-Round policy.

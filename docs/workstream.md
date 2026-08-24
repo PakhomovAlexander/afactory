@@ -1,8 +1,10 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed. The
-second Campaign exhausted after four Rounds with 43 Findings; its eight final corrections are under
-verification. Establish two clean Rounds in a fresh unchanged-policy Campaign before M3.1.
+**Status:** M0 and M1 are complete. Two M2 dogfood Campaigns exhausted with all 88 Findings fixed.
+Fresh convergence Campaign Round 1 opened fifteen further Findings and Round 2 retained fourteen,
+reopened one, and opened ten. Its eleven corrections are verified and ready to commit; this
+Campaign cannot fit two clean Rounds, so another fresh unchanged-policy Campaign is still required
+before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -139,14 +141,16 @@ epoch 2 spent 495,186 tokens and opened nine further claims. Their corrections p
 claims with unknown Scope, validate unique manifest paths, and make authority-unavailable conclusions
 durable through additive `RunReport@3`. Those corrections were verified, committed, and resolved.
 Round 4 spent 605,986 tokens, retained all 35 prior resolutions, opened eight further claims, and
-exhausted the Campaign. A fresh Campaign Round 1 then opened fifteen claims. Their corrections
-replace blocking whole-object materialization with verified fixed-buffer streaming and cloned
-duplicates (ADR-0020), keep ReviewerResult@1 at its sole live flat wire shape, centralize
-RunReport-version classification, fully revalidate Change Sets at prompt rendering, suppress
-authority diagnostics from prior claims, and preserve real Finding/Gate failure precedence.
-Verify, commit, resolve, then establish two clean Rounds before M3.1. Continue
-in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
-isolation, and verification prerequisites.
+exhausted the Campaign. Fresh Campaign `m2-rename-scope-convergence` Round 1 opened fifteen claims;
+their corrections were verified, committed, and resolved. Round 2 spent 615,571 tokens, retained
+fourteen of those fixes, reopened one, and opened ten further claims. Its corrections atomically
+publish verified CAS sources, split source and duplicate materialization into two non-nested
+bounded phases, cap container execution, validate the complete ReviewerResult before admission,
+and remove remaining linear hot-path repetition. The corrections and release measurements are
+verified; commit, resolve, and use the Campaign's remaining Rounds for review coverage. Because
+Round 2 was not clean, establish two clean Rounds in another fresh unchanged-policy Campaign before
+M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past Subject,
+authority, isolation, and verification prerequisites.
 
 ## Risks / notes
 

@@ -116,10 +116,7 @@ impl Manifest {
     }
 
     pub fn get(&self, path: &str) -> Option<&Entry> {
-        self.entries
-            .binary_search_by(|entry| entry.path.as_str().cmp(path))
-            .ok()
-            .map(|index| &self.entries[index])
+        self.entries.iter().find(|entry| entry.path == path)
     }
 
     /// The snapshot's content digest.
@@ -248,6 +245,10 @@ mod tests {
                 previous: "b".into(),
                 path: "a".into(),
             })
+        );
+        assert_eq!(
+            manifest.get("a").map(|entry| entry.path.as_str()),
+            Some("a")
         );
     }
 
