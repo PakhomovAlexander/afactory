@@ -548,6 +548,9 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         && status == "authenticated"
         && claude_subscription_usage_supported(&output.stdout)
     {
+        // Keep this sequential: only a fresh first-party subscription result authorizes opening
+        // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
+        // and third-party contexts merely to hide one provider-process startup.
         match probe_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
             Ok(claude_limits) => limits.extend(claude_limits),
             Err(error) => {
@@ -721,17 +724,21 @@ fn probe_claude_weekly_limits(
 
     // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
     let (sender, receiver) = sync_channel(1);
+    let (recycle_sender, recycle_receiver) = sync_channel(1);
     let (reader_done_sender, reader_done_receiver) = sync_channel(1);
     let reader_thread = thread::spawn(move || {
+        let mut chunk = vec![0_u8; 8192];
         loop {
-            let mut chunk = vec![0_u8; 8192];
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(count) => {
-                    chunk.truncate(count);
-                    if sender.send(Ok(chunk)).is_err() {
+                    if sender.send(Ok((chunk, count))).is_err() {
                         break;
                     }
+                    chunk = match recycle_receiver.recv() {
+                        Ok(chunk) => chunk,
+                        Err(_) => break,
+                    };
                 }
                 Err(error) => {
                     let _ = sender.send(Err(error));
@@ -748,8 +755,9 @@ fn probe_claude_weekly_limits(
     let mut dirty = false;
     let result = loop {
         let quiet = match receiver.recv_timeout(Duration::from_millis(25)) {
-            Ok(Ok(chunk)) => {
-                retain_bounded_tail(&mut captured, &chunk, MAX_PROBE_OUTPUT);
+            Ok(Ok((chunk, count))) => {
+                retain_bounded_tail(&mut captured, &chunk[..count], MAX_PROBE_OUTPUT);
+                let _ = recycle_sender.send(chunk);
                 dirty = true;
                 false
             }
@@ -794,6 +802,7 @@ fn probe_claude_weekly_limits(
     let _ = child.wait();
     drop(pair.master);
     drop(receiver);
+    drop(recycle_sender);
     // A descendant that escaped the process group may retain the PTY slave. Never let that turn
     // cancellation or TUI shutdown into an unbounded join.
     if reader_done_receiver
