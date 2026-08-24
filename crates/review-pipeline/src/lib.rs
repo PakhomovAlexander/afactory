@@ -602,11 +602,12 @@ pub struct Kernel<'a> {
 fn persisted_verdict(
     verdict: &RunVerdict,
     convergence: &Convergence,
+    has_blocked_gates: bool,
 ) -> Result<RunVerdictV3, String> {
     Ok(match verdict {
         RunVerdict::Pass => RunVerdictV3::Pass,
         RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV3::Fail {
-            reason: if convergence.authority_failures_recent > 0 {
+            reason: if convergence.authority_failures_recent > 0 && !has_blocked_gates {
                 RunFailureReasonV3::AuthorityUnavailable
             } else {
                 RunFailureReasonV3::NotConverged
@@ -1062,7 +1063,8 @@ impl<'a> Kernel<'a> {
                 }
             })
             .collect();
-        let persisted_verdict = persisted_verdict(&verdict, &convergence)?;
+        let persisted_verdict =
+            persisted_verdict(&verdict, &convergence, !report.blocked_gates.is_empty())?;
         let payload = RunReportPayloadV3 {
             outcomes,
             blocked_gates: report.blocked_gates.iter().cloned().collect(),
@@ -1569,7 +1571,7 @@ impl<'a> Kernel<'a> {
     fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let mut results: Vec<(String, LegacyStageOutput)> = Vec::new();
+        let mut results: Vec<(String, ReducibleReviewerOutput)> = Vec::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
@@ -1637,12 +1639,18 @@ impl<'a> Kernel<'a> {
             let mut ingest = Ingest::new(*store, self.cas, self.run_id.clone())
                 .map_err(|e| e.to_string())?
                 .under_round(&self.authority.round_event_id);
-            let stages: Vec<(&str, &LegacyStageOutput)> = results
+            let stages: Vec<_> = results
                 .iter()
-                .map(|(node, stage)| (node.as_str(), stage))
+                .map(|(node, stage)| {
+                    (
+                        node.as_str(),
+                        stage.reports.as_slice(),
+                        stage.disputes.as_slice(),
+                    )
+                })
                 .collect();
             ingest
-                .add_live_stage_outputs(&stages)
+                .add_live_report_outputs(&stages)
                 .map_err(|e| e.to_string())?;
             (ingest.ledger().round, ingest.ledger().len())
         };
@@ -1699,16 +1707,44 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
     Ok(serde_json::Value::Object(object))
 }
 
-fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {
+struct ReducibleReviewerOutput {
+    reports: Vec<review_core::FindingReport>,
+    disputes: Vec<review_core::legacy::LegacyDispute>,
+}
+
+fn reviewer_stage_output(value: serde_json::Value) -> Result<ReducibleReviewerOutput, String> {
     let mut object = value
         .as_object()
         .cloned()
         .ok_or("ReviewerResult@1 is not an object")?;
-    let reports = object
+    let report_values = object
         .remove("reports")
-        .ok_or("ReviewerResult@1 has no reports field")?;
-    object.insert("findings".into(), reports);
-    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+        .and_then(|reports| reports.as_array().cloned())
+        .ok_or("ReviewerResult@1 has no reports array")?;
+    object.insert("findings".into(), serde_json::Value::Array(Vec::new()));
+    let metadata: LegacyStageOutput = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|error| error.to_string())?;
+    let mut reports = Vec::with_capacity(report_values.len());
+    for (index, value) in report_values.into_iter().enumerate() {
+        let report = if value.get("locations").is_some() {
+            let report: review_core::FindingReport = serde_json::from_value(value)
+                .map_err(|error| format!("typed report {index}: {error}"))?;
+            report
+                .validate()
+                .map_err(|error| format!("typed report {index}: {error}"))?;
+            report
+        } else {
+            serde_json::from_value::<review_core::legacy::LegacyFinding>(value)
+                .map_err(|error| format!("legacy report {index}: {error}"))?
+                .into_report(index)
+                .map_err(|error| error.to_string())?
+        };
+        reports.push(report);
+    }
+    Ok(ReducibleReviewerOutput {
+        reports,
+        disputes: metadata.disputes,
+    })
 }
 
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
@@ -1949,7 +1985,12 @@ mod tests {
             verdict: Verdict::NotConverged,
         };
         assert_eq!(
-            persisted_verdict(&RunVerdict::Fail(Verdict::NotConverged), &convergence).unwrap(),
+            persisted_verdict(
+                &RunVerdict::Fail(Verdict::NotConverged),
+                &convergence,
+                false,
+            )
+            .unwrap(),
             RunVerdictV3::Fail {
                 reason: RunFailureReasonV3::AuthorityUnavailable
             }
@@ -1957,10 +1998,54 @@ mod tests {
 
         convergence.authority_failures_recent = 0;
         assert_eq!(
-            persisted_verdict(&RunVerdict::Fail(Verdict::NotConverged), &convergence).unwrap(),
+            persisted_verdict(
+                &RunVerdict::Fail(Verdict::NotConverged),
+                &convergence,
+                false,
+            )
+            .unwrap(),
             RunVerdictV3::Fail {
                 reason: RunFailureReasonV3::NotConverged
             }
         );
+
+        convergence.authority_failures_recent = 1;
+        assert_eq!(
+            persisted_verdict(&RunVerdict::Fail(Verdict::NotConverged), &convergence, true,)
+                .unwrap(),
+            RunVerdictV3::Fail {
+                reason: RunFailureReasonV3::NotConverged
+            },
+            "an explicit blocked gate is the immediate durable cause"
+        );
+    }
+
+    #[test]
+    fn typed_reviewer_reports_reach_the_reducer_without_losing_locations() {
+        let output = reviewer_stage_output(serde_json::json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [{
+                "title": "multi-location claim",
+                "severity": "major",
+                "locations": [
+                    {"path": "src/a.rs", "line": 1},
+                    {"path": "src/b.rs", "line": 2}
+                ],
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }],
+            "benchmark_demands": [],
+            "disputes": [{
+                "claim_id": "prior",
+                "position": "refute",
+                "reason": "not reproduced"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].locations.len(), 2);
+        assert_eq!(output.disputes[0].fp, "prior");
     }
 }

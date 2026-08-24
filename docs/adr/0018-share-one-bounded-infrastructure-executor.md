@@ -38,3 +38,6 @@ threads, so scheduler concurrency cannot multiply the CPU worker budget.
   `fsync` does not consume the CPU executor.
 - Operations must submit deterministic indexed collections and restore canonical ordering where
   their result is persisted; work-stealing completion order is never artifact order.
+- A task waiting on a resource budget may not hold that resource across a re-entrant executor
+  submission. Nested fan-out starts only after sibling tasks that can wait on the same budget have
+  drained, so work stealing cannot make a permit holder block behind itself.

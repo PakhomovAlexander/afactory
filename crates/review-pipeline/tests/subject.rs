@@ -84,7 +84,7 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
         .load_with(&lockfile, &registry)
         .unwrap();
 
-    let manifest = Manifest::new(vec![]);
+    let manifest = Manifest::new(vec![]).unwrap();
     let authority =
         support::test_diff_round_authority(&cas, &mut store, "run", &manifest, DIFF_PIPELINE);
     let seen = Arc::new(Mutex::new(None));

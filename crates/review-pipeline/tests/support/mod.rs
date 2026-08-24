@@ -85,7 +85,7 @@ fn test_round_authority_with_subject(
     pipeline: &str,
     subject_kind: SubjectKind,
 ) -> RoundAuthority {
-    let authority_manifest = Manifest::new(vec![]);
+    let authority_manifest = Manifest::new(vec![]).unwrap();
     let authority_manifest_id = cas
         .put_json(&serde_json::to_value(&authority_manifest).unwrap())
         .unwrap();

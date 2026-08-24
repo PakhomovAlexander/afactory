@@ -305,7 +305,7 @@ fn unchanged_large_tree_sandbox_measurement() {
             size: target.len() as u64,
         });
     }
-    let manifest = Manifest::new(entries);
+    let manifest = Manifest::new(entries).unwrap();
     let started = std::time::Instant::now();
     let template = review_sandbox::SandboxTemplate::materialize(&manifest, &cas).unwrap();
     let materialize_elapsed = started.elapsed();
@@ -343,7 +343,8 @@ fn unchanged_large_tree_sandbox_measurement() {
                 size: repeated_bytes.len() as u64,
             })
             .collect(),
-    );
+    )
+    .unwrap();
     let started = std::time::Instant::now();
     let _repeated_template = review_sandbox::SandboxTemplate::materialize(&repeated, &cas).unwrap();
     eprintln!(
@@ -373,7 +374,7 @@ fn many_distinct_repeated_blobs_have_bounded_resident_memory() {
             });
         }
     }
-    let manifest = Manifest::new(entries);
+    let manifest = Manifest::new(entries).unwrap();
     let started = std::time::Instant::now();
     let template = review_sandbox::SandboxTemplate::materialize(&manifest, &cas).unwrap();
     let sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite).unwrap();

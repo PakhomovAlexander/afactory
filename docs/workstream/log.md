@@ -245,3 +245,27 @@ readers remain unchanged under ADR-0002. ADR-0019 records the decision. Focused 
 store, pipeline, CLI, source, and sandbox tests pass. Round 4 remains useful dogfood, but because
 Round 3 was not clean, this Campaign can no longer produce the required two clean Rounds within its
 four-Round policy; convergence will require another fresh Campaign under the same policy.
+
+## 2026-08-24 — M2 fresh dogfood Round 4 corrections
+
+Round 4 spent 605,986 tokens, retained all 35 prior resolutions, opened eight Reports, and
+exhausted Campaign `m2-rename-scope-final`. Two reviewers independently identified the same
+resident-budget/nested-executor deadlock, including one blocker: a worker could hold content bytes,
+enter a nested fan-out, steal a sibling task, and wait behind its own permit. Ordinary digest
+groups now drain in one byte-budgeted outer fan-out with serial per-group occurrences. Heavily
+repeated groups are skipped by that pass and only then use nested parallel writes from the caller
+thread, when no sibling can still wait on the same budget.
+
+`Manifest::new` now returns a typed error; validation uses the canonical sorted invariant to reject
+duplicate or out-of-order adjacent paths in O(n), and materialization checks symlink ancestors in
+the same serial validation pass without re-rendering every path. The live ReviewerResult reducer
+normalizes both contract arms to `FindingReport@1` and preserves every typed location through
+ledger admission. Finding Report line bounds now match the readers' `u32` domain with shared
+boundary corpus cases. A blocked gate remains the immediate durable cause even when background
+Scope authority diagnostics also exist.
+
+The shipped 5,000-entry / 199 MiB release measurement recorded 0.488 s distinct-content and 0.612 s
+repeated-content materialization. The 128-distinct-pairs / 256 MiB workload recorded 0.085 s and
+53,329,920 bytes maximum command RSS with a 36,536,824-byte Darwin peak footprint. Focused contract,
+source, store, and pipeline regressions pass. A fresh unchanged-policy Campaign must establish two
+clean Rounds after these final corrections are fully verified and resolved.

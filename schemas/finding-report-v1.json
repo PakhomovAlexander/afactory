@@ -73,12 +73,12 @@
           "description": "1-indexed line. Absent when the claim is about the file as a whole.",
           "type": "integer",
           "minimum": 1,
-          "maximum": 9007199254740991
+          "maximum": 4294967295
         },
         "end_line": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 9007199254740991
+          "maximum": 4294967295
         }
       }
     },

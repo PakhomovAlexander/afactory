@@ -231,8 +231,9 @@ fn finding_report_semantic_conformance_corpus_matches_schema_and_reader() {
             &case["payload"],
             case["name"].as_str().unwrap(),
         );
-        let report: FindingReport = serde_json::from_value(case["payload"].clone()).unwrap();
-        assert!(report.validate().is_err(), "{}", case["name"]);
+        let refused = serde_json::from_value::<FindingReport>(case["payload"].clone())
+            .map_or(true, |report| report.validate().is_err());
+        assert!(refused, "{}", case["name"]);
     }
 }
 

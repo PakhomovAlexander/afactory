@@ -28,13 +28,14 @@ use review_store::Cas;
 use sha2::{Digest, Sha256};
 
 use crate::git::{GitError, Repo, TreeId, split_nul};
-use crate::manifest::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
+use crate::manifest::{Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path};
 
 #[derive(Debug)]
 pub enum CaptureError {
     Git(GitError),
     Io(std::io::Error),
     Cas(String),
+    Manifest(ManifestError),
     /// The worktree kept changing while it was being read.
     Unstable {
         attempts: u32,
@@ -74,6 +75,7 @@ impl std::fmt::Display for CaptureError {
             CaptureError::Git(e) => write!(f, "{e}"),
             CaptureError::Io(e) => write!(f, "capture io: {e}"),
             CaptureError::Cas(e) => write!(f, "capture cas: {e}"),
+            CaptureError::Manifest(e) => write!(f, "capture manifest: {e}"),
             CaptureError::Unstable { attempts } => write!(
                 f,
                 "worktree changed during capture ({attempts} attempts); refusing to admit a torn tree"
@@ -121,6 +123,12 @@ impl From<GitError> for CaptureError {
 impl From<std::io::Error> for CaptureError {
     fn from(e: std::io::Error) -> Self {
         CaptureError::Io(e)
+    }
+}
+
+impl From<ManifestError> for CaptureError {
+    fn from(error: ManifestError) -> Self {
+        CaptureError::Manifest(error)
     }
 }
 
@@ -288,7 +296,7 @@ impl<'a> Capture<'a> {
             });
         }
 
-        let manifest = Manifest::new(entries);
+        let manifest = Manifest::new(entries)?;
         Ok(Snapshot {
             content_digest: manifest.content_digest(),
             manifest,
@@ -369,7 +377,7 @@ impl<'a> Capture<'a> {
                         size,
                     });
                 }
-                let manifest = Manifest::new(entries);
+                let manifest = Manifest::new(entries)?;
                 return Ok(Snapshot {
                     content_digest: manifest.content_digest(),
                     manifest,

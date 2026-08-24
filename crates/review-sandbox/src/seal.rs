@@ -197,7 +197,9 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    Ok((Manifest::new(entries), mutations))
+    let manifest = Manifest::new(entries)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok((manifest, mutations))
 }
 
 fn append_baseline_candidates(

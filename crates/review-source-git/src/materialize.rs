@@ -86,8 +86,13 @@ pub fn materialize(
     // Each distinct parent is prepared once: `create_dir_all` stats every component, so doing
     // it per entry costs O(files × depth) syscalls where O(directories × depth) suffices.
     let mut prepared: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut symlinks = HashSet::new();
+    let mut symlinks: HashSet<&str> = HashSet::new();
     for entry in &manifest.entries {
+        if has_symlink_ancestor(&entry.path, &symlinks) {
+            return Err(MaterializeError::Escape {
+                path: entry.path.clone(),
+            });
+        }
         let target = safe_join(root, &entry.path)?;
         if let Some(parent) = target.parent()
             && !prepared.contains(parent)
@@ -103,24 +108,7 @@ pub fn materialize(
             prepared.insert(parent.to_path_buf());
         }
         if entry.kind == EntryKind::Symlink {
-            symlinks.insert(target);
-        }
-    }
-
-    if !symlinks.is_empty() {
-        if let Some(entry) = manifest.entries.iter().find(|entry| {
-            let Ok(target) = safe_join(root, &entry.path) else {
-                return false;
-            };
-            target
-                .ancestors()
-                .skip(1)
-                .take_while(|ancestor| *ancestor != root)
-                .any(|ancestor| symlinks.contains(ancestor))
-        }) {
-            return Err(MaterializeError::Escape {
-                path: entry.path.clone(),
-            });
+            symlinks.insert(&entry.path);
         }
     }
 
@@ -147,6 +135,12 @@ pub fn materialize(
     }
     let resident = ResidentBudget::new(64 * 1024 * 1024);
     review_parallel::try_for_each(&groups, |range| {
+        // Large occurrence groups are handled below from the caller thread. Keeping nested
+        // executor work out of this byte-budgeted fan-out ensures a worker waiting for memory
+        // can never be stolen by the permit holder itself.
+        if range.len() >= review_parallel::worker_limit() {
+            return Ok(());
+        }
         let indexes = &order[range.clone()];
         let content = &manifest.entries[indexes[0]].content;
         let (bytes, _resident) = cas
@@ -164,18 +158,57 @@ pub fn materialize(
                 )));
             }
         }
-        let write = |index: &usize| {
+        indexes.iter().try_for_each(|index| {
             let entry = &manifest.entries[*index];
             let target = safe_join(root, &entry.path)?;
             write_entry(&bytes, &target, entry.kind)?;
             Ok::<_, MaterializeError>(())
-        };
-        if indexes.len() >= review_parallel::worker_limit() {
-            review_parallel::try_for_each(indexes, write)
-        } else {
-            indexes.iter().try_for_each(write)
+        })
+    })?;
+
+    // A heavily repeated digest still writes occurrences in parallel, but only after the outer
+    // byte-budgeted pass has drained. The resident permit is therefore never held across a
+    // re-entrant executor call that can steal another memory-waiting materialization task.
+    for range in groups
+        .iter()
+        .filter(|range| range.len() >= review_parallel::worker_limit())
+    {
+        let indexes = &order[range.clone()];
+        let content = &manifest.entries[indexes[0]].content;
+        let (bytes, _resident) = cas
+            .get_admitted(content, |length| resident.acquire(length))
+            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+        for index in indexes {
+            let entry = &manifest.entries[*index];
+            if entry.size != bytes.len() as u64 {
+                return Err(MaterializeError::Manifest(format!(
+                    "entry `{}` declares {} bytes but CAS object {} has {}",
+                    entry.path,
+                    entry.size,
+                    entry.content,
+                    bytes.len()
+                )));
+            }
         }
-    })
+        review_parallel::try_for_each(indexes, |index| {
+            let entry = &manifest.entries[*index];
+            let target = safe_join(root, &entry.path)?;
+            write_entry(&bytes, &target, entry.kind)?;
+            Ok::<_, MaterializeError>(())
+        })?;
+    }
+    Ok(())
+}
+
+fn has_symlink_ancestor<'a>(path: &'a str, symlinks: &HashSet<&'a str>) -> bool {
+    let mut prefix = path;
+    while let Some((parent, _)) = prefix.rsplit_once('/') {
+        if symlinks.contains(parent) {
+            return true;
+        }
+        prefix = parent;
+    }
+    false
 }
 
 struct ResidentBudget {
@@ -299,7 +332,8 @@ mod tests {
                 content: file,
                 size: 7,
             },
-        ]);
+        ])
+        .unwrap();
 
         assert!(matches!(
             materialize(&manifest, &cas, dir.path().join("tree")),
@@ -333,5 +367,37 @@ mod tests {
         let error = materialize(&manifest, &cas, dir.path().join("tree")).unwrap_err();
         assert!(error.to_string().contains("repeats path `same`"));
         assert!(!dir.path().join("tree/same").exists());
+    }
+
+    #[test]
+    fn a_large_repeated_group_drains_outside_the_budgeted_outer_fanout() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+        let repeated = cas.put(b"repeat").unwrap();
+        let distinct = cas.put(b"distinct").unwrap();
+        let mut entries: Vec<crate::Entry> = (0..review_parallel::worker_limit())
+            .map(|index| crate::Entry {
+                path: format!("repeated/{index:04}"),
+                kind: EntryKind::File,
+                content: repeated.clone(),
+                size: 6,
+            })
+            .collect();
+        entries.push(crate::Entry {
+            path: "ordinary".into(),
+            kind: EntryKind::File,
+            content: distinct,
+            size: 8,
+        });
+        let manifest = Manifest::new(entries).unwrap();
+        let root = dir.path().join("tree");
+
+        materialize(&manifest, &cas, &root).unwrap();
+
+        assert_eq!(std::fs::read(root.join("ordinary")).unwrap(), b"distinct");
+        assert_eq!(
+            std::fs::read(root.join("repeated/0000")).unwrap(),
+            b"repeat"
+        );
     }
 }

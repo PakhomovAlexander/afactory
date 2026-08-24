@@ -5,7 +5,7 @@
 //! performed. Now every finding is validated first; the corpus equivalence (proved in
 //! `replay_synthetic`) still holds, and these pin what the gate now refuses on the live path.
 
-use review_core::LegacyStageOutput;
+use review_core::{FindingReport, LegacyStageOutput, Location, Severity};
 use review_store::{Cas, EventStore, Ingest};
 
 fn ingest_one(finding_json: &str) -> usize {
@@ -28,6 +28,34 @@ fn a_contract_complete_finding_is_ingested() {
         r#"{"severity":"major","file":"src/a.rs","line":7,"title":"T","body":"b","fix":"bound it","confidence":0.9}"#,
     );
     assert_eq!(n, 1);
+}
+
+#[test]
+fn a_typed_multi_location_report_reaches_the_live_ledger_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let report = FindingReport {
+        title: "typed claim".into(),
+        severity: Severity::Major,
+        locations: vec![Location::at("src/b.rs", 2), Location::at("src/a.rs", 1)],
+        body: "body".into(),
+        fix: "fix".into(),
+        confidence: 0.9,
+        failure_trace: None,
+        rule_id: None,
+        occurrence_key: None,
+        relations: vec![],
+    };
+    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
+    ingest
+        .add_live_report_outputs(&[("typed", &[report], &[])])
+        .unwrap();
+
+    let finding = ingest.ledger().findings()[0];
+    assert_eq!(finding.identity_file, "src/a.rs");
+    let report_value = cas.get_json(&finding.reports[0].report_id).unwrap();
+    assert_eq!(report_value["locations"].as_array().unwrap().len(), 2);
 }
 
 #[test]

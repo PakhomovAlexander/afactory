@@ -1,8 +1,8 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed. Fresh
-Campaign Rounds 1–3 opened 36 further claims; Round 3 corrections are under verification. Finish
-Round 4, then establish two clean Rounds in another unchanged-policy Campaign before M3.1.
+**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed. The
+second Campaign exhausted after four Rounds with 43 Findings; its eight final corrections are under
+verification. Establish two clean Rounds in a fresh unchanged-policy Campaign before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -138,9 +138,13 @@ installed-runtime probe. Its bounded correction was committed and the epoch rest
 epoch 2 spent 495,186 tokens and opened nine further claims. Their corrections preserve readable
 claims with unknown Scope, validate unique manifest paths, use one streaming materialization pass
 under an explicit 64 MiB resident-content budget, and make authority-unavailable conclusions
-durable through additive `RunReport@3`. Verify and commit these corrections, resolve all nine, and
-run Round 4. Because Round 3 was not clean, this four-Round Campaign cannot meet its two-clean-Round
-policy; after Round 4, start a fresh unchanged-policy Campaign and converge it before M3.1. Continue
+durable through additive `RunReport@3`. Those corrections were verified, committed, and resolved.
+Round 4 spent 605,986 tokens, retained all 35 prior resolutions, opened eight further claims, and
+exhausted the Campaign. Its corrections separate nested repeated-group fan-out from budget-waiting
+executor tasks, make manifest construction fallible and validate canonical adjacent path order,
+carry typed multi-location ReviewerResult reports through the live reducer, align schema line
+bounds with `u32`, and preserve blocked-gate verdict precedence. Verify, commit, and resolve them;
+then start a fresh unchanged-policy Campaign and establish two clean Rounds before M3.1. Continue
 in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

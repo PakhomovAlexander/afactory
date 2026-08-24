@@ -14,6 +14,17 @@
         "rule_id": "review.rules/path-check@2",
         "occurrence_key": "one"
       }
+    },
+    {
+      "name": "u32 line boundary",
+      "payload": {
+        "title": "t",
+        "severity": "minor",
+        "locations": [{ "path": "src/a.rs", "line": 4294967295, "end_line": 4294967295 }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 1
+      }
     }
   ],
   "invalid": [
@@ -23,6 +34,17 @@
         "title": "t",
         "severity": "major",
         "locations": [{ "path": "/src/a.rs" }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "line exceeds u32",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "src/a.rs", "line": 4294967296 }],
         "body": "b",
         "fix": "f",
         "confidence": 0.5

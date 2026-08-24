@@ -62,12 +62,17 @@ pub struct Manifest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     DuplicatePath(String),
+    UnsortedPaths { previous: String, path: String },
 }
 
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicatePath(path) => write!(formatter, "manifest repeats path `{path}`"),
+            Self::UnsortedPaths { previous, path } => write!(
+                formatter,
+                "manifest path `{path}` is ordered before preceding path `{previous}`"
+            ),
         }
     }
 }
@@ -75,22 +80,28 @@ impl std::fmt::Display for ManifestError {
 impl std::error::Error for ManifestError {}
 
 impl Manifest {
-    pub fn new(mut entries: Vec<Entry>) -> Manifest {
+    pub fn new(mut entries: Vec<Entry>) -> Result<Manifest, ManifestError> {
         // Sorted by raw path bytes: the one ordering that does not depend on a locale.
         entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
         let manifest = Manifest { entries };
-        manifest
-            .validate()
-            .expect("programmatically constructed manifests have unique paths");
-        manifest
+        manifest.validate()?;
+        Ok(manifest)
     }
 
     /// Validate invariants required by parallel materialization and positional diffing.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        let mut paths = std::collections::HashSet::with_capacity(self.entries.len());
-        for entry in &self.entries {
-            if !paths.insert(entry.path.as_str()) {
-                return Err(ManifestError::DuplicatePath(entry.path.clone()));
+        for pair in self.entries.windows(2) {
+            match pair[0].path.as_bytes().cmp(pair[1].path.as_bytes()) {
+                std::cmp::Ordering::Equal => {
+                    return Err(ManifestError::DuplicatePath(pair[1].path.clone()));
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(ManifestError::UnsortedPaths {
+                        previous: pair[0].path.clone(),
+                        path: pair[1].path.clone(),
+                    });
+                }
+                std::cmp::Ordering::Less => {}
             }
         }
         Ok(())
@@ -182,11 +193,13 @@ mod tests {
         let a = Manifest::new(vec![
             entry("b.txt", EntryKind::File, b"two"),
             entry("a.txt", EntryKind::File, b"one"),
-        ]);
+        ])
+        .unwrap();
         let b = Manifest::new(vec![
             entry("a.txt", EntryKind::File, b"one"),
             entry("b.txt", EntryKind::File, b"two"),
-        ]);
+        ])
+        .unwrap();
         assert_eq!(a.content_digest(), b.content_digest());
     }
 
@@ -202,27 +215,49 @@ mod tests {
             manifest.validate(),
             Err(ManifestError::DuplicatePath("same".into()))
         );
+        assert_eq!(
+            Manifest::new(manifest.entries),
+            Err(ManifestError::DuplicatePath("same".into()))
+        );
+    }
+
+    #[test]
+    fn deserialized_manifests_must_retain_canonical_path_order() {
+        let manifest = Manifest {
+            entries: vec![
+                entry("b", EntryKind::File, b"two"),
+                entry("a", EntryKind::File, b"one"),
+            ],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ManifestError::UnsortedPaths {
+                previous: "b".into(),
+                path: "a".into(),
+            })
+        );
     }
 
     #[test]
     fn the_executable_bit_is_part_of_identity() {
-        let plain = Manifest::new(vec![entry("s.sh", EntryKind::File, b"#!/bin/sh\n")]);
-        let exec = Manifest::new(vec![entry("s.sh", EntryKind::Executable, b"#!/bin/sh\n")]);
+        let plain = Manifest::new(vec![entry("s.sh", EntryKind::File, b"#!/bin/sh\n")]).unwrap();
+        let exec =
+            Manifest::new(vec![entry("s.sh", EntryKind::Executable, b"#!/bin/sh\n")]).unwrap();
         assert_ne!(plain.content_digest(), exec.content_digest());
     }
 
     #[test]
     fn fields_cannot_be_re_cut_into_a_different_manifest() {
         // Without length framing, "ab" + "c" and "a" + "bc" would hash alike.
-        let a = Manifest::new(vec![entry("ab", EntryKind::File, b"c")]);
-        let b = Manifest::new(vec![entry("a", EntryKind::File, b"bc")]);
+        let a = Manifest::new(vec![entry("ab", EntryKind::File, b"c")]).unwrap();
+        let b = Manifest::new(vec![entry("a", EntryKind::File, b"bc")]).unwrap();
         assert_ne!(a.content_digest(), b.content_digest());
     }
 
     #[test]
     fn a_symlink_is_not_the_file_it_points_at() {
-        let link = Manifest::new(vec![entry("l", EntryKind::Symlink, b"target")]);
-        let file = Manifest::new(vec![entry("l", EntryKind::File, b"target")]);
+        let link = Manifest::new(vec![entry("l", EntryKind::Symlink, b"target")]).unwrap();
+        let file = Manifest::new(vec![entry("l", EntryKind::File, b"target")]).unwrap();
         assert_ne!(link.content_digest(), file.content_digest());
     }
 

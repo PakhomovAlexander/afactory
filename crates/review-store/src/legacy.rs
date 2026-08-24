@@ -9,7 +9,7 @@
 //!   history — and the import is honest about it: it produces one report and at most one
 //!   resolution per row, and claims nothing about what happened in between.
 
-use review_core::{LegacyStageOutput, RunEvent, Severity};
+use review_core::{FindingReport, LegacyStageOutput, RunEvent, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -113,6 +113,12 @@ pub struct Ingest<'a> {
     round_event_id: Option<String>,
 }
 
+struct PreparedStage {
+    source: String,
+    reports: Vec<FindingReport>,
+    disputes: Vec<review_core::legacy::LegacyDispute>,
+}
+
 impl<'a> Ingest<'a> {
     pub fn new(
         store: &'a mut EventStore,
@@ -203,6 +209,35 @@ impl<'a> Ingest<'a> {
         self.add_stage_outputs_inner(stages, true)
     }
 
+    /// Atomically admit already-typed reports from ReviewerResult@1 alongside their disputes.
+    /// This is the permanent reducer path for the typed arm of the bridge contract; unlike a
+    /// conversion through LegacyFinding it preserves every location on the immutable claim.
+    pub fn add_live_report_outputs(
+        &mut self,
+        stages: &[(
+            &str,
+            &[FindingReport],
+            &[review_core::legacy::LegacyDispute],
+        )],
+    ) -> Result<AddSummary, StoreError> {
+        let mut prepared = Vec::with_capacity(stages.len());
+        for (source, reports, disputes) in stages {
+            for (index, report) in reports.iter().enumerate() {
+                report.validate().map_err(|reason| {
+                    StoreError::Conflict(format!(
+                        "{source} finding {index} violates FindingReport@1: {reason}"
+                    ))
+                })?;
+            }
+            prepared.push(PreparedStage {
+                source: (*source).to_string(),
+                reports: reports.to_vec(),
+                disputes: disputes.to_vec(),
+            });
+        }
+        self.add_prepared_outputs(&prepared)
+    }
+
     fn add_stage_output_inner(
         &mut self,
         source: &str,
@@ -217,6 +252,39 @@ impl<'a> Ingest<'a> {
         stages: &[(&str, &LegacyStageOutput)],
         strict: bool,
     ) -> Result<AddSummary, StoreError> {
+        let mut prepared = Vec::with_capacity(stages.len());
+        for (source, stage) in stages {
+            let mut reports = Vec::with_capacity(stage.findings.len());
+            for (index, finding) in stage.findings.iter().enumerate() {
+                // The frozen shell bridge trimmed titles before admission. Preserve that
+                // historical projection here, while the live LegacyFinding reader follows
+                // reviewer-result-v1 literally (where any non-empty string is content).
+                if !strict && finding.title.trim().is_empty() {
+                    eprintln!("add: skipping {source} finding (finding {index}: empty title)");
+                    continue;
+                }
+                match finding.clone().into_report(index) {
+                    Ok(report) => reports.push(report),
+                    Err(reason) if !strict => {
+                        eprintln!("add: skipping {source} finding ({reason})");
+                    }
+                    Err(reason) => {
+                        return Err(StoreError::Conflict(format!(
+                            "{source} finding {index} violates FindingReport@1: {reason}"
+                        )));
+                    }
+                }
+            }
+            prepared.push(PreparedStage {
+                source: (*source).to_string(),
+                reports,
+                disputes: stage.disputes.clone(),
+            });
+        }
+        self.add_prepared_outputs(&prepared)
+    }
+
+    fn add_prepared_outputs(&mut self, stages: &[PreparedStage]) -> Result<AddSummary, StoreError> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
         let mut projected = self.ledger.clone();
@@ -238,42 +306,23 @@ impl<'a> Ingest<'a> {
             .collect();
         let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
 
-        for (source, stage) in stages {
-            for (index, finding) in stage.findings.iter().enumerate() {
-                // The frozen shell bridge trimmed titles before admission. Preserve that
-                // historical projection here, while the live LegacyFinding reader follows
-                // reviewer-result-v1 literally (where any non-empty string is content).
-                if !strict && finding.title.trim().is_empty() {
-                    eprintln!("add: skipping {source} finding (finding {index}: empty title)");
-                    continue;
-                }
-                let report = match finding.clone().into_report(index) {
-                    Ok(report) => report,
-                    Err(reason) if !strict => {
-                        eprintln!("add: skipping {source} finding ({reason})");
-                        continue;
-                    }
-                    Err(reason) => {
-                        return Err(StoreError::Conflict(format!(
-                            "{source} finding {index} violates FindingReport@1: {reason}"
-                        )));
-                    }
-                };
-                let file = report_identity_path(&report);
+        for stage in stages {
+            let source = stage.source.as_str();
+            for report in &stage.reports {
+                let file = report_identity_path(report);
                 let key = legacy_fingerprint(file, &report.title);
 
                 // The report is an immutable artifact; the event references it. Even a duplicate
                 // gets stored — that is the whole difference from the shell ledger, which counted
                 // it and threw it away.
-                let report_artifact = serde_json::to_value(&report)?;
+                let report_artifact = serde_json::to_value(report)?;
                 let report_id = self
                     .cas
                     .put_json(&report_artifact)
                     .map_err(|e| StoreError::Conflict(e.to_string()))?;
-                let report_identity =
-                    (key.clone(), (*source).to_string(), round, report_id.clone());
+                let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
 
-                if existing_reports.contains(&(key.as_str(), *source, round, report_id.as_str()))
+                if existing_reports.contains(&(key.as_str(), source, round, report_id.as_str()))
                     || pending_reports.contains(&report_identity)
                 {
                     summary.dup += 1;
