@@ -178,12 +178,14 @@ fn restore_writable_dirs(_root: &Path) {}
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
 /// recreated (a clone is a fresh writable tree), symlinks are recreated as symlinks (they must
 /// not be dereferenced), and regular files are reflinked — sharing blocks until one side
-/// writes — with a plain copy where the filesystem does not support reflinks. Both preserve
-/// the source permissions, so the exec bit survives.
-fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// writes — with a plain copy where the filesystem does not support reflinks. Writable clones
+/// preserve source permissions. Read-only clones strip write permission in the same file batch
+/// and return the already-discovered directories for a child-before-parent chmod pass.
+fn clone_tree(src: &Path, dst: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
     const TASKS_PER_WORKER: usize = 64;
     std::fs::create_dir_all(dst)?;
     let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    let mut directories = vec![dst.to_path_buf()];
     let mut files = Vec::new();
     while let Some((from_dir, to_dir)) = stack.pop() {
         for entry in std::fs::read_dir(&from_dir)? {
@@ -193,27 +195,69 @@ fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 std::fs::create_dir(&to)?;
+                directories.push(to.clone());
                 stack.push((from, to));
             } else {
-                files.push((from, to, file_type.is_symlink()));
+                let is_symlink = file_type.is_symlink();
+                #[cfg(unix)]
+                let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
+                    use std::os::unix::fs::PermissionsExt;
+                    let executable = entry.metadata()?.permissions().mode() & 0o111 != 0;
+                    Some(if executable { 0o555 } else { 0o444 })
+                } else {
+                    None
+                };
+                #[cfg(not(unix))]
+                let read_only_mode = None;
+                files.push((from, to, is_symlink, read_only_mode));
                 if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
                     clone_file_batch(std::mem::take(&mut files))?;
                 }
             }
         }
     }
-    clone_file_batch(files)
+    clone_file_batch(files)?;
+    Ok(directories)
 }
 
-fn clone_file_batch(files: Vec<(PathBuf, PathBuf, bool)>) -> std::io::Result<()> {
-    review_parallel::try_for_each_owned(files, |(from, to, is_symlink)| {
+fn clone_file_batch(files: Vec<(PathBuf, PathBuf, bool, Option<u32>)>) -> std::io::Result<()> {
+    review_parallel::try_for_each_owned(files, |(from, to, is_symlink, read_only_mode)| {
         if is_symlink {
             symlink_raw(&std::fs::read_link(&from)?, &to)?;
         } else {
             reflink_copy::reflink_or_copy(&from, &to)?;
+            apply_one_file_permission(&to, read_only_mode)?;
         }
         Ok::<_, std::io::Error>(())
     })
+}
+
+#[cfg(unix)]
+fn apply_one_file_permission(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match mode {
+        Some(mode) => std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_one_file_permission(_path: &Path, _mode: Option<u32>) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn apply_cloned_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    for directory in directories.into_iter().rev() {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o555))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_cloned_directories_read_only(_directories: Vec<PathBuf>) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -287,7 +331,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root)?;
+        let cloned_directories = clone_tree(&template.root, &root, mode)?;
 
         let sandbox = Sandbox {
             root,
@@ -297,7 +341,7 @@ impl Sandbox {
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
-            sandbox.apply_read_only()?;
+            apply_cloned_directories_read_only(cloned_directories)?;
         }
         Ok(sandbox)
     }

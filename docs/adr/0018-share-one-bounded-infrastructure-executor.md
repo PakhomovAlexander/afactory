@@ -12,7 +12,9 @@ We decided that filesystem-heavy infrastructure submits borrowed or owned work t
 re-entrant executor in `review-parallel`. `reviewctl` initializes its worker count once from the
 host's available parallelism before a review command starts; library embedders may initialize the
 same boundary before first use. Nested and concurrent phases share the executor's fixed worker
-threads, so scheduler concurrency cannot multiply the CPU worker budget.
+threads, so scheduler concurrency cannot multiply the CPU worker budget. A joined-phase primitive
+lets one bounded phase progress while another uses otherwise-idle workers; sealing uses it to hash
+one directory level while discovering the next.
 
 ## Considered options
 
@@ -38,6 +40,10 @@ threads, so scheduler concurrency cannot multiply the CPU worker budget.
   `fsync` does not consume the CPU executor.
 - Operations must submit deterministic indexed collections and restore canonical ordering where
   their result is persisted; work-stealing completion order is never artifact order.
+- Directory discovery may run level-by-level and overlap hashing through the shared executor.
+  Manifest construction and mutation lists sort afterward, so task completion order never becomes
+  artifact order. Metadata lookup remains non-following even when that costs an extra path-based
+  lookup: executor utilization is not authority to weaken sandbox containment.
 - A task waiting on a resource budget may not hold that resource across a re-entrant executor
   submission. Nested fan-out starts only after sibling tasks that can wait on the same budget have
   drained, so work stealing cannot make a permit holder block behind itself.

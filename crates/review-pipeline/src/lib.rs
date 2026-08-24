@@ -1316,6 +1316,7 @@ impl<'a> Kernel<'a> {
             };
 
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                inputs.refused_attempts.clone_from(&retry_failures);
                 adapter.invoke(self.cas, sandbox.root(), &inputs)
             }));
             let invoked = match invoked {

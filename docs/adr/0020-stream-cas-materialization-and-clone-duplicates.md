@@ -18,7 +18,10 @@ mode. A heavily repeated digest can therefore use the whole executor without mak
 for work it submitted. Symlink target bytes are read once only when the group contains symlinks and
 are refused above a fixed 16 KiB limit before allocation. Every path is decoded once, and a serial
 walk over the manifest's sorted paths prepares newly encountered parent components before either
-parallel phase; each existing component must be a real directory, never a symlink.
+parallel phase; each existing component must be a real directory, never a symlink. That walk keeps
+one absolute parent path and pops only the suffix after consecutive paths diverge. Canonical path
+encoding is checked against the already-decoded bytes without re-encoding or allocating another
+String.
 
 ## Considered options
 
@@ -54,3 +57,5 @@ parallel phase; each existing component must be a real directory, never a symlin
   guarantees every clone source has already been verified without nested executor work.
 - Materialization verifies the authoritative CAS bytes before clones become sources for further
   occurrences and validates every manifest-declared size against the verified byte count.
+- Serial path preparation allocates one absolute PathBuf for the whole manifest, not one per entry;
+  it still validates and creates every newly encountered parent before worker writes begin.

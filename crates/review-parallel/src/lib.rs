@@ -106,6 +106,25 @@ where
     })
 }
 
+/// Run two fallible infrastructure phases concurrently on the shared executor.
+///
+/// This is the bounded pipeline primitive for work such as walking the next directory level
+/// while hashing the candidates discovered at the previous one. Nested parallel operations in
+/// either arm still reuse this same pool.
+pub fn try_join<A, B, E, FA, FB>(left: FA, right: FB) -> Result<(A, B), E>
+where
+    A: Send,
+    B: Send,
+    E: Send,
+    FA: FnOnce() -> Result<A, E> + Send,
+    FB: FnOnce() -> Result<B, E> + Send,
+{
+    pool().install(|| {
+        let (left, right) = rayon::join(left, right);
+        Ok((left?, right?))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -138,5 +157,16 @@ mod tests {
             }
         });
         assert!(threads.into_inner().unwrap().len() <= super::worker_limit());
+    }
+
+    #[test]
+    fn joined_phases_reuse_the_shared_executor() {
+        let (left, right) = super::try_join(
+            || super::try_map_owned(vec![1, 2], |value| Ok::<_, ()>(value + 1)),
+            || super::try_map_owned(vec![3, 4], |value| Ok::<_, ()>(value + 1)),
+        )
+        .unwrap();
+        assert_eq!(left, vec![2, 3]);
+        assert_eq!(right, vec![4, 5]);
     }
 }

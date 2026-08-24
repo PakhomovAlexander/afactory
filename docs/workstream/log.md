@@ -347,3 +347,31 @@ distinct entries / 199 MiB and 0.865 s for the same output with repeated content
 with 53,182,464 bytes maximum command RSS and a 36,405,776-byte Darwin peak footprint. Focused
 store, source, sandbox, pipeline, and CLI tests pass. Full workspace formatting, clippy, tests,
 doc tests, and byte-identical fixture reproduction pass before commit.
+
+## 2026-08-25 — M2 convergence Campaign Round 4 corrections
+
+Round 4 spent 755,609 tokens, retained all 33 prior resolutions, opened five Reports, and exhausted
+Campaign `m2-rename-scope-convergence`. Two reviewers independently found that a result refused by
+the complete admission gate was retried with an identical prompt. Reviewer inputs now carry a
+bounded JSON refusal history under an explicit data-not-instructions heading, and the retry test
+proves the second attempt receives the canonical-path failure while the first prompt stays
+unchanged.
+
+Read-only template cloning now determines executable bits during its existing discovery walk,
+applies final file modes in the reflink batch, and reuses the discovered directory list for the
+child-before-parent mode pass. Seal discovery runs one directory level across the shared executor
+while the previous level's baseline candidates hash on the same bounded workers. It deliberately
+retains non-following metadata lookup: avoiding an lstat is not worth making a symlink race escape
+the sandbox boundary. Sorted manifest construction and mutation lists keep completion order out of
+durable artifacts.
+
+Materialization validates canonical encoding against the already-decoded bytes without allocating
+a re-encoded String. Its serial directory prologue keeps one absolute parent path, pops only the
+suffix after consecutive parents diverge, and pushes only newly encountered components. The release
+5,000-entry / 199 MiB fixture recorded 1.282 s materialization, 0.652/1.049 s writable/read-only
+clone plus permissions, 0.138/0.130 s seal, and 0.154/0.161 s teardown. The prior Round 2 seal
+measurement was 0.680/0.693 s. A 5,000-entry baseline plus 10,000 added files sealed in 0.175 s.
+Read-only clone time stayed near its prior 1.037 s because the required per-file chmod calls, not
+the removed second discovery walk, dominate. Focused runner, pipeline, parallel, source, and sandbox
+tests pass. Full workspace formatting, all-target clippy, tests, doc tests, and byte-identical
+fixture reproduction pass before commit.

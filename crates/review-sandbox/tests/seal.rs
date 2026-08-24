@@ -332,6 +332,23 @@ fn unchanged_large_tree_sandbox_measurement() {
         );
     }
 
+    let sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite).unwrap();
+    for shard in 0..100 {
+        let directory = sandbox.root().join(format!("target/{shard:03}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        for file in 0..100 {
+            std::fs::write(directory.join(format!("{file:03}.o")), b"generated").unwrap();
+        }
+    }
+    let started = std::time::Instant::now();
+    let added = sandbox.seal().unwrap();
+    let added_seal_elapsed = started.elapsed();
+    assert_eq!(added.mutations.added.len(), 10_000);
+    eprintln!(
+        "5,000 baseline entries + 10,000 added files: seal {:.3}s",
+        added_seal_elapsed.as_secs_f64()
+    );
+
     let repeated_bytes = vec![0x5A; 41_943];
     let repeated_content = cas.put(&repeated_bytes).unwrap();
     let repeated = Manifest::new(

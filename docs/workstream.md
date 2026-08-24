@@ -3,7 +3,8 @@
 **Status:** M0 and M1 are complete. Two M2 dogfood Campaigns exhausted with all 88 Findings fixed.
 Fresh convergence Campaign Round 1 opened fifteen further Findings and Round 2 retained fourteen,
 reopened one, and opened ten. Round 3 retained all 25 fixes and opened eight further Findings; its
-corrections are fully verified. This Campaign cannot fit two clean Rounds, so another fresh
+corrections are fully verified. Round 4 retained all 33 fixes, opened five further Findings, and
+exhausted the Campaign; its corrections are fully verified. Another fresh
 unchanged-policy Campaign is still required before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
@@ -151,9 +152,13 @@ resolved. Round 3 spent 693,947 tokens, retained all 25 fixes, and opened eight 
 corrections validate typed projection authority, distinguish round-binding failures, make container
 execution deadlines caller-owned, state the event-ordering boundary honestly, use verified CAS
 reflinks, seek terminal reports by an indexed type range, and prepare directories without worker
-locks. The corrections pass the full kernel gate. Commit, resolve, and run the Campaign's final
-Round for coverage. Because Round 2 was
-not clean, establish two clean Rounds in another fresh unchanged-policy Campaign before M3.1.
+locks. The corrections pass the full kernel gate and are committed and resolved. Round 4 spent
+755,609 tokens, retained all 33 fixes, opened five further claims, and exhausted the Campaign. Its
+corrections feed contract refusals into retries, fold read-only permissions into template cloning,
+overlap level-parallel seal discovery with hashing, and remove remaining serial materialization
+allocations. The corrections pass the full kernel gate. Commit and resolve them, then establish
+two clean Rounds in another fresh
+unchanged-policy Campaign before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

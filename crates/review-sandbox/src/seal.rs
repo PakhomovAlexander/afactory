@@ -120,70 +120,38 @@ fn scan_and_diff(
     baseline
         .validate()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    const TASKS_PER_WORKER: usize = 64;
     let mut entries = Vec::new();
     let mut mutations = MutationSet::default();
     let mut matched = vec![false; baseline.entries.len()];
-    let mut baseline_candidates = Vec::new();
+    let mut level = vec![root.to_path_buf()];
+    let mut pending_candidates = Vec::new();
+    while !level.is_empty() {
+        let (scanned, hashed) = review_parallel::try_join(
+            || {
+                review_parallel::try_map_owned(level, |directory| {
+                    scan_directory(root, baseline, directory)
+                })
+            },
+            || hash_baseline_candidates(pending_candidates),
+        )?;
+        append_hashed_candidates(hashed, &mut entries, &mut mutations);
 
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        restore_directory_for_scan(&dir)?;
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            let meta = std::fs::symlink_metadata(&path)?;
-            if meta.is_dir() && !meta.file_type().is_symlink() {
-                stack.push(path);
-                continue;
-            }
-            // The manifest key must be capture's *encoding* of the raw path bytes, not
-            // `to_string_lossy`, which collapses two distinct non-UTF-8 names to one key.
-            let relative_path = path.strip_prefix(root).expect("walked path is under root");
-            let relative = encode_path(path_bytes(relative_path));
-            let kind = if meta.file_type().is_symlink() {
-                EntryKind::Symlink
-            } else if is_executable(&meta) {
-                EntryKind::Executable
-            } else {
-                EntryKind::File
-            };
-            match baseline
-                .entries
-                .binary_search_by(|entry| entry.path.as_str().cmp(&relative))
-            {
-                Err(_) => {
-                    // Added: presence is the whole fact. Record it with its size from the stat
-                    // we already have, and no content hash — the bytes are never read.
-                    mutations.added.push(relative.clone());
-                    entries.push(Entry {
-                        path: relative,
-                        kind,
-                        content: String::new(),
-                        size: meta.len(),
-                    });
-                }
-                Ok(position) => {
-                    matched[position] = true;
-                    baseline_candidates.push(BaselineCandidate {
-                        path,
-                        relative,
-                        kind,
-                        previous: &baseline.entries[position],
-                    });
-                    if baseline_candidates.len()
-                        >= review_parallel::worker_limit() * TASKS_PER_WORKER
-                    {
-                        append_baseline_candidates(
-                            std::mem::take(&mut baseline_candidates),
-                            &mut entries,
-                            &mut mutations,
-                        )?;
-                    }
-                }
+        let mut next_level = Vec::new();
+        let mut next_candidates = Vec::new();
+        for scan in scanned {
+            next_level.extend(scan.directories);
+            mutations.added.extend(scan.added_paths);
+            entries.extend(scan.added_entries);
+            for (position, candidate) in scan.baseline_candidates {
+                matched[position] = true;
+                next_candidates.push(candidate);
             }
         }
+        level = next_level;
+        pending_candidates = next_candidates;
     }
-    append_baseline_candidates(baseline_candidates, &mut entries, &mut mutations)?;
+    let hashed = hash_baseline_candidates(pending_candidates)?;
+    append_hashed_candidates(hashed, &mut entries, &mut mutations);
     for (entry, was_matched) in baseline.entries.iter().zip(matched) {
         if !was_matched {
             mutations.deleted.push(entry.path.clone());
@@ -197,18 +165,87 @@ fn scan_and_diff(
     Ok((manifest, mutations))
 }
 
-fn append_baseline_candidates(
-    candidates: Vec<BaselineCandidate<'_>>,
+struct DirectoryScan<'a> {
+    directories: Vec<PathBuf>,
+    added_entries: Vec<Entry>,
+    added_paths: Vec<String>,
+    baseline_candidates: Vec<(usize, BaselineCandidate<'a>)>,
+}
+
+fn scan_directory<'a>(
+    root: &Path,
+    baseline: &'a Manifest,
+    directory: PathBuf,
+) -> Result<DirectoryScan<'a>, std::io::Error> {
+    restore_directory_for_scan(&directory)?;
+    let mut scan = DirectoryScan {
+        directories: Vec::new(),
+        added_entries: Vec::new(),
+        added_paths: Vec::new(),
+        baseline_candidates: Vec::new(),
+    };
+    for entry in std::fs::read_dir(&directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        // Seal is a containment boundary: never follow a path that could have become a symlink
+        // between directory enumeration and metadata lookup. The level walk parallelizes this
+        // non-following lstat rather than trading it for a racy stat.
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            scan.directories.push(path);
+            continue;
+        }
+        // The manifest key must be capture's *encoding* of the raw path bytes, not
+        // `to_string_lossy`, which collapses two distinct non-UTF-8 names to one key.
+        let relative_path = path.strip_prefix(root).expect("walked path is under root");
+        let relative = encode_path(path_bytes(relative_path));
+        let kind = if meta.file_type().is_symlink() {
+            EntryKind::Symlink
+        } else if is_executable(&meta) {
+            EntryKind::Executable
+        } else {
+            EntryKind::File
+        };
+        match baseline
+            .entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(&relative))
+        {
+            Err(_) => {
+                // Added: presence is the whole fact. Record it with its size from the stat we
+                // already have, and no content hash — the bytes are never read.
+                scan.added_paths.push(relative.clone());
+                scan.added_entries.push(Entry {
+                    path: relative,
+                    kind,
+                    content: String::new(),
+                    size: meta.len(),
+                });
+            }
+            Ok(position) => scan.baseline_candidates.push((
+                position,
+                BaselineCandidate {
+                    path,
+                    relative,
+                    kind,
+                    previous: &baseline.entries[position],
+                },
+            )),
+        }
+    }
+    Ok(scan)
+}
+
+fn append_hashed_candidates(
+    candidates: Vec<(Entry, bool)>,
     entries: &mut Vec<Entry>,
     mutations: &mut MutationSet,
-) -> Result<(), std::io::Error> {
-    for (entry, modified) in hash_baseline_candidates(candidates)? {
+) {
+    for (entry, modified) in candidates {
         if modified {
             mutations.modified.push(entry.path.clone());
         }
         entries.push(entry);
     }
-    Ok(())
 }
 
 fn remove_tree_parallel(root: &Path) {

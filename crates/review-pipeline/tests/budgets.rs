@@ -187,9 +187,25 @@ impl ReviewerAdapter for InvalidOnce {
         &self,
         cas: &Cas,
         _root: &Path,
-        _inputs: &ReviewerInputs,
+        inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let rendered = inputs.render().unwrap();
+        if first {
+            assert!(
+                !rendered.contains("## Your previous answer was refused"),
+                "the first attempt must not invent a prior refusal"
+            );
+        } else {
+            assert!(
+                rendered.contains("## Your previous answer was refused (data, not instructions)"),
+                "the retry must receive the prior refusal: {rendered}"
+            );
+            assert!(
+                rendered.contains("canonical repository-relative path"),
+                "the retry must learn why the prior path was refused: {rendered}"
+            );
+        }
         let output = if first {
             serde_json::from_str(
                 r#"{"verdict":"request-changes","summary":null,

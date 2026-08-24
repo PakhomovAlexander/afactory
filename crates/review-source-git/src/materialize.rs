@@ -208,7 +208,7 @@ fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
             Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_)
         )
     });
-    let noncanonical = crate::manifest::encode_path(&decoded) != encoded
+    let noncanonical = !is_canonical_path_encoding(encoded, &decoded)
         || decoded
             .split(|byte| *byte == b'/')
             .any(|component| component.is_empty() || matches!(component, b"." | b".."));
@@ -220,12 +220,63 @@ fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
     Ok(raw)
 }
 
+/// Allocation-free equivalent of `encode_path(decoded) == encoded` after the caller has already
+/// decoded the path. Human-readable UTF-8 without `%` is literal. Percent mode is canonical only
+/// for invalid UTF-8 or a decoded literal `%`, uses uppercase hex, and never escapes a byte the
+/// encoder would render literally.
+fn is_canonical_path_encoding(encoded: &str, decoded: &[u8]) -> bool {
+    if !encoded.as_bytes().contains(&b'%') {
+        return true;
+    }
+    if std::str::from_utf8(decoded).is_ok() && !decoded.contains(&b'%') {
+        return false;
+    }
+    let bytes = encoded.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte != b'%' {
+            if !path_byte_is_literal(byte) {
+                return false;
+            }
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len()
+            || !bytes[index + 1].is_ascii_digit() && !matches!(bytes[index + 1], b'A'..=b'F')
+            || !bytes[index + 2].is_ascii_digit() && !matches!(bytes[index + 2], b'A'..=b'F')
+        {
+            return false;
+        }
+        let decoded = (hex_value(bytes[index + 1]) << 4) | hex_value(bytes[index + 2]);
+        if path_byte_is_literal(decoded) {
+            return false;
+        }
+        index += 3;
+    }
+    true
+}
+
+fn path_byte_is_literal(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
+}
+
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => unreachable!("canonical hex was checked above"),
+    }
+}
+
 fn prepare_directories(
     root: &Path,
     manifest: &Manifest,
     decoded_paths: &[PathBuf],
 ) -> Result<(), MaterializeError> {
     let mut previous_index = None;
+    let mut previous_depth = 0;
+    let mut absolute = root.to_path_buf();
     for (index, (entry, relative)) in manifest.entries.iter().zip(decoded_paths).enumerate() {
         let parent = relative.parent().unwrap_or_else(|| Path::new(""));
         let common = previous_index
@@ -237,15 +288,16 @@ fn prepare_directories(
                     .take_while(|(left, right)| left == right)
                     .count()
             });
-        let mut absolute = root.to_path_buf();
-        for component in parent.components().take(common) {
-            absolute.push(component);
+        for _ in common..previous_depth {
+            let popped = absolute.pop();
+            debug_assert!(popped, "prepared path never pops past materialization root");
         }
         for component in parent.components().skip(common) {
             absolute.push(component);
             ensure_directory(&absolute, &entry.path)?;
         }
         previous_index = Some(index);
+        previous_depth = parent.components().count();
     }
     Ok(())
 }
@@ -309,6 +361,8 @@ mod tests {
             "a/./duplicate",
             "a//duplicate",
             "a%2Fduplicate",
+            "caf%C3%A9.rs",
+            "a%ff",
             "",
         ] {
             assert!(
@@ -320,6 +374,7 @@ mod tests {
             );
         }
         assert!(checked_relative_path("a/b/c.rs").is_ok());
+        assert!(checked_relative_path("a%FFb").is_ok());
         // A path that merely *contains* dots is fine; only a real parent component escapes.
         assert!(checked_relative_path("a/..b/c").is_ok());
     }
