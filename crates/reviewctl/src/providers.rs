@@ -2,17 +2,19 @@
 //!
 //! Providers are display-only in this iteration. The registry names auth directories, never
 //! credentials, arbitrary commands, arguments, or environment variables. Status is obtained from
-//! the two fixed adapter CLIs with bounded output and wall time. The accepted response shapes are
-//! pinned by fixtures captured from Claude Code 2.1.238 and codex-cli 0.149.0 on 2026-08-21.
+//! the two fixed adapter CLIs with bounded output and wall time. Codex exposes its plan and quota
+//! windows through the official local app-server protocol. Claude exposes authentication but has
+//! no headless usage-status surface, so the inventory says so instead of scraping credentials or
+//! starting a billable model session. Accepted response shapes are pinned by fixtures.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -23,6 +25,7 @@ const MAX_PROVIDERS: usize = 32;
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_CONCURRENT_PROBES: usize = 4;
+const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ProviderInventory {
@@ -39,7 +42,16 @@ pub struct ProviderStatus {
     pub source: String,
     pub status: String,
     pub auth_type: String,
+    pub subscription: String,
+    pub limits: Vec<ProviderLimit>,
     pub detail: String,
+}
+
+#[derive(Clone)]
+pub struct ProviderLimit {
+    pub name: String,
+    pub used_percent: u8,
+    pub resets_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,6 +132,67 @@ pub fn discover_with_cancel(cancelled: &AtomicBool) -> ProviderInventory {
         providers,
         registry,
         warning,
+    }
+}
+
+pub fn print_status() {
+    let cancelled = AtomicBool::new(false);
+    let inventory = discover_with_cancel(&cancelled);
+    if let Some(warning) = inventory.warning {
+        eprintln!("warning: {warning}");
+    }
+    if inventory.providers.is_empty() {
+        println!("No supported provider CLI is installed and no provider registry entries exist");
+        return;
+    }
+    println!(
+        "{:<24} {:<8} {:<19} {:<18} SUBSCRIPTION",
+        "ID", "KIND", "STATUS", "AUTH"
+    );
+    for provider in inventory.providers {
+        println!(
+            "{:<24} {:<8} {:<19} {:<18} {}",
+            provider.id, provider.kind, provider.status, provider.auth_type, provider.subscription
+        );
+        for limit in &provider.limits {
+            println!("  limit  {}", format_limit(limit));
+        }
+        if !provider.detail.is_empty() {
+            println!("  note   {}", provider.detail);
+        }
+    }
+}
+
+pub fn format_limit(limit: &ProviderLimit) -> String {
+    let reset = limit
+        .resets_at
+        .map(format_reset)
+        .unwrap_or_else(|| "reset unavailable".to_string());
+    format!("{}: {}% used, {reset}", limit.name, limit.used_percent)
+}
+
+fn format_reset(resets_at: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let remaining = resets_at.saturating_sub(now);
+    if remaining == 0 {
+        "reset due".to_string()
+    } else if remaining >= 24 * 60 * 60 {
+        format!(
+            "resets in {}d {}h",
+            remaining / (24 * 60 * 60),
+            remaining % (24 * 60 * 60) / (60 * 60)
+        )
+    } else if remaining >= 60 * 60 {
+        format!(
+            "resets in {}h {}m",
+            remaining / (60 * 60),
+            remaining % (60 * 60) / 60
+        )
+    } else {
+        format!("resets in {}m", remaining.div_ceil(60))
     }
 }
 
@@ -262,11 +335,16 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
         });
     }
     if resolve_program("codex").is_some() {
+        let configured_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
         defaults.push(ProviderSpec {
             id: "codex-ambient".to_string(),
             kind: ProviderKind::Codex,
-            auth_dir: canonical_if_present(home.map(|home| home.join(".codex"))),
-            explicit_selector: false,
+            auth_dir: canonical_if_present(
+                configured_home
+                    .clone()
+                    .or_else(|| home.map(|home| home.join(".codex"))),
+            ),
+            explicit_selector: configured_home.is_some(),
             source: "ambient CLI candidate; unstable local context label".to_string(),
         });
     }
@@ -447,10 +525,37 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         Ok(output) => output,
         Err(error) => return unavailable_status(&spec, &error),
     };
-    let (status, auth_type, detail) = match spec.kind {
+    let (status, auth_type, mut detail) = match spec.kind {
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
+    let mut subscription = match spec.kind {
+        ProviderKind::Claude => claude_subscription(&output.stdout),
+        ProviderKind::Codex if auth_type == "API key" => "API billing".to_string(),
+        ProviderKind::Codex if auth_type == "ChatGPT" => "ChatGPT (plan unavailable)".to_string(),
+        ProviderKind::Codex => "-".to_string(),
+    };
+    let mut limits = Vec::new();
+    if spec.kind == ProviderKind::Codex && status == "authenticated" && auth_type == "ChatGPT" {
+        match probe_codex_subscription(&program, &spec, cancelled) {
+            Ok(snapshot) => {
+                subscription = snapshot.subscription;
+                limits = snapshot.limits;
+                if let Some(warning) = snapshot.warning {
+                    if !detail.is_empty() {
+                        detail.push_str("; ");
+                    }
+                    detail.push_str(&format!("subscription status partial: {warning}"));
+                }
+            }
+            Err(error) => {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!("subscription status unavailable: {error}"));
+            }
+        }
+    }
     ProviderStatus {
         id: spec.id,
         kind: spec.kind.name().to_string(),
@@ -463,6 +568,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         source: spec.source,
         status,
         auth_type,
+        subscription,
+        limits,
         detail,
     }
 }
@@ -483,6 +590,8 @@ fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
         source: spec.source.clone(),
         status: "not probed".to_string(),
         auth_type: "-".to_string(),
+        subscription: "-".to_string(),
+        limits: Vec::new(),
         detail: "Open PROVIDERS or press R to refresh status".to_string(),
     }
 }
@@ -500,6 +609,8 @@ fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
         source: spec.source.clone(),
         status: "unavailable".to_string(),
         auth_type: "-".to_string(),
+        subscription: "-".to_string(),
+        limits: Vec::new(),
         detail: detail.to_string(),
     }
 }
@@ -509,29 +620,17 @@ struct ProbeOutput {
     stdout: String,
 }
 
-#[cfg(unix)]
-fn run_probe(
-    program: &Path,
-    spec: &ProviderSpec,
-    cancelled: &AtomicBool,
-) -> Result<ProbeOutput, String> {
-    let mut command = Command::new(program);
-    match spec.kind {
-        ProviderKind::Claude => {
-            command.args(["auth", "status", "--json"]);
-        }
-        ProviderKind::Codex => {
-            command.args(["login", "status"]);
-        }
-    }
+struct SubscriptionSnapshot {
+    subscription: String,
+    limits: Vec<ProviderLimit>,
+    warning: Option<String>,
+}
+
+fn configure_probe_environment(command: &mut Command, spec: &ProviderSpec) {
     command
         .env_clear()
         .current_dir(Path::new("/"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    command.process_group(0);
-    command.env("PATH", sanitized_path());
+        .env("PATH", sanitized_path());
     if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
         command.env("HOME", home);
     }
@@ -549,19 +648,309 @@ fn run_probe(
             auth_dir,
         );
     }
+}
+
+#[cfg(unix)]
+fn probe_codex_subscription(
+    program: &Path,
+    spec: &ProviderSpec,
+    cancelled: &AtomicBool,
+) -> Result<SubscriptionSnapshot, String> {
+    let mut command = Command::new(program);
+    command.args(["app-server", "--stdio"]);
+    configure_probe_environment(&mut command, spec);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command.process_group(0);
     let mut child = command
         .spawn()
-        .map_err(|error| format!("cannot start provider status probe: {error}"))?;
+        .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
+    let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
     if let Err(error) = set_nonblocking(&stdout) {
         stop_probe(&mut child);
         return Err(error);
     }
+    if let Err(error) = writeln!(
+        stdin,
+        "{{\"method\":\"initialize\",\"id\":1,\"params\":{{\"clientInfo\":{{\"name\":\"afactory\",\"version\":\"{}\"}}}}}}",
+        env!("CARGO_PKG_VERSION")
+    )
+    .and_then(|()| stdin.flush())
+    {
+        stop_probe(&mut child);
+        return Err(format!("cannot initialize Codex app-server probe: {error}"));
+    }
+
+    let deadline = Instant::now() + PROBE_TIMEOUT;
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut exceeded = false;
+    let mut requested_limits = false;
+    let result = 'probe: loop {
+        loop {
+            match drain_available(&mut stdout, &mut captured, &mut exceeded) {
+                Ok(true) if !exceeded => {}
+                Ok(_) => break,
+                Err(error) => break 'probe Err(error),
+            }
+        }
+        if exceeded {
+            break Err(format!(
+                "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
+            ));
+        }
+        if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
+            if response.get("error").is_some() {
+                break Err("Codex app-server rejected initialization".to_string());
+            }
+            if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
+                .and_then(|()| {
+                    writeln!(stdin, "{{\"method\":\"account/rateLimits/read\",\"id\":2}}")
+                })
+                .and_then(|()| stdin.flush())
+            {
+                break Err(format!("cannot request Codex subscription status: {error}"));
+            }
+            requested_limits = true;
+        }
+        if requested_limits && let Some(response) = response_for_id(&captured, 2) {
+            break parse_codex_subscription_response(&response);
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                break Err("Codex app-server probe exited without a rate-limit response".into());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                break Err(format!("Codex app-server probe failed: {error}"));
+            }
+        }
+        if cancelled.load(Ordering::Acquire) {
+            break Err("provider status refresh cancelled".to_string());
+        }
+        if Instant::now() >= deadline {
+            break Err(format!(
+                "Codex subscription probe timed out after {} seconds",
+                PROBE_TIMEOUT.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    stop_probe(&mut child);
+    result
+}
+
+#[cfg(not(unix))]
+fn probe_codex_subscription(
+    _program: &Path,
+    _spec: &ProviderSpec,
+    _cancelled: &AtomicBool,
+) -> Result<SubscriptionSnapshot, String> {
+    Err("provider probes require Unix process-group isolation".to_string())
+}
+
+fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
+    captured
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| line.ends_with(b"\n"))
+        .filter_map(|line| {
+            let line = line
+                .strip_suffix(b"\n")
+                .unwrap_or(line)
+                .strip_suffix(b"\r")
+                .unwrap_or(line);
+            serde_json::from_slice::<serde_json::Value>(line).ok()
+        })
+        .find(|message| message.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id))
+}
+
+fn parse_codex_subscription_response(
+    response: &serde_json::Value,
+) -> Result<SubscriptionSnapshot, String> {
+    if response.get("error").is_some() {
+        return Err("Codex app-server rejected the rate-limit request".to_string());
+    }
+    let result = response
+        .get("result")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "unrecognized Codex rate-limit response".to_string())?;
+    let mut snapshots: Vec<&serde_json::Value> = result
+        .get("rateLimitsByLimitId")
+        .and_then(serde_json::Value::as_object)
+        .map(|snapshots| snapshots.values().collect())
+        .unwrap_or_default();
+    snapshots.extend(result.get("rateLimits"));
+    snapshots.sort_by_key(|snapshot| {
+        snapshot
+            .get("limitId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    });
+    let plan = snapshots.iter().find_map(|snapshot| {
+        snapshot
+            .get("planType")
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalize_codex_plan)
+    });
+    let mut limits = Vec::new();
+    let mut seen_limits = BTreeSet::new();
+    let mut skipped_windows = 0_usize;
+    let mut truncated = false;
+    for snapshot in snapshots {
+        let bucket = snapshot
+            .get("limitName")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str))
+            .map(|value| safe_display(value, "Codex"))
+            .unwrap_or_else(|| "Codex".to_string());
+        for field in ["primary", "secondary"] {
+            let Some(window) = snapshot.get(field).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let used_percent = match window
+                .get("usedPercent")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|used| u8::try_from(used).ok())
+                .filter(|used| *used <= 100)
+            {
+                Some(used) => used,
+                None => {
+                    skipped_windows += 1;
+                    continue;
+                }
+            };
+            let window_minutes = window
+                .get("windowDurationMins")
+                .and_then(serde_json::Value::as_u64);
+            if !seen_limits.insert((bucket.clone(), window_minutes)) {
+                continue;
+            }
+            if limits.len() == MAX_PROVIDER_LIMITS {
+                truncated = true;
+                continue;
+            }
+            limits.push(ProviderLimit {
+                name: match window_minutes {
+                    Some(minutes) => format!("{bucket} {}", format_window(minutes)),
+                    None => bucket.clone(),
+                },
+                used_percent,
+                resets_at: window.get("resetsAt").and_then(serde_json::Value::as_u64),
+            });
+        }
+    }
+    if plan.is_none() && limits.is_empty() {
+        return Err("Codex rate-limit response has no usable subscription information".to_string());
+    }
+    let mut warnings = Vec::new();
+    if skipped_windows > 0 {
+        warnings.push(format!(
+            "skipped {skipped_windows} malformed rate-limit windows"
+        ));
+    }
+    if truncated {
+        warnings.push(format!(
+            "additional rate-limit windows omitted at the {MAX_PROVIDER_LIMITS}-window safety limit"
+        ));
+    }
+    Ok(SubscriptionSnapshot {
+        subscription: plan
+            .map(|plan| format!("ChatGPT {plan}"))
+            .unwrap_or_else(|| "ChatGPT (plan unavailable)".to_string()),
+        limits,
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+    })
+}
+
+fn normalize_codex_plan(value: &str) -> Option<&'static str> {
+    match value {
+        "free" => Some("Free"),
+        "go" => Some("Go"),
+        "plus" => Some("Plus"),
+        "pro" | "prolite" => Some("Pro"),
+        "team" => Some("Team"),
+        "self_serve_business_prolite" | "self_serve_business_usage_based" | "business" => {
+            Some("Business")
+        }
+        "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based" | "enterprise" => {
+            Some("Enterprise")
+        }
+        "edu" | "edu_plus" | "edu_pro" => Some("Education"),
+        "unknown" => Some("Unknown"),
+        _ => None,
+    }
+}
+
+fn safe_display(value: &str, fallback: &str) -> String {
+    let value: String = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(48)
+        .collect();
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
+pub fn format_window(minutes: u64) -> String {
+    if minutes % (7 * 24 * 60) == 0 {
+        format!("{}w", minutes / (7 * 24 * 60))
+    } else if minutes % (24 * 60) == 0 {
+        format!("{}d", minutes / (24 * 60))
+    } else if minutes % 60 == 0 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+#[cfg(unix)]
+fn run_probe(
+    program: &Path,
+    spec: &ProviderSpec,
+    cancelled: &AtomicBool,
+) -> Result<ProbeOutput, String> {
+    let mut command = Command::new(program);
+    match spec.kind {
+        ProviderKind::Claude => {
+            command.args(["auth", "status", "--json"]);
+        }
+        ProviderKind::Codex => {
+            command.args(["login", "status"]);
+        }
+    }
+    configure_probe_environment(&mut command, spec);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot start provider status probe: {error}"))?;
+    let mut stdout = child.stdout.take().expect("provider stdout was piped");
+    let mut stderr = child.stderr.take().expect("provider stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
+        stop_probe(&mut child);
+        return Err(error);
+    }
+    let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut discarded = Vec::new();
     let mut exceeded = false;
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let status = loop {
-        if let Err(error) = drain_available(&mut stdout, &mut captured, &mut exceeded) {
+        if let Err(error) = drain_probe_streams(
+            spec.kind,
+            &mut stdout,
+            &mut stderr,
+            &mut captured,
+            &mut discarded,
+            &mut exceeded,
+        ) {
             stop_probe(&mut child);
             return Err(error);
         }
@@ -593,7 +982,15 @@ fn run_probe(
         thread::sleep(Duration::from_millis(25));
     };
     terminate_probe_group(child.id());
-    while drain_available(&mut stdout, &mut captured, &mut exceeded)? && !exceeded {}
+    while drain_probe_streams(
+        spec.kind,
+        &mut stdout,
+        &mut stderr,
+        &mut captured,
+        &mut discarded,
+        &mut exceeded,
+    )? && !exceeded
+    {}
     if exceeded {
         return Err(format!(
             "provider status output exceeds {MAX_PROBE_OUTPUT} bytes"
@@ -602,6 +999,28 @@ fn run_probe(
     let stdout = String::from_utf8(captured)
         .map_err(|_| "provider status output is not UTF-8".to_string())?;
     Ok(ProbeOutput { status, stdout })
+}
+
+fn drain_probe_streams(
+    kind: ProviderKind,
+    stdout: &mut impl Read,
+    stderr: &mut impl Read,
+    captured: &mut Vec<u8>,
+    discarded: &mut Vec<u8>,
+    exceeded: &mut bool,
+) -> Result<bool, String> {
+    let (stdout_read, stderr_read) = match kind {
+        ProviderKind::Claude => (
+            drain_available(stdout, captured, exceeded)?,
+            drain_available(stderr, discarded, exceeded)?,
+        ),
+        ProviderKind::Codex => (
+            drain_available(stdout, discarded, exceeded)?,
+            // codex-cli 0.149.0 deliberately renders login status on stderr.
+            drain_available(stderr, captured, exceeded)?,
+        ),
+    };
+    Ok(stdout_read || stderr_read)
 }
 
 #[cfg(unix)]
@@ -667,16 +1086,16 @@ fn sanitized_path() -> std::ffi::OsString {
 }
 
 fn parse_claude_status(success: bool, stdout: &str) -> (String, String, String) {
-    if !success {
-        return (
-            "unavailable".to_string(),
-            "-".to_string(),
-            "Claude auth status exited unsuccessfully".to_string(),
-        );
-    }
     let parsed: serde_json::Value = match serde_json::from_str(stdout) {
         Ok(value) => value,
         Err(error) => {
+            if !success {
+                return (
+                    "unavailable".to_string(),
+                    "-".to_string(),
+                    "Claude auth status exited unsuccessfully".to_string(),
+                );
+            }
             return (
                 "unknown".to_string(),
                 "-".to_string(),
@@ -720,14 +1139,49 @@ fn parse_claude_status(success: bool, stdout: &str) -> (String, String, String) 
     )
 }
 
-fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
-    if !success {
-        return (
-            "unavailable".to_string(),
-            "-".to_string(),
-            "Codex login status exited unsuccessfully".to_string(),
-        );
+fn claude_subscription(stdout: &str) -> String {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return "-".to_string();
+    };
+    if parsed.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
+        return "-".to_string();
     }
+    match parsed
+        .get("apiProvider")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("bedrock") => return "AWS Bedrock billing".to_string(),
+        Some("vertex") => return "Google Vertex billing".to_string(),
+        _ => {}
+    }
+    match parsed.get("authMethod").and_then(serde_json::Value::as_str) {
+        Some("api_key") => "API billing".to_string(),
+        Some("claude.ai" | "oauth") => ["subscriptionType", "planType", "plan"]
+            .into_iter()
+            .find_map(|field| {
+                parsed
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(normalize_claude_plan)
+            })
+            .map(|plan| format!("Claude {plan}"))
+            .unwrap_or_else(|| "Claude subscription (tier unavailable)".to_string()),
+        _ => "-".to_string(),
+    }
+}
+
+fn normalize_claude_plan(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "free" => Some("Free"),
+        "pro" => Some("Pro"),
+        "max" | "max_5x" | "max_20x" => Some("Max"),
+        "team" => Some("Team"),
+        "enterprise" => Some("Enterprise"),
+        _ => None,
+    }
+}
+
+fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
     if let Some(auth_type) = stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix("Logged in using "))
@@ -738,12 +1192,21 @@ fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
             String::new(),
         );
     }
-    let status = if stdout.to_ascii_lowercase().contains("not logged in") {
-        "not authenticated"
-    } else {
-        "unknown"
-    };
-    (status.to_string(), "-".to_string(), String::new())
+    if stdout.to_ascii_lowercase().contains("not logged in") {
+        return (
+            "not authenticated".to_string(),
+            "-".to_string(),
+            String::new(),
+        );
+    }
+    if !success {
+        return (
+            "unavailable".to_string(),
+            "-".to_string(),
+            "Codex login status exited unsuccessfully".to_string(),
+        );
+    }
+    ("unknown".to_string(), "-".to_string(), String::new())
 }
 
 fn normalize_claude_method(value: &str) -> &'static str {
@@ -874,6 +1337,12 @@ auth_dir = "{}"
         );
         assert_eq!(status, "authenticated");
         assert_eq!(auth_type, "api_key / firstParty");
+        assert_eq!(
+            claude_subscription(include_str!(
+                "../tests/fixtures/providers/claude-2.1.238-authenticated.json"
+            )),
+            "API billing"
+        );
         assert!(detail.is_empty());
         // Captured from `codex login status` on 2026-08-21.
         let (status, auth_type, _) = parse_codex_status(
@@ -885,14 +1354,147 @@ auth_dir = "{}"
     }
 
     #[test]
+    fn codex_subscription_plan_and_all_quota_windows_are_parsed() {
+        // Captured from `account/rateLimits/read` on codex-cli 0.149.0, with opaque reset-credit
+        // identifiers omitted because the provider inventory never consumes or displays them.
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 3);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(snapshot.limits[0].used_percent, 37);
+        assert_eq!(snapshot.limits[1].name, "GPT-5.3-Codex-Spark 5h");
+        assert_eq!(snapshot.limits[2].name, "GPT-5.3-Codex-Spark 1w");
+        assert!(snapshot.warning.is_none());
+    }
+
+    #[test]
+    fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-mixed.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 2 malformed rate-limit windows")
+        );
+    }
+
+    #[test]
+    fn unusable_per_limit_map_falls_back_to_legacy_snapshot() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-fallback.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 1 malformed rate-limit windows")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let pid_file = directory.path().join("descendant.pid");
+        let script = format!(
+            "#!/bin/sh\n\
+             IFS= read -r _\n\
+             printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+             IFS= read -r _\n\
+             IFS= read -r _\n\
+             sleep 30 &\n\
+             echo $! > '{}'\n\
+             exit 0\n",
+            pid_file.display()
+        );
+        fs::write(&program, script).unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            source: "test".to_string(),
+        };
+
+        let Err(error) = probe_codex_subscription(&program, &spec, &AtomicBool::new(false)) else {
+            panic!("early app-server exit unexpectedly returned subscription data");
+        };
+        assert!(error.contains("exited without a rate-limit response"));
+        let process = nix::unistd::Pid::from_raw(
+            fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+        );
+        for _ in 0..100 {
+            if nix::sys::signal::kill(process, None) == Err(nix::errno::Errno::ESRCH) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("Codex app-server descendant {process} survived probe cleanup");
+    }
+
+    #[test]
+    fn claude_subscription_tier_is_optional_and_never_inferred_for_api_keys() {
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"oauth","apiProvider":"firstParty","subscriptionType":"max_20x"}"#
+            ),
+            "Claude Max"
+        );
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+            ),
+            "Claude subscription (tier unavailable)"
+        );
+        assert_eq!(
+            claude_subscription(
+                r#"{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","subscriptionType":"max"}"#
+            ),
+            "API billing"
+        );
+    }
+
+    #[test]
+    fn app_server_response_scanner_waits_for_a_complete_matching_line() {
+        let captured = br#"{"id":1,"result":{}}
+{"id":2,"result":{"rateLimits":{}}}"#;
+        assert!(response_for_id(captured, 1).is_some());
+        assert!(response_for_id(captured, 2).is_none());
+        let complete = [captured.as_slice(), b"\n"].concat();
+        assert!(response_for_id(&complete, 2).is_some());
+    }
+
+    #[test]
     fn captured_logged_out_shapes_are_distinct_from_contract_drift() {
         let (status, _, _) = parse_claude_status(
-            true,
+            false,
             include_str!("../tests/fixtures/providers/claude-2.1.238-logged-out.json"),
         );
         assert_eq!(status, "not authenticated");
         let (status, _, _) = parse_codex_status(
-            true,
+            false,
             include_str!("../tests/fixtures/providers/codex-0.149.0-logged-out.txt"),
         );
         assert_eq!(status, "not authenticated");

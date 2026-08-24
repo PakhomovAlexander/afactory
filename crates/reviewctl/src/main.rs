@@ -1,6 +1,6 @@
 //! `af review` - reviews from a definition file to a verdict, and the campaign loop.
 //!
-//! Six subcommands:
+//! The review namespace has six subcommands:
 //!
 //! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
 //!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
@@ -19,6 +19,7 @@
 //! explicit action.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -179,6 +180,17 @@ fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
+fn resolve_codex_home(home: &str, configured: Option<&OsStr>) -> Result<String, String> {
+    match configured {
+        Some(value) if value.is_empty() => Err("CODEX_HOME is empty".to_string()),
+        Some(value) => value
+            .to_str()
+            .map(str::to_string)
+            .ok_or_else(|| "CODEX_HOME must be valid UTF-8".to_string()),
+        None => Ok(format!("{home}/.codex")),
+    }
+}
+
 struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
@@ -215,6 +227,7 @@ fn usage() -> ! {
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
+        \x20      af provider status\n\
         \x20      af --version\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
@@ -365,6 +378,13 @@ fn main() {
     let namespace = args.next();
     if matches!(namespace.as_deref(), Some("--version" | "-V")) {
         println!("af {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if namespace.as_deref() == Some("provider") {
+        if args.next().as_deref() != Some("status") || args.next().is_some() {
+            usage();
+        }
+        providers::print_status();
         return;
     }
     if namespace.as_deref() != Some("review") {
@@ -751,7 +771,10 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                         let mut adapter =
                             review_runner_codex::CodexAdapter::from_package(package, timeout)
                                 .map_err(|error| format!("{node}: {error}"))?
-                                .with_codex_home(format!("{home}/.codex"));
+                                .with_codex_home(resolve_codex_home(
+                                    &home,
+                                    std::env::var_os("CODEX_HOME").as_deref(),
+                                )?);
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
@@ -820,7 +843,25 @@ fn exit_for_verdict(verdict: RunVerdict) {
 
 #[cfg(test)]
 mod option_tests {
-    use super::{Options, validate_campaign_name};
+    use std::ffi::OsStr;
+
+    use super::{Options, resolve_codex_home, validate_campaign_name};
+
+    #[test]
+    fn codex_runner_uses_the_ambient_auth_context() {
+        assert_eq!(
+            resolve_codex_home("/home/operator", Some(OsStr::new("/contexts/codex"))).unwrap(),
+            "/contexts/codex"
+        );
+        assert_eq!(
+            resolve_codex_home("/home/operator", None).unwrap(),
+            "/home/operator/.codex"
+        );
+        assert_eq!(
+            resolve_codex_home("/home/operator", Some(OsStr::new(""))).unwrap_err(),
+            "CODEX_HOME is empty"
+        );
+    }
 
     #[test]
     fn campaign_names_cannot_redirect_state() {
