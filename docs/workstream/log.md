@@ -269,3 +269,25 @@ repeated-content materialization. The 128-distinct-pairs / 256 MiB workload reco
 53,329,920 bytes maximum command RSS with a 36,536,824-byte Darwin peak footprint. Focused contract,
 source, store, and pipeline regressions pass. A fresh unchanged-policy Campaign must establish two
 clean Rounds after these final corrections are fully verified and resolved.
+
+## 2026-08-24 — M2 convergence Campaign Round 1 corrections
+
+Fresh Campaign `m2-rename-scope-convergence` Round 1 spent 561,837 tokens and opened fifteen
+Reports. ReviewerResult@1 now has one wire shape—the flat report every adapter emits—while live
+ingestion remains the producer of typed FindingReport@1 artifacts. Its schema matches the
+permanent reader's optional line and confidence fields. RunReport version membership is
+centralized, and `authority_unavailable` is emitted only when missing authority is the sole
+non-exhaustion cause. Prior prompts omit synthetic authority diagnostics and never pair a null
+file with a line.
+
+Materialization no longer reads candidate-sized regular files into memory or parks shared
+executor workers. One task per digest streams a verified occurrence through a 64 KiB buffer and
+reflinks or copies duplicates; symlink targets are the only whole objects retained and are
+refused above 16 KiB before allocation. Path parents
+are prepared component by component at the write boundary, and declared symlink ancestry is
+preflighted before concurrent work. ADR-0020 records this boundary. Change Sets regain their
+render-time byte bound and full validation, unfamiliar Git diff warnings fail closed as rename
+truncation, sealing uses binary search over the already sorted baseline, reviewer output parsing
+moves rather than clones JSON, and CAS fsync fan-out has an explicit sixteen-worker ceiling.
+The release measurements recorded 0.943 s for 5,000 distinct entries / 199 MiB, 0.510 s for the
+same output with repeated content, and 0.467 s for 128 distinct duplicated 1 MiB blobs / 256 MiB.

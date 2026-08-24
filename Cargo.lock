@@ -1127,6 +1127,7 @@ version = "0.1.0"
 dependencies = [
  "jsonschema",
  "notify",
+ "reflink-copy",
  "review-core",
  "review-parallel",
  "review-store",

@@ -209,35 +209,6 @@ impl<'a> Ingest<'a> {
         self.add_stage_outputs_inner(stages, true)
     }
 
-    /// Atomically admit already-typed reports from ReviewerResult@1 alongside their disputes.
-    /// This is the permanent reducer path for the typed arm of the bridge contract; unlike a
-    /// conversion through LegacyFinding it preserves every location on the immutable claim.
-    pub fn add_live_report_outputs(
-        &mut self,
-        stages: &[(
-            &str,
-            &[FindingReport],
-            &[review_core::legacy::LegacyDispute],
-        )],
-    ) -> Result<AddSummary, StoreError> {
-        let mut prepared = Vec::with_capacity(stages.len());
-        for (source, reports, disputes) in stages {
-            for (index, report) in reports.iter().enumerate() {
-                report.validate().map_err(|reason| {
-                    StoreError::Conflict(format!(
-                        "{source} finding {index} violates FindingReport@1: {reason}"
-                    ))
-                })?;
-            }
-            prepared.push(PreparedStage {
-                source: (*source).to_string(),
-                reports: reports.to_vec(),
-                disputes: disputes.to_vec(),
-            });
-        }
-        self.add_prepared_outputs(&prepared)
-    }
-
     fn add_stage_output_inner(
         &mut self,
         source: &str,

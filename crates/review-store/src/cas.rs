@@ -192,17 +192,11 @@ impl Cas {
     }
 
     pub fn get(&self, digest: &str) -> Result<Vec<u8>, CasError> {
-        self.get_admitted(digest, |_| ()).map(|(bytes, ())| bytes)
+        self.get_bounded(digest, u64::MAX)
     }
 
-    /// Verify and read one object after admitting its authoritative on-disk byte length.
-    /// The returned guard lives beside the bytes, allowing callers to enforce a byte budget
-    /// before allocation rather than estimating memory from candidate-supplied metadata.
-    pub fn get_admitted<G>(
-        &self,
-        digest: &str,
-        admit: impl FnOnce(u64) -> G,
-    ) -> Result<(Vec<u8>, G), CasError> {
+    /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
+    pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
@@ -214,7 +208,12 @@ impl Cas {
             _ => CasError::Io(e),
         })?;
         let length = file.metadata()?.len();
-        let guard = admit(length);
+        if length > max_bytes {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                format!("CAS object {digest} is {length} bytes; limit is {max_bytes}"),
+            )));
+        }
         let capacity = usize::try_from(length).map_err(|error| {
             CasError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, error))
         })?;
@@ -237,7 +236,35 @@ impl Cas {
                 digest: digest.to_string(),
             });
         }
-        Ok((bytes, guard))
+        Ok(bytes)
+    }
+
+    /// Stream one object into `writer` while verifying the content identity.
+    /// Memory is bounded by the fixed hash buffer regardless of object size.
+    pub fn copy_verified_to(&self, digest: &str, writer: &mut impl Write) -> Result<u64, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let path = self.path_for(digest);
+        let mut file = fs::File::open(&path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => CasError::NotFound {
+                digest: digest.to_string(),
+            },
+            _ => CasError::Io(error),
+        })?;
+        let mut copying = CopyingReader {
+            source: &mut file,
+            destination: writer,
+        };
+        let mut buffer = [0_u8; 64 * 1024];
+        let (actual, size) =
+            canonical::blob_content_id_reader_with_buffer(&mut copying, &mut buffer)?;
+        if actual != digest {
+            return Err(CasError::Corrupt {
+                digest: digest.to_string(),
+            });
+        }
+        Ok(size)
     }
 
     pub fn get_json(&self, digest: &str) -> Result<Value, CasError> {
@@ -264,6 +291,19 @@ impl Cas {
 
     pub fn contains(&self, digest: &str) -> bool {
         self.get(digest).is_ok()
+    }
+}
+
+struct CopyingReader<'a, R, W> {
+    source: &'a mut R,
+    destination: &'a mut W,
+}
+
+impl<R: Read, W: Write> Read for CopyingReader<'_, R, W> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.source.read(buffer)?;
+        self.destination.write_all(&buffer[..read])?;
+        Ok(read)
     }
 }
 
@@ -297,9 +337,11 @@ fn sync_concurrently<'p>(
     sync: fn(&fs::File) -> std::io::Result<()>,
 ) -> Result<(), CasError> {
     let paths: Vec<&Path> = paths.collect();
+    const MAX_SYNC_WORKERS: usize = 16;
     let workers = std::thread::available_parallelism()
         .map(|workers| workers.get())
         .unwrap_or(1)
+        .min(MAX_SYNC_WORKERS)
         .min(paths.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
@@ -351,6 +393,36 @@ mod tests {
         let path = cas.path_for(&digest);
         fs::write(&path, b"tampered").unwrap();
         assert!(matches!(cas.get(&digest), Err(CasError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn verified_copy_streams_exact_bytes_and_detects_corruption() {
+        let (_dir, cas) = cas();
+        let bytes = vec![0x5a; 256 * 1024];
+        let digest = cas.put(&bytes).unwrap();
+        let mut copied = Vec::new();
+        assert_eq!(
+            cas.copy_verified_to(&digest, &mut copied).unwrap(),
+            bytes.len() as u64
+        );
+        assert_eq!(copied, bytes);
+
+        fs::write(cas.path_for(&digest), b"tampered").unwrap();
+        assert!(matches!(
+            cas.copy_verified_to(&digest, &mut Vec::new()),
+            Err(CasError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_reads_refuse_the_stored_length_before_allocation() {
+        let (_dir, cas) = cas();
+        let digest = cas.put(b"five!").unwrap();
+        assert_eq!(cas.get_bounded(&digest, 5).unwrap(), b"five!");
+        assert!(matches!(
+            cas.get_bounded(&digest, 4),
+            Err(CasError::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge
+        ));
     }
 
     #[test]

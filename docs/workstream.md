@@ -136,15 +136,15 @@ tokens and opened sixteen further claims; Round 2 retained those fixes and spent
 eleven further claims. Round 3 epoch 1 reached no reviewer: the gate exposed an unbounded
 installed-runtime probe. Its bounded correction was committed and the epoch restarted. Round 3
 epoch 2 spent 495,186 tokens and opened nine further claims. Their corrections preserve readable
-claims with unknown Scope, validate unique manifest paths, use one streaming materialization pass
-under an explicit 64 MiB resident-content budget, and make authority-unavailable conclusions
+claims with unknown Scope, validate unique manifest paths, and make authority-unavailable conclusions
 durable through additive `RunReport@3`. Those corrections were verified, committed, and resolved.
 Round 4 spent 605,986 tokens, retained all 35 prior resolutions, opened eight further claims, and
-exhausted the Campaign. Its corrections separate nested repeated-group fan-out from budget-waiting
-executor tasks, make manifest construction fallible and validate canonical adjacent path order,
-carry typed multi-location ReviewerResult reports through the live reducer, align schema line
-bounds with `u32`, and preserve blocked-gate verdict precedence. Verify, commit, and resolve them;
-then start a fresh unchanged-policy Campaign and establish two clean Rounds before M3.1. Continue
+exhausted the Campaign. A fresh Campaign Round 1 then opened fifteen claims. Their corrections
+replace blocking whole-object materialization with verified fixed-buffer streaming and cloned
+duplicates (ADR-0020), keep ReviewerResult@1 at its sole live flat wire shape, centralize
+RunReport-version classification, fully revalidate Change Sets at prompt rendering, suppress
+authority diagnostics from prior claims, and preserve real Finding/Gate failure precedence.
+Verify, commit, resolve, then establish two clean Rounds before M3.1. Continue
 in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

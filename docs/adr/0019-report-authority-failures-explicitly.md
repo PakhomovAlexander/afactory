@@ -10,8 +10,9 @@ run but was not a durable explanation.
 
 We decided that new conclusions use `RunReport@3`, whose failure-reason vocabulary adds
 `authority_unavailable`. The convergence projection records the number of authority failures in
-the active clean window. A non-exhausted failure uses `authority_unavailable` whenever that count
-is nonzero; otherwise it remains `not_converged`. Existing `RunReport@1` and `RunReport@2` readers
+the active clean window. A non-exhausted failure uses `authority_unavailable` only when that count
+is nonzero and no real blocking Finding, new Finding, or failed Gate is already the immediate
+cause; otherwise it remains `not_converged`. Existing `RunReport@1` and `RunReport@2` readers
 remain permanent and unchanged.
 
 ## Considered options
@@ -36,5 +37,7 @@ remain permanent and unchanged.
   an incomplete verdict, while missing Scope authority is a completed run that fails closed.
 - Exhaustion remains the terminal reason at the configured round limit. The authority-failure
   count and warning still identify why convergence could not be reached before exhaustion.
+- Real Finding and Gate failures retain precedence, so an accompanying diagnostic cannot replace
+  the actionable durable cause with `authority_unavailable`.
 - Report readers, the event vocabulary schema, campaign terminal validation, and receipt checks
   must recognize all three report versions.

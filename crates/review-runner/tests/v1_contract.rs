@@ -2,10 +2,9 @@
 //!
 //! The adapters parse the legacy stage-output shape — that is what `RESULT_CONTRACT` asks a
 //! model for, tolerantly. The v1 contract is where those answers are headed, and
-//! `LegacyStageOutput::into_reports` is the bridge. This test walks one answer across it:
-//! model text → tolerant parse → v1 reports → the `ReviewerResult@1` payload shape — with
-//! every step validated against the schema that governs it. Until the ledger itself speaks
-//! v1, this is the proof the two models have not drifted apart.
+//! `LegacyStageOutput::into_reports` is the ingestion bridge. This test walks one answer across
+//! the wire contract and the bridge separately: model text → `ReviewerResult@1` flat reports,
+//! then live reports → durable FindingReport@1 artifacts.
 
 use std::path::PathBuf;
 
@@ -70,7 +69,7 @@ fn a_contract_shaped_answer_bridges_to_the_v1_result() {
     let result = json!({
         "verdict": serde_json::to_value(stage.verdict).unwrap(),
         "summary": stage.summary,
-        "reports": reports,
+        "reports": serde_json::to_value(&stage.findings).unwrap(),
         "benchmark_demands": serde_json::to_value(&stage.benchmark_demands).unwrap(),
         "disputes": stage.disputes.iter().map(|d| json!({
             "claim_id": d.fp, "position": d.position, "reason": d.reason,

@@ -1022,7 +1022,10 @@ fn prior_rows(
     Ok(ledger
         .findings()
         .iter()
-        .filter(|finding| !matches!(finding.status, Status::Rejected | Status::Wontfix))
+        .filter(|finding| {
+            !finding.authority_diagnostic
+                && !matches!(finding.status, Status::Rejected | Status::Wontfix)
+        })
         .map(|finding| {
             let severity = format!("{:?}", finding.severity).to_lowercase();
             let effective_severity = finding
@@ -1040,8 +1043,10 @@ fn prior_rows(
                 "last_seen_round": finding.last_seen_round,
             });
             let object = row.as_object_mut().expect("prior row is an object");
-            let (file, location_unrecorded) = prior_location(&finding.identity_file);
+            let (file, line, location_unrecorded) =
+                prior_location(&finding.identity_file, finding.identity_line);
             object.insert("file".into(), file);
+            object.insert("line".into(), line);
             if location_unrecorded {
                 object.insert("location_unrecorded".into(), serde_json::Value::Bool(true));
             }
@@ -1059,14 +1064,18 @@ fn prior_rows(
         .collect())
 }
 
-fn prior_location(file: &str) -> (serde_json::Value, bool) {
+fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {
     if file == review_core::legacy::CHANGE_WIDE_SENTINEL {
-        return (serde_json::Value::Null, false);
+        return (serde_json::Value::Null, serde_json::Value::Null, false);
     }
     if review_core::is_valid_repo_path(file) {
-        (serde_json::Value::String(file.to_string()), false)
+        (
+            serde_json::Value::String(file.to_string()),
+            line.map_or(serde_json::Value::Null, |line| line.into()),
+            false,
+        )
     } else {
-        (serde_json::Value::Null, true)
+        (serde_json::Value::Null, serde_json::Value::Null, true)
     }
 }
 
@@ -1176,16 +1185,20 @@ mod tests {
     #[test]
     fn prior_findings_never_echo_a_path_live_admission_would_refuse() {
         assert_eq!(
-            super::prior_location("src/main.rs"),
-            (serde_json::Value::String("src/main.rs".into()), false)
+            super::prior_location("src/main.rs", Some(7)),
+            (
+                serde_json::Value::String("src/main.rs".into()),
+                serde_json::json!(7),
+                false
+            )
         );
         assert_eq!(
-            super::prior_location("./src/main.rs"),
-            (serde_json::Value::Null, true)
+            super::prior_location("./src/main.rs", Some(7)),
+            (serde_json::Value::Null, serde_json::Value::Null, true)
         );
         assert_eq!(
-            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL),
-            (serde_json::Value::Null, false)
+            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
+            (serde_json::Value::Null, serde_json::Value::Null, false)
         );
     }
 }

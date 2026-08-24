@@ -635,12 +635,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
         .iter()
-        .filter(|event| {
-            matches!(
-                event.event_type,
-                EventType::RunReportV1 | EventType::RunReportV2 | EventType::RunReportV3
-            )
-        })
+        .filter(|event| event.event_type.is_run_report())
         .collect();
 
     println!("# Review campaign `{}`", options.campaign);

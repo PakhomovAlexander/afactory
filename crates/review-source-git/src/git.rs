@@ -737,7 +737,9 @@ impl Repo {
 }
 
 fn rename_detection_was_truncated(stderr: &[u8]) -> bool {
-    String::from_utf8_lossy(stderr).contains("rename detection was skipped")
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .any(|line| line.trim_start().starts_with("warning:"))
 }
 
 fn quote_fast_import_path(path: &[u8]) -> String {
@@ -1069,6 +1071,9 @@ mod tests {
         );
         assert!(rename_detection_was_truncated(
             b"warning: exhaustive rename detection was skipped due to too many files.\n"
+        ));
+        assert!(rename_detection_was_truncated(
+            b"warning: an unfamiliar future diff warning\n"
         ));
         assert!(!rename_detection_was_truncated(b""));
     }

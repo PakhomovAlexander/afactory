@@ -871,33 +871,17 @@ fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
         .iter()
         .enumerate()
     {
-        if report.get("locations").is_some() {
-            let typed: review_core::FindingReport = serde::Deserialize::deserialize(report)
-                .map_err(|error| {
-                    StoreError::Conflict(format!(
-                        "ReviewerResult@1 typed report {index} violates its payload contract: {error}"
-                    ))
-                })?;
-            typed.validate().map_err(|error| {
-                StoreError::Conflict(format!(
-                    "ReviewerResult@1 typed report {index} is not admissible: {error}"
-                ))
-            })?;
-        } else {
-            let legacy: review_core::legacy::LegacyFinding = serde::Deserialize::deserialize(
-                report,
-            )
+        let legacy: review_core::legacy::LegacyFinding = serde::Deserialize::deserialize(report)
             .map_err(|error| {
                 StoreError::Conflict(format!(
-                    "ReviewerResult@1 legacy report {index} violates its payload contract: {error}"
+                    "ReviewerResult@1 report {index} violates its payload contract: {error}"
                 ))
             })?;
-            legacy.validate(index).map_err(|error| {
-                StoreError::Conflict(format!(
-                    "ReviewerResult@1 legacy report is not admissible: {error}"
-                ))
-            })?;
-        }
+        legacy.validate(index).map_err(|error| {
+            StoreError::Conflict(format!(
+                "ReviewerResult@1 report is not admissible: {error}"
+            ))
+        })?;
     }
     for demand in value
         .get("benchmark_demands")
@@ -1641,17 +1625,13 @@ fn validate_campaign_transition(
                         }
                         _ => {}
                     }
-                    if matches!(
-                        event_type,
-                        EventType::RunReportV1 | EventType::RunReportV2 | EventType::RunReportV3
-                    ) && report_closes(event_type, &event.payload)?
-                    {
+                    if event_type.is_run_report() && report_closes(event_type, &event.payload)? {
                         if terminal {
                             return Err(StoreError::Conflict(
                                 "the active Round epoch already has a terminal conclusion".into(),
                             ));
                         }
-                        if matches!(event_type, EventType::RunReportV2 | EventType::RunReportV3) {
+                        if event_type.run_report_requires_receipts() {
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
@@ -1709,24 +1689,22 @@ fn validate_campaign_transition(
 }
 
 fn round_runtime_event(event_type: EventType) -> bool {
-    matches!(
-        event_type,
-        EventType::AttemptAdmittedV1
-            | EventType::AttemptDispatchedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1
-            | EventType::CheckCompletedV1
-            | EventType::FindingReportedV1
-            | EventType::GateDecisionV1
-            | EventType::GenerationAdvancedV1
-            | EventType::NodeInvocationV1
-            | EventType::NodeOutputReceiptV1
-            | EventType::ProviderOperationTransitionV1
-            | EventType::RunReportV1
-            | EventType::RunReportV2
-            | EventType::RunReportV3
-    )
+    event_type.is_run_report()
+        || matches!(
+            event_type,
+            EventType::AttemptAdmittedV1
+                | EventType::AttemptDispatchedV1
+                | EventType::AttemptFailedV1
+                | EventType::AttemptFencedV1
+                | EventType::AttemptReleasedV1
+                | EventType::CheckCompletedV1
+                | EventType::FindingReportedV1
+                | EventType::GateDecisionV1
+                | EventType::GenerationAdvancedV1
+                | EventType::NodeInvocationV1
+                | EventType::NodeOutputReceiptV1
+                | EventType::ProviderOperationTransitionV1
+        )
 }
 
 fn latest_round(
@@ -1754,7 +1732,6 @@ fn round_has_terminal_report(
     let mut statement = tx.prepare(
         "SELECT type, payload FROM events
          WHERE run_id = ?1 AND causation_id = ?2
-           AND type IN ('RunReport@1', 'RunReport@2', 'RunReport@3')
          ORDER BY sequence",
     )?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
@@ -1765,7 +1742,9 @@ fn round_has_terminal_report(
         let event_type = event_type
             .parse::<EventType>()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if report_closes(event_type, &serde_json::from_str(&payload)?)? {
+        if event_type.is_run_report()
+            && report_closes(event_type, &serde_json::from_str(&payload)?)?
+        {
             return Ok(true);
         }
     }
@@ -1951,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_result_admission_accepts_both_bridge_report_shapes() {
+    fn reviewer_result_admission_accepts_only_the_live_flat_shape() {
         let result = |report| {
             json!({
                 "verdict": "request-changes",
@@ -1980,7 +1959,7 @@ mod tests {
         });
 
         assert!(validate_reviewer_result(&result(legacy)).is_ok());
-        assert!(validate_reviewer_result(&result(typed)).is_ok());
+        assert!(validate_reviewer_result(&result(typed)).is_err());
     }
 
     #[test]

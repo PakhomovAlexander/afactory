@@ -48,3 +48,5 @@ options you rejected and why — that is the part future-you needs.
   executor](0018-share-one-bounded-infrastructure-executor.md)
 - [0019 — Report authority failures
   explicitly](0019-report-authority-failures-explicitly.md)
+- [0020 — Stream CAS materialization and clone duplicate
+  files](0020-stream-cas-materialization-and-clone-duplicates.md)

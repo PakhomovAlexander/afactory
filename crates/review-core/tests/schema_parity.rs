@@ -87,7 +87,7 @@ fn every_schema_is_a_valid_json_schema() {
 }
 
 #[test]
-fn reviewer_result_schema_names_both_bridge_report_shapes() {
+fn reviewer_result_schema_names_the_live_flat_report_shape() {
     let result = |report| {
         json!({
             "verdict": "request-changes",
@@ -109,7 +109,7 @@ fn reviewer_result_schema_names_both_bridge_report_shapes() {
             "confidence": 0.9
         })),
     );
-    assert_valid(
+    assert_invalid(
         "reviewer-result-v1.json",
         &result(json!({
             "title": "typed",
@@ -119,16 +119,17 @@ fn reviewer_result_schema_names_both_bridge_report_shapes() {
             "fix": "fix",
             "confidence": 0.9
         })),
+        "typed FindingReport artifacts are produced only after ingestion",
     );
     assert_invalid(
         "reviewer-result-v1.json",
         &result(json!({"title": "no shape discriminator"})),
-        "a report must be legacy-flat or typed",
+        "a report must use the live flat shape",
     );
     assert_invalid(
         "reviewer-result-v1.json",
         &result(json!({"file": "src/a.rs", "locations": []})),
-        "a report cannot claim both bridge shapes",
+        "a report cannot mix wire and durable shapes",
     );
 }
 

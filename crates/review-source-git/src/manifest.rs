@@ -116,7 +116,10 @@ impl Manifest {
     }
 
     pub fn get(&self, path: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.path == path)
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .ok()
+            .map(|index| &self.entries[index])
     }
 
     /// The snapshot's content digest.
@@ -147,14 +150,24 @@ impl Manifest {
 /// verbatim, so a non-UTF-8 or `%`-bearing name reaches the filesystem as itself.
 #[cfg(unix)]
 pub fn fs_path(encoded: &str) -> std::path::PathBuf {
+    fs_path_bytes(&decode_path(encoded))
+}
+
+#[cfg(unix)]
+pub(crate) fn fs_path_bytes(decoded: &[u8]) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
-    std::ffi::OsStr::from_bytes(&decode_path(encoded)).into()
+    std::ffi::OsStr::from_bytes(decoded).into()
 }
 
 #[cfg(not(unix))]
 pub fn fs_path(encoded: &str) -> std::path::PathBuf {
+    fs_path_bytes(&decode_path(encoded))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn fs_path_bytes(decoded: &[u8]) -> std::path::PathBuf {
     // Off-unix, paths are not bytes; this lossless mapping does not apply, so fall back.
-    std::path::PathBuf::from(String::from_utf8_lossy(&decode_path(encoded)).into_owned())
+    std::path::PathBuf::from(String::from_utf8_lossy(decoded).into_owned())
 }
 
 /// The digest a blob is filed under.

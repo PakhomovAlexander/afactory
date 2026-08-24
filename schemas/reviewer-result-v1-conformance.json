@@ -49,6 +49,16 @@
         "benchmark_demands": [],
         "disputes": []
       }
+    },
+    {
+      "name": "line and confidence may be omitted",
+      "payload": {
+        "verdict": "request-changes",
+        "summary": null,
+        "reports": [{"severity":"minor","file":"src/a.rs","title":"title","body":"body","fix":"fix"}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
     }
   ],
   "invalid": [

@@ -9,14 +9,15 @@
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Condvar, Mutex};
 
 use review_store::Cas;
 
 use crate::manifest::{EntryKind, Manifest};
+
+const MAX_SYMLINK_TARGET_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug)]
 pub enum MaterializeError {
@@ -50,27 +51,6 @@ impl From<std::io::Error> for MaterializeError {
     }
 }
 
-/// Resolve a manifest path under `root`, refusing anything that escapes.
-fn safe_join(root: &Path, encoded: &str) -> Result<PathBuf, MaterializeError> {
-    // Decode first: the manifest path is a JSON-safe display form, and joining it verbatim
-    // would write `docs/50%-off.md` to `docs/50%25-off.md`. The escape check runs on the real
-    // components — `..`, an absolute root, a Windows prefix are all ASCII, so decoding does not
-    // hide them.
-    let raw = crate::manifest::fs_path(encoded);
-    let escapes = raw.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    });
-    if escapes || encoded.is_empty() {
-        return Err(MaterializeError::Escape {
-            path: encoded.to_string(),
-        });
-    }
-    Ok(root.join(&raw))
-}
-
 /// Write every entry of `manifest` under `root`.
 pub fn materialize(
     manifest: &Manifest,
@@ -82,39 +62,38 @@ pub fn materialize(
         .validate()
         .map_err(|error| MaterializeError::Manifest(error.to_string()))?;
     fs::create_dir_all(root)?;
+    if fs::symlink_metadata(root)?.file_type().is_symlink() {
+        return Err(MaterializeError::Escape {
+            path: root.display().to_string(),
+        });
+    }
 
-    // Each distinct parent is prepared once: `create_dir_all` stats every component, so doing
-    // it per entry costs O(files × depth) syscalls where O(directories × depth) suffices.
-    let mut prepared: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut symlinks: HashSet<&str> = HashSet::new();
-    for entry in &manifest.entries {
-        if has_symlink_ancestor(&entry.path, &symlinks) {
-            return Err(MaterializeError::Escape {
-                path: entry.path.clone(),
-            });
-        }
-        let target = safe_join(root, &entry.path)?;
-        if let Some(parent) = target.parent()
-            && !prepared.contains(parent)
-        {
-            fs::create_dir_all(parent)?;
-            // A parent that is a symlink would place the write outside the root even though
-            // every component looked innocent.
-            if fs::symlink_metadata(parent)?.file_type().is_symlink() {
+    // A manifest-declared symlink must never become the parent of another entry. Decode this
+    // preflight only when the tree actually contains symlinks; ordinary manifests decode every
+    // path exactly once, in `prepare_target` immediately before the write.
+    if manifest
+        .entries
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Symlink)
+    {
+        let mut symlinks = HashSet::new();
+        for entry in &manifest.entries {
+            let path = checked_relative_path(&entry.path)?;
+            if path.ancestors().skip(1).any(|path| symlinks.contains(path)) {
                 return Err(MaterializeError::Escape {
                     path: entry.path.clone(),
                 });
             }
-            prepared.insert(parent.to_path_buf());
-        }
-        if entry.kind == EntryKind::Symlink {
-            symlinks.insert(&entry.path);
+            if entry.kind == EntryKind::Symlink {
+                symlinks.insert(path);
+            }
         }
     }
 
-    // Sort compact entry indexes into contiguous digest groups. One executor pass overlaps reads
-    // and writes across groups; an explicit byte budget, admitted from the CAS object's actual
-    // on-disk length before allocation, bounds resident content independently of CPU count.
+    // Sort compact entry indexes into digest groups. One bounded executor pass overlaps groups;
+    // each group streams one verified regular file from CAS and reflinks/copies its duplicates.
+    // No worker waits on another worker and resident content is O(workers × 64 KiB), independent
+    // of object size and duplicate count.
     let mut order: Vec<usize> = (0..manifest.entries.len()).collect();
     order.sort_by(|left, right| {
         manifest.entries[*left]
@@ -133,143 +112,134 @@ pub fn materialize(
         groups.push(start..end);
         start = end;
     }
-    let resident = ResidentBudget::new(64 * 1024 * 1024);
     review_parallel::try_for_each(&groups, |range| {
-        // Large occurrence groups are handled below from the caller thread. Keeping nested
-        // executor work out of this byte-budgeted fan-out ensures a worker waiting for memory
-        // can never be stolen by the permit holder itself.
-        if range.len() >= review_parallel::worker_limit() {
-            return Ok(());
-        }
         let indexes = &order[range.clone()];
         let content = &manifest.entries[indexes[0]].content;
-        let (bytes, _resident) = cas
-            .get_admitted(content, |length| resident.acquire(length))
-            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-        for index in indexes {
-            let entry = &manifest.entries[*index];
-            if entry.size != bytes.len() as u64 {
-                return Err(MaterializeError::Manifest(format!(
-                    "entry `{}` declares {} bytes but CAS object {} has {}",
-                    entry.path,
-                    entry.size,
-                    entry.content,
-                    bytes.len()
-                )));
-            }
-        }
-        indexes.iter().try_for_each(|index| {
-            let entry = &manifest.entries[*index];
-            let target = safe_join(root, &entry.path)?;
-            write_entry(&bytes, &target, entry.kind)?;
-            Ok::<_, MaterializeError>(())
-        })
+        materialize_group(manifest, indexes, content, cas, root)
     })?;
+    Ok(())
+}
 
-    // A heavily repeated digest still writes occurrences in parallel, but only after the outer
-    // byte-budgeted pass has drained. The resident permit is therefore never held across a
-    // re-entrant executor call that can steal another memory-waiting materialization task.
-    for range in groups
+fn materialize_group(
+    manifest: &Manifest,
+    indexes: &[usize],
+    content: &str,
+    cas: &Cas,
+    root: &Path,
+) -> Result<(), MaterializeError> {
+    let regular = indexes
         .iter()
-        .filter(|range| range.len() >= review_parallel::worker_limit())
-    {
-        let indexes = &order[range.clone()];
-        let content = &manifest.entries[indexes[0]].content;
-        let (bytes, _resident) = cas
-            .get_admitted(content, |length| resident.acquire(length))
+        .copied()
+        .find(|index| manifest.entries[*index].kind != EntryKind::Symlink);
+    let mut source = None;
+    let mut symlink_bytes = None;
+    let actual_size = if let Some(index) = regular {
+        let entry = &manifest.entries[index];
+        let target = prepare_target(root, &entry.path)?;
+        let mut file = fs::File::create(&target)?;
+        let size = cas
+            .copy_verified_to(content, &mut file)
             .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-        for index in indexes {
-            let entry = &manifest.entries[*index];
-            if entry.size != bytes.len() as u64 {
-                return Err(MaterializeError::Manifest(format!(
-                    "entry `{}` declares {} bytes but CAS object {} has {}",
-                    entry.path,
-                    entry.size,
-                    entry.content,
-                    bytes.len()
-                )));
+        set_executable(&target, entry.kind == EntryKind::Executable)?;
+        source = Some((index, target));
+        size
+    } else {
+        let bytes = cas
+            .get_bounded(content, MAX_SYMLINK_TARGET_BYTES)
+            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+        let size = bytes.len() as u64;
+        symlink_bytes = Some(bytes);
+        size
+    };
+
+    for index in indexes {
+        let entry = &manifest.entries[*index];
+        if entry.size != actual_size {
+            return Err(MaterializeError::Manifest(format!(
+                "entry `{}` declares {} bytes but CAS object {} has {}",
+                entry.path, entry.size, entry.content, actual_size
+            )));
+        }
+    }
+
+    for index in indexes {
+        let entry = &manifest.entries[*index];
+        if source.as_ref().is_some_and(|(source, _)| source == index) {
+            continue;
+        }
+        let target = prepare_target(root, &entry.path)?;
+        match entry.kind {
+            EntryKind::Symlink => {
+                if symlink_bytes.is_none() {
+                    symlink_bytes = Some(
+                        cas.get_bounded(content, MAX_SYMLINK_TARGET_BYTES)
+                            .map_err(|error| MaterializeError::Cas(error.to_string()))?,
+                    );
+                }
+                symlink(symlink_bytes.as_deref().expect("loaded above"), &target)?;
+            }
+            EntryKind::File | EntryKind::Executable => {
+                let (_, source) = source.as_ref().expect("regular source exists");
+                reflink_copy::reflink_or_copy(source, &target)?;
+                set_executable(&target, entry.kind == EntryKind::Executable)?;
             }
         }
-        review_parallel::try_for_each(indexes, |index| {
-            let entry = &manifest.entries[*index];
-            let target = safe_join(root, &entry.path)?;
-            write_entry(&bytes, &target, entry.kind)?;
-            Ok::<_, MaterializeError>(())
-        })?;
     }
     Ok(())
 }
 
-fn has_symlink_ancestor<'a>(path: &'a str, symlinks: &HashSet<&'a str>) -> bool {
-    let mut prefix = path;
-    while let Some((parent, _)) = prefix.rsplit_once('/') {
-        if symlinks.contains(parent) {
-            return true;
-        }
-        prefix = parent;
+fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
+    let decoded = crate::manifest::decode_path(encoded);
+    let raw = crate::manifest::fs_path_bytes(&decoded);
+    let escapes = raw.components().any(|component| {
+        matches!(
+            component,
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    let noncanonical = crate::manifest::encode_path(&decoded) != encoded
+        || decoded
+            .split(|byte| *byte == b'/')
+            .any(|component| component.is_empty() || matches!(component, b"." | b".."));
+    if escapes || noncanonical || encoded.is_empty() {
+        return Err(MaterializeError::Escape {
+            path: encoded.to_string(),
+        });
     }
-    false
+    Ok(raw)
 }
 
-struct ResidentBudget {
-    limit: u64,
-    used: Mutex<u64>,
-    changed: Condvar,
-}
-
-impl ResidentBudget {
-    fn new(limit: u64) -> Self {
-        Self {
-            limit,
-            used: Mutex::new(0),
-            changed: Condvar::new(),
+fn prepare_target(root: &Path, encoded: &str) -> Result<PathBuf, MaterializeError> {
+    let relative = checked_relative_path(encoded)?;
+    let mut parent = root.to_path_buf();
+    if let Some(components) = relative.parent() {
+        for component in components.components() {
+            parent.push(component);
+            loop {
+                match fs::symlink_metadata(&parent) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                        break;
+                    }
+                    Ok(_) => {
+                        return Err(MaterializeError::Escape {
+                            path: encoded.to_string(),
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        match fs::create_dir(&parent) {
+                            Ok(()) => break,
+                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                continue;
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
     }
-
-    fn acquire(&self, bytes: u64) -> ResidentPermit<'_> {
-        // An oversized object must still make progress, alone. Its charge fills the budget, so
-        // the bound is max(limit, largest object), never CPU workers × largest object.
-        let charge = bytes.min(self.limit);
-        let mut used = self.used.lock().expect("resident materialization budget");
-        while *used > self.limit - charge {
-            used = self
-                .changed
-                .wait(used)
-                .expect("resident materialization budget");
-        }
-        *used += charge;
-        ResidentPermit {
-            budget: self,
-            charge,
-        }
-    }
-}
-
-struct ResidentPermit<'a> {
-    budget: &'a ResidentBudget,
-    charge: u64,
-}
-
-impl Drop for ResidentPermit<'_> {
-    fn drop(&mut self) {
-        let mut used = self
-            .budget
-            .used
-            .lock()
-            .expect("resident materialization budget");
-        *used -= self.charge;
-        self.budget.changed.notify_all();
-    }
-}
-
-fn write_entry(bytes: &[u8], target: &Path, kind: EntryKind) -> std::io::Result<()> {
-    match kind {
-        EntryKind::Symlink => symlink(bytes, target),
-        EntryKind::File | EntryKind::Executable => {
-            fs::write(target, bytes)?;
-            set_executable(target, kind == EntryKind::Executable)
-        }
-    }
+    Ok(root.join(relative))
 }
 
 #[cfg(unix)]
@@ -301,16 +271,26 @@ mod tests {
 
     #[test]
     fn paths_that_leave_the_root_are_refused() {
-        let root = Path::new("/tmp/sandbox");
-        for path in ["../escape", "a/../../escape", "/etc/passwd", ""] {
+        for path in [
+            "../escape",
+            "a/../../escape",
+            "/etc/passwd",
+            "a/./duplicate",
+            "a//duplicate",
+            "a%2Fduplicate",
+            "",
+        ] {
             assert!(
-                matches!(safe_join(root, path), Err(MaterializeError::Escape { .. })),
+                matches!(
+                    checked_relative_path(path),
+                    Err(MaterializeError::Escape { .. })
+                ),
                 "{path} was not refused"
             );
         }
-        assert!(safe_join(root, "a/b/c.rs").is_ok());
+        assert!(checked_relative_path("a/b/c.rs").is_ok());
         // A path that merely *contains* dots is fine; only a real parent component escapes.
-        assert!(safe_join(root, "a/..b/c").is_ok());
+        assert!(checked_relative_path("a/..b/c").is_ok());
     }
 
     #[test]
@@ -370,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_large_repeated_group_drains_outside_the_budgeted_outer_fanout() {
+    fn a_large_repeated_digest_materializes_without_nested_executor_work() {
         let dir = tempfile::tempdir().unwrap();
         let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
         let repeated = cas.put(b"repeat").unwrap();
@@ -399,5 +379,23 @@ mod tests {
             std::fs::read(root.join("repeated/0000")).unwrap(),
             b"repeat"
         );
+    }
+
+    #[test]
+    fn oversized_symlink_targets_are_refused_before_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+        let bytes = vec![b'x'; MAX_SYMLINK_TARGET_BYTES as usize + 1];
+        let content = cas.put(&bytes).unwrap();
+        let manifest = Manifest::new(vec![crate::Entry {
+            path: "link".into(),
+            kind: EntryKind::Symlink,
+            content,
+            size: bytes.len() as u64,
+        }])
+        .unwrap();
+
+        let error = materialize(&manifest, &cas, dir.path().join("tree")).unwrap_err();
+        assert!(error.to_string().contains("limit is 16384"));
     }
 }

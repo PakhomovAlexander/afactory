@@ -100,6 +100,19 @@ impl EventType {
         }
     }
 
+    /// Whether this event is any readable generation of the durable run conclusion.
+    pub const fn is_run_report(self) -> bool {
+        matches!(
+            self,
+            Self::RunReportV1 | Self::RunReportV2 | Self::RunReportV3
+        )
+    }
+
+    /// Whether this run-report generation carries plan and receipt authority.
+    pub const fn run_report_requires_receipts(self) -> bool {
+        matches!(self, Self::RunReportV2 | Self::RunReportV3)
+    }
+
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
             Self::AttemptAdmittedV1 => ("AttemptAdmitted", 1),

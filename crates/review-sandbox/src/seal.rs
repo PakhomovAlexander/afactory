@@ -9,7 +9,6 @@
 //! kernel-computed final sandbox diff byte for byte, and diagnostic mutations must be reverted
 //! before completion. Neither is checkable without computing the diff independently.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use review_source_git::{
@@ -122,13 +121,6 @@ fn scan_and_diff(
         .validate()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     const TASKS_PER_WORKER: usize = 64;
-    let index: BTreeMap<&str, (usize, &Entry)> = baseline
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(position, entry)| (entry.path.as_str(), (position, entry)))
-        .collect();
-
     let mut entries = Vec::new();
     let mut mutations = MutationSet::default();
     let mut matched = vec![false; baseline.entries.len()];
@@ -155,8 +147,11 @@ fn scan_and_diff(
             } else {
                 EntryKind::File
             };
-            match index.get(relative.as_str()) {
-                None => {
+            match baseline
+                .entries
+                .binary_search_by(|entry| entry.path.as_str().cmp(&relative))
+            {
+                Err(_) => {
                     // Added: presence is the whole fact. Record it with its size from the stat
                     // we already have, and no content hash — the bytes are never read.
                     mutations.added.push(relative.clone());
@@ -167,13 +162,13 @@ fn scan_and_diff(
                         size: meta.len(),
                     });
                 }
-                Some((position, previous)) => {
-                    matched[*position] = true;
+                Ok(position) => {
+                    matched[position] = true;
                     baseline_candidates.push(BaselineCandidate {
                         path,
                         relative,
                         kind,
-                        previous,
+                        previous: &baseline.entries[position],
                     });
                     if baseline_candidates.len()
                         >= review_parallel::worker_limit() * TASKS_PER_WORKER

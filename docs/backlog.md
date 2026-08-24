@@ -228,6 +228,11 @@ identity transition. Existing legacy campaigns keep their frozen fingerprint key
 handled by recorded Grouping after M3 or by starting a new Campaign, never by rewriting old
 events.
 
+Snapshot materialization remains part of the trusted Subject boundary: CAS objects stream through
+fixed verification buffers and repeated regular-file content is cloned from one verified
+occurrence, never admitted as candidate-sized resident buffers or behind blocking executor
+permits. See [ADR-0020](adr/0020-stream-cas-materialization-and-clone-duplicates.md).
+
 ---
 
 ## M3 · Canonical claims and explicit dispositions
