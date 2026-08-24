@@ -59,11 +59,41 @@ pub struct Manifest {
     pub entries: Vec<Entry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestError {
+    DuplicatePath(String),
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicatePath(path) => write!(formatter, "manifest repeats path `{path}`"),
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {}
+
 impl Manifest {
     pub fn new(mut entries: Vec<Entry>) -> Manifest {
         // Sorted by raw path bytes: the one ordering that does not depend on a locale.
         entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-        Manifest { entries }
+        let manifest = Manifest { entries };
+        manifest
+            .validate()
+            .expect("programmatically constructed manifests have unique paths");
+        manifest
+    }
+
+    /// Validate invariants required by parallel materialization and positional diffing.
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        let mut paths = std::collections::HashSet::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            if !paths.insert(entry.path.as_str()) {
+                return Err(ManifestError::DuplicatePath(entry.path.clone()));
+            }
+        }
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -158,6 +188,20 @@ mod tests {
             entry("b.txt", EntryKind::File, b"two"),
         ]);
         assert_eq!(a.content_digest(), b.content_digest());
+    }
+
+    #[test]
+    fn duplicate_paths_are_not_a_manifest() {
+        let manifest = Manifest {
+            entries: vec![
+                entry("same", EntryKind::File, b"one"),
+                entry("same", EntryKind::File, b"two"),
+            ],
+        };
+        assert_eq!(
+            manifest.validate(),
+            Err(ManifestError::DuplicatePath("same".into()))
+        );
     }
 
     #[test]

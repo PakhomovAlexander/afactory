@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use review_attempt::{Budget, BudgetLedger, Scope};
-use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, Severity};
+use review_core::{
+    EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
+    RunVerdictV2, RunVerdictV3, Severity,
+};
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
@@ -635,7 +638,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .filter(|event| {
             matches!(
                 event.event_type,
-                EventType::RunReportV1 | EventType::RunReportV2
+                EventType::RunReportV1 | EventType::RunReportV2 | EventType::RunReportV3
             )
         })
         .collect();
@@ -779,6 +782,25 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
                     reason: RunFailureReasonV2::Exhausted,
                 } => "fail (exhausted)".to_string(),
                 RunVerdictV2::Incomplete { missing_nodes } => {
+                    format!("incomplete ({} missing nodes)", missing_nodes.len())
+                }
+            })
+        }
+        EventType::RunReportV3 => {
+            let report: RunReportPayloadV3 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(match report.verdict {
+                RunVerdictV3::Pass => "pass".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::NotConverged,
+                } => "fail (not_converged)".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::AuthorityUnavailable,
+                } => "fail (authority_unavailable)".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                } => "fail (exhausted)".to_string(),
+                RunVerdictV3::Incomplete { missing_nodes } => {
                     format!("incomplete ({} missing nodes)", missing_nodes.len())
                 }
             })
@@ -1027,6 +1049,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     }
 
     let ledger = kernel.ledger();
+    print_scope_authority_warnings(&ledger);
     println!();
     println!("findings {}", ledger.len());
     for finding in ledger.findings() {

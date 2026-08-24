@@ -240,6 +240,13 @@ impl<'a> Ingest<'a> {
 
         for (source, stage) in stages {
             for (index, finding) in stage.findings.iter().enumerate() {
+                // The frozen shell bridge trimmed titles before admission. Preserve that
+                // historical projection here, while the live LegacyFinding reader follows
+                // reviewer-result-v1 literally (where any non-empty string is content).
+                if !strict && finding.title.trim().is_empty() {
+                    eprintln!("add: skipping {source} finding (finding {index}: empty title)");
+                    continue;
+                }
                 let report = match finding.clone().into_report(index) {
                     Ok(report) => report,
                     Err(reason) if !strict => {

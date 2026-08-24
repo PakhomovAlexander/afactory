@@ -12,14 +12,15 @@ use review_core::{
     Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
     PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
     ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 17] = [
+const SCHEMAS: [&str; 18] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -35,6 +36,7 @@ const SCHEMAS: [&str; 17] = [
     "round-started-v1.json",
     "run-event-v1.json",
     "run-report-v2.json",
+    "run-report-v3.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -629,7 +631,7 @@ fn provider_operation_continuation_is_exact_and_secret_free() {
 }
 
 #[test]
-fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
+fn run_reports_are_structural_and_every_report_version_remains_readable() {
     let report = RunReportPayloadV2 {
         outcomes: vec![
             RunNodeReportV2 {
@@ -714,6 +716,32 @@ fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
         spent_tokens: None,
     })
     .unwrap();
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let report_v3 = RunReportPayloadV3 {
+        outcomes: vec![RunNodeReportV2 {
+            node: "review".into(),
+            outcome: RunNodeOutcomeV2::Completed {
+                output_artifacts: vec![],
+            },
+        }],
+        blocked_gates: vec![],
+        verdict: RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::AuthorityUnavailable,
+        },
+        spent_tokens: Some(43),
+    };
+    let value = serde_json::to_value(&report_v3).unwrap();
+    assert_valid("run-report-v3.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV3>(value.clone()).unwrap(),
+        report_v3
+    );
+    event.event_type = EventType::RunReportV3;
+    event.payload = value;
     assert_eq!(
         review_core::run_report_closes_round(&event).unwrap(),
         Some(true)

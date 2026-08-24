@@ -248,7 +248,11 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
         .unwrap();
 
     let finding = ledger.get("bad-path").unwrap();
-    assert_eq!(finding.severity, Severity::Blocker);
+    assert_eq!(finding.severity, Severity::Major);
+    assert_eq!(finding.title, "bad path spelling");
+    assert_eq!(finding.body, "body");
+    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert!(!finding.authority_diagnostic);
     assert_eq!(finding.convergence_scope, None);
     assert_eq!(finding.reports[0].scope, None);
     assert_eq!(ledger.scope_authority_failures().len(), 1);
@@ -259,7 +263,7 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
     assert!(
         ledger.scope_authority_failures()[0]
             .reason
-            .contains("canonical repository-relative paths")
+            .contains("no canonical repository-relative location")
     );
     assert_eq!(
         convergence(&ledger, Severity::Major).verdict,
@@ -276,9 +280,8 @@ fn a_readable_report_replaces_an_unreadable_first_report() {
 
     let unreadable_id = cas
         .put_json(&serde_json::json!({
-            "title": "invalid placeholder source",
             "severity": "blocker",
-            "locations": [{"path": "./src/a.rs"}],
+            "locations": [{"path": "src/a.rs"}],
             "body": "invalid body",
             "fix": "invalid fix",
             "confidence": 1.0
@@ -319,9 +322,8 @@ fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
     apply_whole_tree_round(&mut ledger, &cas, 1);
     let unreadable_id = cas
         .put_json(&serde_json::json!({
-            "title": "invalid placeholder source",
             "severity": "blocker",
-            "locations": [{"path": "./src/a.rs"}],
+            "locations": [{"path": "src/a.rs"}],
             "body": "invalid body",
             "fix": "invalid fix",
             "confidence": 1.0
@@ -442,7 +444,6 @@ fn an_unreadable_later_report_does_not_overwrite_a_readable_claim() {
 
     let report_id = cas
         .put_json(&serde_json::json!({
-            "title": "unreadable replacement",
             "severity": "blocker",
             "locations": [{"path": "./src/a.rs"}],
             "body": "replacement body",
@@ -717,6 +718,10 @@ fn unavailable_subject_is_diagnostic_unknown_and_fails_closed() {
     assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
     assert_eq!(ledger.scope_authority_failures().len(), 1);
     assert_eq!(ledger.scope_authority_failures()[0].round, 1);
+    assert_eq!(
+        convergence(&ledger, Severity::Major).authority_failures_recent,
+        1
+    );
 }
 
 #[test]

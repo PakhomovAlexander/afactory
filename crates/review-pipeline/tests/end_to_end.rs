@@ -745,13 +745,13 @@ fn the_event_log_tells_the_whole_story() {
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
             "RoundStarted@1",
-            "RunReport@2",
+            "RunReport@3",
         ],
         "the log holds the whole run"
     );
     assert_eq!(types[0], "CampaignOpened@1");
     assert_eq!(types[1], "RoundStarted@1");
-    assert_eq!(*types.last().unwrap(), "RunReport@2");
+    assert_eq!(*types.last().unwrap(), "RunReport@3");
     for node in ["architecture", "performance"] {
         let lifecycle: Vec<&str> = events
             .iter()
@@ -882,5 +882,5 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         1,
         "performance's failure recorded"
     );
-    assert!(types.contains(&"RunReport@2".to_string()));
+    assert!(types.contains(&"RunReport@3".to_string()));
 }

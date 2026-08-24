@@ -29,6 +29,26 @@
         "benchmark_demands": [],
         "disputes": []
       }
+    },
+    {
+      "name": "whitespace is non-empty report content",
+      "payload": {
+        "verdict": "request-changes",
+        "summary": null,
+        "reports": [{"severity":"minor","file":"src/a.rs","line":null,"title":" ","body":" ","fix":" ","confidence":0.5}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
+    },
+    {
+      "name": "spaces are a literal repository path",
+      "payload": {
+        "verdict": "request-changes",
+        "summary": null,
+        "reports": [{"severity":"minor","file":"  ","line":5,"title":"title","body":"body","fix":"fix","confidence":0.5}],
+        "benchmark_demands": [],
+        "disputes": []
+      }
     }
   ],
   "invalid": [

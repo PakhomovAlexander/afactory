@@ -22,7 +22,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -192,23 +192,52 @@ impl Cas {
     }
 
     pub fn get(&self, digest: &str) -> Result<Vec<u8>, CasError> {
+        self.get_admitted(digest, |_| ()).map(|(bytes, ())| bytes)
+    }
+
+    /// Verify and read one object after admitting its authoritative on-disk byte length.
+    /// The returned guard lives beside the bytes, allowing callers to enforce a byte budget
+    /// before allocation rather than estimating memory from candidate-supplied metadata.
+    pub fn get_admitted<G>(
+        &self,
+        digest: &str,
+        admit: impl FnOnce(u64) -> G,
+    ) -> Result<(Vec<u8>, G), CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
         let path = self.path_for(digest);
-        let bytes = fs::read(&path).map_err(|e| match e.kind() {
+        let mut file = fs::File::open(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => CasError::NotFound {
                 digest: digest.to_string(),
             },
             _ => CasError::Io(e),
         })?;
+        let length = file.metadata()?.len();
+        let guard = admit(length);
+        let capacity = usize::try_from(length).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::FileTooLarge, error))
+        })?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|error| CasError::Io(std::io::Error::other(error)))?;
+        Read::by_ref(&mut file)
+            .take(length)
+            .read_to_end(&mut bytes)?;
+        let mut trailing = [0_u8; 1];
+        if bytes.len() != capacity || file.read(&mut trailing)? != 0 {
+            return Err(CasError::Corrupt {
+                digest: digest.to_string(),
+            });
+        }
         // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
         if canonical::blob_content_id(&bytes) != digest {
             return Err(CasError::Corrupt {
                 digest: digest.to_string(),
             });
         }
-        Ok(bytes)
+        Ok((bytes, guard))
     }
 
     pub fn get_json(&self, digest: &str) -> Result<Value, CasError> {

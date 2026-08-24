@@ -120,13 +120,13 @@ impl LegacyFinding {
     /// Validate one legacy-shaped report without cloning or converting its owned text.
     pub fn validate(&self, index: usize) -> Result<(), LegacyImportError> {
         let err = |reason| LegacyImportError { index, reason };
-        if self.fix.as_deref().is_none_or(|fix| fix.trim().is_empty()) {
+        if self.fix.as_deref().is_none_or(str::is_empty) {
             return Err(err(ImportReason::MissingFix));
         }
-        if self.title.trim().is_empty() {
+        if self.title.is_empty() {
             return Err(err(ImportReason::EmptyTitle));
         }
-        if self.body.trim().is_empty() {
+        if self.body.is_empty() {
             return Err(err(ImportReason::EmptyBody));
         }
         if self
@@ -142,7 +142,7 @@ impl LegacyFinding {
         if line == Some(0) {
             return Err(err(ImportReason::InvalidLine));
         }
-        let path = self.file.trim();
+        let path = self.file.as_str();
         if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
             if line.is_some() {
                 return Err(err(ImportReason::InvalidLine));
@@ -170,7 +170,7 @@ impl LegacyFinding {
             Some(n) => Some(u32::try_from(n).map_err(|_| err(ImportReason::InvalidLine))?),
         };
 
-        let path = self.file.trim();
+        let path = self.file.as_str();
         let locations = if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
             Vec::new()
         } else {

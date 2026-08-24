@@ -9,9 +9,10 @@
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Condvar, Mutex};
 
 use review_store::Cas;
 
@@ -21,6 +22,7 @@ use crate::manifest::{EntryKind, Manifest};
 pub enum MaterializeError {
     Io(std::io::Error),
     Cas(String),
+    Manifest(String),
     /// A path that would leave the sandbox root.
     Escape {
         path: String,
@@ -32,6 +34,7 @@ impl std::fmt::Display for MaterializeError {
         match self {
             MaterializeError::Io(e) => write!(f, "materialize io: {e}"),
             MaterializeError::Cas(e) => write!(f, "materialize cas: {e}"),
+            MaterializeError::Manifest(e) => write!(f, "materialize manifest: {e}"),
             MaterializeError::Escape { path } => {
                 write!(f, "refusing to materialize outside the sandbox: {path}")
             }
@@ -75,12 +78,15 @@ pub fn materialize(
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
     let root = root.as_ref();
+    manifest
+        .validate()
+        .map_err(|error| MaterializeError::Manifest(error.to_string()))?;
     fs::create_dir_all(root)?;
 
     // Each distinct parent is prepared once: `create_dir_all` stats every component, so doing
     // it per entry costs O(files × depth) syscalls where O(directories × depth) suffices.
     let mut prepared: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut targets = Vec::with_capacity(manifest.entries.len());
+    let mut symlinks = HashSet::new();
     for entry in &manifest.entries {
         let target = safe_join(root, &entry.path)?;
         if let Some(parent) = target.parent()
@@ -96,17 +102,16 @@ pub fn materialize(
             }
             prepared.insert(parent.to_path_buf());
         }
-
-        targets.push((target, entry));
+        if entry.kind == EntryKind::Symlink {
+            symlinks.insert(target);
+        }
     }
 
-    let symlinks: HashSet<&Path> = targets
-        .iter()
-        .filter(|(_, entry)| entry.kind == EntryKind::Symlink)
-        .map(|(target, _)| target.as_path())
-        .collect();
     if !symlinks.is_empty() {
-        if let Some((_, entry)) = targets.iter().find(|(target, _)| {
+        if let Some(entry) = manifest.entries.iter().find(|entry| {
+            let Ok(target) = safe_join(root, &entry.path) else {
+                return false;
+            };
             target
                 .ancestors()
                 .skip(1)
@@ -119,43 +124,109 @@ pub fn materialize(
         }
     }
 
-    // One verified CAS read per distinct digest. Load at most one group per executor worker,
-    // then fan every occurrence in that bounded window out through the executor. This retains
-    // occurrence-level concurrency for a single heavily repeated blob while bounding resident
-    // content to worker_limit × largest group blob rather than the sum of candidate-controlled
-    // distinct content.
-    let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
-    for (target, entry) in targets {
-        grouped
-            .entry(entry.content.as_str())
-            .or_default()
-            .push((target, entry.kind));
+    // Sort compact entry indexes into contiguous digest groups. One executor pass overlaps reads
+    // and writes across groups; an explicit byte budget, admitted from the CAS object's actual
+    // on-disk length before allocation, bounds resident content independently of CPU count.
+    let mut order: Vec<usize> = (0..manifest.entries.len()).collect();
+    order.sort_by(|left, right| {
+        manifest.entries[*left]
+            .content
+            .cmp(&manifest.entries[*right].content)
+            .then_with(|| left.cmp(right))
+    });
+    let mut groups = Vec::new();
+    let mut start = 0;
+    while start < order.len() {
+        let content = &manifest.entries[order[start]].content;
+        let mut end = start + 1;
+        while end < order.len() && manifest.entries[order[end]].content == *content {
+            end += 1;
+        }
+        groups.push(start..end);
+        start = end;
     }
-    let groups: Vec<_> = grouped.into_iter().collect();
-    for window in groups.chunks(review_parallel::worker_limit()) {
-        let loads: Vec<_> = window
-            .iter()
-            .map(|(content, targets)| (*content, targets))
-            .collect();
-        let loaded = review_parallel::try_map_owned(loads, |(content, targets)| {
-            cas.get(content)
-                .map(|bytes| (bytes, targets))
-                .map_err(|error| MaterializeError::Cas(error.to_string()))
-        })?;
-        let occurrences: Vec<_> = loaded
-            .iter()
-            .flat_map(|(bytes, targets)| {
-                targets
-                    .iter()
-                    .map(move |(target, kind)| (bytes.as_slice(), target, *kind))
-            })
-            .collect();
-        review_parallel::try_for_each(&occurrences, |(bytes, target, kind)| {
-            write_entry(bytes, target, *kind)?;
+    let resident = ResidentBudget::new(64 * 1024 * 1024);
+    review_parallel::try_for_each(&groups, |range| {
+        let indexes = &order[range.clone()];
+        let content = &manifest.entries[indexes[0]].content;
+        let (bytes, _resident) = cas
+            .get_admitted(content, |length| resident.acquire(length))
+            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+        for index in indexes {
+            let entry = &manifest.entries[*index];
+            if entry.size != bytes.len() as u64 {
+                return Err(MaterializeError::Manifest(format!(
+                    "entry `{}` declares {} bytes but CAS object {} has {}",
+                    entry.path,
+                    entry.size,
+                    entry.content,
+                    bytes.len()
+                )));
+            }
+        }
+        let write = |index: &usize| {
+            let entry = &manifest.entries[*index];
+            let target = safe_join(root, &entry.path)?;
+            write_entry(&bytes, &target, entry.kind)?;
             Ok::<_, MaterializeError>(())
-        })?;
+        };
+        if indexes.len() >= review_parallel::worker_limit() {
+            review_parallel::try_for_each(indexes, write)
+        } else {
+            indexes.iter().try_for_each(write)
+        }
+    })
+}
+
+struct ResidentBudget {
+    limit: u64,
+    used: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl ResidentBudget {
+    fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            used: Mutex::new(0),
+            changed: Condvar::new(),
+        }
     }
-    Ok(())
+
+    fn acquire(&self, bytes: u64) -> ResidentPermit<'_> {
+        // An oversized object must still make progress, alone. Its charge fills the budget, so
+        // the bound is max(limit, largest object), never CPU workers × largest object.
+        let charge = bytes.min(self.limit);
+        let mut used = self.used.lock().expect("resident materialization budget");
+        while *used > self.limit - charge {
+            used = self
+                .changed
+                .wait(used)
+                .expect("resident materialization budget");
+        }
+        *used += charge;
+        ResidentPermit {
+            budget: self,
+            charge,
+        }
+    }
+}
+
+struct ResidentPermit<'a> {
+    budget: &'a ResidentBudget,
+    charge: u64,
+}
+
+impl Drop for ResidentPermit<'_> {
+    fn drop(&mut self) {
+        let mut used = self
+            .budget
+            .used
+            .lock()
+            .expect("resident materialization budget");
+        *used -= self.charge;
+        self.budget.changed.notify_all();
+    }
 }
 
 fn write_entry(bytes: &[u8], target: &Path, kind: EntryKind) -> std::io::Result<()> {
@@ -234,5 +305,33 @@ mod tests {
             materialize(&manifest, &cas, dir.path().join("tree")),
             Err(MaterializeError::Escape { path }) if path == "link/escape"
         ));
+    }
+
+    #[test]
+    fn duplicate_targets_are_refused_before_any_write_can_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+        let one = cas.put(b"one").unwrap();
+        let two = cas.put(b"two").unwrap();
+        let manifest = Manifest {
+            entries: vec![
+                crate::Entry {
+                    path: "same".into(),
+                    kind: EntryKind::File,
+                    content: one,
+                    size: 3,
+                },
+                crate::Entry {
+                    path: "same".into(),
+                    kind: EntryKind::File,
+                    content: two,
+                    size: 3,
+                },
+            ],
+        };
+
+        let error = materialize(&manifest, &cas, dir.path().join("tree")).unwrap_err();
+        assert!(error.to_string().contains("repeats path `same`"));
+        assert!(!dir.path().join("tree/same").exists());
     }
 }

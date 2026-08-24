@@ -118,6 +118,9 @@ fn scan_and_diff(
     root: &Path,
     baseline: &Manifest,
 ) -> Result<(Manifest, MutationSet), std::io::Error> {
+    baseline
+        .validate()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     const TASKS_PER_WORKER: usize = 64;
     let index: BTreeMap<&str, (usize, &Entry)> = baseline
         .entries

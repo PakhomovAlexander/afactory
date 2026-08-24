@@ -221,3 +221,27 @@ isolation claim. A synthetic wedged-runtime test returns in 0.11 s; the real wed
 probe returns in 5.08 s. Full verification now passes naturally without a Docker environment
 override, including the real-host detection test and byte-identical fixture reproduction. Restart
 the incomplete Round 3 against the corrected snapshot; it has not established a clean Round.
+
+## 2026-08-24 — M2 fresh dogfood Round 3 corrections
+
+Round 3 epoch 2 restarted against the bounded-probe snapshot, spent 495,186 tokens, and opened nine
+Reports. The legacy-shaped reader now follows its published v1 schema for whitespace content and
+literal paths while the frozen shell importer retains its historical trimmed-title projection.
+Typed Report replay deserializes borrowed JSON, preserves readable claim content when locations are
+noncanonical, records unknown Scope, and no longer replaces the claim with an unreadable synthetic
+blocker. Manifest admission rejects duplicate paths before any parallel write can race.
+
+Materialization now sorts compact entry indexes into digest groups and submits one executor pass in
+which each task admits the authoritative CAS object size, reads it, and writes all occurrences. A
+64 MiB condition-variable budget bounds resident content independently of worker count; an
+oversized object runs alone. The warmed 5,000-entry / 199 MiB measurement recorded 1.628 s
+distinct-content and 1.882 s repeated-content materialization, improving the Round 2 distinct
+measurement of 2.008 s. The 128-distinct-pairs / 256 MiB workload recorded 1.978 s and 53,248,000
+bytes maximum command RSS with a 36,454,904-byte Darwin peak footprint.
+
+Scope-authority failures are now counted in the active clean window, printed by the run command,
+and persisted distinctly as `authority_unavailable` in additive `RunReport@3`; permanent @1/@2
+readers remain unchanged under ADR-0002. ADR-0019 records the decision. Focused schema, migration,
+store, pipeline, CLI, source, and sandbox tests pass. Round 4 remains useful dogfood, but because
+Round 3 was not clean, this Campaign can no longer produce the required two clean Rounds within its
+four-Round policy; convergence will require another fresh Campaign under the same policy.

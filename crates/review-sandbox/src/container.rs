@@ -237,8 +237,6 @@ fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    // A successful wrapper does not license descendants to outlive capability detection.
-    kill_probe_group(child.id());
     let read_output = |file: &mut std::fs::File| -> std::io::Result<Vec<u8>> {
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();

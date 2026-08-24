@@ -35,6 +35,7 @@
         "ProviderOperationTransition@1",
         "RunReport@1",
         "RunReport@2",
+        "RunReport@3",
         "RoundInputSuperseded@1",
         "RoundStarted@1",
         "SourceCaptured@1"

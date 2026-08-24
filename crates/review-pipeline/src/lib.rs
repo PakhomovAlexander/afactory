@@ -35,8 +35,8 @@ use review_core::event::{
 };
 use review_core::{
     CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV3,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3,
     SnapshotAffinity, SourceSnapshot, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
@@ -599,6 +599,37 @@ pub struct Kernel<'a> {
     replayed_spent: u64,
 }
 
+fn persisted_verdict(
+    verdict: &RunVerdict,
+    convergence: &Convergence,
+) -> Result<RunVerdictV3, String> {
+    Ok(match verdict {
+        RunVerdict::Pass => RunVerdictV3::Pass,
+        RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV3::Fail {
+            reason: if convergence.authority_failures_recent > 0 {
+                RunFailureReasonV3::AuthorityUnavailable
+            } else {
+                RunFailureReasonV3::NotConverged
+            },
+        },
+        RunVerdict::Fail(Verdict::Exhausted) => RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted,
+        },
+        RunVerdict::Fail(Verdict::Converged) => {
+            return Err("invalid run verdict: converged cannot be a failure".to_string());
+        }
+        RunVerdict::Incomplete { missing } => RunVerdictV3::Incomplete {
+            missing_nodes: missing
+                .iter()
+                .map(|(node, reason)| MissingNodeV2 {
+                    node: node.clone(),
+                    reason: reason.clone(),
+                })
+                .collect(),
+        },
+    })
+}
+
 impl<'a> Kernel<'a> {
     fn new(
         cas: &'a Cas,
@@ -982,7 +1013,7 @@ impl<'a> Kernel<'a> {
             {
                 match event.event_type {
                     EventType::GenerationAdvancedV1 => conclusion = false,
-                    EventType::RunReportV1 | EventType::RunReportV2 => {
+                    EventType::RunReportV1 | EventType::RunReportV2 | EventType::RunReportV3 => {
                         conclusion = run_report_closes_round(&event)
                             .map_err(|error| error.to_string())?
                             .unwrap_or(false);
@@ -1001,7 +1032,8 @@ impl<'a> Kernel<'a> {
         // reaches it, and the buffered attempts, charges included, would be lost. Every run
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
-        let verdict = run_verdict(report, &self.convergence(policy));
+        let convergence = self.convergence(policy);
+        let verdict = run_verdict(report, &convergence);
         let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
             .iter()
@@ -1030,41 +1062,20 @@ impl<'a> Kernel<'a> {
                 }
             })
             .collect();
-        let persisted_verdict = match &verdict {
-            RunVerdict::Pass => RunVerdictV2::Pass,
-            RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::NotConverged,
-            },
-            RunVerdict::Fail(Verdict::Exhausted) => RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::Exhausted,
-            },
-            RunVerdict::Fail(Verdict::Converged) => {
-                return Err("invalid run verdict: converged cannot be a failure".to_string());
-            }
-            RunVerdict::Incomplete { missing } => RunVerdictV2::Incomplete {
-                missing_nodes: missing
-                    .iter()
-                    .map(|(node, reason)| MissingNodeV2 {
-                        node: node.clone(),
-                        reason: reason.clone(),
-                    })
-                    .collect(),
-            },
-        };
-        let payload = RunReportPayloadV2 {
+        let persisted_verdict = persisted_verdict(&verdict, &convergence)?;
+        let payload = RunReportPayloadV3 {
             outcomes,
             blocked_gates: report.blocked_gates.iter().cloned().collect(),
             verdict: persisted_verdict,
             spent_tokens: self.spent(),
         };
         self.append(NewEvent::new(
-            EventType::RunReportV2,
+            EventType::RunReportV3,
             serde_json::to_value(payload).map_err(|e| e.to_string())?,
         ))?;
         *published = true;
         Ok(verdict)
     }
-
     /// A sandbox in the requested mode, as a copy-on-write clone of the run's single
     /// materialized template. The template is built once, under the lock, on the first call
     /// (the gate's); every later sandbox — the reviewers' — clones it instead of walking the
@@ -1921,5 +1932,35 @@ impl Dispatch for Kernel<'_> {
 impl review_config::SubjectDispatch for Kernel<'_> {
     fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_authority_has_a_distinct_durable_failure_reason() {
+        let mut convergence = Convergence {
+            round: 2,
+            open_blocking: 1,
+            new_recent: 1,
+            authority_failures_recent: 1,
+            verdict: Verdict::NotConverged,
+        };
+        assert_eq!(
+            persisted_verdict(&RunVerdict::Fail(Verdict::NotConverged), &convergence).unwrap(),
+            RunVerdictV3::Fail {
+                reason: RunFailureReasonV3::AuthorityUnavailable
+            }
+        );
+
+        convergence.authority_failures_recent = 0;
+        assert_eq!(
+            persisted_verdict(&RunVerdict::Fail(Verdict::NotConverged), &convergence).unwrap(),
+            RunVerdictV3::Fail {
+                reason: RunFailureReasonV3::NotConverged
+            }
+        );
     }
 }

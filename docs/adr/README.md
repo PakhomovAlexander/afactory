@@ -46,3 +46,5 @@ options you rejected and why — that is the part future-you needs.
   Subject](0017-record-rename-truncation-and-continue.md)
 - [0018 — Share one bounded infrastructure
   executor](0018-share-one-bounded-infrastructure-executor.md)
+- [0019 — Report authority failures
+  explicitly](0019-report-authority-failures-explicitly.md)

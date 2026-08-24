@@ -970,19 +970,41 @@ fn is_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-fn validate_report_plan(plan: &AuthorityPlan, payload: &Value) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+fn report_outcomes(
+    event_type: EventType,
+    payload: &Value,
+) -> Result<Vec<review_core::RunNodeReportV2>, StoreError> {
+    match event_type {
+        EventType::RunReportV2 => Ok(serde_json::from_value::<review_core::RunReportPayloadV2>(
+            payload.clone(),
+        )?
+        .outcomes),
+        EventType::RunReportV3 => Ok(serde_json::from_value::<review_core::RunReportPayloadV3>(
+            payload.clone(),
+        )?
+        .outcomes),
+        _ => Err(StoreError::Conflict(format!(
+            "{event_type} has no structural run-report outcomes"
+        ))),
+    }
+}
+
+fn validate_report_plan(
+    plan: &AuthorityPlan,
+    event_type: EventType,
+    payload: &Value,
+) -> Result<(), StoreError> {
+    let outcomes = report_outcomes(event_type, payload)?;
     let expected: std::collections::BTreeSet<&str> =
         plan.nodes.keys().map(String::as_str).collect();
-    let actual: std::collections::BTreeSet<&str> = report
-        .outcomes
+    let actual: std::collections::BTreeSet<&str> = outcomes
         .iter()
         .map(|outcome| outcome.node.as_str())
         .collect();
-    if expected != actual || actual.len() != report.outcomes.len() {
-        return Err(StoreError::Conflict(
-            "RunReport@2 does not cover exactly the pinned Campaign plan".into(),
-        ));
+    if expected != actual || actual.len() != outcomes.len() {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} does not cover exactly the pinned Campaign plan"
+        )));
     }
     Ok(())
 }
@@ -1619,19 +1641,27 @@ fn validate_campaign_transition(
                         }
                         _ => {}
                     }
-                    if matches!(event_type, EventType::RunReportV1 | EventType::RunReportV2)
-                        && report_closes(event_type, &event.payload)?
+                    if matches!(
+                        event_type,
+                        EventType::RunReportV1 | EventType::RunReportV2 | EventType::RunReportV3
+                    ) && report_closes(event_type, &event.payload)?
                     {
                         if terminal {
                             return Err(StoreError::Conflict(
                                 "the active Round epoch already has a terminal conclusion".into(),
                             ));
                         }
-                        if event_type == EventType::RunReportV2 {
+                        if matches!(event_type, EventType::RunReportV2 | EventType::RunReportV3) {
                             if let Some(plan) = plan {
-                                validate_report_plan(plan, &event.payload)?;
+                                validate_report_plan(plan, event_type, &event.payload)?;
                             }
-                            validate_report_receipts(tx, run_id, active_id, &event.payload)?;
+                            validate_report_receipts(
+                                tx,
+                                run_id,
+                                active_id,
+                                event_type,
+                                &event.payload,
+                            )?;
                         }
                         terminal = true;
                     }
@@ -1695,6 +1725,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
             | EventType::ProviderOperationTransitionV1
             | EventType::RunReportV1
             | EventType::RunReportV2
+            | EventType::RunReportV3
     )
 }
 
@@ -1722,7 +1753,8 @@ fn round_has_terminal_report(
 ) -> Result<bool, StoreError> {
     let mut statement = tx.prepare(
         "SELECT type, payload FROM events
-         WHERE run_id = ?1 AND causation_id = ?2 AND type IN ('RunReport@1', 'RunReport@2')
+         WHERE run_id = ?1 AND causation_id = ?2
+           AND type IN ('RunReport@1', 'RunReport@2', 'RunReport@3')
          ORDER BY sequence",
     )?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
@@ -1744,9 +1776,10 @@ fn validate_report_receipts(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
+    event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+    let outcomes = report_outcomes(event_type, payload)?;
     let mut receipts = std::collections::BTreeMap::new();
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
@@ -1762,12 +1795,12 @@ fn validate_report_receipts(
         let node =
             node.ok_or_else(|| StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into()))?;
         if node != receipt.node || receipts.insert(node, receipt).is_some() {
-            return Err(StoreError::Conflict(
-                "RunReport@2 has ambiguous durable output receipts".into(),
-            ));
+            return Err(StoreError::Conflict(format!(
+                "{event_type} has ambiguous durable output receipts"
+            )));
         }
     }
-    for outcome in report.outcomes {
+    for outcome in outcomes {
         if let review_core::RunNodeOutcomeV2::Completed {
             mut output_artifacts,
         } = outcome.outcome
@@ -1775,8 +1808,8 @@ fn validate_report_receipts(
             output_artifacts.sort();
             let receipt = receipts.remove(&outcome.node).ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "RunReport@2 completed node '{}' without a durable receipt",
-                    outcome.node
+                    "{event_type} completed node '{}' without a durable receipt",
+                    outcome.node,
                 ))
             })?;
             let mut durable: Vec<String> = receipt
@@ -1787,21 +1820,21 @@ fn validate_report_receipts(
             durable.sort();
             if durable != output_artifacts {
                 return Err(StoreError::Conflict(format!(
-                    "RunReport@2 contradicts the receipt for node '{}'",
-                    outcome.node
+                    "{event_type} contradicts the receipt for node '{}'",
+                    outcome.node,
                 )));
             }
         } else if receipts.contains_key(&outcome.node) {
             return Err(StoreError::Conflict(format!(
-                "RunReport@2 suppresses or fails node '{}' after it published a receipt",
-                outcome.node
+                "{event_type} suppresses or fails node '{}' after it published a receipt",
+                outcome.node,
             )));
         }
     }
     if !receipts.is_empty() {
-        return Err(StoreError::Conflict(
-            "RunReport@2 omits nodes with durable output receipts".into(),
-        ));
+        return Err(StoreError::Conflict(format!(
+            "{event_type} omits nodes with durable output receipts"
+        )));
     }
     Ok(())
 }

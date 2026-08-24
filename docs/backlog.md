@@ -410,7 +410,7 @@ The original host-passthrough decision in ADR-0003 is superseded by
 Route every Gate check through its resolved Execution Binding and admit the Sandbox Provider
 against the pipeline's required isolation before execution. A safe pipeline requires the
 container provider; `trusted_local` remains available only when policy explicitly accepts
-`Isolation::None`, and that fact is visible in `RunReport@2`.
+`Isolation::None`, and that fact is visible in the current structural `RunReport` contract.
 
 Within the admitted provider, the Gate uses `Mode::EphemeralWrite`. Each sandbox is an independent
 COW clone of the template, so a writable Gate cannot leak mutations into reviewer copies. This
@@ -436,7 +436,8 @@ fail with a diagnostic rather than degrading into an unbounded multi-gigabyte co
 inside the sandbox and disappear at teardown.
 
 Use offline package-manager mode so a cache miss fails loudly. Every Cache Snapshot kind, source
-digest, size, and materialization method is recorded in `RunReport@2`. A direct host passthrough
+digest, size, and materialization method is recorded in the current structural `RunReport`
+contract. A direct host passthrough
 is permitted only by an explicitly unsafe `trusted_local` execution policy and cannot satisfy a
 pipeline requiring container isolation.
 

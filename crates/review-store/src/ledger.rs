@@ -274,6 +274,7 @@ pub struct Convergence {
     pub round: u32,
     pub open_blocking: usize,
     pub new_recent: usize,
+    pub authority_failures_recent: usize,
     pub verdict: Verdict,
 }
 
@@ -384,6 +385,9 @@ impl Ledger {
                 ));
             }
         };
+        if let Some(reason) = report.scope_authority_reason.as_deref() {
+            self.record_authority_failure(round, ScopeAuthorityKind::Report, &report_id, reason);
+        }
         let severity = report.severity;
         let unreadable = report.unreadable;
         let (identity_file, identity_line) = report.identity_location();
@@ -731,11 +735,12 @@ impl Ledger {
             })
             .count();
 
-        let authority_failure_recent = self
+        let authority_failures_recent = self
             .scope_authority_failures
             .iter()
-            .any(|failure| i64::from(failure.round) > since);
-        let verdict = if !authority_failure_recent
+            .filter(|failure| i64::from(failure.round) > since)
+            .count();
+        let verdict = if authority_failures_recent == 0
             && open_blocking == 0
             && new_recent == 0
             && self.round >= policy.clean_rounds
@@ -750,6 +755,7 @@ impl Ledger {
             round: self.round,
             open_blocking,
             new_recent,
+            authority_failures_recent,
             verdict,
         }
     }
@@ -765,6 +771,7 @@ struct ReportProjection {
     fix: Option<String>,
     confidence: Option<f64>,
     unreadable: bool,
+    scope_authority_reason: Option<String>,
 }
 
 enum ReportLocation {
@@ -801,33 +808,50 @@ impl ReportProjection {
 
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
         if value.get("locations").is_some() {
-            let report: review_core::FindingReport = serde_json::from_value(value.clone())
+            let report: review_core::FindingReport = serde::Deserialize::deserialize(value)
                 .map_err(|error| {
                     crate::store::StoreError::Artifact(format!(
                         "report {report_id} is not FindingReport@1: {error}"
                     ))
                 })?;
-            report.validate().map_err(|reason| {
-                crate::store::StoreError::Artifact(format!("report {report_id}: {reason}"))
-            })?;
-            let first = report.locations.first();
+            let valid_locations: Vec<_> = report
+                .locations
+                .iter()
+                .filter(|location| review_core::is_valid_repo_path(&location.path))
+                .map(|location| ProjectedLocation {
+                    path: location.path.clone(),
+                    line: location.line.map(i64::from),
+                })
+                .collect();
+            let scope_authority_reason =
+                (!report.locations.is_empty() && valid_locations.is_empty()).then(|| {
+                    format!(
+                        "report {report_id} has no canonical repository-relative location; \
+                     claim content remains readable with unknown Scope"
+                    )
+                });
+            let first = valid_locations.first();
             let file = first
                 .map(|location| location.path.clone())
-                .unwrap_or_else(|| "(change-wide)".to_string());
-            let line = first.and_then(|location| location.line).map(i64::from);
-            let location = if report.locations.is_empty() {
-                ReportLocation::ChangeWide
-            } else {
-                ReportLocation::Paths(
+                .or_else(|| {
                     report
                         .locations
-                        .iter()
-                        .map(|location| ProjectedLocation {
-                            path: location.path.clone(),
-                            line: location.line.map(i64::from),
-                        })
-                        .collect(),
-                )
+                        .first()
+                        .map(|location| location.path.clone())
+                })
+                .unwrap_or_else(|| "(change-wide)".to_string());
+            let line = first.and_then(|location| location.line).or_else(|| {
+                report
+                    .locations
+                    .first()
+                    .and_then(|location| location.line.map(i64::from))
+            });
+            let location = if report.locations.is_empty() {
+                ReportLocation::ChangeWide
+            } else if valid_locations.is_empty() {
+                ReportLocation::Unrecorded
+            } else {
+                ReportLocation::Paths(valid_locations)
             };
             return Ok(Self {
                 severity: report.severity,
@@ -839,12 +863,13 @@ impl ReportProjection {
                 fix: Some(report.fix),
                 confidence: Some(report.confidence),
                 unreadable: false,
+                scope_authority_reason,
             });
         }
         let required = |field: &str| {
             value[field]
                 .as_str()
-                .filter(|text| !text.trim().is_empty())
+                .filter(|text| !text.is_empty())
                 .ok_or_else(|| {
                     crate::store::StoreError::Artifact(format!(
                         "report {report_id} has no non-empty string `{field}`"
@@ -881,7 +906,16 @@ impl ReportProjection {
                     })?,
             ),
         };
-        let location = if file.trim().is_empty() {
+        let scope_authority_reason = (!file.is_empty()
+            && file != review_core::legacy::CHANGE_WIDE_SENTINEL
+            && !review_core::is_valid_repo_path(file))
+        .then(|| {
+            format!(
+                "report {report_id} has noncanonical legacy location `{file}`; \
+                 claim content remains readable with unknown Scope"
+            )
+        });
+        let location = if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
             ReportLocation::ChangeWide
         } else if !review_core::is_valid_repo_path(file) {
             ReportLocation::Unrecorded
@@ -893,7 +927,7 @@ impl ReportProjection {
         };
         Ok(Self {
             severity,
-            file: if file.trim().is_empty() {
+            file: if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
                 "(change-wide)".to_string()
             } else {
                 file.to_string()
@@ -905,6 +939,7 @@ impl ReportProjection {
             fix: Some(required("fix")?.to_string()),
             confidence,
             unreadable: false,
+            scope_authority_reason,
         })
     }
 
@@ -926,6 +961,7 @@ impl ReportProjection {
             fix: None,
             confidence: payload["confidence"].as_f64(),
             unreadable: false,
+            scope_authority_reason: None,
         })
     }
 
@@ -940,6 +976,7 @@ impl ReportProjection {
             fix: Some("Restore or migrate the exact content-addressed Report artifact".into()),
             confidence: None,
             unreadable: true,
+            scope_authority_reason: None,
         }
     }
 

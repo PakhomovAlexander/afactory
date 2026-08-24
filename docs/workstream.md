@@ -1,8 +1,8 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed; fresh
-Campaign Rounds 1–2 opened 27 further claims whose corrections are locally implemented and under
-verification. Converge that unchanged-policy Campaign before M3.1.
+**Status:** M0 and M1 are complete. M2's first Campaign exhausted with all 45 Findings fixed. Fresh
+Campaign Rounds 1–3 opened 36 further claims; Round 3 corrections are under verification. Finish
+Round 4, then establish two clean Rounds in another unchanged-policy Campaign before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -11,7 +11,7 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and eighteen ADR records; ADR-0003 and ADR-0004
+current contracts. The corrected roadmap has M0–M9 and nineteen ADR records; ADR-0003 and ADR-0004
 are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood; its first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
@@ -65,6 +65,8 @@ corrections from the second audit are:
   attach Reports, and reversible Grouping handles ambiguity.
 - Reviewer silence is not a Drop, and `fixed` requires current-Subject Fix Verification.
 - Campaign authority resolves from a pinned Authority Snapshot before candidate capture.
+- Scope-authority failures are counted in convergence and new conclusions persist the distinct
+  `RunReport@3` reason `authority_unavailable`; frozen @1/@2 readers remain permanent.
 - Safe caches are sandbox-local snapshots; ADR-0008 supersedes host passthrough ADR-0003.
 - Proposals are base-bound and exported by Proposal ID; ADR-0010 supersedes ADR-0004.
 - Dynamic scatter/semantic closure and internal derived-Snapshot Integration are restored as M8
@@ -85,7 +87,8 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Acceptance criteria
 
-- [x] M0 — every event type is a Rust/schema enum member; `RunReport@2` is structural; ports
+- [x] M0 — every event type is a Rust/schema enum member; structural RunReport versions are
+      permanent and additive; ports
       validate type/cardinality/snapshot affinity; exact invocation inputs and output receipts are
       persisted; legacy replay remains pinned by fixtures.
 - [x] M1 — `af review show` prints every attached report whole; `ledger --long` carries body and
@@ -130,13 +133,16 @@ corrections are committed and fully verified. Round 4 retained all 33 as fixed, 
 further claims, and exhausted Campaign `m2-rename-scope`; all 45 are fixed and its Round 4
 corrections are committed and verified. Fresh Campaign `m2-rename-scope-final` Round 1 spent 396,132
 tokens and opened sixteen further claims; Round 2 retained those fixes and spent 473,552 tokens on
-eleven further claims. Round 2 corrections are locally implemented; measurements, full verification,
-and markdownlint pass. Those corrections are committed and resolved. Round 3 epoch 1 reached no
-reviewer: the gate exposed an unbounded installed-runtime probe, whose bounded correction is
-verified locally. Commit it and restart the incomplete Round 3 against the new exact snapshot under the
-unchanged two-clean-Round/four-Round policy. Only then resume M3.1. Continue in milestone order; do
-not pull Proposal or scatter work forward past Subject, authority, isolation, and verification
-prerequisites.
+eleven further claims. Round 3 epoch 1 reached no reviewer: the gate exposed an unbounded
+installed-runtime probe. Its bounded correction was committed and the epoch restarted. Round 3
+epoch 2 spent 495,186 tokens and opened nine further claims. Their corrections preserve readable
+claims with unknown Scope, validate unique manifest paths, use one streaming materialization pass
+under an explicit 64 MiB resident-content budget, and make authority-unavailable conclusions
+durable through additive `RunReport@3`. Verify and commit these corrections, resolve all nine, and
+run Round 4. Because Round 3 was not clean, this four-Round Campaign cannot meet its two-clean-Round
+policy; after Round 4, start a fresh unchanged-policy Campaign and converge it before M3.1. Continue
+in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
+isolation, and verification prerequisites.
 
 ## Risks / notes
 
