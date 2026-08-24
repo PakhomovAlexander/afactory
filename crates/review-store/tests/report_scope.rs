@@ -272,6 +272,63 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
 }
 
 #[test]
+fn typed_report_semantic_failures_are_unreadable_authority() {
+    for (key, report) in [
+        (
+            "empty-fix",
+            serde_json::json!({
+                "title": "title",
+                "severity": "major",
+                "locations": [{"path": "src/a.rs", "line": 1}],
+                "body": "body",
+                "fix": "",
+                "confidence": 0.9
+            }),
+        ),
+        (
+            "zero-line",
+            serde_json::json!({
+                "title": "title",
+                "severity": "major",
+                "locations": [{"path": "src/a.rs", "line": 0}],
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path()).unwrap();
+        let mut ledger = Ledger::default();
+        apply_whole_tree_round(&mut ledger, &cas, 1);
+        let report_id = cas.put_json(&report).unwrap();
+        ledger
+            .apply_event(
+                &event(
+                    EventType::FindingReportedV1,
+                    serde_json::json!({
+                        "key": key,
+                        "round": 1,
+                        "source": "typed",
+                        "report_id": report_id,
+                    }),
+                    vec![report_id],
+                ),
+                &cas,
+            )
+            .unwrap();
+
+        assert!(ledger.get(key).unwrap().authority_diagnostic, "{key}");
+        assert_eq!(ledger.scope_authority_failures().len(), 1, "{key}");
+        assert_eq!(
+            ledger.scope_authority_failures()[0].authority,
+            ScopeAuthorityKind::Report,
+            "{key}"
+        );
+    }
+}
+
+#[test]
 fn a_readable_report_replaces_an_unreadable_first_report() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
@@ -858,6 +915,10 @@ fn a_report_without_its_exact_round_subject_is_unknown_and_fail_closed() {
     assert_eq!(finding.convergence_scope_label(), "unknown");
     assert_eq!(finding.convergence_severity, Some(Severity::Major));
     assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert_eq!(
+        ledger.scope_authority_failures()[0].authority,
+        ScopeAuthorityKind::RoundBinding
+    );
     assert!(
         ledger.scope_authority_failures()[0]
             .reason

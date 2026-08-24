@@ -243,7 +243,40 @@ impl Cas {
     /// Unverified bytes remain in a sibling temporary file and are never published at the
     /// caller-visible path. Memory is bounded by the fixed hash buffer regardless of object size.
     pub fn materialize_verified(&self, digest: &str, target: &Path) -> Result<u64, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let source = self.path_for(digest);
+        let cloned = tempfile::Builder::new()
+            .prefix(".materialize-")
+            .make_in(parent, |path| {
+                if let Err(error) = reflink_copy::reflink(&source, path) {
+                    // An AlreadyExists path belongs to whoever won the randomized-name race;
+                    // never unlink it. Other reflink failures may leave their own partial target.
+                    if error.kind() != std::io::ErrorKind::AlreadyExists {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Err(error);
+                }
+                match fs::File::open(path) {
+                    Ok(file) => Ok(file),
+                    Err(error) => {
+                        let _ = fs::remove_file(path);
+                        Err(error)
+                    }
+                }
+            });
+        if let Ok(mut temporary) = cloned {
+            let size = Self::verify_reader(digest, temporary.as_file_mut())?;
+            temporary
+                .persist(target)
+                .map_err(|error| CasError::Io(error.error))?;
+            return Ok(size);
+        }
+
+        // Cross-device and non-COW filesystems retain the fixed-buffer fallback. It has the same
+        // publish-after-verification contract, but copies the bytes into the private temp file.
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         let size = self.copy_to_and_verify(digest, temporary.as_file_mut())?;
         temporary
@@ -267,9 +300,12 @@ impl Cas {
             source: &mut file,
             destination: writer,
         };
+        Self::verify_reader(digest, &mut copying)
+    }
+
+    fn verify_reader(digest: &str, reader: &mut impl Read) -> Result<u64, CasError> {
         let mut buffer = [0_u8; 64 * 1024];
-        let (actual, size) =
-            canonical::blob_content_id_reader_with_buffer(&mut copying, &mut buffer)?;
+        let (actual, size) = canonical::blob_content_id_reader_with_buffer(reader, &mut buffer)?;
         if actual != digest {
             return Err(CasError::Corrupt {
                 digest: digest.to_string(),

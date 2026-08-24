@@ -9,11 +9,9 @@
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 
 use review_store::Cas;
 
@@ -70,21 +68,22 @@ pub fn materialize(
         });
     }
 
-    // A manifest-declared symlink must never become the parent of another entry. Decode this
-    // preflight only when the tree actually contains symlinks; ordinary manifests decode every
-    // path exactly once, in `prepare_target` immediately before the write.
-    let decoded_paths = if manifest
+    // Decode and validate once on the serial boundary. The same paths drive ancestry checks,
+    // directory preparation, and both write phases.
+    let decoded_paths: Vec<PathBuf> = manifest
+        .entries
+        .iter()
+        .map(|entry| checked_relative_path(&entry.path))
+        .collect::<Result<_, _>>()?;
+
+    // A manifest-declared symlink must never become the parent of another entry.
+    if manifest
         .entries
         .iter()
         .any(|entry| entry.kind == EntryKind::Symlink)
     {
-        let paths: Vec<PathBuf> = manifest
-            .entries
-            .iter()
-            .map(|entry| checked_relative_path(&entry.path))
-            .collect::<Result<_, _>>()?;
         let mut symlinks = HashSet::new();
-        for (entry, path) in manifest.entries.iter().zip(&paths) {
+        for (entry, path) in manifest.entries.iter().zip(&decoded_paths) {
             if path.ancestors().skip(1).any(|path| symlinks.contains(path)) {
                 return Err(MaterializeError::Escape {
                     path: entry.path.clone(),
@@ -94,10 +93,8 @@ pub fn materialize(
                 symlinks.insert(path.clone());
             }
         }
-        Some(paths)
-    } else {
-        None
-    };
+    }
+    prepare_directories(root, manifest, &decoded_paths)?;
 
     // Preserve first-occurrence order while grouping in O(entries): the hash map is lookup only,
     // never an iteration authority. Sources and duplicates run as two non-nested executor phases,
@@ -119,49 +116,24 @@ pub fn materialize(
             groups[group].regular_source = Some(index);
         }
     }
-    if decoded_paths.is_none() {
-        for group in &mut groups {
-            if let Some(source) = group.regular_source {
-                group.source_relative =
-                    Some(checked_relative_path(&manifest.entries[source].path)?);
-            }
-        }
-    }
-    let prepared = PreparedDirectories::new(root);
     review_parallel::try_for_each(&groups, |group| {
-        materialize_group_source(
-            manifest,
-            group,
-            decoded_paths.as_deref(),
-            cas,
-            root,
-            &prepared,
-        )
+        materialize_group_source(manifest, group, &decoded_paths, cas, root)
     })?;
-    let duplicates: Vec<(usize, usize, usize)> = groups
+    let duplicates: Vec<(usize, usize)> = groups
         .iter()
-        .enumerate()
-        .flat_map(|(group_index, group)| {
+        .flat_map(|group| {
             group.regular_source.into_iter().flat_map(move |source| {
                 group.indexes.iter().copied().filter_map(move |index| {
                     (index != source && manifest.entries[index].kind != EntryKind::Symlink)
-                        .then_some((index, source, group_index))
+                        .then_some((index, source))
                 })
             })
         })
         .collect();
-    review_parallel::try_for_each(&duplicates, |(index, source, group_index)| {
+    review_parallel::try_for_each(&duplicates, |(index, source)| {
         let entry = &manifest.entries[*index];
-        let relative = entry_relative(manifest, decoded_paths.as_deref(), *index)?;
-        let target = prepare_relative(root, &relative, &entry.path, &prepared)?;
-        let source_relative = match groups[*group_index].source_relative.as_deref() {
-            Some(path) => path,
-            None => decoded_paths
-                .as_deref()
-                .expect("symlink manifest paths are predecoded")[*source]
-                .as_path(),
-        };
-        reflink_copy::reflink_or_copy(root.join(source_relative), &target)?;
+        let target = root.join(&decoded_paths[*index]);
+        reflink_copy::reflink_or_copy(root.join(&decoded_paths[*source]), &target)?;
         set_executable(&target, entry.kind == EntryKind::Executable)?;
         Ok::<_, MaterializeError>(())
     })?;
@@ -172,25 +144,20 @@ pub fn materialize(
 struct ContentGroup {
     indexes: Vec<usize>,
     regular_source: Option<usize>,
-    source_relative: Option<PathBuf>,
 }
 
 fn materialize_group_source(
     manifest: &Manifest,
     group: &ContentGroup,
-    decoded_paths: Option<&[PathBuf]>,
+    decoded_paths: &[PathBuf],
     cas: &Cas,
     root: &Path,
-    prepared: &PreparedDirectories,
 ) -> Result<(), MaterializeError> {
     let content = &manifest.entries[group.indexes[0]].content;
     let mut symlink_bytes = None;
     let actual_size = if let Some(index) = group.regular_source {
         let entry = &manifest.entries[index];
-        let relative = group.source_relative.as_deref().unwrap_or_else(|| {
-            decoded_paths.expect("symlink manifest paths are predecoded")[index].as_path()
-        });
-        let target = prepare_relative(root, relative, &entry.path, prepared)?;
+        let target = root.join(&decoded_paths[index]);
         let size = cas
             .materialize_verified(content, &target)
             .map_err(|error| MaterializeError::Cas(error.to_string()))?;
@@ -220,8 +187,7 @@ fn materialize_group_source(
         if group.regular_source.as_ref() == Some(index) || entry.kind != EntryKind::Symlink {
             continue;
         }
-        let relative = &decoded_paths.expect("symlink manifest paths are predecoded")[*index];
-        let target = prepare_relative(root, relative, &entry.path, prepared)?;
+        let target = root.join(&decoded_paths[*index]);
         if symlink_bytes.is_none() {
             symlink_bytes = Some(
                 cas.get_bounded(content, MAX_SYMLINK_TARGET_BYTES)
@@ -231,17 +197,6 @@ fn materialize_group_source(
         symlink(symlink_bytes.as_deref().expect("loaded above"), &target)?;
     }
     Ok(())
-}
-
-fn entry_relative<'a>(
-    manifest: &'a Manifest,
-    decoded_paths: Option<&'a [PathBuf]>,
-    index: usize,
-) -> Result<Cow<'a, Path>, MaterializeError> {
-    decoded_paths.map_or_else(
-        || checked_relative_path(&manifest.entries[index].path).map(Cow::Owned),
-        |paths| Ok(Cow::Borrowed(paths[index].as_path())),
-    )
 }
 
 fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
@@ -265,66 +220,57 @@ fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
     Ok(raw)
 }
 
-struct PreparedDirectories {
-    paths: Mutex<HashSet<PathBuf>>,
-}
-
-impl PreparedDirectories {
-    fn new(root: &Path) -> Self {
-        Self {
-            paths: Mutex::new(HashSet::from([root.to_path_buf()])),
-        }
-    }
-}
-
-fn prepare_relative(
+fn prepare_directories(
     root: &Path,
-    relative: &Path,
-    encoded: &str,
-    prepared: &PreparedDirectories,
-) -> Result<PathBuf, MaterializeError> {
-    let mut parent = root.to_path_buf();
-    if let Some(components) = relative.parent() {
-        for component in components.components() {
-            parent.push(component);
-            if prepared
-                .paths
-                .lock()
-                .expect("prepared directories")
-                .contains(&parent)
-            {
-                continue;
+    manifest: &Manifest,
+    decoded_paths: &[PathBuf],
+) -> Result<(), MaterializeError> {
+    let mut previous_index = None;
+    for (index, (entry, relative)) in manifest.entries.iter().zip(decoded_paths).enumerate() {
+        let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+        let common = previous_index
+            .and_then(|previous: usize| decoded_paths[previous].parent())
+            .map_or(0, |previous| {
+                previous
+                    .components()
+                    .zip(parent.components())
+                    .take_while(|(left, right)| left == right)
+                    .count()
+            });
+        let mut absolute = root.to_path_buf();
+        for component in parent.components().take(common) {
+            absolute.push(component);
+        }
+        for component in parent.components().skip(common) {
+            absolute.push(component);
+            ensure_directory(&absolute, &entry.path)?;
+        }
+        previous_index = Some(index);
+    }
+    Ok(())
+}
+
+fn ensure_directory(path: &Path, encoded: &str) -> Result<(), MaterializeError> {
+    loop {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                return Ok(());
             }
-            loop {
-                match fs::symlink_metadata(&parent) {
-                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                        break;
-                    }
-                    Ok(_) => {
-                        return Err(MaterializeError::Escape {
-                            path: encoded.to_string(),
-                        });
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        match fs::create_dir(&parent) {
-                            Ok(()) => break,
-                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                                continue;
-                            }
-                            Err(error) => return Err(error.into()),
-                        }
-                    }
+            Ok(_) => {
+                return Err(MaterializeError::Escape {
+                    path: encoded.to_string(),
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(path) {
+                    Ok(()) => return Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                     Err(error) => return Err(error.into()),
                 }
             }
-            prepared
-                .paths
-                .lock()
-                .expect("prepared directories")
-                .insert(parent.clone());
+            Err(error) => return Err(error.into()),
         }
     }
-    Ok(root.join(relative))
 }
 
 #[cfg(unix)]

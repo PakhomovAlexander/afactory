@@ -1142,6 +1142,7 @@ name = "review-store"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "reflink-copy",
  "review-core",
  "rusqlite",
  "serde",

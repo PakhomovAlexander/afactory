@@ -1724,17 +1724,17 @@ fn latest_round(
         .transpose()
 }
 
+const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
+     WHERE run_id = ?1 AND causation_id = ?2
+       AND type >= 'RunReport@' AND type < 'RunReportA'
+     ORDER BY sequence";
+
 fn round_has_terminal_report(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
 ) -> Result<bool, StoreError> {
-    let mut statement = tx.prepare(
-        "SELECT type, payload FROM events
-         WHERE run_id = ?1 AND causation_id = ?2
-           AND type LIKE 'RunReport@%'
-         ORDER BY sequence",
-    )?;
+    let mut statement = tx.prepare(ROUND_TERMINAL_REPORT_SQL)?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -1860,6 +1860,26 @@ mod tests {
         let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         (dir, store, cas)
+    }
+
+    #[test]
+    fn terminal_report_lookup_uses_the_full_type_index_prefix() {
+        let (_dir, store, _cas) = fixture();
+        let mut statement = store
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {ROUND_TERMINAL_REPORT_SQL}"))
+            .unwrap();
+        let details: Vec<String> = statement
+            .query_map(params!["run", "round"], |row| row.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("type>? AND type<?")),
+            "query plan did not seek the report type range: {details:?}"
+        );
     }
 
     #[test]

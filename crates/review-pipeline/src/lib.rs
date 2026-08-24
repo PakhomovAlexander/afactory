@@ -578,11 +578,12 @@ pub struct Kernel<'a> {
     /// labelled data resolved by the kernel, which is what makes round N+1 a re-examination
     /// of round N's claims instead of a fresh look that happens to share a repository.
     prior_findings: Option<String>,
-    /// Reviewer-thread events, held until a barrier flushes them in canonical order. Reviewers
-    /// run concurrently, and appending from a worker thread would assign sequences — and the
-    /// event IDs derived from them — in whatever order the threads happened to reach the log,
-    /// so two identical runs would produce different, incomparable logs. Each `(node, seq)`
-    /// keeps a node's own events in the order it emitted them; the flush sorts by that key.
+    /// Reviewer result and gate events held until their node receipt can publish them as one
+    /// batch. Each `(node, seq)` preserves emission order inside that node. Dispatch and terminal
+    /// failure events are deliberately not buffered: dispatch must be durable before external
+    /// execution, and a failed attempt must be durable before its retry dispatch. Their ordering
+    /// across concurrently executing nodes therefore records real completion order rather than
+    /// claiming whole-log determinism that the scheduler cannot provide.
     reviewer_events: Mutex<Vec<((String, u64), NewEvent)>>,
     reviewer_event_seq: Mutex<u64>,
     /// First attempts are reserved, assigned, and durably dispatched by the scheduler thread in
@@ -983,11 +984,12 @@ impl<'a> Kernel<'a> {
             .push((key, event));
     }
 
-    /// Append every buffered reviewer event, sorted by `(node, emission order)`, then clear the
-    /// buffer. Called at the gather barrier — every reviewer has finished by then — so the log
-    /// is a function of the pipeline, not of thread timing. Idempotent: a second call on an
-    /// already-drained buffer is a no-op, which is why a gather-less pipeline can still flush
-    /// from the run driver.
+    /// Append every still-buffered node event, sorted by `(node, emission order)`, then clear the
+    /// buffer. Ordinary successful nodes flush their own events with their output receipt;
+    /// gather and final publication drain leftovers from failed or suppressed paths. This makes
+    /// each published node batch internally canonical. It does not reorder already-durable
+    /// dispatch/failure events or successful node receipts across concurrent nodes. Idempotent:
+    /// a second call on an already-drained buffer is a no-op.
     pub fn flush_reviewer_events(&self) -> Result<(), String> {
         let mut pending = self.reviewer_events.lock().expect("reviewer events");
         pending.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1668,11 +1670,6 @@ impl<'a> Kernel<'a> {
 }
 
 fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value, String> {
-    for (index, finding) in stage.findings.iter().enumerate() {
-        finding
-            .validate(index)
-            .map_err(|error| format!("ReviewerResult@1 is not admissible: {error}"))?;
-    }
     let mut object = match serde_json::to_value(stage).map_err(|error| error.to_string())? {
         serde_json::Value::Object(object) => object,
         _ => return Err("reviewer result did not serialize as an object".into()),

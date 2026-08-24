@@ -19,9 +19,12 @@
 use review_check::{Arg, Command};
 use review_sandbox::{Availability, ContainerProvider, Mode, Sandbox};
 use review_source_git::Capture;
+use std::time::Duration;
 
 mod common;
 use common::fixture_repo;
+
+const EXEC_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Invoked explicitly means required: refusal here is a failure, not a skip.
 fn provider() -> ContainerProvider {
@@ -46,7 +49,12 @@ fn a_host_marker_is_out_of_reach() {
     let sandbox = tempfile::tempdir().unwrap();
 
     let read = provider
-        .exec(sandbox.path(), "/bin/cat", &[marker.display().to_string()])
+        .exec(
+            sandbox.path(),
+            "/bin/cat",
+            &[marker.display().to_string()],
+            EXEC_TIMEOUT,
+        )
         .unwrap();
     assert!(!read.status.success(), "the marker must be unreadable");
     assert!(
@@ -62,6 +70,7 @@ fn a_host_marker_is_out_of_reach() {
                 "-c".to_string(),
                 format!("echo pwned > {}", marker.display()),
             ],
+            EXEC_TIMEOUT,
         )
         .unwrap();
     assert!(!write.status.success(), "the marker must be unwritable");
@@ -95,6 +104,7 @@ fn an_absolute_write_cannot_reach_the_checkout() {
                     repo.workdir().display()
                 ),
             ],
+            EXEC_TIMEOUT,
         )
         .unwrap();
     assert!(output.status.success(), "the check did its job");
@@ -126,6 +136,7 @@ fn an_undeclared_connection_is_refused() {
                 "-c".to_string(),
                 "echo probe > /dev/tcp/1.1.1.1/80".to_string(),
             ],
+            EXEC_TIMEOUT,
         )
         .unwrap();
     assert!(
@@ -144,6 +155,7 @@ fn an_undeclared_connection_is_refused() {
                 "hosts".to_string(),
                 "debian.org".to_string(),
             ],
+            EXEC_TIMEOUT,
         )
         .unwrap();
     assert!(
@@ -174,7 +186,7 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
     );
     let argv = check.resolve().unwrap();
     let output = provider
-        .exec(sandbox.root(), &check.program, &argv)
+        .exec(sandbox.root(), &check.program, &argv, EXEC_TIMEOUT)
         .unwrap();
 
     assert!(

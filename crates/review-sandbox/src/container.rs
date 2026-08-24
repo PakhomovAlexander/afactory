@@ -36,7 +36,6 @@ const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
 /// Capability detection runs in every full verification gate. A wedged daemon is unavailable,
 /// not authority to keep the gate open forever.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const EXEC_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The default sandbox image, pinned by manifest digest — the same never-`latest` rule as
 /// reviewer packages. The digest names a multi-arch manifest list (amd64 CI, arm64 laptops),
@@ -185,18 +184,10 @@ impl ContainerProvider {
         argv
     }
 
-    /// Run a command in the sandbox. Refuses when the runtime is not usable — never falls back
-    /// to running it on the host, which would be containment silently becoming none.
+    /// Run a command in the sandbox under the caller's policy deadline. Refuses when the runtime
+    /// is not usable — never falls back to running it on the host, which would be containment
+    /// silently becoming none.
     pub fn exec(
-        &self,
-        sandbox_root: &Path,
-        program: &str,
-        args: &[String],
-    ) -> Result<std::process::Output, String> {
-        self.exec_with_timeout(sandbox_root, program, args, EXEC_TIMEOUT)
-    }
-
-    fn exec_with_timeout(
         &self,
         sandbox_root: &Path,
         program: &str,
@@ -341,7 +332,12 @@ mod tests {
 
         // And it refuses to run rather than falling back to the host.
         let err = provider
-            .exec(dir.path(), "/bin/sh", &["-c".into(), "echo pwned".into()])
+            .exec(
+                dir.path(),
+                "/bin/sh",
+                &["-c".into(), "echo pwned".into()],
+                Duration::from_secs(1),
+            )
             .unwrap_err();
         assert!(
             err.starts_with("refusing to run outside a container"),
@@ -383,7 +379,7 @@ mod tests {
 
         let started = Instant::now();
         let error = provider
-            .exec_with_timeout(dir.path(), "/bin/true", &[], Duration::from_millis(100))
+            .exec(dir.path(), "/bin/true", &[], Duration::from_millis(100))
             .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(

@@ -320,3 +320,30 @@ target path. Focused contract, source, store, sandbox, and pipeline regressions 
 workspace clippy, tests, and byte-identical fixture reproduction pass before the correction
 commit. Because Round 2 was not clean, this Campaign cannot establish two clean Rounds within its
 four-Round policy.
+
+## 2026-08-25 — M2 convergence Campaign Round 3 corrections
+
+Round 3 spent 693,947 tokens, retained all 25 prior resolutions, and opened eight Reports. Typed
+FindingReport projection now validates every semantic field while retaining the established
+fail-closed exception that readable content with a noncanonical frozen path has unknown Scope.
+Round/Subject binding mismatches have their own authority kind and operator diagnostic instead of
+claiming a readable Subject artifact is unavailable. ReviewerResult admission has one validator,
+and the event-buffer documentation now states the real boundary: successful node batches are
+internally canonical, while dispatch and terminal failure order records concurrent completion
+because each must be durable before external execution or retry.
+
+Container execution receives its deadline from the caller while provider probing retains its own
+five-second capability deadline. Terminal-report detection uses a sargable `RunReport@` type range;
+an `EXPLAIN QUERY PLAN` regression proves SQLite seeks the complete
+`(run_id, causation_id, type, sequence)` index prefix. Materialization decodes paths once and
+prepares newly encountered parent components in one sorted serial prologue, so both executor phases
+write without a process-wide directory mutex.
+
+On COW filesystems, each CAS source is reflinked into a sibling temporary path, hashed there through
+the fixed 64 KiB buffer, and atomically published only after verification; unsupported filesystems
+retain the Round 2 streaming-copy fallback. The release measurement recorded 1.269 s for 5,000
+distinct entries / 199 MiB and 0.865 s for the same output with repeated content. The
+128-distinct-pairs / 256 MiB workload improved from the streaming fallback's 0.876 s to 0.094 s,
+with 53,182,464 bytes maximum command RSS and a 36,405,776-byte Darwin peak footprint. Focused
+store, source, sandbox, pipeline, and CLI tests pass. Full workspace formatting, clippy, tests,
+doc tests, and byte-identical fixture reproduction pass before commit.

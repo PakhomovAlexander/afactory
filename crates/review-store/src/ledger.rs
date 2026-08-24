@@ -44,11 +44,12 @@ impl ReportScope {
     }
 }
 
-/// The immutable artifact class that failed to supply Scope authority.
+/// The authority boundary that failed to supply a trustworthy Scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeAuthorityKind {
     Subject,
     Report,
+    RoundBinding,
 }
 
 /// A Round whose Subject or Report could not supply Report Scope authority during replay.
@@ -604,7 +605,12 @@ impl Ledger {
                 active.round
             );
             let subject_id = active.subject_id.clone();
-            self.record_authority_failure(round, ScopeAuthorityKind::Subject, &subject_id, &reason);
+            self.record_authority_failure(
+                round,
+                ScopeAuthorityKind::RoundBinding,
+                &subject_id,
+                &reason,
+            );
             return (None, location.first_index());
         }
         let Some(active) = self.active_scope.as_ref() else {
@@ -814,6 +820,28 @@ impl ReportProjection {
                         "report {report_id} is not FindingReport@1: {error}"
                     ))
                 })?;
+            // Frozen typed artifacts with noncanonical paths remain readable but have unknown
+            // Scope: location authority is handled below. Validate every other semantic field,
+            // and canonical locations in full, by excluding only the unusable paths from this
+            // contract check. Positive line bounds on usable paths remain mandatory.
+            let mut contract_report = report.clone();
+            if report
+                .locations
+                .iter()
+                .any(|location| location.line == Some(0) || location.end_line == Some(0))
+            {
+                return Err(crate::store::StoreError::Artifact(format!(
+                    "report {report_id} is not FindingReport@1: location lines must be positive"
+                )));
+            }
+            contract_report
+                .locations
+                .retain(|location| review_core::is_valid_repo_path(&location.path));
+            contract_report.validate().map_err(|error| {
+                crate::store::StoreError::Artifact(format!(
+                    "report {report_id} is not FindingReport@1: {error}"
+                ))
+            })?;
             let valid_locations: Vec<_> = report
                 .locations
                 .iter()

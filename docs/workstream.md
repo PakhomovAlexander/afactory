@@ -2,9 +2,9 @@
 
 **Status:** M0 and M1 are complete. Two M2 dogfood Campaigns exhausted with all 88 Findings fixed.
 Fresh convergence Campaign Round 1 opened fifteen further Findings and Round 2 retained fourteen,
-reopened one, and opened ten. Its eleven corrections are verified and ready to commit; this
-Campaign cannot fit two clean Rounds, so another fresh unchanged-policy Campaign is still required
-before M3.1.
+reopened one, and opened ten. Round 3 retained all 25 fixes and opened eight further Findings; its
+corrections are fully verified. This Campaign cannot fit two clean Rounds, so another fresh
+unchanged-policy Campaign is still required before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -146,11 +146,16 @@ their corrections were verified, committed, and resolved. Round 2 spent 615,571 
 fourteen of those fixes, reopened one, and opened ten further claims. Its corrections atomically
 publish verified CAS sources, split source and duplicate materialization into two non-nested
 bounded phases, cap container execution, validate the complete ReviewerResult before admission,
-and remove remaining linear hot-path repetition. The corrections and release measurements are
-verified; commit, resolve, and use the Campaign's remaining Rounds for review coverage. Because
-Round 2 was not clean, establish two clean Rounds in another fresh unchanged-policy Campaign before
-M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past Subject,
-authority, isolation, and verification prerequisites.
+and remove remaining linear hot-path repetition. Those corrections were verified, committed, and
+resolved. Round 3 spent 693,947 tokens, retained all 25 fixes, and opened eight further claims. Its
+corrections validate typed projection authority, distinguish round-binding failures, make container
+execution deadlines caller-owned, state the event-ordering boundary honestly, use verified CAS
+reflinks, seek terminal reports by an indexed type range, and prepare directories without worker
+locks. The corrections pass the full kernel gate. Commit, resolve, and run the Campaign's final
+Round for coverage. Because Round 2 was
+not clean, establish two clean Rounds in another fresh unchanged-policy Campaign before M3.1.
+Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
+isolation, and verification prerequisites.
 
 ## Risks / notes
 

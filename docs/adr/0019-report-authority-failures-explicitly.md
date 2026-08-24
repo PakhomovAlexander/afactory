@@ -13,7 +13,9 @@ We decided that new conclusions use `RunReport@3`, whose failure-reason vocabula
 the active clean window. A non-exhausted failure uses `authority_unavailable` only when that count
 is nonzero and no real blocking Finding, new Finding, or failed Gate is already the immediate
 cause; otherwise it remains `not_converged`. Existing `RunReport@1` and `RunReport@2` readers
-remain permanent and unchanged.
+remain permanent and unchanged. A Report whose round disagrees with the active Subject binding is
+recorded as a distinct round-binding authority failure, not as an unavailable Subject artifact;
+it still counts in the same fail-closed convergence total.
 
 ## Considered options
 
@@ -39,5 +41,7 @@ remain permanent and unchanged.
   count and warning still identify why convergence could not be reached before exhaustion.
 - Real Finding and Gate failures retain precedence, so an accompanying diagnostic cannot replace
   the actionable durable cause with `authority_unavailable`.
+- Operator diagnostics distinguish an unreadable Subject or Report artifact from an inconsistent
+  Report-to-Round binding; all three leave affected Scope unknown and block convergence.
 - Report readers, the event vocabulary schema, campaign terminal validation, and receipt checks
   must recognize all three report versions.
