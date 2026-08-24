@@ -35,6 +35,8 @@ pub enum EventType {
     NodeInvocationV1,
     #[serde(rename = "NodeOutputReceipt@1")]
     NodeOutputReceiptV1,
+    #[serde(rename = "ProviderOperationTransition@1")]
+    ProviderOperationTransitionV1,
     #[serde(rename = "RunReport@1")]
     RunReportV1,
     #[serde(rename = "RunReport@2")]
@@ -48,7 +50,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -62,6 +64,7 @@ impl EventType {
         Self::GenerationAdvancedV1,
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
+        Self::ProviderOperationTransitionV1,
         Self::RunReportV1,
         Self::RunReportV2,
         Self::RoundInputSupersededV1,
@@ -84,6 +87,7 @@ impl EventType {
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
+            Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
@@ -107,6 +111,7 @@ impl EventType {
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
+            Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
@@ -163,6 +168,7 @@ impl std::str::FromStr for EventType {
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
+            "ProviderOperationTransition@1" => Ok(Self::ProviderOperationTransitionV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
@@ -266,6 +272,244 @@ pub struct RunReportPayloadV2 {
     pub verdict: RunVerdictV2,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spent_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderOperationStateV1 {
+    Running,
+    WaitingForHuman,
+    Resumed,
+    Done,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFailureClassV1 {
+    InvalidOrExpiredAuthentication,
+    InteractiveLoginRequired,
+    TransientTransportFailure,
+    RateLimitOrQuotaExhaustion,
+    UnavailableModelOrCapability,
+    SmokeTimeout,
+    UnknownProviderFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderNextActionV1 {
+    CompleteInteractiveLogin,
+    RefreshAuthentication,
+    RetryExplicitly,
+    CheckTransport,
+    WaitForQuota,
+    SelectAvailableModel,
+    IncreaseSmokeTimeout,
+    InspectProviderFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderOperationTransitionPayloadV1 {
+    pub operation_id: String,
+    pub provider_id: String,
+    pub capability_id: String,
+    pub node_id: String,
+    pub round: u32,
+    pub round_epoch: u32,
+    pub operation_epoch: u64,
+    pub state: ProviderOperationStateV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<ProviderFailureClassV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_handle: Option<String>,
+    pub reserved_tokens: u64,
+    pub charged_tokens: u64,
+    pub elapsed_ms: u64,
+    pub retry_permitted: bool,
+    pub circuit_open: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<ProviderNextActionV1>,
+}
+
+impl ProviderOperationTransitionPayloadV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        let valid_id = |value: &str| {
+            value.len() == 26
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        };
+        let valid_provider = !self.provider_id.is_empty()
+            && self.provider_id.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+            });
+        if !valid_id(&self.operation_id)
+            || !valid_provider
+            || !crate::is_digest(&self.capability_id)
+            || self.node_id.trim().is_empty()
+            || self.round == 0
+            || self.round_epoch == 0
+            || self.operation_epoch == 0
+            || self.attempt_id.as_deref().is_some_and(|id| !valid_id(id))
+            || self
+                .failure_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| !crate::is_digest(fingerprint))
+            || self
+                .continuation_handle
+                .as_deref()
+                .is_some_and(|handle| !valid_id(handle))
+            || [self.reserved_tokens, self.charged_tokens, self.elapsed_ms]
+                .into_iter()
+                .any(|value| value > 9_007_199_254_740_991)
+        {
+            return Err(
+                "ProviderOperationTransition@1 has invalid identity or numeric bounds".into(),
+            );
+        }
+        let has_attempt = self.attempt.is_some() && self.attempt_id.is_some();
+        let has_failure = self.failure_class.is_some() && self.failure_fingerprint.is_some();
+        let valid_shape = match self.state {
+            ProviderOperationStateV1::Running => {
+                has_attempt
+                    && self.continuation_handle.is_none()
+                    && self.next_action.is_none()
+                    && !self.circuit_open
+                    && if has_failure {
+                        self.retry_permitted
+                    } else {
+                        self.failure_class.is_none()
+                            && self.failure_fingerprint.is_none()
+                            && self.charged_tokens == 0
+                            && !self.retry_permitted
+                    }
+            }
+            ProviderOperationStateV1::WaitingForHuman => {
+                has_attempt
+                    && has_failure
+                    && self.continuation_handle.is_some()
+                    && self.retry_permitted
+                    && !self.circuit_open
+                    && self.next_action == Some(ProviderNextActionV1::CompleteInteractiveLogin)
+            }
+            ProviderOperationStateV1::Resumed => {
+                has_attempt
+                    && self.failure_class.is_none()
+                    && self.failure_fingerprint.is_none()
+                    && self.reserved_tokens == 0
+                    && self.charged_tokens == 0
+                    && self.elapsed_ms == 0
+                    && !self.retry_permitted
+                    && !self.circuit_open
+                    && self.next_action.is_none()
+            }
+            ProviderOperationStateV1::Done => {
+                has_attempt
+                    && !has_failure
+                    && self.failure_class.is_none()
+                    && self.failure_fingerprint.is_none()
+                    && self.continuation_handle.is_none()
+                    && !self.retry_permitted
+                    && !self.circuit_open
+                    && self.next_action.is_none()
+            }
+            ProviderOperationStateV1::Failed => {
+                has_attempt
+                    && has_failure
+                    && self.continuation_handle.is_none()
+                    && self.next_action.is_some()
+                    && (!self.circuit_open || !self.retry_permitted)
+            }
+        };
+        if !valid_shape {
+            return Err("ProviderOperationTransition@1 fields contradict its state".into());
+        }
+        Ok(())
+    }
+
+    pub fn validate_after(&self, previous: Option<&Self>) -> Result<(), String> {
+        self.validate()?;
+        let Some(previous) = previous else {
+            if self.state != ProviderOperationStateV1::Running
+                || self.operation_epoch != 1
+                || self.attempt != Some(1)
+                || self.failure_class.is_some()
+            {
+                return Err(
+                    "a provider operation must start running at operation epoch 1, attempt 1"
+                        .into(),
+                );
+            }
+            return Ok(());
+        };
+        if self.operation_id != previous.operation_id
+            || self.provider_id != previous.provider_id
+            || self.capability_id != previous.capability_id
+            || self.node_id != previous.node_id
+            || self.round != previous.round
+            || self.round_epoch != previous.round_epoch
+        {
+            return Err("a provider operation transition changes immutable authority".into());
+        }
+        let valid = match (previous.state, self.state) {
+            (ProviderOperationStateV1::Running, ProviderOperationStateV1::Running) => {
+                if previous.failure_class.is_none() {
+                    self.operation_epoch == previous.operation_epoch
+                        && self.attempt == previous.attempt
+                        && self.attempt_id == previous.attempt_id
+                        && self.failure_class.is_some()
+                } else {
+                    self.operation_epoch == previous.operation_epoch
+                        && self.attempt == previous.attempt.and_then(|value| value.checked_add(1))
+                        && self.attempt_id != previous.attempt_id
+                        && self.failure_class.is_none()
+                }
+            }
+            (ProviderOperationStateV1::Running, ProviderOperationStateV1::WaitingForHuman)
+            | (ProviderOperationStateV1::Running, ProviderOperationStateV1::Done) => {
+                self.operation_epoch == previous.operation_epoch
+                    && self.attempt == previous.attempt
+                    && self.attempt_id == previous.attempt_id
+                    && previous.failure_class.is_none()
+            }
+            (ProviderOperationStateV1::Running, ProviderOperationStateV1::Failed) => {
+                self.operation_epoch == previous.operation_epoch
+                    && self.attempt == previous.attempt
+                    && self.attempt_id == previous.attempt_id
+                    && (previous.failure_class.is_none()
+                        || (self.failure_class == previous.failure_class
+                            && self.failure_fingerprint == previous.failure_fingerprint
+                            && self.charged_tokens == 0))
+            }
+            (ProviderOperationStateV1::WaitingForHuman, ProviderOperationStateV1::Resumed)
+            | (ProviderOperationStateV1::Failed, ProviderOperationStateV1::Resumed) => {
+                previous.retry_permitted
+                    && self.operation_epoch == previous.operation_epoch + 1
+                    && self.continuation_handle == previous.continuation_handle
+                    && self.attempt == previous.attempt.and_then(|value| value.checked_add(1))
+                    && self.attempt_id != previous.attempt_id
+            }
+            (ProviderOperationStateV1::Resumed, ProviderOperationStateV1::Running) => {
+                self.operation_epoch == previous.operation_epoch
+                    && self.attempt == previous.attempt
+                    && self.attempt_id == previous.attempt_id
+                    && self.failure_class.is_none()
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err("invalid or stale provider operation transition".into());
+        }
+        Ok(())
+    }
 }
 
 impl RunReportPayloadV2 {
@@ -694,6 +938,14 @@ pub fn validate_event_payload(
             receipt
                 .validate()
                 .map_err(|error| format!("NodeOutputReceipt@1: {error}"))
+        }
+        EventType::ProviderOperationTransitionV1 => {
+            let transition =
+                serde_json::from_value::<ProviderOperationTransitionPayloadV1>(payload.clone())
+                    .map_err(|error| format!("ProviderOperationTransition@1: {error}"))?;
+            transition
+                .validate()
+                .map_err(|error| format!("ProviderOperationTransition@1: {error}"))
         }
         EventType::RunReportV1 => {
             let report = serde_json::from_value::<LegacyRunReportV1>(payload.clone())

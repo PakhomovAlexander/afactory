@@ -100,6 +100,47 @@ impl CodexAdapter {
     }
 }
 
+/// Build the adapter-owned capability smoke invocation. The production builder supplies the
+/// same global/subcommand ordering, with a read-only scratch root and no output file.
+pub fn smoke_command(runner: &Command, scratch: &Path) -> Result<Command, String> {
+    let model_flags = runner.resolve().map_err(|error| error.to_string())?;
+    Ok(codex_command(
+        &runner.program,
+        &model_flags,
+        scratch,
+        "read-only",
+        None,
+    ))
+}
+
+fn codex_command(
+    program: &str,
+    model_flags: &[String],
+    sandbox_root: &Path,
+    mode: &str,
+    output: Option<&Path>,
+) -> Command {
+    let mut args = vec![
+        Arg::literal("exec"),
+        Arg::literal("--ephemeral"),
+        Arg::literal("--skip-git-repo-check"),
+        Arg::literal("--json"),
+        Arg::literal("-C"),
+        Arg::literal(sandbox_root.display().to_string()),
+        Arg::literal("-s"),
+        Arg::literal(mode),
+    ];
+    if let Some(output) = output {
+        args.extend([
+            Arg::literal("-o"),
+            Arg::literal(output.display().to_string()),
+        ]);
+    }
+    args.extend(model_flags.iter().map(Arg::literal));
+    args.push(Arg::literal("-"));
+    Command::new(program, args)
+}
+
 impl ReviewerAdapter for CodexAdapter {
     fn invoke(
         &self,
@@ -112,25 +153,17 @@ impl ReviewerAdapter for CodexAdapter {
             .map_err(|e| RunnerError::Unavailable(format!("staging dir: {e}")))?;
         let last_message = staging.path().join("last-message");
 
-        let mut args = vec![
-            Arg::literal("exec"),
-            Arg::literal("--ephemeral"),
-            Arg::literal("--skip-git-repo-check"),
-            Arg::literal("--json"),
-            Arg::literal("-C"),
-            Arg::literal(sandbox_root.display().to_string()),
-            Arg::literal("-s"),
-            Arg::literal("workspace-write"),
-            Arg::literal("-o"),
-            Arg::literal(last_message.display().to_string()),
-        ];
-        args.extend(self.model_flags.iter().map(Arg::literal));
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        args.push(Arg::literal("-"));
         let prompt = format!("{}{}", self.prompt, inputs);
-        let command = Command::new(&self.program, args);
+        let command = codex_command(
+            &self.program,
+            &self.model_flags,
+            sandbox_root,
+            "workspace-write",
+            Some(&last_message),
+        );
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         if let Some(home) = &self.codex_home {

@@ -38,3 +38,22 @@ drivers, text conversion, and NUL-delimited path parsing. Raw records become byt
 changes while patch bytes remain available for M2.4's Change Set artifact. Adversarial coverage
 proves candidate-selected textconv code does not execute and hostile diff configuration cannot
 change the result.
+
+## 2026-08-24 — M2.5 Report Scope
+
+Made Report Scope a deterministic Ledger projection of each immutable Report location and its
+exact Round Subject/Change Set. Attached claims now retain independent `in`/`out` values,
+whole-tree and change-wide Reports are always `in`, and pre-Subject legacy evidence renders
+`unknown` and fails closed. Convergence uses the highest non-out attached-claim severity and
+scope-aware News instead of the Finding's arrival-dependent adopted severity. No Report, event,
+or artifact contract changed.
+
+## 2026-08-24 — bounded Provider Operations prerequisite
+
+Added explicit machine-local reviewer-to-Provider bindings and a pre-dispatch operation that
+durably records structural authentication and bounded real-inference smoke transitions. Exact
+operation epochs fence stale continuation; failed, timed-out, and abandoned work is charged;
+transient failures receive at most one automatic retry; repeated normalized failures open the
+circuit. Persistent state is a closed, versioned schema containing only IDs, classification,
+fingerprint, timing, spend, next action, and a non-secret continuation handle. Provider labels
+remain outside pinned Campaign authority. M2.6 is next.

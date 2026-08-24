@@ -1024,9 +1024,14 @@ fn prior_rows(
         .iter()
         .filter(|finding| !matches!(finding.status, Status::Rejected | Status::Wontfix))
         .map(|finding| {
-            serde_json::json!({
+            let severity = format!("{:?}", finding.severity).to_lowercase();
+            let effective_severity = finding
+                .convergence_severity
+                .map(|effective| format!("{effective:?}").to_lowercase());
+            let scope = finding.convergence_scope_label();
+            let mut row = serde_json::json!({
                 "key": finding.key,
-                "severity": format!("{:?}", finding.severity).to_lowercase(),
+                "severity": severity,
                 "status": finding.status.as_str(),
                 "file": finding.file,
                 "line": finding.line,
@@ -1034,7 +1039,18 @@ fn prior_rows(
                 "body": finding.body,
                 "source": finding.source,
                 "last_seen_round": finding.last_seen_round,
-            })
+            });
+            let object = row.as_object_mut().expect("prior row is an object");
+            if scope != "in" {
+                object.insert("scope".into(), serde_json::Value::String(scope.into()));
+            }
+            if effective_severity.as_deref() != Some(severity.as_str()) {
+                object.insert(
+                    "effective_severity".into(),
+                    effective_severity.map_or(serde_json::Value::Null, serde_json::Value::String),
+                );
+            }
+            row
         })
         .collect())
 }

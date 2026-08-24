@@ -10,15 +10,16 @@ use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
     Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent,
-    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
-    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
+    ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 15] = [
+const SCHEMAS: [&str; 16] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -27,6 +28,7 @@ const SCHEMAS: [&str; 15] = [
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
+    "provider-operation-transition-v1.json",
     "reviewer-package-v1.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
@@ -410,6 +412,128 @@ fn bootstrap_event_payloads_are_semantically_validated() {
         &json!({"round":0,"epoch":1,"campaign_manifest_id":"x","subject_id":"x","prior_finding_set_id":"x","prior_demand_set_id":"x"}),
     )
     .is_err());
+}
+
+#[test]
+fn provider_operation_payload_is_closed_and_schema_valid() {
+    let payload = ProviderOperationTransitionPayloadV1 {
+        operation_id: "a".repeat(26),
+        provider_id: "claude-work".into(),
+        capability_id: format!("sha256:{}", "b".repeat(64)),
+        node_id: "architecture".into(),
+        round: 1,
+        round_epoch: 1,
+        operation_epoch: 1,
+        state: ProviderOperationStateV1::Running,
+        attempt: Some(1),
+        attempt_id: Some("c".repeat(26)),
+        failure_class: None,
+        failure_fingerprint: None,
+        continuation_handle: None,
+        reserved_tokens: 4096,
+        charged_tokens: 0,
+        elapsed_ms: 0,
+        retry_permitted: false,
+        circuit_open: false,
+        next_action: None,
+    };
+    let value = serde_json::to_value(payload).unwrap();
+    assert_valid("provider-operation-transition-v1.json", &value);
+    let mut secret = value;
+    secret["oauth_code"] = json!("must-never-be-stored");
+    assert_invalid(
+        "provider-operation-transition-v1.json",
+        &secret,
+        "secret-bearing fields must be rejected",
+    );
+}
+
+#[test]
+fn provider_operation_continuation_is_exact_and_secret_free() {
+    let running = ProviderOperationTransitionPayloadV1 {
+        operation_id: "a".repeat(26),
+        provider_id: "claude-work".into(),
+        capability_id: format!("sha256:{}", "b".repeat(64)),
+        node_id: "architecture".into(),
+        round: 1,
+        round_epoch: 1,
+        operation_epoch: 1,
+        state: ProviderOperationStateV1::Running,
+        attempt: Some(1),
+        attempt_id: Some("c".repeat(26)),
+        failure_class: None,
+        failure_fingerprint: None,
+        continuation_handle: None,
+        reserved_tokens: 4096,
+        charged_tokens: 0,
+        elapsed_ms: 0,
+        retry_permitted: false,
+        circuit_open: false,
+        next_action: None,
+    };
+    let mut waiting = running.clone();
+    waiting.state = ProviderOperationStateV1::WaitingForHuman;
+    waiting.failure_class =
+        Some(review_core::ProviderFailureClassV1::InvalidOrExpiredAuthentication);
+    waiting.failure_fingerprint = Some(format!("sha256:{}", "d".repeat(64)));
+    waiting.continuation_handle = Some("e".repeat(26));
+    waiting.charged_tokens = 4096;
+    waiting.elapsed_ms = 12;
+    waiting.retry_permitted = true;
+    waiting.next_action = Some(review_core::ProviderNextActionV1::CompleteInteractiveLogin);
+    waiting.validate_after(Some(&running)).unwrap();
+
+    let mut resumed = waiting.clone();
+    resumed.state = ProviderOperationStateV1::Resumed;
+    resumed.operation_epoch = 1;
+    resumed.attempt = Some(2);
+    resumed.attempt_id = Some("f".repeat(26));
+    resumed.failure_class = None;
+    resumed.failure_fingerprint = None;
+    resumed.reserved_tokens = 0;
+    resumed.charged_tokens = 0;
+    resumed.elapsed_ms = 0;
+    resumed.retry_permitted = false;
+    resumed.next_action = None;
+    assert!(resumed.validate_after(Some(&waiting)).is_err());
+    resumed.operation_epoch = 2;
+    resumed.validate_after(Some(&waiting)).unwrap();
+
+    let mut resumed_running = resumed.clone();
+    resumed_running.state = ProviderOperationStateV1::Running;
+    resumed_running.continuation_handle = None;
+    resumed_running.reserved_tokens = 4096;
+    resumed_running.validate_after(Some(&resumed)).unwrap();
+
+    let mut done = resumed_running.clone();
+    done.state = ProviderOperationStateV1::Done;
+    done.charged_tokens = 7;
+    done.elapsed_ms = 4;
+    done.validate_after(Some(&resumed_running)).unwrap();
+
+    let mut transient = running.clone();
+    transient.failure_class = Some(review_core::ProviderFailureClassV1::TransientTransportFailure);
+    transient.failure_fingerprint = Some(format!("sha256:{}", "1".repeat(64)));
+    transient.charged_tokens = 5;
+    transient.retry_permitted = true;
+    transient.validate_after(Some(&running)).unwrap();
+    let mut automatic_retry = running.clone();
+    automatic_retry.attempt = Some(2);
+    automatic_retry.attempt_id = Some("2".repeat(26));
+    automatic_retry.validate_after(Some(&transient)).unwrap();
+
+    let persisted = serde_json::to_string(&[
+        running,
+        waiting,
+        resumed,
+        resumed_running,
+        done,
+        transient,
+        automatic_retry,
+    ])
+    .unwrap();
+    assert!(!persisted.contains("oauth-code-value"));
+    assert!(!persisted.contains("access-token-value"));
 }
 
 #[test]

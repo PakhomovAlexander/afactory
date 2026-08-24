@@ -1,7 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0, M1, and M2.1-M2.4 are complete. Repository extraction and the `af review`
-release boundary must reach parity before work resumes with M2.5 Report Scope.
+**Status:** M0, M1, and M2.1-M2.5 are complete. Repository extraction, private release, Project
+Hub external cutover, and bounded resumable Provider Operations are complete. Resume M2.6.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -10,9 +10,10 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and fifteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0, M1, and M2.1 capability negotiation are complete; resume with M2.1 runtime
-Subject publication and M2.2's immutable authority bootstrap, then follow milestone order.
+current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
+are superseded. M0, M1, and M2.1-M2.5 are complete. The repository/release migration and Project
+Hub external cutover and the bounded Provider Operation dogfood slice are also complete. Work
+resumes at M2.6 and then continues in milestone order.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -110,14 +111,18 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0, M1, and M2.1-M2.4 are complete. Campaigns now publish one immutable
+M0, M1, and M2.1-M2.5 are complete. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,
 publish `Subject@1` and Subject-bound Round inputs, reuse incomplete Round inputs, and require an
 explicit epoch supersession to capture a changed head. The Git adapter now resolves opaque tree
 ids and exposes one configuration-neutral, byte-safe typed tree diff while generic `diff` remains
 refused. Committed and revalidated dirty heads now publish one exact Change Set artifact wired
-into every diff reviewer. Resume with M2.5 Report Scope. Continue in milestone order; do not pull Proposal
-or scatter work forward past Subject, authority, isolation, and verification prerequisites.
+into every diff reviewer. Ledger replay now derives each attached Report's `in`/`out` Scope from
+its exact Round Subject; convergence excludes wholly out-of-set Findings and fails closed on
+legacy `unknown` evidence. Bounded, resumable Provider Operations now probe explicit machine-local
+contexts, run a real inference smoke, fence exact continuations, and charge failed work before
+dispatch. Resume M2.6. Continue in milestone order; do not pull Proposal or scatter work
+forward past Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes
 

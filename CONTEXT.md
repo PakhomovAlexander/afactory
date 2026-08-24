@@ -67,8 +67,10 @@ Campaign Manifests under different trusted invocation policies.
 
 **Report Scope**:
 Whether a Report's location falls inside the Change Set it was made under — `in` or `out`.
-Stamped on each Report at the Round it was made, never on the Finding, because a file this
-branch has not touched yet may be touched by a later Round.
+Attached deterministically to each Report claim from its exact Round Subject, never supplied by
+the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
+be touched by a later Round. A Report with no derivable exact Round Subject is presented as
+`unknown`; that is fail-closed compatibility metadata, not a third Report Scope.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,
 recorded, and triageable — it simply does not block this Subject's convergence.
 
@@ -208,6 +210,19 @@ explicitly unstable candidate but does not become a configured Provider until th
 its context. Credentials are capabilities used through a Provider and never part of its ID.
 _Avoid_: using "provider" for a CLI binary, model, reviewer package, or verified account identity.
 
+**Provider Operation**:
+A durable, Round-bound machine-local operation that proves one configured Provider can satisfy one
+adapter capability before dispatch. Its epoch fences stale continuation, failed and abandoned
+work is charged, and persisted state contains only non-secret handles and normalized failure
+metadata.
+_Avoid_: **Attempt**; an Attempt consumes an admitted Provider rather than authenticating it.
+
+**Provider Admission**:
+The current successful result of a Provider Operation's structural authentication probe and
+bounded real-inference smoke test for one adapter capability. Admission is local execution state,
+not pinned pipeline authority, and expires when its Round, Provider label, or capability changes.
+_Avoid_: treating an ambient login or a Provider ID as proof of usable authentication.
+
 **Broker Handle**:
 A non-secret, Attempt/epoch-bound capability authorizing only named external operations through a
 trusted broker that can revoke it after fencing.
@@ -258,6 +273,9 @@ the result incomplete.
   `contested` through an explicit event.
 - Every executable node resolves one **Execution Binding** before dispatch; safe Bindings expose
   revocable **Broker Handles**, never reusable credential bytes.
+- A configured **Provider** dispatches only after current **Provider Admission**. Continuations
+  name the exact Provider Operation epoch; stale epochs and repeated failure fingerprints are
+  fenced before another external call.
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,
   gate, closure, and budget state; it never queries ambient latest projections.
 - A **Subject** is always anchored to one head **Snapshot**; a `diff` Subject additionally
@@ -275,9 +293,10 @@ the result incomplete.
   not an empty field.
 - **Finding Sets** and **Demand Sets** are immutable views produced by deterministic reducers;
   graph edges deliver exact view IDs and nodes never consume ambient "latest" state.
-- **Report Scope** lives on each **Report** claim. Convergence evaluates active claims independently: a
-  Finding blocks when any active claim is `in` at the severity gate and is wholly `out` only when
-  all active claims are `out`. **News** and Report Scope remain independent axes.
+- **Report Scope** is derived for each **Report** claim from its exact Round Subject. Convergence
+  evaluates active claims independently: a Finding blocks when any active claim is `in` at the
+  severity gate and is wholly `out` only when all active claims are `out`. **News** and Report
+  Scope remain independent axes.
 
 ## Example dialogue
 

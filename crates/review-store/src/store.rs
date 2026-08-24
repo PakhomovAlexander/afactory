@@ -319,6 +319,102 @@ impl EventStore {
         Ok(appended)
     }
 
+    /// Ordered transitions for one provider operation. The correlation index keeps admission
+    /// proportional to that operation rather than to the Campaign's entire append-only log.
+    pub fn provider_operation_transitions(
+        &self,
+        run_id: &str,
+        operation_id: &str,
+    ) -> Result<Vec<review_core::ProviderOperationTransitionPayloadV1>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT payload FROM events
+             WHERE run_id = ?1 AND type = 'ProviderOperationTransition@1'
+               AND correlation_id = ?2 ORDER BY sequence",
+        )?;
+        let rows = stmt.query_map(params![run_id, operation_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let payload = row?;
+            serde_json::from_str(&payload).map_err(StoreError::from)
+        })
+        .collect()
+    }
+
+    /// Reviewer nodes carrying Provider Operations under one exact Round authority epoch.
+    pub fn provider_operation_nodes(
+        &self,
+        run_id: &str,
+        round_event_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT node_id FROM events
+             WHERE run_id = ?1 AND causation_id = ?2
+               AND type = 'ProviderOperationTransition@1' AND node_id IS NOT NULL
+             ORDER BY node_id",
+        )?;
+        stmt.query_map(params![run_id, round_event_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Committed and crash-reserved token spend for one exact Round, without replaying
+    /// unrelated Campaign events or re-reading output artifacts from the CAS.
+    pub fn round_committed_tokens(
+        &self,
+        run_id: &str,
+        round_event_id: &str,
+    ) -> Result<u64, StoreError> {
+        let sum = |query: &str| -> Result<u64, StoreError> {
+            let value: i64 =
+                self.conn
+                    .query_row(query, params![run_id, round_event_id], |row| row.get(0))?;
+            u64::try_from(value)
+                .map_err(|_| StoreError::Conflict("replayed token charge overflow".into()))
+        };
+        let terminal_attempts = sum(
+            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.charged') AS INTEGER)), 0)
+             FROM events WHERE run_id = ?1 AND causation_id = ?2
+               AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1', 'AttemptFenced@1')",
+        )?;
+        let outstanding_attempts = sum(
+            "SELECT COALESCE(SUM(CAST(json_extract(dispatched.payload, '$.reserved') AS INTEGER)), 0)
+             FROM events AS dispatched
+             WHERE dispatched.run_id = ?1 AND dispatched.causation_id = ?2
+               AND dispatched.type = 'AttemptDispatched@1'
+               AND NOT EXISTS (
+                 SELECT 1 FROM events AS terminal
+                 WHERE terminal.run_id = dispatched.run_id
+                   AND terminal.causation_id = dispatched.causation_id
+                   AND terminal.attempt_id = dispatched.attempt_id
+                   AND terminal.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
+                                         'AttemptFenced@1', 'AttemptReleased@1')
+               )",
+        )?;
+        let provider_charges = sum(
+            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.charged_tokens') AS INTEGER)), 0)
+             FROM events WHERE run_id = ?1 AND causation_id = ?2
+               AND type = 'ProviderOperationTransition@1'",
+        )?;
+        let outstanding_providers = sum(
+            "SELECT COALESCE(SUM(CAST(json_extract(operation.payload, '$.reserved_tokens') AS INTEGER)), 0)
+             FROM events AS operation
+             WHERE operation.run_id = ?1 AND operation.causation_id = ?2
+               AND operation.type = 'ProviderOperationTransition@1'
+               AND json_extract(operation.payload, '$.state') = 'running'
+               AND json_type(operation.payload, '$.failure_class') IS NULL
+               AND operation.sequence = (
+                 SELECT MAX(latest.sequence) FROM events AS latest
+                 WHERE latest.run_id = operation.run_id
+                   AND latest.type = operation.type
+                   AND latest.correlation_id = operation.correlation_id
+               )",
+        )?;
+        terminal_attempts
+            .checked_add(outstanding_attempts)
+            .and_then(|value| value.checked_add(provider_charges))
+            .and_then(|value| value.checked_add(outstanding_providers))
+            .ok_or_else(|| StoreError::Conflict("replayed token charge overflow".into()))
+    }
+
     /// Every event of a run, in sequence order. This is the only read replay needs.
     pub fn replay(&self, run_id: &str) -> Result<Vec<RunEvent>, StoreError> {
         let mut stmt = self.conn.prepare(
@@ -887,6 +983,10 @@ fn validate_campaign_transition(
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
     let mut batch_findings = std::collections::BTreeSet::new();
+    let mut batch_provider_operations: std::collections::BTreeMap<
+        String,
+        review_core::ProviderOperationTransitionPayloadV1,
+    > = std::collections::BTreeMap::new();
 
     for (offset, event) in events.iter().enumerate() {
         let sequence = first_sequence
@@ -1076,6 +1176,40 @@ fn validate_campaign_transition(
                         )));
                     }
                     match event_type {
+                        EventType::ProviderOperationTransitionV1 => {
+                            let transition: review_core::ProviderOperationTransitionPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if transition.round != active_payload.round
+                                || transition.round_epoch != active_payload.epoch
+                                || event.node_id.as_deref() != Some(transition.node_id.as_str())
+                                || event.attempt_id != transition.attempt_id
+                                || event.correlation_id.as_deref()
+                                    != Some(transition.operation_id.as_str())
+                            {
+                                return Err(StoreError::Conflict(
+                                    "ProviderOperationTransition@1 is not bound to its active Round, node, attempt, and operation".into(),
+                                ));
+                            }
+                            let previous = match batch_provider_operations
+                                .get(&transition.operation_id)
+                            {
+                                Some(previous) => Some(previous.clone()),
+                                None => tx
+                                    .query_row(
+                                        "SELECT payload FROM events WHERE run_id = ?1 AND type = 'ProviderOperationTransition@1' AND correlation_id = ?2 ORDER BY sequence DESC LIMIT 1",
+                                        params![run_id, transition.operation_id],
+                                        |row| row.get::<_, String>(0),
+                                    )
+                                    .optional()?
+                                    .map(|payload| serde_json::from_str(&payload))
+                                    .transpose()?,
+                            };
+                            transition
+                                .validate_after(previous.as_ref())
+                                .map_err(StoreError::Conflict)?;
+                            batch_provider_operations
+                                .insert(transition.operation_id.clone(), transition);
+                        }
                         EventType::NodeInvocationV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeInvocation@1 has no node ID".into())
@@ -1129,6 +1263,25 @@ fn validate_campaign_transition(
                                 return Err(StoreError::Conflict(
                                     "budgeted AttemptDispatched@1 has no reservation".into(),
                                 ));
+                            }
+                            let provider: Option<String> = tx
+                                .query_row(
+                                    "SELECT payload FROM events
+                                     WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3
+                                       AND type = 'ProviderOperationTransition@1'
+                                     ORDER BY sequence DESC LIMIT 1",
+                                    params![run_id, active_id, node],
+                                    |row| row.get(0),
+                                )
+                                .optional()?;
+                            if let Some(provider) = provider {
+                                let provider: review_core::ProviderOperationTransitionPayloadV1 =
+                                    serde_json::from_str(&provider)?;
+                                if provider.state != review_core::ProviderOperationStateV1::Done {
+                                    return Err(StoreError::Conflict(format!(
+                                        "attempt for node '{node}' dispatched without completed Provider Admission"
+                                    )));
+                                }
                             }
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
@@ -1502,6 +1655,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
             | EventType::GenerationAdvancedV1
             | EventType::NodeInvocationV1
             | EventType::NodeOutputReceiptV1
+            | EventType::ProviderOperationTransitionV1
             | EventType::RunReportV1
             | EventType::RunReportV2
     )

@@ -179,8 +179,12 @@ distort Report Scope or patch applicability.
 
 ### M2.5 — Report Scope
 
-Each Report is stamped `in` / `out` — whether its location falls inside the Change Set of the
-round it was made under. The kernel derives it; the reviewer never reports it. Convergence
+**Status: complete (2026-08-24).** Scope is rebuilt per attached Report from its exact Round
+Subject and Change Set; convergence and CLI presentation consume that projection without changing
+the frozen `FindingReport@1` or `FindingReported@1` contracts.
+
+Each attached Report projects `in` / `out` — whether its location falls inside the Change Set of
+the round it was made under. The kernel derives it; the reviewer never reports it. Convergence
 evaluates active Report claims independently: a Finding blocks when any active claim is `in` at
 the configured severity gate and is wholly `out` only when all active claims are `out`. Effective
 blocking severity is the maximum severity among in-scope active claims, never an arrival-order
@@ -200,6 +204,20 @@ predate Report Scope render `unknown` in the CLI as compatibility metadata; `unk
 third Report Scope value and cannot produce a passing scoped verdict.
 
 Decision recorded in [ADR-0013](adr/0013-scope-is-evaluated-per-active-claim.md).
+
+### Completed prerequisite — bounded Provider Operations
+
+Explicit machine-local Provider bindings are admitted before reviewer dispatch by a structural
+authentication probe and bounded real-inference smoke. Durable Round-bound transitions fence stale
+continuations, allow at most one automatic transient retry, open a circuit on repeated normalized
+failure, and charge failed or abandoned work without persisting secrets or raw provider output.
+Provider labels remain outside pinned pipeline authority. See
+[ADR-0016](adr/0016-provider-preflight-is-a-fenced-operation.md) and GitHub issue #3.
+
+Known operating limit: admissions are serialized in canonical node order so budget reservations
+and event IDs remain deterministic. Bounded parallel preflight is an M5 latency optimization only
+after the durable prepare/execute/settle split is explicit; it is not part of this correctness
+prerequisite.
 
 ### M2.6 — Rename-aware Report Scope, identity untouched
 

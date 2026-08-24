@@ -32,6 +32,7 @@
         "GenerationAdvanced@1",
         "NodeInvocation@1",
         "NodeOutputReceipt@1",
+        "ProviderOperationTransition@1",
         "RunReport@1",
         "RunReport@2",
         "RoundInputSuperseded@1",
@@ -79,6 +80,10 @@
     {
       "if": { "properties": { "type": { "const": "RoundInputSuperseded@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/round_superseded" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "ProviderOperationTransition@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/provider_operation_transition" } } }
     }
   ],
   "$defs": {
@@ -121,6 +126,32 @@
         "campaign_manifest_id": { "$ref": "#/$defs/digest" },
         "old_subject_id": { "$ref": "#/$defs/digest" },
         "replacement_subject_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provider_operation_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "provider_id", "capability_id", "node_id", "round", "round_epoch", "operation_epoch", "state", "reserved_tokens", "charged_tokens", "elapsed_ms", "retry_permitted", "circuit_open"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/id" },
+        "provider_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$" },
+        "capability_id": { "$ref": "#/$defs/digest" },
+        "node_id": { "type": "string", "minLength": 1 },
+        "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "round_epoch": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "operation_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "state": { "enum": ["running", "waiting_for_human", "resumed", "done", "failed"] },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "failure_class": { "enum": ["invalid_or_expired_authentication", "interactive_login_required", "transient_transport_failure", "rate_limit_or_quota_exhaustion", "unavailable_model_or_capability", "smoke_timeout", "unknown_provider_failure"] },
+        "failure_fingerprint": { "$ref": "#/$defs/digest" },
+        "continuation_handle": { "$ref": "#/$defs/id" },
+        "reserved_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "charged_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "retry_permitted": { "type": "boolean" },
+        "circuit_open": { "type": "boolean" },
+        "next_action": { "enum": ["complete_interactive_login", "refresh_authentication", "retry_explicitly", "check_transport", "wait_for_quota", "select_available_model", "increase_smoke_timeout", "inspect_provider_failure"] }
       }
     }
   }

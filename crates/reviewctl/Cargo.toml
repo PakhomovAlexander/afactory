@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 crossterm = "0.29.0"
 review-config = { path = "../review-config" }
+review-attempt = { path = "../review-attempt" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
 review-pipeline = { path = "../review-pipeline" }
@@ -23,6 +24,7 @@ review-runner-codex = { path = "../review-runner-codex" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.10.9"
 toml = "0.8.23"
 
 [target.'cfg(unix)'.dependencies]

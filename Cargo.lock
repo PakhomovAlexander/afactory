@@ -1164,6 +1164,7 @@ dependencies = [
  "crossterm",
  "nix 0.30.1",
  "portable-pty",
+ "review-attempt",
  "review-config",
  "review-core",
  "review-graph",
@@ -1174,6 +1175,7 @@ dependencies = [
  "review-source-git",
  "review-store",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
 ]
