@@ -3,19 +3,6 @@
   "description": "Semantic cases shared by the JSON Schema and every permanent reader.",
   "valid": [
     {
-      "name": "whitespace content is non-empty JSON text",
-      "payload": {
-        "title": " ",
-        "severity": "minor",
-        "locations": [{ "path": "docs/50%-off.md", "line": 1 }],
-        "body": " ",
-        "fix": " ",
-        "confidence": 0,
-        "rule_id": "review.rules/path-check@2",
-        "occurrence_key": "one"
-      }
-    },
-    {
       "name": "u32 line boundary",
       "payload": {
         "title": "t",
@@ -28,6 +15,27 @@
     }
   ],
   "invalid": [
+    {
+      "name": "whitespace-only title",
+      "payload": {
+        "title": " ", "severity": "minor", "locations": [],
+        "body": "body", "fix": "fix", "confidence": 0
+      }
+    },
+    {
+      "name": "whitespace-only body",
+      "payload": {
+        "title": "title", "severity": "minor", "locations": [],
+        "body": "\t", "fix": "fix", "confidence": 0
+      }
+    },
+    {
+      "name": "whitespace-only fix",
+      "payload": {
+        "title": "title", "severity": "minor", "locations": [],
+        "body": "body", "fix": "\n", "confidence": 0
+      }
+    },
     {
       "name": "absolute location",
       "payload": {

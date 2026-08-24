@@ -325,6 +325,10 @@ fn typed_report_semantic_failures_are_unreadable_authority() {
             ScopeAuthorityKind::Report,
             "{key}"
         );
+        let summary = convergence(&ledger, Severity::Major);
+        assert_eq!(summary.open_blocking, 0, "{key}");
+        assert_eq!(summary.new_recent, 0, "{key}");
+        assert_eq!(summary.authority_failures_recent, 1, "{key}");
     }
 }
 
@@ -805,7 +809,7 @@ fn a_later_round_does_not_rewrite_an_earlier_report_scope() {
 }
 
 #[test]
-fn repeated_round_subject_resolution_reuses_the_verified_scope() {
+fn repeated_round_subject_resolution_reverifies_artifact_authority() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
@@ -854,11 +858,12 @@ fn repeated_round_subject_resolution_reuses_the_verified_scope() {
     ledger.round = 2;
     apply_report(&mut ledger, &cas, "cached", 2, Severity::Major, "src/in.rs");
 
+    assert_eq!(ledger.get("cached").unwrap().convergence_scope, None);
+    assert_eq!(ledger.scope_authority_failures().len(), 1);
     assert_eq!(
-        ledger.get("cached").unwrap().convergence_scope,
-        Some(ReportScope::In)
+        ledger.scope_authority_failures()[0].authority,
+        ScopeAuthorityKind::Subject
     );
-    assert!(ledger.scope_authority_failures().is_empty());
 }
 
 #[test]

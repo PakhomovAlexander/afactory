@@ -79,6 +79,97 @@ pub struct LegacyStageOutput {
     pub disputes: Vec<LegacyDispute>,
 }
 
+/// Validate the produced flat `ReviewerResult@1` wire value in the crate that owns its Rust
+/// report types. Persistence and pipeline admission both call this one rule.
+pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "ReviewerResult@1 is not an object".to_string())?;
+    exact_reviewer_keys(
+        object,
+        &[
+            "verdict",
+            "summary",
+            "reports",
+            "benchmark_demands",
+            "disputes",
+        ],
+        "ReviewerResult@1",
+    )?;
+    if !matches!(
+        value["verdict"].as_str(),
+        Some("approve" | "request-changes" | "block")
+    ) || value["reports"]
+        .as_array()
+        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
+        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
+        || value["benchmark_demands"].as_array().is_none()
+        || value["disputes"].as_array().is_none()
+    {
+        return Err("ReviewerResult@1 violates its top-level payload contract".into());
+    }
+    for (index, report) in value["reports"]
+        .as_array()
+        .expect("top-level contract checked reports")
+        .iter()
+        .enumerate()
+    {
+        let legacy: LegacyFinding = serde::Deserialize::deserialize(report).map_err(|error| {
+            format!("ReviewerResult@1 report {index} violates its payload contract: {error}")
+        })?;
+        legacy
+            .validate(index)
+            .map_err(|error| format!("ReviewerResult@1 report is not admissible: {error}"))?;
+    }
+    for demand in value["benchmark_demands"]
+        .as_array()
+        .expect("top-level contract checked demands")
+    {
+        let demand = demand
+            .as_object()
+            .ok_or_else(|| "ReviewerResult@1 has a malformed benchmark demand".to_string())?;
+        exact_reviewer_keys(
+            demand,
+            &["claim", "why", "suggested_method"],
+            "benchmark demand",
+        )?;
+        if demand
+            .values()
+            .any(|field| field.as_str().is_none_or(str::is_empty))
+        {
+            return Err("ReviewerResult@1 has an empty benchmark demand".into());
+        }
+    }
+    for dispute in value["disputes"]
+        .as_array()
+        .expect("top-level contract checked disputes")
+    {
+        let dispute = dispute
+            .as_object()
+            .ok_or_else(|| "ReviewerResult@1 has a malformed dispute".to_string())?;
+        exact_reviewer_keys(dispute, &["claim_id", "position", "reason"], "dispute")?;
+        if dispute["claim_id"].as_str().is_none_or(str::is_empty)
+            || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
+            || dispute["reason"].as_str().is_none_or(str::is_empty)
+        {
+            return Err("ReviewerResult@1 has an invalid dispute".into());
+        }
+    }
+    Ok(())
+}
+
+fn exact_reviewer_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    if object.len() != expected.len() || object.keys().any(|key| !expected.contains(&key.as_str()))
+    {
+        return Err(format!("{context} has unexpected or missing fields"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyImportError {
     /// Index of the offending finding within the stage output.
@@ -120,13 +211,13 @@ impl LegacyFinding {
     /// Validate one legacy-shaped report without cloning or converting its owned text.
     pub fn validate(&self, index: usize) -> Result<(), LegacyImportError> {
         let err = |reason| LegacyImportError { index, reason };
-        if self.fix.as_deref().is_none_or(str::is_empty) {
+        if self.fix.as_deref().is_none_or(|fix| fix.trim().is_empty()) {
             return Err(err(ImportReason::MissingFix));
         }
-        if self.title.is_empty() {
+        if self.title.trim().is_empty() {
             return Err(err(ImportReason::EmptyTitle));
         }
-        if self.body.is_empty() {
+        if self.body.trim().is_empty() {
             return Err(err(ImportReason::EmptyBody));
         }
         if self
@@ -261,6 +352,21 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.reason, ImportReason::MissingFix);
         assert_eq!(err.index, 3);
+    }
+
+    #[test]
+    fn whitespace_only_claim_content_is_not_admissible() {
+        for (title, body, fix, expected) in [
+            ("   ", "body", Some("fix"), ImportReason::EmptyTitle),
+            ("title", "\n\t", Some("fix"), ImportReason::EmptyBody),
+            ("title", "body", Some("  "), ImportReason::MissingFix),
+        ] {
+            let mut candidate = finding();
+            candidate.title = title.into();
+            candidate.body = body.into();
+            candidate.fix = fix.map(str::to_string);
+            assert_eq!(candidate.validate(0).unwrap_err().reason, expected);
+        }
     }
 
     #[test]

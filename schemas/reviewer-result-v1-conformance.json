@@ -31,16 +31,6 @@
       }
     },
     {
-      "name": "whitespace is non-empty report content",
-      "payload": {
-        "verdict": "request-changes",
-        "summary": null,
-        "reports": [{"severity":"minor","file":"src/a.rs","line":null,"title":" ","body":" ","fix":" ","confidence":0.5}],
-        "benchmark_demands": [],
-        "disputes": []
-      }
-    },
-    {
       "name": "spaces are a literal repository path",
       "payload": {
         "verdict": "request-changes",
@@ -62,6 +52,18 @@
     }
   ],
   "invalid": [
+    {
+      "name": "whitespace-only title",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":" ","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "whitespace-only body",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"\t","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
+      "name": "whitespace-only fix",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":"\n","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
     {
       "name": "null fix",
       "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":"title","body":"body","fix":null,"confidence":0.5}],"benchmark_demands":[],"disputes":[]}

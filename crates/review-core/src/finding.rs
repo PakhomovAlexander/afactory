@@ -118,7 +118,8 @@ impl FindingReport {
 
     /// Enforce the language-neutral `FindingReport@1` semantic contract.
     pub fn validate(&self) -> Result<(), String> {
-        if self.title.is_empty() || self.body.is_empty() || self.fix.is_empty() {
+        if self.title.trim().is_empty() || self.body.trim().is_empty() || self.fix.trim().is_empty()
+        {
             return Err("FindingReport@1 title, body, and fix must be non-empty".into());
         }
         if !(0.0..=1.0).contains(&self.confidence) {

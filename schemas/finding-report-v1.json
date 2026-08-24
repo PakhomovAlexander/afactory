@@ -10,7 +10,8 @@
     "title": {
       "description": "Stable one-line claim. A dedupe hint only — never proof of claim identity.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "severity": {
       "description": "Reported rank. Monotone under re-report: a later report may raise it, never lower it.",
@@ -24,12 +25,14 @@
     "body": {
       "description": "The argument: what is wrong and why, with enough detail to reproduce or refute.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "fix": {
       "description": "The reviewer's proposed remedy. Required — the legacy findings schema also required it, and the legacy ledger then stored it nowhere, which is the field a triager most wants. A patch, if any, is a separate PatchProposal@1.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "confidence": {
       "description": "Reviewer's own confidence. Evidence, not authority: it can never grant auto-apply or resolve a finding.",

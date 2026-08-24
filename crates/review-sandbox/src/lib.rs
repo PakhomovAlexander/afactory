@@ -148,11 +148,10 @@ impl Drop for Sandbox {
 /// TempDir cleanup that follows will do no worse than before.
 #[cfg(unix)]
 fn restore_writable_dirs(root: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     let mut level = vec![root.to_path_buf()];
     while !level.is_empty() {
         let children = review_parallel::try_map_owned(level, |dir| {
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+            let _ = ensure_directory_mode(&dir, 0o700);
             let mut children = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -175,6 +174,21 @@ fn restore_writable_dirs(root: &Path) {
 #[cfg(not(unix))]
 fn restore_writable_dirs(_root: &Path) {}
 
+#[cfg(unix)]
+pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::symlink_metadata(path)?.permissions().mode();
+    if mode & required != required {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn ensure_directory_mode(_path: &Path, _required: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
 /// recreated (a clone is a fresh writable tree), symlinks are recreated as symlinks (they must
 /// not be dereferenced), and regular files are reflinked — sharing blocks until one side
@@ -182,45 +196,68 @@ fn restore_writable_dirs(_root: &Path) {}
 /// preserve source permissions. Read-only clones strip write permission in the same file batch
 /// and return the already-discovered directories for a child-before-parent chmod pass.
 fn clone_tree(src: &Path, dst: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
-    const TASKS_PER_WORKER: usize = 64;
     std::fs::create_dir_all(dst)?;
-    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    let mut level = vec![(src.to_path_buf(), dst.to_path_buf())];
     let mut directories = vec![dst.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some((from_dir, to_dir)) = stack.pop() {
-        for entry in std::fs::read_dir(&from_dir)? {
-            let entry = entry?;
-            let from = entry.path();
-            let to = to_dir.join(entry.file_name());
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                std::fs::create_dir(&to)?;
-                directories.push(to.clone());
-                stack.push((from, to));
-            } else {
-                let is_symlink = file_type.is_symlink();
-                #[cfg(unix)]
-                let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
-                    use std::os::unix::fs::PermissionsExt;
-                    let executable = entry.metadata()?.permissions().mode() & 0o111 != 0;
-                    Some(if executable { 0o555 } else { 0o444 })
-                } else {
-                    None
-                };
-                #[cfg(not(unix))]
-                let read_only_mode = None;
-                files.push((from, to, is_symlink, read_only_mode));
-                if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
-                    clone_file_batch(std::mem::take(&mut files))?;
-                }
+    let mut pending_files = Vec::new();
+    while !level.is_empty() {
+        let (scanned, ()) = review_parallel::try_join(
+            || review_parallel::try_map_owned(level, |pair| scan_clone_directory(pair, mode)),
+            || clone_file_batch(pending_files),
+        )?;
+        let mut next_level = Vec::new();
+        let mut next_files = Vec::new();
+        for scan in scanned {
+            for child in &scan.directories {
+                directories.push(child.1.clone());
             }
+            next_level.extend(scan.directories);
+            next_files.extend(scan.files);
         }
+        level = next_level;
+        pending_files = next_files;
     }
-    clone_file_batch(files)?;
+    clone_file_batch(pending_files)?;
     Ok(directories)
 }
 
-fn clone_file_batch(files: Vec<(PathBuf, PathBuf, bool, Option<u32>)>) -> std::io::Result<()> {
+type CloneFile = (PathBuf, PathBuf, bool, Option<u32>);
+
+struct CloneScan {
+    directories: Vec<(PathBuf, PathBuf)>,
+    files: Vec<CloneFile>,
+}
+
+fn scan_clone_directory(
+    (from_dir, to_dir): (PathBuf, PathBuf),
+    mode: Mode,
+) -> std::io::Result<CloneScan> {
+    let mut scan = CloneScan {
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    for entry in std::fs::read_dir(&from_dir)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = to_dir.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            std::fs::create_dir(&to)?;
+            scan.directories.push((from, to));
+        } else {
+            let is_symlink = file_type.is_symlink();
+            let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
+                Some(read_only_mode_for(&entry.metadata()?))
+            } else {
+                None
+            };
+            scan.files.push((from, to, is_symlink, read_only_mode));
+        }
+    }
+    Ok(scan)
+}
+
+fn clone_file_batch(files: Vec<CloneFile>) -> std::io::Result<()> {
     review_parallel::try_for_each_owned(files, |(from, to, is_symlink, read_only_mode)| {
         if is_symlink {
             symlink_raw(&std::fs::read_link(&from)?, &to)?;
@@ -247,7 +284,22 @@ fn apply_one_file_permission(_path: &Path, _mode: Option<u32>) -> std::io::Resul
 }
 
 #[cfg(unix)]
-fn apply_cloned_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()> {
+fn read_only_mode_for(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 != 0 {
+        0o555
+    } else {
+        0o444
+    }
+}
+
+#[cfg(not(unix))]
+fn read_only_mode_for(_metadata: &std::fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn apply_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     for directory in directories.into_iter().rev() {
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o555))?;
@@ -256,7 +308,7 @@ fn apply_cloned_directories_read_only(directories: Vec<PathBuf>) -> std::io::Res
 }
 
 #[cfg(not(unix))]
-fn apply_cloned_directories_read_only(_directories: Vec<PathBuf>) -> std::io::Result<()> {
+fn apply_directories_read_only(_directories: Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -341,7 +393,7 @@ impl Sandbox {
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
-            apply_cloned_directories_read_only(cloned_directories)?;
+            apply_directories_read_only(cloned_directories)?;
         }
         Ok(sandbox)
     }
@@ -379,39 +431,27 @@ impl Sandbox {
 
     #[cfg(unix)]
     fn apply_read_only(&self) -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        const TASKS_PER_WORKER: usize = 64;
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
-        let mut dirs = vec![self.root.clone()];
-        let mut seen_dirs = Vec::new();
-        let mut files = Vec::new();
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
-                let meta = std::fs::symlink_metadata(&path)?;
-                if meta.is_dir() {
-                    dirs.push(path);
-                } else if !meta.file_type().is_symlink() {
-                    // Strip write, keep execute. Flattening to 0o444 was a real bug the hub's
-                    // own tree caught on the first live run: every script lost its exec bit,
-                    // so seal reported the whole executable population as mutated and the
-                    // gate's verify check saw a tree full of non-executable hooks.
-                    use std::os::unix::fs::PermissionsExt;
-                    let executable = meta.permissions().mode() & 0o111 != 0;
-                    let mode = if executable { 0o555 } else { 0o444 };
-                    files.push((path, mode));
-                    if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
-                        apply_file_permissions(std::mem::take(&mut files))?;
-                    }
-                }
+        let mut level = vec![self.root.clone()];
+        let mut seen_dirs = vec![self.root.clone()];
+        let mut pending_files = Vec::new();
+        while !level.is_empty() {
+            let (scanned, ()) = review_parallel::try_join(
+                || review_parallel::try_map_owned(level, scan_permission_directory),
+                || apply_file_permissions(pending_files),
+            )?;
+            let mut next_level = Vec::new();
+            let mut next_files = Vec::new();
+            for scan in scanned {
+                seen_dirs.extend(scan.directories.iter().cloned());
+                next_level.extend(scan.directories);
+                next_files.extend(scan.files);
             }
-            seen_dirs.push(dir);
+            level = next_level;
+            pending_files = next_files;
         }
-        apply_file_permissions(files)?;
-        for dir in seen_dirs.into_iter().rev() {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))?;
-        }
-        Ok(())
+        apply_file_permissions(pending_files)?;
+        apply_directories_read_only(seen_dirs)
     }
 
     #[cfg(not(unix))]
@@ -437,6 +477,28 @@ impl Sandbox {
         let baseline = std::mem::take(&mut self.baseline);
         (root, baseline, self.mode, dir)
     }
+}
+
+struct PermissionScan {
+    directories: Vec<PathBuf>,
+    files: Vec<(PathBuf, u32)>,
+}
+
+fn scan_permission_directory(directory: PathBuf) -> std::io::Result<PermissionScan> {
+    let mut scan = PermissionScan {
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            scan.directories.push(path);
+        } else if !metadata.file_type().is_symlink() {
+            scan.files.push((path, read_only_mode_for(&metadata)));
+        }
+    }
+    Ok(scan)
 }
 
 #[cfg(unix)]

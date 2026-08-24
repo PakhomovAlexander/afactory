@@ -73,9 +73,9 @@
           "minimum": 1,
           "maximum": 4294967295
         },
-        "title": { "type": "string", "minLength": 1 },
-        "body": { "type": "string", "minLength": 1 },
-        "fix": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "body": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "fix": { "type": "string", "minLength": 1, "pattern": "\\S" },
         "confidence": {
           "type": ["number", "null"],
           "minimum": 0,

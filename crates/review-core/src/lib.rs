@@ -42,7 +42,7 @@ pub use event::{
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use json::{NumericDomainError, admit};
-pub use legacy::{LegacyImportError, LegacyStageOutput};
+pub use legacy::{LegacyImportError, LegacyStageOutput, validate_reviewer_result};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};

@@ -1,4 +1,6 @@
-use review_core::event::{AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1};
+use review_core::event::{
+    AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptInputPayloadV1,
+};
 use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
     NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
@@ -207,6 +209,56 @@ fn runtime_events_require_an_active_round() {
 
     assert!(error.to_string().contains("requires an active Round"));
     assert!(store.replay("run").unwrap().is_empty());
+}
+
+#[test]
+fn retry_input_and_its_dispatch_are_one_atomic_transition() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "retry-input");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let refusal_history = cas
+        .put_json(&serde_json::json!(["first answer was inadmissible"]))
+        .unwrap();
+    let attempt = "a".repeat(26);
+    let input = || {
+        NewEvent::new(
+            EventType::AttemptInputV1,
+            serde_json::to_value(AttemptInputPayloadV1 {
+                refusal_history_id: refusal_history.clone(),
+            })
+            .unwrap(),
+        )
+        .node("reviewer")
+        .attempt(&attempt)
+        .caused_by(&round.event_id)
+        .referencing(vec![refusal_history.clone()])
+    };
+
+    let error = store.append("run", &cas, input()).unwrap_err();
+    assert!(error.to_string().contains("atomically"), "{error}");
+
+    store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                input(),
+                NewEvent::new(
+                    EventType::AttemptDispatchedV1,
+                    serde_json::to_value(AttemptDispatchedPayloadV1 {
+                        reserved: None,
+                        prior_findings: None,
+                    })
+                    .unwrap(),
+                )
+                .node("reviewer")
+                .attempt(attempt)
+                .caused_by(round.event_id),
+            ],
+        )
+        .unwrap();
 }
 
 #[test]

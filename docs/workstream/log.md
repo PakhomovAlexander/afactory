@@ -375,3 +375,29 @@ Read-only clone time stayed near its prior 1.037 s because the required per-file
 the removed second discovery walk, dominate. Focused runner, pipeline, parallel, source, and sandbox
 tests pass. Full workspace formatting, all-target clippy, tests, doc tests, and byte-identical
 fixture reproduction pass before commit.
+
+## 2026-08-25 — M2 clean Campaign Round 1 corrections
+
+Fresh unchanged-policy Campaign `m2-rename-scope-clean` Round 1 spent 605,849 tokens and opened
+nine Reports. An unreadable Report placeholder no longer counts as both an ordinary open/new
+Finding and an authority diagnostic: it remains fail-closed through the authority-failure window,
+so a run with no other blocker can durably conclude `authority_unavailable`. Subject Scope replay
+reverifies the content-addressed Subject on every Round rather than trusting a prior in-process
+parse. Git marks rename linkage truncated only for its exact inexact/exhaustive rename-search
+warnings; unrelated successful-command warnings no longer change the Subject contract.
+
+`ReviewerResult@1` now has one semantic validator in `review-core`, used by both persistence and
+pipeline admission. Its schema and both conformance corpora reject whitespace-only title, body,
+and fix values. ADR-0021 records the permanent flat wire shape. Retry refusal history is now a
+bounded CAS artifact named by additive `AttemptInput@1`, atomically published with dispatch and
+replayed as exact invocation input. ADR-0022 records why the frozen `AttemptDispatched@1` payload
+was not changed. The Change Set prompt bound counts streaming JSON bytes without retaining a
+second candidate-sized buffer.
+
+Sandbox clone, direct chmod, sealing, and cleanup share non-following mode helpers. Clone,
+permission, and teardown discovery progress level by level while the previous level's file work
+uses the same bounded executor; no phase introduces an independent worker pool. The release
+5,000-entry / 199 MiB fixture recorded 1.276 s materialization, 0.690/1.102 s writable/read-only
+clone plus permissions, 0.133/0.126 s seal, and 0.148/0.119 s teardown. A 5,000-entry baseline plus
+10,000 added files sealed in 0.145 s. Focused regressions pass. Full workspace formatting,
+all-target clippy, tests, doc tests, and byte-identical fixture reproduction pass before commit.

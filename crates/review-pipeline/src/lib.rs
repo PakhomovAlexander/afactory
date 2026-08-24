@@ -31,7 +31,7 @@ use review_attempt::{
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
 use review_core::event::{
     AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFailedPayloadV1,
-    AttemptFencedPayloadV1, AttemptReleasedPayloadV1,
+    AttemptFencedPayloadV1, AttemptInputPayloadV1, AttemptReleasedPayloadV1,
 };
 use review_core::{
     CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
@@ -99,6 +99,7 @@ struct Budgets {
 struct PreparedReviewerAttempt {
     attempt: AttemptId,
     reservation: Option<Reservation>,
+    refusal_history_id: Option<String>,
 }
 
 /// What one whole run amounts to.
@@ -259,6 +260,7 @@ struct ReplayedExecution {
     gates: BTreeMap<String, GateDecision>,
     attempt_counts: BTreeMap<String, u64>,
     outstanding_attempts: Vec<(String, String, u64)>,
+    refusal_histories: BTreeMap<String, Vec<String>>,
     committed_tokens: u64,
 }
 
@@ -373,6 +375,20 @@ fn replay_execution(
                     return Err("attempt has duplicate durable dispatch events".into());
                 }
             }
+            EventType::AttemptInputV1 if active_epoch => {
+                let payload: AttemptInputPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let node = event.node_id.ok_or("AttemptInput@1 has no node ID")?;
+                let failures: Vec<String> = serde_json::from_value(
+                    cas.get_json(&payload.refusal_history_id)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                if failures.is_empty() {
+                    return Err("AttemptInput@1 refusal history is empty".into());
+                }
+                replayed.refusal_histories.insert(node, failures);
+            }
             EventType::AttemptAdmittedV1 => {
                 let payload: AttemptAdmittedPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
@@ -420,6 +436,9 @@ fn replay_execution(
             EventType::AttemptFailedV1 => {
                 let payload: AttemptFailedPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let node = event
+                    .node_id
+                    .ok_or("terminal attempt event has no node ID")?;
                 let attempt = event
                     .attempt_id
                     .ok_or("terminal attempt event has no attempt ID")?;
@@ -431,10 +450,20 @@ fn replay_execution(
                     .committed_tokens
                     .checked_add(payload.charged.unwrap_or(0))
                     .ok_or("replayed token charge overflow")?;
+                if active_epoch {
+                    replayed
+                        .refusal_histories
+                        .entry(node)
+                        .or_default()
+                        .push(failed_retry_context(&attempt, &payload.error));
+                }
             }
             EventType::AttemptFencedV1 => {
                 let payload: AttemptFencedPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let node = event
+                    .node_id
+                    .ok_or("terminal attempt event has no node ID")?;
                 let attempt = event
                     .attempt_id
                     .ok_or("terminal attempt event has no attempt ID")?;
@@ -446,6 +475,13 @@ fn replay_execution(
                     .committed_tokens
                     .checked_add(payload.charged.unwrap_or(0))
                     .ok_or("replayed token charge overflow")?;
+                if active_epoch {
+                    replayed
+                        .refusal_histories
+                        .entry(node)
+                        .or_default()
+                        .push(fenced_retry_context(&attempt, &payload.reason));
+                }
             }
             EventType::AttemptReleasedV1 => {
                 let _: AttemptReleasedPayloadV1 =
@@ -513,6 +549,14 @@ fn replay_execution(
         }
     }
     Ok(replayed)
+}
+
+fn failed_retry_context(attempt: &str, error: &str) -> String {
+    format!("attempt {attempt} returned an invalid result: {error}")
+}
+
+fn fenced_retry_context(attempt: &str, reason: &str) -> String {
+    format!("attempt {attempt} {reason}")
 }
 
 impl RunVerdict {
@@ -596,6 +640,7 @@ pub struct Kernel<'a> {
     report_published: Mutex<bool>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
+    replayed_refusal_histories: BTreeMap<String, Vec<String>>,
     reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
     replayed_spent: u64,
 }
@@ -705,6 +750,7 @@ impl<'a> Kernel<'a> {
             report_published: Mutex::new(false),
             replayed_invocations: replayed.invocations,
             replayed_outputs: replayed.outputs,
+            replayed_refusal_histories: replayed.refusal_histories,
             reviewer_selections: Mutex::new(replayed.selected_reviewers),
             replayed_spent: replayed.committed_tokens,
         })
@@ -861,6 +907,13 @@ impl<'a> Kernel<'a> {
         prior_findings_artifact: Option<&String>,
         prior_failures: &[String],
     ) -> Result<PreparedReviewerAttempt, String> {
+        let refusal_history_id = (!prior_failures.is_empty())
+            .then(|| {
+                let value =
+                    serde_json::to_value(prior_failures).map_err(|error| error.to_string())?;
+                self.cas.put_json(&value).map_err(|error| error.to_string())
+            })
+            .transpose()?;
         let reservation = match &self.budgets {
             Some(budgets) => Some(
                 budgets
@@ -886,7 +939,7 @@ impl<'a> Kernel<'a> {
             .lock()
             .expect("attempt ledger")
             .dispatch(node_id);
-        let event = NewEvent::new(
+        let dispatch = NewEvent::new(
             EventType::AttemptDispatchedV1,
             serde_json::json!({
                 "reserved": reservation.as_ref().map(|reservation| reservation.amount),
@@ -896,7 +949,23 @@ impl<'a> Kernel<'a> {
         .node(node_id)
         .attempt(attempt.to_string())
         .referencing(prior_findings_artifact.cloned().into_iter().collect());
-        if let Err(error) = self.append(event) {
+        let mut events = Vec::with_capacity(2);
+        if let Some(refusal_history_id) = &refusal_history_id {
+            events.push(
+                NewEvent::new(
+                    EventType::AttemptInputV1,
+                    serde_json::to_value(AttemptInputPayloadV1 {
+                        refusal_history_id: refusal_history_id.clone(),
+                    })
+                    .map_err(|error| error.to_string())?,
+                )
+                .node(node_id)
+                .attempt(attempt.to_string())
+                .referencing(vec![refusal_history_id.clone()]),
+            );
+        }
+        events.push(dispatch);
+        if let Err(error) = self.append_batch(&events) {
             if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                 budgets
                     .ledger
@@ -910,6 +979,7 @@ impl<'a> Kernel<'a> {
         Ok(PreparedReviewerAttempt {
             attempt,
             reservation,
+            refusal_history_id,
         })
     }
 
@@ -1295,6 +1365,7 @@ impl<'a> Kernel<'a> {
             let PreparedReviewerAttempt {
                 attempt,
                 reservation,
+                refusal_history_id,
             } = match prepared.take() {
                 Some(prepared) => prepared,
                 None => self.prepare_reviewer_attempt(
@@ -1302,6 +1373,16 @@ impl<'a> Kernel<'a> {
                     prior_findings_artifact.as_ref(),
                     &retry_failures,
                 )?,
+            };
+
+            inputs.refused_attempts = match refusal_history_id {
+                Some(refusal_history_id) => serde_json::from_value(
+                    self.cas
+                        .get_json(&refusal_history_id)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?,
+                None => Vec::new(),
             };
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
@@ -1316,7 +1397,6 @@ impl<'a> Kernel<'a> {
             };
 
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                inputs.refused_attempts.clone_from(&retry_failures);
                 adapter.invoke(self.cas, sandbox.root(), &inputs)
             }));
             let invoked = match invoked {
@@ -1351,9 +1431,7 @@ impl<'a> Kernel<'a> {
                                 returned.cost_tokens,
                                 Some(&returned.raw_artifact),
                             )?;
-                            retry_failures.push(format!(
-                                "attempt {attempt} returned an invalid result: {error}"
-                            ));
+                            retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
                             continue;
                         }
                     };
@@ -1496,7 +1574,10 @@ impl<'a> Kernel<'a> {
                         .node(node_id)
                         .attempt(attempt.to_string()),
                     )?;
-                    retry_failures.push(format!("attempt {attempt} timed out after {after_ms}ms"));
+                    retry_failures.push(fenced_retry_context(
+                        &attempt.to_string(),
+                        &format!("timed out after {after_ms}ms"),
+                    ));
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
                     // Nothing executed, so nothing was spent: the reservation is released,
@@ -1700,7 +1781,7 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
         }
     }
     let value = serde_json::Value::Object(object);
-    review_store::validate_reviewer_result(&value).map_err(|error| error.to_string())?;
+    review_core::validate_reviewer_result(&value)?;
     Ok(value)
 }
 
@@ -1798,7 +1879,13 @@ impl Dispatch for Kernel<'_> {
             let prior_findings = inputs
                 .get(PRIOR_FINDINGS_PORT)
                 .and_then(|artifacts| artifacts.first());
-            let prepared = self.prepare_reviewer_attempt(&node.id, prior_findings, &[])?;
+            let replayed_failures = self
+                .replayed_refusal_histories
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_default();
+            let prepared =
+                self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
             self.prepared_attempts
                 .lock()
                 .expect("prepared attempts")

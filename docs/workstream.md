@@ -1,11 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. Two M2 dogfood Campaigns exhausted with all 88 Findings fixed.
-Fresh convergence Campaign Round 1 opened fifteen further Findings and Round 2 retained fourteen,
-reopened one, and opened ten. Round 3 retained all 25 fixes and opened eight further Findings; its
-corrections are fully verified. Round 4 retained all 33 fixes, opened five further Findings, and
-exhausted the Campaign; its corrections are fully verified. Another fresh
-unchanged-policy Campaign is still required before M3.1.
+**Status:** M0 and M1 are complete. Three M2 dogfood Campaigns exhausted with all 126 Findings
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` Round 1 opened nine further
+Findings; its corrections pass the full kernel gate. The Campaign still needs two consecutive
+clean Rounds before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -156,9 +154,16 @@ locks. The corrections pass the full kernel gate and are committed and resolved.
 755,609 tokens, retained all 33 fixes, opened five further claims, and exhausted the Campaign. Its
 corrections feed contract refusals into retries, fold read-only permissions into template cloning,
 overlap level-parallel seal discovery with hashing, and remove remaining serial materialization
-allocations. The corrections pass the full kernel gate. Commit and resolve them, then establish
-two clean Rounds in another fresh
-unchanged-policy Campaign before M3.1.
+allocations. The corrections pass the full kernel gate and are committed and resolved. Fresh
+unchanged-policy Campaign `m2-rename-scope-clean` Round 1 spent 605,849 tokens and opened nine
+claims. Their corrections make retry feedback durable under additive `AttemptInput@1`, keep
+authority diagnostics out of ordinary Finding convergence while still failing closed, reverify
+Subject CAS authority every Round, centralize the flat ReviewerResult validator, reject
+whitespace-only claims, recognize only Git's exact rename-limit warnings, share one non-following
+permission implementation, overlap clone/chmod/cleanup directory discovery with bounded work, and
+count serialized Change Set bytes without retaining a second allocation. ADR-0021 and ADR-0022
+record the contract decisions. The full kernel gate passes; commit and resolve these nine claims,
+then establish two consecutive clean Rounds in this Campaign before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

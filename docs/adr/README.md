@@ -50,3 +50,7 @@ options you rejected and why — that is the part future-you needs.
   explicitly](0019-report-authority-failures-explicitly.md)
 - [0020 — Stream CAS materialization and clone duplicate
   files](0020-stream-cas-materialization-and-clone-duplicates.md)
+- [0021 — Keep the ReviewerResult wire shape
+  flat](0021-keep-reviewer-result-wire-shape-flat.md)
+- [0022 — Persist retry feedback as an Attempt
+  input](0022-persist-retry-feedback-as-attempt-input.md)

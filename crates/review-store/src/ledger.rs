@@ -216,7 +216,7 @@ pub struct Ledger {
     active_scope: Option<ActiveScope>,
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
-    subject_scope_cache: BTreeMap<String, Result<Arc<SubjectScope>, String>>,
+    subject_scope_cache: BTreeMap<String, Arc<SubjectScope>>,
     pub round: u32,
 }
 
@@ -548,9 +548,17 @@ impl Ledger {
         started
             .validate()
             .map_err(|error| malformed("RoundStarted@1", &error))?;
-        let resolved_scope = if let Some(cached) = self.subject_scope_cache.get(&started.subject_id)
-        {
-            cached.clone()
+        // A parsed scope may be reused, but its immutable artifact authority is reverified for
+        // every Round. Otherwise a warm live projection and a cold replay can disagree after CAS
+        // loss or corruption.
+        let verified = cas
+            .get(&started.subject_id)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        let resolved_scope = if let Err(error) = verified {
+            Err(error)
+        } else if let Some(cached) = self.subject_scope_cache.get(&started.subject_id) {
+            Ok(cached.clone())
         } else {
             let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
                 .map_err(|error| error.to_string())
@@ -566,8 +574,10 @@ impl Ledger {
                             )
                         }),
                 });
-            self.subject_scope_cache
-                .insert(started.subject_id.clone(), resolved.clone());
+            if let Ok(scope) = &resolved {
+                self.subject_scope_cache
+                    .insert(started.subject_id.clone(), scope.clone());
+            }
             resolved
         };
         let subject_scope = match resolved_scope {
@@ -722,6 +732,7 @@ impl Ledger {
             .values()
             .filter(|finding| {
                 finding.status.is_active()
+                    && !finding.authority_diagnostic
                     && finding
                         .convergence_severity
                         .is_some_and(|severity| severity.rank() >= gate)
@@ -732,9 +743,10 @@ impl Ledger {
             .findings
             .values()
             .filter(|finding| {
-                finding
-                    .scoped_news_round
-                    .is_some_and(|round| i64::from(round) > since)
+                !finding.authority_diagnostic
+                    && finding
+                        .scoped_news_round
+                        .is_some_and(|round| i64::from(round) > since)
                     && finding
                         .convergence_severity
                         .is_some_and(|severity| severity.rank() >= gate)

@@ -15,7 +15,7 @@ use review_source_git::{
     Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path,
 };
 
-use crate::{Mode, Sandbox, restore_writable_dirs};
+use crate::{Mode, Sandbox, ensure_directory_mode, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -177,7 +177,7 @@ fn scan_directory<'a>(
     baseline: &'a Manifest,
     directory: PathBuf,
 ) -> Result<DirectoryScan<'a>, std::io::Error> {
-    restore_directory_for_scan(&directory)?;
+    ensure_directory_mode(&directory, 0o500)?;
     let mut scan = DirectoryScan {
         directories: Vec::new(),
         added_entries: Vec::new(),
@@ -249,16 +249,46 @@ fn append_hashed_candidates(
 }
 
 fn remove_tree_parallel(root: &Path) {
-    const TASKS_PER_WORKER: usize = 64;
-    let mut files = Vec::new();
-    let mut directories = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        restore_directory_for_cleanup(&directory);
-        directories.push(directory.clone());
-        let Ok(entries) = std::fs::read_dir(&directory) else {
-            continue;
+    let mut level = vec![root.to_path_buf()];
+    let mut directories = vec![root.to_path_buf()];
+    let mut pending_files = Vec::new();
+    while !level.is_empty() {
+        let joined = review_parallel::try_join(
+            || review_parallel::try_map_owned(level, scan_removal_directory),
+            || remove_file_batch(pending_files),
+        );
+        let Ok((scanned, ())) = joined else {
+            return;
         };
+        let mut next_level = Vec::new();
+        let mut next_files = Vec::new();
+        for scan in scanned {
+            directories.extend(scan.directories.iter().cloned());
+            next_level.extend(scan.directories);
+            next_files.extend(scan.files);
+        }
+        level = next_level;
+        pending_files = next_files;
+    }
+    let _ = remove_file_batch(pending_files);
+    // The level walk records every child after its parent, so reverse is deepest-first.
+    for directory in directories.into_iter().rev() {
+        let _ = std::fs::remove_dir(directory);
+    }
+}
+
+struct RemovalScan {
+    directories: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+fn scan_removal_directory(directory: PathBuf) -> Result<RemovalScan, ()> {
+    let _ = ensure_directory_mode(&directory, 0o700);
+    let mut scan = RemovalScan {
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    if let Ok(entries) = std::fs::read_dir(&directory) {
         for entry in entries.flatten() {
             let path = entry.path();
             if entry
@@ -266,57 +296,20 @@ fn remove_tree_parallel(root: &Path) {
                 .map(|kind| kind.is_dir() && !kind.is_symlink())
                 .unwrap_or(false)
             {
-                stack.push(path);
+                scan.directories.push(path);
             } else {
-                files.push(path);
-                if files.len() >= review_parallel::worker_limit() * TASKS_PER_WORKER {
-                    remove_file_batch(std::mem::take(&mut files));
-                }
+                scan.files.push(path);
             }
         }
     }
-    remove_file_batch(files);
-    // The DFS records every child after its parent, so reverse order is already deepest-first.
-    for directory in directories.into_iter().rev() {
-        let _ = std::fs::remove_dir(directory);
-    }
+    Ok(scan)
 }
 
-#[cfg(unix)]
-fn restore_directory_for_cleanup(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return;
-    };
-    let mode = metadata.permissions().mode();
-    if mode & 0o700 != 0o700 {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
-    }
-}
-
-#[cfg(not(unix))]
-fn restore_directory_for_cleanup(_path: &Path) {}
-
-fn remove_file_batch(files: Vec<PathBuf>) {
-    let _ = review_parallel::try_for_each_owned(files, |path| {
+fn remove_file_batch(files: Vec<PathBuf>) -> Result<(), ()> {
+    review_parallel::try_for_each_owned(files, |path| {
         let _ = std::fs::remove_file(path);
         Ok::<_, ()>(())
-    });
-}
-
-#[cfg(unix)]
-fn restore_directory_for_scan(path: &Path) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::symlink_metadata(path)?.permissions().mode();
-    if mode & 0o500 != 0o500 {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restore_directory_for_scan(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
+    })
 }
 
 struct BaselineCandidate<'a> {

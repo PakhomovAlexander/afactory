@@ -17,6 +17,8 @@ pub enum EventType {
     AttemptFailedV1,
     #[serde(rename = "AttemptFenced@1")]
     AttemptFencedV1,
+    #[serde(rename = "AttemptInput@1")]
+    AttemptInputV1,
     #[serde(rename = "AttemptReleased@1")]
     AttemptReleasedV1,
     #[serde(rename = "CheckCompleted@1")]
@@ -52,11 +54,12 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
         Self::AttemptFencedV1,
+        Self::AttemptInputV1,
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
@@ -81,6 +84,7 @@ impl EventType {
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
             Self::AttemptFailedV1 => "AttemptFailed@1",
             Self::AttemptFencedV1 => "AttemptFenced@1",
+            Self::AttemptInputV1 => "AttemptInput@1",
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
@@ -119,6 +123,7 @@ impl EventType {
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
             Self::AttemptFailedV1 => ("AttemptFailed", 1),
             Self::AttemptFencedV1 => ("AttemptFenced", 1),
+            Self::AttemptInputV1 => ("AttemptInput", 1),
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -177,6 +182,7 @@ impl std::str::FromStr for EventType {
             "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
             "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
             "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
+            "AttemptInput@1" => Ok(Self::AttemptInputV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
@@ -803,6 +809,12 @@ pub struct AttemptDispatchedPayloadV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AttemptInputPayloadV1 {
+    pub refusal_history_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttemptAdmittedPayloadV1 {
     pub selection: String,
     pub cost_tokens: u64,
@@ -895,6 +907,14 @@ pub fn validate_event_payload(
                 .is_some_and(|artifact| !crate::is_digest(artifact))
             {
                 return Err("AttemptDispatched@1 has an invalid prior Finding Set ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptInputV1 => {
+            let value: AttemptInputPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptInput@1: {error}"))?;
+            if !crate::is_digest(&value.refusal_history_id) {
+                return Err("AttemptInput@1 has an invalid refusal history ID".into());
             }
             Ok(())
         }

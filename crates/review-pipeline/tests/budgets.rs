@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use review_check::{Arg, CheckDefinition, Command};
+use review_core::event::AttemptInputPayloadV1;
 use review_core::{EventType, LegacyStageOutput};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
 use review_pipeline::{RunVerdict, run_verdict};
@@ -489,11 +490,9 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
     assert!(run_verdict(&report, &kernel.convergence(ConvergencePolicy::default())).passed());
     drop(kernel);
 
-    let failed = run
-        .store
-        .replay("run")
-        .unwrap()
-        .into_iter()
+    let events = run.store.replay("run").unwrap();
+    let failed = events
+        .iter()
         .find(|event| event.event_type == EventType::AttemptFailedV1)
         .expect("the inadmissible first answer records a failed attempt");
     assert!(failed.artifact_refs.iter().any(|artifact| {
@@ -501,6 +500,23 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
             .get(artifact)
             .is_ok_and(|bytes| bytes == b"invalid answer")
     }));
+
+    let retry_input = events
+        .iter()
+        .find(|event| event.event_type == EventType::AttemptInputV1)
+        .expect("the retry records its refusal history as a durable input");
+    let payload: AttemptInputPayloadV1 =
+        serde_json::from_value(retry_input.payload.clone()).unwrap();
+    assert!(
+        retry_input
+            .artifact_refs
+            .contains(&payload.refusal_history_id)
+    );
+    let refusal_history: Vec<String> =
+        serde_json::from_value(run.cas.get_json(&payload.refusal_history_id).unwrap()).unwrap();
+    assert_eq!(refusal_history.len(), 1);
+    assert!(refusal_history[0].contains("canonical repository-relative path"));
+    assert_ne!(retry_input.attempt_id, failed.attempt_id);
 }
 
 #[test]

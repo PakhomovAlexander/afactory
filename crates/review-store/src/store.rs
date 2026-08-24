@@ -840,92 +840,7 @@ fn validate_artifact_payload(
 }
 
 pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| StoreError::Conflict("ReviewerResult@1 is not an object".into()))?;
-    let allowed = [
-        "verdict",
-        "summary",
-        "reports",
-        "benchmark_demands",
-        "disputes",
-    ];
-    exact_keys(object, &allowed, "ReviewerResult@1")?;
-    if !matches!(
-        value["verdict"].as_str(),
-        Some("approve" | "request-changes" | "block")
-    ) || value["reports"]
-        .as_array()
-        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
-        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
-        || value["benchmark_demands"].as_array().is_none()
-        || value["disputes"].as_array().is_none()
-    {
-        return Err(StoreError::Conflict(
-            "ReviewerResult@1 violates its top-level payload contract".into(),
-        ));
-    }
-    for (index, report) in value["reports"]
-        .as_array()
-        .expect("top-level contract checked reports")
-        .iter()
-        .enumerate()
-    {
-        let legacy: review_core::legacy::LegacyFinding = serde::Deserialize::deserialize(report)
-            .map_err(|error| {
-                StoreError::Conflict(format!(
-                    "ReviewerResult@1 report {index} violates its payload contract: {error}"
-                ))
-            })?;
-        legacy.validate(index).map_err(|error| {
-            StoreError::Conflict(format!(
-                "ReviewerResult@1 report is not admissible: {error}"
-            ))
-        })?;
-    }
-    for demand in value
-        .get("benchmark_demands")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let demand = demand.as_object().ok_or_else(|| {
-            StoreError::Conflict("ReviewerResult@1 has a malformed benchmark demand".into())
-        })?;
-        exact_keys(
-            demand,
-            &["claim", "why", "suggested_method"],
-            "benchmark demand",
-        )?;
-        if demand
-            .values()
-            .any(|field| field.as_str().is_none_or(str::is_empty))
-        {
-            return Err(StoreError::Conflict(
-                "ReviewerResult@1 has an empty benchmark demand".into(),
-            ));
-        }
-    }
-    for dispute in value
-        .get("disputes")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let dispute = dispute.as_object().ok_or_else(|| {
-            StoreError::Conflict("ReviewerResult@1 has a malformed dispute".into())
-        })?;
-        exact_keys(dispute, &["claim_id", "position", "reason"], "dispute")?;
-        if dispute["claim_id"].as_str().is_none_or(str::is_empty)
-            || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
-            || dispute["reason"].as_str().is_none_or(str::is_empty)
-        {
-            return Err(StoreError::Conflict(
-                "ReviewerResult@1 has an invalid dispute".into(),
-            ));
-        }
-    }
-    Ok(())
+    review_core::validate_reviewer_result(value).map_err(StoreError::Conflict)
 }
 
 fn exact_keys(
@@ -1020,6 +935,7 @@ fn validate_campaign_transition(
     let mut pending_fences = std::collections::BTreeSet::new();
     let mut batch_dispatches = std::collections::BTreeMap::new();
     let mut batch_latest_dispatch = std::collections::BTreeMap::new();
+    let mut batch_attempt_inputs = std::collections::BTreeMap::new();
     let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
         std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
@@ -1490,6 +1406,37 @@ fn validate_campaign_transition(
                                 }
                             }
                         }
+                        EventType::AttemptInputV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptInput@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptInput@1 has no attempt ID".into())
+                            })?;
+                            let input: review_core::event::AttemptInputPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if !event.artifact_refs.contains(&input.refusal_history_id) {
+                                return Err(StoreError::Conflict(
+                                    "AttemptInput@1 does not reference its refusal history".into(),
+                                ));
+                            }
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'AttemptInput@1' AND node_id = ?3 AND attempt_id = ?4",
+                                params![run_id, active_id, node, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0
+                                || batch_attempt_inputs
+                                    .insert(attempt.to_string(), node.to_string())
+                                    .is_some()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "attempt has duplicate durable input events".into(),
+                                ));
+                            }
+                        }
                         EventType::NodeOutputReceiptV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into())
@@ -1685,6 +1632,13 @@ fn validate_campaign_transition(
                 .into(),
         ));
     }
+    for (attempt, node) in batch_attempt_inputs {
+        if batch_dispatches.get(&attempt) != Some(&node) {
+            return Err(StoreError::Conflict(
+                "AttemptInput@1 must append atomically with its matching dispatch".into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1694,6 +1648,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
             event_type,
             EventType::AttemptAdmittedV1
                 | EventType::AttemptDispatchedV1
+                | EventType::AttemptInputV1
                 | EventType::AttemptFailedV1
                 | EventType::AttemptFencedV1
                 | EventType::AttemptReleasedV1
