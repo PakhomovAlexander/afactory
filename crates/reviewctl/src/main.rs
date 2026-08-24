@@ -23,7 +23,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2};
+use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, Severity};
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
