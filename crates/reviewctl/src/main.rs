@@ -421,12 +421,18 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
+    print_scope_authority_warnings(&ledger);
     for finding in ledger.findings() {
         println!(
-            "{}\t{}\t{}\t{}:{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
             finding.key,
             format!("{:?}", finding.severity).to_lowercase(),
             finding.status.as_str(),
+            finding.convergence_scope_label(),
+            finding
+                .convergence_severity
+                .map(|severity| format!("{severity:?}").to_lowercase())
+                .unwrap_or_else(|| "-".to_string()),
             finding.file,
             finding.line.map_or("-".to_string(), |l| l.to_string()),
             finding.title
@@ -439,6 +445,22 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                     .fix
                     .as_deref()
                     .unwrap_or("(unavailable: artifact-less legacy import)"),
+            );
+            print_indented(
+                "report scopes",
+                &finding
+                    .reports
+                    .iter()
+                    .map(|report| {
+                        format!(
+                            "{} round {}={}",
+                            report.source,
+                            report.round,
+                            report.scope_label()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
         }
     }
@@ -469,15 +491,21 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
+    print_scope_authority_warnings(&ledger);
     let finding = ledger
         .get(&options.key)
         .ok_or_else(|| format!("no finding with key {}", options.key))?;
 
     println!("{} [{}]", finding.title, finding.key);
     println!(
-        "severity={} status={} location={}:{}",
+        "severity={} effective_severity={} status={} scope={} location={}:{}",
         format!("{:?}", finding.severity).to_lowercase(),
+        finding
+            .convergence_severity
+            .map(|severity| format!("{severity:?}").to_lowercase())
+            .unwrap_or_else(|| "-".to_string()),
         finding.status.as_str(),
+        finding.convergence_scope_label(),
         finding.file,
         finding
             .line
@@ -485,11 +513,12 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     );
     for (index, attached) in finding.reports.iter().enumerate() {
         println!(
-            "\nreport {}: reviewer={} round={} severity={} id={}",
+            "\nreport {}: reviewer={} round={} severity={} scope={} id={}",
             index + 1,
             attached.source,
             attached.round,
             format!("{:?}", attached.severity).to_lowercase(),
+            attached.scope_label(),
             if attached.report_id.is_empty() {
                 "(unavailable: legacy import)"
             } else {
@@ -543,6 +572,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
+    print_scope_authority_warnings(&ledger);
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
         .iter()
@@ -584,13 +614,22 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
 
     println!();
     println!("## Findings");
-    for severity in ["blocker", "major", "minor"] {
+    for effective_severity in [
+        Some(Severity::Blocker),
+        Some(Severity::Major),
+        Some(Severity::Minor),
+        None,
+    ] {
         println!();
-        println!("### {}", title_case(severity));
+        let heading = effective_severity.map_or_else(
+            || "Recorded, not blocking this Subject".to_string(),
+            |severity| title_case(&format!("{severity:?}").to_lowercase()),
+        );
+        println!("### {heading}");
         let matching: Vec<_> = ledger
             .findings()
             .into_iter()
-            .filter(|finding| format!("{:?}", finding.severity).to_lowercase() == severity)
+            .filter(|finding| finding.convergence_severity == effective_severity)
             .collect();
         if matching.is_empty() {
             println!();
@@ -600,8 +639,14 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         for finding in matching {
             println!();
             println!(
-                "- **[{}] {}** (`{}`) at `{}:{}`",
+                "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
                 finding.status.as_str(),
+                finding.convergence_scope_label(),
+                format!("{:?}", finding.severity).to_lowercase(),
+                finding
+                    .convergence_severity
+                    .map(|severity| format!("{severity:?}").to_lowercase())
+                    .unwrap_or_else(|| "-".to_string()),
                 finding.title,
                 finding.key,
                 finding.file,
@@ -624,11 +669,19 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 .iter()
                 .map(|report| {
                     if report.report_id.is_empty() {
-                        format!("{} round {} (legacy import)", report.source, report.round)
+                        format!(
+                            "{} round {} scope={} (legacy import)",
+                            report.source,
+                            report.round,
+                            report.scope_label()
+                        )
                     } else {
                         format!(
-                            "{} round {} `{}`",
-                            report.source, report.round, report.report_id
+                            "{} round {} scope={} `{}`",
+                            report.source,
+                            report.round,
+                            report.scope_label(),
+                            report.report_id
                         )
                     }
                 })
@@ -686,6 +739,15 @@ fn title_case(value: &str) -> String {
     }
 }
 
+fn print_scope_authority_warnings(ledger: &Ledger) {
+    for failure in ledger.scope_authority_failures() {
+        eprintln!(
+            "warning: round {} Report Scope is unknown: Subject {} is unavailable: {}",
+            failure.round, failure.subject_id, failure.reason
+        );
+    }
+}
+
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let status = Status::parse(&options.status)
         .ok_or_else(|| format!("unknown status `{}`", options.status))?;
@@ -694,6 +756,7 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
+    print_scope_authority_warnings(ingest.ledger());
     if ingest.ledger().get(&options.key).is_none() {
         return Err(format!("no finding with key {}", options.key));
     }

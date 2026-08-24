@@ -67,8 +67,10 @@ Campaign Manifests under different trusted invocation policies.
 
 **Report Scope**:
 Whether a Report's location falls inside the Change Set it was made under — `in` or `out`.
-Stamped on each Report at the Round it was made, never on the Finding, because a file this
-branch has not touched yet may be touched by a later Round.
+Attached deterministically to each Report claim from its exact Round Subject, never supplied by
+the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
+be touched by a later Round. A Report with no derivable exact Round Subject is presented as
+`unknown`; that is fail-closed compatibility metadata, not a third Report Scope.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,
 recorded, and triageable — it simply does not block this Subject's convergence.
 
@@ -275,9 +277,10 @@ the result incomplete.
   not an empty field.
 - **Finding Sets** and **Demand Sets** are immutable views produced by deterministic reducers;
   graph edges deliver exact view IDs and nodes never consume ambient "latest" state.
-- **Report Scope** lives on each **Report** claim. Convergence evaluates active claims independently: a
-  Finding blocks when any active claim is `in` at the severity gate and is wholly `out` only when
-  all active claims are `out`. **News** and Report Scope remain independent axes.
+- **Report Scope** is derived for each **Report** claim from its exact Round Subject. Convergence
+  evaluates active claims independently: a Finding blocks when any active claim is `in` at the
+  severity gate and is wholly `out` only when all active claims are `out`. **News** and Report
+  Scope remain independent axes.
 
 ## Example dialogue
 

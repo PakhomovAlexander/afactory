@@ -10,9 +10,9 @@
 //! *not* reproduce is the loss — every report stays attached, and a resolution never overwrites
 //! the note that preceded it.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-use review_core::{EventType, Severity};
+use review_core::{EventType, RoundStartedPayloadV1, Severity, SubjectKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,6 +22,32 @@ use crate::store::EventStore;
 pub const EVENT_FINDING_REPORTED: EventType = EventType::FindingReportedV1;
 pub const EVENT_FINDING_RESOLVED: EventType = EventType::FindingResolvedV1;
 pub const EVENT_GENERATION_ADVANCED: EventType = EventType::GenerationAdvancedV1;
+
+/// Scope has exactly two durable meanings. `None` on an [`AttachedReport`] is fail-closed
+/// compatibility metadata for evidence with no derivable exact Round Subject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportScope {
+    In,
+    Out,
+}
+
+impl ReportScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::In => "in",
+            Self::Out => "out",
+        }
+    }
+}
+
+/// A Round whose Subject could not supply Report Scope authority during replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeAuthorityFailure {
+    pub round: u32,
+    pub subject_id: String,
+    pub reason: String,
+}
 
 /// The legacy status set, kept verbatim so equivalence can be checked field by field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +101,14 @@ pub struct AttachedReport {
     pub round: u32,
     pub source: String,
     pub severity: Severity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ReportScope>,
+}
+
+impl AttachedReport {
+    pub fn scope_label(&self) -> &'static str {
+        self.scope.map_or("unknown", ReportScope::as_str)
+    }
 }
 
 /// One transition, appended rather than overwritten. `ledger.sh resolve` wrote over `.note`,
@@ -115,6 +149,13 @@ pub struct Finding {
     /// The currently adopted remedy. Absent only for artifact-less legacy imports.
     pub fix: Option<String>,
     pub confidence: Option<f64>,
+    /// Aggregate of active Report claims for presentation, never Scope stamped onto identity.
+    /// `None` means exact Scope authority was unavailable.
+    pub convergence_scope: Option<ReportScope>,
+    /// Highest active non-out claim severity. `None` means active claims are wholly out.
+    pub convergence_severity: Option<Severity>,
+    /// Scope-aware News used by convergence; separate from frozen legacy `news_round`.
+    pub scoped_news_round: Option<u32>,
     /// Every report, in arrival order — including the ones the shell harness dropped.
     pub reports: Vec<AttachedReport>,
     /// Every transition, in order — including the notes a resolution used to overwrite.
@@ -135,13 +176,33 @@ impl Finding {
         sources.dedup();
         sources
     }
+
+    pub fn convergence_scope_label(&self) -> &'static str {
+        self.convergence_scope
+            .map_or("unknown", ReportScope::as_str)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
     findings: BTreeMap<String, Finding>,
     order: Vec<String>,
+    active_scope: Option<ActiveScope>,
+    scope_authority_failures: Vec<ScopeAuthorityFailure>,
     pub round: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveScope {
+    round: u32,
+    subject: SubjectScope,
+}
+
+#[derive(Debug, Clone)]
+enum SubjectScope {
+    WholeTree,
+    Diff(Arc<[String]>),
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +284,7 @@ impl Ledger {
         cas: &Cas,
     ) -> Result<(), crate::store::StoreError> {
         match event_type {
+            EventType::RoundStartedV1 => self.apply_round_started(payload, cas)?,
             EVENT_GENERATION_ADVANCED => {
                 let round = payload
                     .get("round")
@@ -284,15 +346,17 @@ impl Ledger {
             }
         };
         let severity = report.severity;
-
+        let scope = self.report_scope(round, &report.location);
         let attached = AttachedReport {
             report_id,
             round,
             source: source.clone(),
             severity,
+            scope,
         };
 
         let Some(existing) = self.findings.get_mut(&key) else {
+            let convergence_severity = (scope != Some(ReportScope::Out)).then_some(severity);
             self.order.push(key.clone());
             self.findings.insert(
                 key.clone(),
@@ -309,6 +373,9 @@ impl Ledger {
                     body: report.body,
                     fix: report.fix,
                     confidence: report.confidence,
+                    convergence_scope: scope,
+                    convergence_severity,
+                    scoped_news_round: convergence_severity.map(|_| round),
                     reports: vec![attached],
                     history: vec![Transition {
                         round,
@@ -319,6 +386,10 @@ impl Ledger {
             );
             return Ok(());
         };
+
+        let previous_scoped_severity = existing.convergence_severity;
+        let scoped_news = scope != Some(ReportScope::Out)
+            && previous_scoped_severity.is_none_or(|previous| severity.rank() > previous.rank());
 
         // Every report is kept, whatever the projection then decides about it.
         existing.reports.push(attached);
@@ -363,8 +434,93 @@ impl Ledger {
             )),
             _ => None,
         };
+        if kind == TransitionKind::Reopened {
+            existing.convergence_scope = scope;
+            existing.convergence_severity = (scope != Some(ReportScope::Out)).then_some(severity);
+        } else {
+            existing.convergence_scope = combine_scope(existing.convergence_scope, scope);
+            if scope != Some(ReportScope::Out)
+                && existing
+                    .convergence_severity
+                    .is_none_or(|current| severity.rank() > current.rank())
+            {
+                existing.convergence_severity = Some(severity);
+            }
+        }
+        if scoped_news || (scope != Some(ReportScope::Out) && kind == TransitionKind::Reopened) {
+            existing.scoped_news_round = Some(round);
+        }
         existing.history.push(Transition { round, kind, note });
         Ok(())
+    }
+
+    fn apply_round_started(
+        &mut self,
+        payload: &Value,
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        let started: RoundStartedPayloadV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| malformed("RoundStarted@1", &error.to_string()))?;
+        started
+            .validate()
+            .map_err(|error| malformed("RoundStarted@1", &error))?;
+        let subject_scope = match crate::resolve_subject_scope(cas, &started.subject_id)
+            .map_err(|error| error.to_string())
+            .and_then(|resolved| match resolved.subject.kind {
+                SubjectKind::WholeTree => Ok(SubjectScope::WholeTree),
+                SubjectKind::Diff => {
+                    resolved
+                        .changed_paths
+                        .map(SubjectScope::Diff)
+                        .ok_or_else(|| {
+                            format!(
+                                "diff Subject {} resolved without changed paths",
+                                started.subject_id
+                            )
+                        })
+                }
+            }) {
+            Ok(scope) => scope,
+            Err(reason) => {
+                self.scope_authority_failures.push(ScopeAuthorityFailure {
+                    round: started.round,
+                    subject_id: started.subject_id.clone(),
+                    reason,
+                });
+                SubjectScope::Unavailable
+            }
+        };
+        self.active_scope = Some(ActiveScope {
+            round: started.round,
+            subject: subject_scope,
+        });
+        Ok(())
+    }
+
+    fn report_scope(&self, round: u32, location: &ReportLocation) -> Option<ReportScope> {
+        let Some(active) = self
+            .active_scope
+            .as_ref()
+            .filter(|active| active.round == round)
+        else {
+            return None;
+        };
+        match (&active.subject, location) {
+            (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => None,
+            (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
+                Some(ReportScope::In)
+            }
+            (SubjectScope::Diff(paths), ReportLocation::Path(path)) => Some(
+                if paths
+                    .binary_search_by(|item| item.as_str().cmp(path))
+                    .is_ok()
+                {
+                    ReportScope::In
+                } else {
+                    ReportScope::Out
+                },
+            ),
+        }
     }
 
     fn apply_resolution(&mut self, payload: &Value) -> Result<(), crate::store::StoreError> {
@@ -419,6 +575,11 @@ impl Ledger {
         self.findings.is_empty()
     }
 
+    /// Scope failures are diagnostics, not replay failures: affected reports remain unknown.
+    pub fn scope_authority_failures(&self) -> &[ScopeAuthorityFailure] {
+        &self.scope_authority_failures
+    }
+
     /// The convergence decision, computed exactly as `ledger.sh converged` computes it.
     ///
     /// `new_recent` counts by news round and **ignores status** — so a finding fixed in the
@@ -429,13 +590,25 @@ impl Ledger {
         let open_blocking = self
             .findings
             .values()
-            .filter(|f| f.status.is_active() && f.severity.rank() >= gate)
+            .filter(|finding| {
+                finding.status.is_active()
+                    && finding
+                        .convergence_severity
+                        .is_some_and(|severity| severity.rank() >= gate)
+            })
             .count();
         let since = self.round as i64 - policy.clean_rounds as i64;
         let new_recent = self
             .findings
             .values()
-            .filter(|f| (f.news_round as i64) > since && f.severity.rank() >= gate)
+            .filter(|finding| {
+                finding
+                    .scoped_news_round
+                    .is_some_and(|round| i64::from(round) > since)
+                    && finding
+                        .convergence_severity
+                        .is_some_and(|severity| severity.rank() >= gate)
+            })
             .count();
 
         let verdict = if open_blocking == 0 && new_recent == 0 && self.round >= policy.clean_rounds
@@ -458,11 +631,18 @@ impl Ledger {
 struct ReportProjection {
     severity: Severity,
     file: String,
+    location: ReportLocation,
     line: Option<i64>,
     title: String,
     body: String,
     fix: Option<String>,
     confidence: Option<f64>,
+}
+
+enum ReportLocation {
+    ChangeWide,
+    Path(String),
+    Unrecorded,
 }
 
 impl ReportProjection {
@@ -507,6 +687,11 @@ impl ReportProjection {
                     })?,
             ),
         };
+        let location = if file.trim().is_empty() {
+            ReportLocation::ChangeWide
+        } else {
+            ReportLocation::Path(file.to_string())
+        };
         Ok(Self {
             severity,
             file: if file.trim().is_empty() {
@@ -514,6 +699,7 @@ impl ReportProjection {
             } else {
                 file.to_string()
             },
+            location,
             line,
             title: required("title")?.to_string(),
             body: required("body")?.to_string(),
@@ -533,12 +719,21 @@ impl ReportProjection {
         Ok(Self {
             severity,
             file: required_string(payload, "imported FindingReported@1", "file")?,
+            location: ReportLocation::Unrecorded,
             line: payload["line"].as_i64(),
             title: required_string(payload, "imported FindingReported@1", "title")?,
             body: required_string(payload, "imported FindingReported@1", "body")?,
             fix: None,
             confidence: payload["confidence"].as_f64(),
         })
+    }
+}
+
+fn combine_scope(current: Option<ReportScope>, next: Option<ReportScope>) -> Option<ReportScope> {
+    match (current, next) {
+        (Some(ReportScope::In), _) | (_, Some(ReportScope::In)) => Some(ReportScope::In),
+        (Some(ReportScope::Out), Some(ReportScope::Out)) => Some(ReportScope::Out),
+        _ => None,
     }
 }
 

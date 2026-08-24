@@ -66,6 +66,13 @@ impl ChangeSetV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_scope_shape()?;
+        self.canonical_patch().map(|_| ())
+    }
+
+    /// Validate the identity and path data needed to derive Report Scope without decoding the
+    /// potentially large inline patch. Full artifact admission still uses [`Self::validate`].
+    pub fn validate_scope_shape(&self) -> Result<(), String> {
         if !crate::is_digest(&self.base_snapshot_id) || !crate::is_digest(&self.head_snapshot_id) {
             return Err("ChangeSet@1 has an invalid Base or head Snapshot ID".into());
         }
@@ -95,7 +102,7 @@ impl ChangeSetV1 {
                 );
             }
         }
-        self.canonical_patch().map(|_| ())
+        Ok(())
     }
 }
 
