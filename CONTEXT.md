@@ -210,6 +210,19 @@ explicitly unstable candidate but does not become a configured Provider until th
 its context. Credentials are capabilities used through a Provider and never part of its ID.
 _Avoid_: using "provider" for a CLI binary, model, reviewer package, or verified account identity.
 
+**Provider Operation**:
+A durable, Round-bound machine-local operation that proves one configured Provider can satisfy one
+adapter capability before dispatch. Its epoch fences stale continuation, failed and abandoned
+work is charged, and persisted state contains only non-secret handles and normalized failure
+metadata.
+_Avoid_: **Attempt**; an Attempt consumes an admitted Provider rather than authenticating it.
+
+**Provider Admission**:
+The current successful result of a Provider Operation's structural authentication probe and
+bounded real-inference smoke test for one adapter capability. Admission is local execution state,
+not pinned pipeline authority, and expires when its Round, Provider label, or capability changes.
+_Avoid_: treating an ambient login or a Provider ID as proof of usable authentication.
+
 **Broker Handle**:
 A non-secret, Attempt/epoch-bound capability authorizing only named external operations through a
 trusted broker that can revoke it after fencing.
@@ -260,6 +273,9 @@ the result incomplete.
   `contested` through an explicit event.
 - Every executable node resolves one **Execution Binding** before dispatch; safe Bindings expose
   revocable **Broker Handles**, never reusable credential bytes.
+- A configured **Provider** dispatches only after current **Provider Admission**. Continuations
+  name the exact Provider Operation epoch; stale epochs and repeated failure fingerprints are
+  fenced before another external call.
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,
   gate, closure, and budget state; it never queries ambient latest projections.
 - A **Subject** is always anchored to one head **Snapshot**; a `diff` Subject additionally

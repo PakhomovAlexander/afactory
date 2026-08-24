@@ -1095,6 +1095,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "nix",
+ "review-attempt",
  "review-config",
  "review-core",
  "review-graph",
@@ -1105,6 +1106,7 @@ dependencies = [
  "review-source-git",
  "review-store",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
 ]

@@ -113,6 +113,23 @@ impl ClaudeAdapter {
     }
 }
 
+/// Build the adapter-owned capability smoke invocation. It shares the production argument
+/// ordering while disabling tools: admission proves auth/model inference, not filesystem access.
+pub fn smoke_command(runner: &Command) -> Result<Command, String> {
+    let model_flags = runner.resolve().map_err(|error| error.to_string())?;
+    Ok(claude_command(&runner.program, &model_flags))
+}
+
+fn claude_command(program: &str, model_flags: &[String]) -> Command {
+    let mut args = vec![
+        Arg::literal("-p"),
+        Arg::literal("--output-format"),
+        Arg::literal("json"),
+    ];
+    args.extend(model_flags.iter().map(Arg::literal));
+    Command::new(program, args)
+}
+
 impl ReviewerAdapter for ClaudeAdapter {
     fn invoke(
         &self,
@@ -120,17 +137,11 @@ impl ReviewerAdapter for ClaudeAdapter {
         sandbox_root: &Path,
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
-        let mut args = vec![
-            Arg::literal("-p"),
-            Arg::literal("--output-format"),
-            Arg::literal("json"),
-        ];
-        args.extend(self.model_flags.iter().map(Arg::literal));
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let inputs = inputs.render().map_err(RunnerError::Refused)?;
         let prompt = format!("{}{}", self.prompt, inputs);
-        let command = Command::new(&self.program, args);
+        let command = claude_command(&self.program, &self.model_flags);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {

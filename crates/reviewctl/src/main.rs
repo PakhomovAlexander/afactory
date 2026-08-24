@@ -18,11 +18,12 @@
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
 //! explicit action.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, Severity};
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
@@ -45,6 +46,8 @@ struct Options {
     uncommitted: bool,
     restart_round: bool,
     timeout: Option<Duration>,
+    provider_bindings: BTreeMap<String, String>,
+    provider_resumes: BTreeMap<String, u64>,
 }
 
 impl Options {
@@ -221,6 +224,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: af review run     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+        \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH]\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
@@ -259,6 +263,8 @@ fn parse_run(mut args: std::env::Args) -> Options {
         uncommitted: false,
         restart_round: false,
         timeout: None,
+        provider_bindings: std::collections::BTreeMap::new(),
+        provider_resumes: std::collections::BTreeMap::new(),
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
@@ -275,6 +281,36 @@ fn parse_run(mut args: std::env::Args) -> Options {
                 options.timeout = Some(Duration::from_secs(
                     value().parse().unwrap_or_else(|_| usage()),
                 ))
+            }
+            "--provider" => {
+                let binding = value();
+                let (node, provider) = binding.split_once('=').unwrap_or_else(|| usage());
+                if node.is_empty()
+                    || provider.is_empty()
+                    || options
+                        .provider_bindings
+                        .insert(node.to_string(), provider.to_string())
+                        .is_some()
+                {
+                    usage();
+                }
+            }
+            "--resume-provider" => {
+                let token = value();
+                let (operation, epoch) = token.rsplit_once(':').unwrap_or_else(|| usage());
+                let epoch = epoch.parse::<u64>().unwrap_or_else(|_| usage());
+                if operation.len() != 26
+                    || !operation
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                    || epoch == 0
+                    || options
+                        .provider_resumes
+                        .insert(operation.to_string(), epoch)
+                        .is_some()
+                {
+                    usage();
+                }
             }
             _ => usage(),
         }
@@ -793,6 +829,88 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
 
+    for node in options.provider_bindings.keys() {
+        if !loaded.reviewers().contains_key(node) {
+            return Err(format!("--provider names unknown reviewer node `{node}`"));
+        }
+        if !loaded.packages().contains_key(node) {
+            return Err(format!(
+                "node `{node}` is an inline command; --provider is only valid for packaged reviewers"
+            ));
+        }
+    }
+    for node in store
+        .provider_operation_nodes(&run_id, authority.round_event_id())
+        .map_err(|error| error.to_string())?
+    {
+        if !options.provider_bindings.contains_key(&node) {
+            return Err(format!(
+                "node `{node}` has Provider Admission state in this Round; repeat its explicit --provider binding"
+            ));
+        }
+    }
+    let expected_operations = options
+        .provider_bindings
+        .iter()
+        .map(|(node, provider_id)| {
+            let reviewer = loaded
+                .reviewers()
+                .get(node)
+                .expect("provider binding node was validated");
+            providers::operation_id_for(provider_id, node, reviewer, &authority)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if let Some(stale) = options
+        .provider_resumes
+        .keys()
+        .find(|operation| !expected_operations.contains(*operation))
+    {
+        return Err(format!(
+            "--resume-provider `{stale}` is stale or does not belong to a configured provider operation"
+        ));
+    }
+    let replayed_spend = if options.provider_bindings.is_empty() {
+        0
+    } else {
+        store
+            .round_committed_tokens(&run_id, authority.round_event_id())
+            .map_err(|error| error.to_string())?
+    };
+    let mut provider_budget = BudgetLedger::default().with_committed(Scope::Run, replayed_spend);
+    if let Some(budgets) = loaded.budgets() {
+        provider_budget = provider_budget.with_limit(Scope::Run, Budget::of(budgets.run));
+    }
+    let mut resumes = options.provider_resumes.clone();
+    let mut structural_probes = BTreeSet::new();
+    let mut admissions = BTreeMap::new();
+    for (node, provider_id) in &options.provider_bindings {
+        let command = loaded
+            .reviewers()
+            .get(node)
+            .expect("provider binding node was validated");
+        let admission = providers::admit(
+            provider_id,
+            providers::AdmissionRequest {
+                node_id: node,
+                reviewer: command,
+                state_dir: &state,
+                run_id: &run_id,
+                authority: &authority,
+                cas: &cas,
+                store: &mut store,
+                resumes: &mut resumes,
+                budget: &mut provider_budget,
+                structural_probes: &mut structural_probes,
+            },
+        )?;
+        admissions.insert(node.clone(), admission);
+    }
+    if let Some((operation, _)) = resumes.first_key_value() {
+        return Err(format!(
+            "--resume-provider `{operation}` is stale or does not belong to a configured provider operation"
+        ));
+    }
+
     let auth = (
         std::env::var("CLAUDE_CONFIG_DIR").ok(),
         std::env::var("USER").ok(),
@@ -824,20 +942,32 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                         let mut adapter =
                             review_runner_claude::ClaudeAdapter::from_package(package, timeout)
                                 .map_err(|error| format!("{node}: {error}"))?
-                                .with_auth(auth.0.clone(), user, auth.2.clone());
+                                .with_auth(
+                                    admissions
+                                        .get(node)
+                                        .map(|provider| provider.auth_dir_string())
+                                        .transpose()?
+                                        .or_else(|| auth.0.clone()),
+                                    user,
+                                    auth.2.clone(),
+                                );
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
                         Box::new(adapter)
                     }
                     "codex" => {
+                        let codex_home = match admissions.get(node) {
+                            Some(provider) => provider.auth_dir_string()?,
+                            None => resolve_codex_home(
+                                &home,
+                                std::env::var_os("CODEX_HOME").as_deref(),
+                            )?,
+                        };
                         let mut adapter =
                             review_runner_codex::CodexAdapter::from_package(package, timeout)
                                 .map_err(|error| format!("{node}: {error}"))?
-                                .with_codex_home(resolve_codex_home(
-                                    &home,
-                                    std::env::var_os("CODEX_HOME").as_deref(),
-                                )?);
+                                .with_codex_home(codex_home);
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
                         }
@@ -961,6 +1091,8 @@ mod option_tests {
             uncommitted: false,
             restart_round: false,
             timeout: None,
+            provider_bindings: std::collections::BTreeMap::new(),
+            provider_resumes: std::collections::BTreeMap::new(),
         };
         let error = options.resolved_state_dir().unwrap_err();
         assert!(error.contains("is a symlink"));
