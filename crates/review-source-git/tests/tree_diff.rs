@@ -135,6 +135,39 @@ fn revision_like_options_cannot_become_tree_operands() {
 }
 
 #[test]
+fn an_over_limit_rename_search_fails_closed_instead_of_losing_the_map() {
+    let fixture = Fixture::new();
+    for index in 0..=1000 {
+        fixture.write(
+            &format!("old/{index:04}.txt"),
+            format!("old content {index:04}\n").as_bytes(),
+        );
+    }
+    let base_revision = fixture.commit_all("base");
+
+    for index in 0..=1000 {
+        std::fs::remove_file(fixture.repo_path().join(format!("old/{index:04}.txt"))).unwrap();
+        fixture.write(
+            &format!("new/{index:04}.txt"),
+            format!("unrelated new content {index:04}\n").as_bytes(),
+        );
+    }
+    let head_revision = fixture.commit_all("head");
+
+    let repo = repo_of(&fixture);
+    let error = repo
+        .tree_diff(
+            &repo.resolve_tree(&base_revision).unwrap(),
+            &repo.resolve_tree(&head_revision).unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("rename detection was truncated"),
+        "expected a fail-closed rename-limit diagnostic, got {error}"
+    );
+}
+
+#[test]
 fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     let fixture = Fixture::new();
     fixture.write("src/main.rs", b"fn old() {}\n");

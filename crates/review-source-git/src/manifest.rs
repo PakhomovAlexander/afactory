@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use review_core::{decode_path, encode_path};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -97,64 +99,6 @@ impl Manifest {
             hasher.update(entry.size.to_be_bytes());
         }
         format!("sha256:{:x}", hasher.finalize())
-    }
-}
-
-/// Render a raw path for the manifest, losslessly.
-///
-/// Non-UTF-8 paths exist, and dropping or lossily converting one would change what the snapshot
-/// covers without saying so. Such a path is recorded in a percent-escaped form that round-trips.
-pub fn encode_path(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(s) if !s.contains('%') => s.to_string(),
-        _ => {
-            let mut out = String::with_capacity(bytes.len());
-            for byte in bytes {
-                if byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
-                {
-                    out.push(*byte as char);
-                } else {
-                    out.push_str(&format!("%{byte:02X}"));
-                }
-            }
-            out
-        }
-    }
-}
-
-/// Invert [`encode_path`]: recover the raw path bytes a manifest entry names.
-///
-/// `encode_path` is a JSON-safe *display* form, not a filesystem path — joining it onto a
-/// directory renames `docs/50%-off.md` to `docs/50%25-off.md` and drops any non-UTF-8 path
-/// entirely. Anything that turns a manifest entry back into a real path must decode first.
-/// Every `%XX` becomes its byte; every other byte is itself, which is exact because
-/// `encode_path` emits only allowlisted ASCII and `%XX` escapes.
-pub fn decode_path(encoded: &str) -> Vec<u8> {
-    let bytes = encoded.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 3 <= bytes.len()
-            && let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2]))
-        {
-            out.push(hi << 4 | lo);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
     }
 }
 

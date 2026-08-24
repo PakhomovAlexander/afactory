@@ -1,7 +1,5 @@
 //! The immutable, content-addressed description of one diff Subject.
 
-use std::collections::BTreeSet;
-
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
@@ -56,13 +54,27 @@ impl ChangeSetV1 {
     }
 
     pub fn canonical_patch(&self) -> Result<Vec<u8>, String> {
-        let decoded = STANDARD
+        STANDARD
             .decode(&self.canonical_patch_base64)
-            .map_err(|error| format!("ChangeSet@1 canonical patch is not base64: {error}"))?;
-        if STANDARD.encode(&decoded) != self.canonical_patch_base64 {
-            return Err("ChangeSet@1 canonical patch is not canonically encoded".into());
-        }
-        Ok(decoded)
+            .map_err(|error| {
+                format!("ChangeSet@1 canonical patch is not canonical base64: {error}")
+            })
+    }
+
+    /// Match a Report location against the losslessly encoded Change Set path set.
+    ///
+    /// Review adapters normally report an ordinary UTF-8 sandbox path, while a non-UTF-8 path
+    /// can only be named in the Change Set's encoded form. Accept both representations. If a
+    /// percent-bearing string is ambiguous, membership is deliberately a union: projecting a
+    /// claim `in` is the fail-closed result for convergence.
+    pub fn contains_report_path(&self, report_path: &str) -> bool {
+        self.changed_paths
+            .binary_search_by(|path| path.as_str().cmp(report_path))
+            .is_ok()
+            || {
+                let encoded = crate::encode_path(report_path.as_bytes());
+                encoded != report_path && self.changed_paths.binary_search(&encoded).is_ok()
+            }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -87,14 +99,13 @@ impl ChangeSetV1 {
         if self.renames.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err("ChangeSet@1 renames must be sorted and unique".into());
         }
-        let paths: BTreeSet<&str> = self.changed_paths.iter().map(String::as_str).collect();
         for rename in &self.renames {
             if rename.similarity > 100
                 || rename.old_path == rename.new_path
                 || !valid_path(&rename.old_path)
                 || !valid_path(&rename.new_path)
-                || !paths.contains(rename.old_path.as_str())
-                || !paths.contains(rename.new_path.as_str())
+                || self.changed_paths.binary_search(&rename.old_path).is_err()
+                || self.changed_paths.binary_search(&rename.new_path).is_err()
             {
                 return Err(
                     "ChangeSet@1 rename paths must be changed, distinct, relative, and at most 100% similar"

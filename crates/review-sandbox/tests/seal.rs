@@ -5,7 +5,7 @@ mod common;
 use common::fixture_repo;
 use review_check::{Arg, CheckDefinition, CheckRunner, Command};
 use review_sandbox::{Mode, Sandbox};
-use review_source_git::Capture;
+use review_source_git::{Capture, Entry, EntryKind, Manifest};
 
 fn sandbox_of(mode: Mode) -> (tempfile::TempDir, Sandbox, review_store::Cas) {
     let (dir, repo, cas) = fixture_repo();
@@ -253,6 +253,39 @@ fn added_files_are_not_hashed() {
     );
     // The CAS never received those 4 MiB.
     assert!(!cas.contains(&review_source_git::digest_bytes(&big)));
+}
+
+/// Manual evidence for the sealing budget named by the performance reviewer. Setup is excluded
+/// from the measurement: the timer covers only sealing an unchanged 5,000-file / ~200 MiB tree.
+#[test]
+#[ignore = "manual 5,000-file / 200 MiB sealing measurement"]
+fn unchanged_large_tree_seal_measurement() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+    let bytes = vec![0xA5; 41_943];
+    let content = cas.put(&bytes).unwrap();
+    let manifest = Manifest::new(
+        (0..5_000)
+            .map(|index| Entry {
+                path: format!("files/{index:04}.bin"),
+                kind: EntryKind::File,
+                content: content.clone(),
+                size: bytes.len() as u64,
+            })
+            .collect(),
+    );
+    let sandbox = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+
+    let started = std::time::Instant::now();
+    let sealed = sandbox.seal().unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(sealed.unchanged(), "{:?}", sealed.mutations);
+    eprintln!(
+        "sealed 5,000 unchanged files / {} MiB in {:.3}s",
+        (bytes.len() * 5_000) / (1024 * 1024),
+        elapsed.as_secs_f64()
+    );
 }
 
 /// A COW clone must isolate writes: two sandboxes cloned from one template are independent,

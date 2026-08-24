@@ -143,11 +143,17 @@ impl TreeDiff {
         base_snapshot_id: impl Into<String>,
         head_snapshot_id: impl Into<String>,
     ) -> Result<ChangeSetV1, String> {
-        let mut paths = Vec::new();
+        let mut paths = Vec::with_capacity(self.changes.len() + 1);
         let mut renames = Vec::new();
         for change in &self.changes {
-            paths.extend(change.old_path.as_deref().map(encode_path));
-            paths.extend(change.new_path.as_deref().map(encode_path));
+            if let Some(old_path) = change.old_path.as_deref() {
+                paths.push(encode_path(old_path));
+            }
+            if let Some(new_path) = change.new_path.as_deref()
+                && change.old_path.as_deref() != Some(new_path)
+            {
+                paths.push(encode_path(new_path));
+            }
             if let TreeChangeKind::Renamed { similarity } = &change.kind
                 && let (Some(old_path), Some(new_path)) =
                     (change.old_path.as_deref(), change.new_path.as_deref())
@@ -352,6 +358,12 @@ impl Repo {
                     .map(|arg| arg.as_ref().to_string_lossy().into_owned())
                     .collect(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        if rename_detection_was_truncated(&output.stderr) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "rename detection was truncated at the fixed 1000-candidate safety limit; partition the Subject before retrying"
+                    .to_string(),
             });
         }
         Ok((output, git_version))
@@ -720,6 +732,10 @@ impl Repo {
     }
 }
 
+fn rename_detection_was_truncated(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).contains("rename detection was skipped")
+}
+
 fn quote_fast_import_path(path: &[u8]) -> String {
     let mut quoted = String::from("\"");
     for byte in path {
@@ -995,7 +1011,7 @@ pub fn split_nul(bytes: &[u8]) -> Vec<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_tree_diff;
+    use super::{parse_tree_diff, rename_detection_was_truncated};
 
     const OID: &str = "0123456789012345678901234567890123456789";
 
@@ -1037,5 +1053,13 @@ mod tests {
         raw_only.extend_from_slice(b"diff --git a/file b/file\n");
         let parsed = parse_tree_diff(raw_only, "git version test".to_string()).unwrap();
         assert_eq!(parsed.diff_policy, super::TREE_DIFF_POLICY_VERSION);
+    }
+
+    #[test]
+    fn rename_limit_warnings_fail_closed_even_when_git_exits_zero() {
+        assert!(rename_detection_was_truncated(
+            b"warning: exhaustive rename detection was skipped due to too many files.\n"
+        ));
+        assert!(!rename_detection_was_truncated(b""));
     }
 }

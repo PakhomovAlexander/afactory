@@ -67,6 +67,46 @@ fn a_change_wide_finding_is_still_admitted() {
     assert_eq!(n, 1);
 }
 
+#[test]
+fn legacy_live_identity_remains_path_based_until_m3() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let stage = |file: &str| -> LegacyStageOutput {
+        serde_json::from_value(serde_json::json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "findings": [{
+                "severity": "major",
+                "file": file,
+                "line": 1,
+                "title": "same semantic claim",
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }],
+            "benchmark_demands": [],
+            "disputes": []
+        }))
+        .unwrap()
+    };
+    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
+    ingest
+        .add_stage_output("architecture", &stage("src/old.rs"))
+        .unwrap();
+    ingest.advance().unwrap();
+    ingest
+        .add_stage_output("architecture", &stage("src/new.rs"))
+        .unwrap();
+
+    assert_eq!(ingest.ledger().len(), 2);
+    assert_ne!(
+        ingest.ledger().findings()[0].key,
+        ingest.ledger().findings()[1].key,
+        "the permanent legacy path must stay explicit until M3 introduces canonical identity"
+    );
+}
+
 /// A reviewer's dispute is folded into the ledger: a `refute` on a prior claim contests it,
 /// which the campaign loop and `reviewctl ledger`/`resolve` then see. Before, disputes sat in
 /// raw CAS output and affected nothing.

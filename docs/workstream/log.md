@@ -66,3 +66,29 @@ both endpoints, and Ledger replay consequently projects Reports against either p
 Acceptance coverage also proves an unrelated path remains `out` and replay does not rewrite an
 existing legacy Finding key. No persisted contract changed. `make check` passed, including
 fixture reproduction; the M2 dogfood Campaign is the gate before M3.1.
+
+## 2026-08-24 — M2 dogfood Round 1
+
+Campaign `m2-rename-scope` ran the pinned external `af 0.1.0` against committed M2 head and
+closed Round 1 with fourteen Findings at 317,395 tokens. The Round exposed a blocker where
+losslessly encoded Change Set paths did not match ordinary percent-bearing Report paths, plus
+major claims about discarded secondary Report locations, reviewer prose contradicting the diff
+Subject, an overclaimed legacy-identity test, and serial whole-tree sandbox hashing. Minor claims
+identified redundant Change Set allocations, reads, validation passes, a silent Git rename-limit
+fallback, and missing round-authority diagnostics. M2 was reopened; no M3 work starts until the
+same Campaign converges.
+
+## 2026-08-24 — M2 dogfood Round 1 corrections
+
+Corrected all fourteen accepted Round 1 claims without changing persisted contracts or policy.
+Report Scope now shares the source adapter's lossless path codec, considers every typed Report
+location, and records mismatched Round authority. Live Report artifacts use `FindingReport@1`
+while the permanent projection reader retains the earlier flat M1 shape. Reviewer packages now
+describe the exact diff Subject and are content-locked at version 1.3.0. Change Set rendering and
+admission reuse parsed and borrowed values, Git fails closed when its fixed rename limit truncates
+detection, and sandbox sealing hashes baseline files through bounded parallel 64 KiB streams.
+
+`scripts/verify.sh` and markdownlint passed. The manual 5,000-file / 199 MiB sealing measurement
+completed in 0.589 seconds; the over-limit Git integration test exercised 1,001 delete and 1,001
+add candidates and observed the fail-closed diagnostic. Campaign Round 2 remains the convergence
+gate before M3.1.

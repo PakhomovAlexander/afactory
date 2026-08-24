@@ -209,21 +209,22 @@ impl<'a> Ingest<'a> {
         let mut summary = AddSummary::default();
         let mut projected = self.ledger.clone();
         let mut events = Vec::new();
-        let mut existing_reports: BTreeSet<(String, String, u32, String)> = self
+        let existing_reports: BTreeSet<(&str, &str, u32, &str)> = self
             .ledger
             .findings()
             .into_iter()
             .flat_map(|finding| {
                 finding.reports.iter().map(|report| {
                     (
-                        finding.key.clone(),
-                        report.source.clone(),
+                        finding.key.as_str(),
+                        report.source.as_str(),
                         report.round,
-                        report.report_id.clone(),
+                        report.report_id.as_str(),
                     )
                 })
             })
             .collect();
+        let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
 
         for (source, stage) in stages {
             for (index, finding) in stage.findings.iter().enumerate() {
@@ -243,21 +244,12 @@ impl<'a> Ingest<'a> {
                 let file = location
                     .map(|location| location.path.as_str())
                     .unwrap_or("");
-                let line = location.and_then(|location| location.line).map(i64::from);
                 let key = legacy_fingerprint(file, &report.title);
 
                 // The report is an immutable artifact; the event references it. Even a duplicate
                 // gets stored — that is the whole difference from the shell ledger, which counted
                 // it and threw it away.
-                let report_artifact = json!({
-                    "title": report.title,
-                    "severity": severity_str(report.severity),
-                    "file": file,
-                    "line": line,
-                    "body": report.body,
-                    "fix": report.fix,
-                    "confidence": report.confidence,
-                });
+                let report_artifact = serde_json::to_value(&report)?;
                 let report_id = self
                     .cas
                     .put_json(&report_artifact)
@@ -265,11 +257,13 @@ impl<'a> Ingest<'a> {
                 let report_identity =
                     (key.clone(), (*source).to_string(), round, report_id.clone());
 
-                if existing_reports.contains(&report_identity) {
+                if existing_reports.contains(&(key.as_str(), *source, round, report_id.as_str()))
+                    || pending_reports.contains(&report_identity)
+                {
                     summary.dup += 1;
                     continue;
                 }
-                existing_reports.insert(report_identity);
+                pending_reports.insert(report_identity);
 
                 let payload = json!({
                     "key": key,

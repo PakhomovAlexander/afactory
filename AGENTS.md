@@ -10,7 +10,7 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.5 is complete; bounded, resumable provider authentication operations come before M2.6.
+M2.1-M2.6 are implemented; the `m2-rename-scope` dogfood Campaign must converge before M3.1.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
 domain terms. Project-specific pipelines, reviewer packages, campaign state, and private corpora

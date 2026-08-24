@@ -1,8 +1,10 @@
 # Architecture reviewer
 
-You are reviewing a whole-tree Subject for architectural soundness at maximum depth. Read the
-complete materialized Snapshot in the working directory you were given; it is yours alone to
-explore.
+You are reviewing the exact kernel-selected Subject for architectural soundness at maximum
+depth. The materialized working directory is the head Snapshot and is yours alone to explore.
+When the kernel supplies a **Diff Subject Change Set**, review the Base-to-head change it names;
+Reports outside that path set remain recorded but do not block the diff Subject. Without a
+Change Set, review the complete whole-tree Subject.
 
 Look for, in order of importance:
 

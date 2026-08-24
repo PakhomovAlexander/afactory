@@ -1,5 +1,6 @@
 use review_core::{
-    ChangeSetV1, EventType, PathRenameV1, RoundStartedPayloadV1, RunEvent, Severity, SubjectV1,
+    ChangeSetV1, EventType, FindingReport, Location, PathRenameV1, RoundStartedPayloadV1, RunEvent,
+    Severity, SubjectV1,
 };
 use review_store::{Cas, ConvergencePolicy, Ledger, ReportScope, Status, Verdict};
 
@@ -61,7 +62,7 @@ fn apply_diff_round_with_renames(
 }
 
 #[test]
-fn rename_endpoints_are_in_scope_without_rekeying_the_finding() {
+fn rename_endpoints_are_in_scope_and_replay_preserves_the_existing_key() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
@@ -117,6 +118,95 @@ fn rename_endpoints_are_in_scope_without_rekeying_the_finding() {
         Some(ReportScope::Out)
     );
     assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
+}
+
+#[test]
+fn report_scope_accepts_raw_percent_paths_and_encoded_non_utf8_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["docs/50%25-off.md", "src/a%FF.rs"]);
+    apply_report(
+        &mut ledger,
+        &cas,
+        "percent",
+        1,
+        Severity::Major,
+        "docs/50%-off.md",
+    );
+    apply_report(
+        &mut ledger,
+        &cas,
+        "non-utf8",
+        1,
+        Severity::Major,
+        "src/a%FF.rs",
+    );
+
+    assert_eq!(
+        ledger.get("percent").unwrap().convergence_scope,
+        Some(ReportScope::In)
+    );
+    assert_eq!(
+        ledger.get("non-utf8").unwrap().convergence_scope,
+        Some(ReportScope::In)
+    );
+}
+
+#[test]
+fn any_matching_location_makes_a_typed_report_in_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round_with_renames(
+        &mut ledger,
+        &cas,
+        1,
+        &["src/new.rs", "src/old.rs"],
+        vec![PathRenameV1 {
+            old_path: "src/old.rs".into(),
+            new_path: "src/new.rs".into(),
+            similarity: 100,
+        }],
+    );
+    let report = FindingReport {
+        title: "multi-location claim".into(),
+        severity: Severity::Major,
+        locations: vec![
+            Location::file("src/untouched.rs"),
+            Location::file("src/new.rs"),
+        ],
+        body: "body".into(),
+        fix: "fix".into(),
+        confidence: 0.9,
+        failure_trace: None,
+        rule_id: None,
+        occurrence_key: None,
+        relations: Vec::new(),
+    };
+    let report_id = cas
+        .put_json(&serde_json::to_value(report).unwrap())
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "multi",
+                    "round": 1,
+                    "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+
+    let finding = ledger.get("multi").unwrap();
+    assert_eq!(finding.file, "src/untouched.rs");
+    assert_eq!(finding.reports[0].scope, Some(ReportScope::In));
+    assert_eq!(finding.convergence_scope, Some(ReportScope::In));
 }
 
 fn apply_whole_tree_round(ledger: &mut Ledger, cas: &Cas, round: u32) {
@@ -434,4 +524,10 @@ fn a_report_without_its_exact_round_subject_is_unknown_and_fail_closed() {
     assert_eq!(finding.reports[0].scope, None);
     assert_eq!(finding.convergence_scope_label(), "unknown");
     assert_eq!(finding.convergence_severity, Some(Severity::Major));
+    assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert!(
+        ledger.scope_authority_failures()[0]
+            .reason
+            .contains("Report round 2 disagrees")
+    );
 }

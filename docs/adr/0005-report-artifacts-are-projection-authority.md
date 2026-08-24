@@ -19,3 +19,6 @@ only for imported legacy rows that have no Report artifact.
 - Future Report fields become visible through the Report contract rather than by expanding event
   payloads. A genuine event-payload change still follows ADR-0002 and receives a new event type
   version.
+- New live Report artifacts serialize `FindingReport@1` itself, preserving every location and
+  relation. The permanent reader also accepts the earlier M1 flat Report artifact so existing
+  Campaigns remain replayable; the event payload is unchanged in both cases.

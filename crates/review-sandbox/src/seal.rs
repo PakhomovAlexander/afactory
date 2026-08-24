@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use review_source_git::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
+use review_store::canonical::blob_content_id_reader;
 
 use crate::{Mode, Sandbox};
 
@@ -102,6 +103,7 @@ fn scan_and_diff(
     let mut entries = Vec::new();
     let mut mutations = MutationSet::default();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut baseline_candidates = Vec::new();
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -138,30 +140,22 @@ fn scan_and_diff(
                     });
                 }
                 Some(previous) => {
-                    // Present in the baseline: read and hash, the only way to detect a change.
-                    let bytes = if kind == EntryKind::Symlink {
-                        std::fs::read_link(&path)?
-                            .to_string_lossy()
-                            .into_owned()
-                            .into_bytes()
-                    } else {
-                        std::fs::read(&path)?
-                    };
-                    let content = digest_bytes(&bytes);
-                    // Kind is part of identity: a file replaced by a symlink to the same bytes
-                    // is a change, and a reviewer that made one has not left the tree alone.
-                    if previous.content != content || previous.kind != kind {
-                        mutations.modified.push(relative.clone());
-                    }
-                    entries.push(Entry {
-                        path: relative,
+                    baseline_candidates.push(BaselineCandidate {
+                        path,
+                        relative,
                         kind,
-                        content,
-                        size: bytes.len() as u64,
+                        previous_content: previous.content.clone(),
+                        previous_kind: previous.kind,
                     });
                 }
             }
         }
+    }
+    for (entry, modified) in hash_baseline_candidates(&baseline_candidates)? {
+        if modified {
+            mutations.modified.push(entry.path.clone());
+        }
+        entries.push(entry);
     }
     for path in index.keys() {
         if !seen.contains(*path) {
@@ -172,6 +166,62 @@ fn scan_and_diff(
     mutations.modified.sort();
     mutations.deleted.sort();
     Ok((Manifest::new(entries), mutations))
+}
+
+struct BaselineCandidate {
+    path: PathBuf,
+    relative: String,
+    kind: EntryKind,
+    previous_content: String,
+    previous_kind: EntryKind,
+}
+
+fn hash_baseline_candidates(
+    candidates: &[BaselineCandidate],
+) -> Result<Vec<(Entry, bool)>, std::io::Error> {
+    let workers = std::thread::available_parallelism()
+        .map(|workers| workers.get())
+        .unwrap_or(4)
+        .min(candidates.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| -> Result<Vec<(Entry, bool)>, std::io::Error> {
+                    let mut hashed = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(candidate) = candidates.get(index) else {
+                            return Ok(hashed);
+                        };
+                        let (content, size) = if candidate.kind == EntryKind::Symlink {
+                            let target = std::fs::read_link(&candidate.path)?;
+                            let bytes = path_bytes(&target);
+                            (digest_bytes(bytes), bytes.len() as u64)
+                        } else {
+                            blob_content_id_reader(std::fs::File::open(&candidate.path)?)?
+                        };
+                        let modified = candidate.previous_content != content
+                            || candidate.previous_kind != candidate.kind;
+                        hashed.push((
+                            Entry {
+                                path: candidate.relative.clone(),
+                                kind: candidate.kind,
+                                content,
+                                size,
+                            },
+                            modified,
+                        ));
+                    }
+                })
+            })
+            .collect();
+        let mut hashed = Vec::with_capacity(candidates.len());
+        for handle in handles {
+            hashed.extend(handle.join().expect("sandbox hash worker")?);
+        }
+        Ok(hashed)
+    })
 }
 
 #[cfg(unix)]

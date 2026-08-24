@@ -715,8 +715,12 @@ fn validate_plan_ports(
                 expected.name()
             )));
         }
+        let mut validated_change_set = None;
         for artifact in &port.artifact_ids {
-            validate_artifact_payload(cas, &port.artifact_type, artifact)?;
+            if let Some(change_set) = validate_artifact_payload(cas, &port.artifact_type, artifact)?
+            {
+                validated_change_set = Some(change_set);
+            }
         }
         if port.artifact_type == review_core::contract::CHANGE_SET_V1 {
             let expected = subject_change_set_id.ok_or_else(|| {
@@ -729,10 +733,8 @@ fn validate_plan_ports(
                     "ChangeSet@1 port does not carry the Subject's exact Change Set".into(),
                 ));
             }
-            let change_set: review_core::ChangeSetV1 = serde_json::from_value(
-                cas.get_json(expected)
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
-            )?;
+            let change_set = validated_change_set
+                .ok_or_else(|| StoreError::Conflict("ChangeSet@1 port was not validated".into()))?;
             if change_set.head_snapshot_id != subject_snapshot_id
                 || Some(change_set.base_snapshot_id.as_str()) != subject_base_snapshot_id
             {
@@ -749,11 +751,11 @@ fn validate_artifact_payload(
     cas: &Cas,
     artifact_type: &str,
     artifact_id: &str,
-) -> Result<(), StoreError> {
+) -> Result<Option<review_core::ChangeSetV1>, StoreError> {
     if artifact_type == "review.kernel/Opaque@1" {
         cas.get(artifact_id)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        return Ok(());
+        return Ok(None);
     }
     let value = cas
         .get_json(artifact_id)
@@ -766,6 +768,7 @@ fn validate_artifact_payload(
             let change_set: review_core::ChangeSetV1 = serde_json::from_value(value)
                 .map_err(|error| StoreError::Conflict(error.to_string()))?;
             change_set.validate().map_err(StoreError::Conflict)?;
+            return Ok(Some(change_set));
         }
         "review.kernel/GateDecision@1" => {
             exact_keys(
@@ -833,7 +836,7 @@ fn validate_artifact_payload(
             )));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {

@@ -195,13 +195,14 @@ pub struct Ledger {
 #[derive(Debug, Clone)]
 struct ActiveScope {
     round: u32,
+    subject_id: String,
     subject: SubjectScope,
 }
 
 #[derive(Debug, Clone)]
 enum SubjectScope {
     WholeTree,
-    Diff(Arc<[String]>),
+    Diff(Arc<review_core::ChangeSetV1>),
     Unavailable,
 }
 
@@ -468,17 +469,12 @@ impl Ledger {
             .map_err(|error| error.to_string())
             .and_then(|resolved| match resolved.subject.kind {
                 SubjectKind::WholeTree => Ok(SubjectScope::WholeTree),
-                SubjectKind::Diff => {
-                    resolved
-                        .changed_paths
-                        .map(SubjectScope::Diff)
-                        .ok_or_else(|| {
-                            format!(
-                                "diff Subject {} resolved without changed paths",
-                                started.subject_id
-                            )
-                        })
-                }
+                SubjectKind::Diff => resolved.change_set.map(SubjectScope::Diff).ok_or_else(|| {
+                    format!(
+                        "diff Subject {} resolved without changed paths",
+                        started.subject_id
+                    )
+                }),
             }) {
             Ok(scope) => scope,
             Err(reason) => {
@@ -492,25 +488,45 @@ impl Ledger {
         };
         self.active_scope = Some(ActiveScope {
             round: started.round,
+            subject_id: started.subject_id,
             subject: subject_scope,
         });
         Ok(())
     }
 
-    fn report_scope(&self, round: u32, location: &ReportLocation) -> Option<ReportScope> {
-        let active = self
+    fn report_scope(&mut self, round: u32, location: &ReportLocation) -> Option<ReportScope> {
+        if let Some(active) = self
             .active_scope
             .as_ref()
-            .filter(|active| active.round == round)?;
+            .filter(|active| active.round != round)
+        {
+            let reason = format!(
+                "Report round {round} disagrees with active RoundStarted@1 round {}",
+                active.round
+            );
+            if !self.scope_authority_failures.iter().any(|failure| {
+                failure.round == round
+                    && failure.subject_id == active.subject_id
+                    && failure.reason == reason
+            }) {
+                self.scope_authority_failures.push(ScopeAuthorityFailure {
+                    round,
+                    subject_id: active.subject_id.clone(),
+                    reason,
+                });
+            }
+            return None;
+        }
+        let active = self.active_scope.as_ref()?;
         match (&active.subject, location) {
             (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => None,
             (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
                 Some(ReportScope::In)
             }
-            (SubjectScope::Diff(paths), ReportLocation::Path(path)) => Some(
+            (SubjectScope::Diff(change_set), ReportLocation::Paths(paths)) => Some(
                 if paths
-                    .binary_search_by(|item| item.as_str().cmp(path))
-                    .is_ok()
+                    .iter()
+                    .any(|path| change_set.contains_report_path(path))
                 {
                     ReportScope::In
                 } else {
@@ -638,12 +654,60 @@ struct ReportProjection {
 
 enum ReportLocation {
     ChangeWide,
-    Path(String),
+    Paths(Vec<String>),
     Unrecorded,
 }
 
 impl ReportProjection {
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
+        if value.get("locations").is_some() {
+            let report: review_core::FindingReport = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    crate::store::StoreError::Artifact(format!(
+                        "report {report_id} is not FindingReport@1: {error}"
+                    ))
+                })?;
+            if report.title.trim().is_empty()
+                || report.body.trim().is_empty()
+                || report.fix.trim().is_empty()
+                || !(0.0..=1.0).contains(&report.confidence)
+                || report.locations.iter().any(|location| {
+                    location.path.trim().is_empty()
+                        || location.line == Some(0)
+                        || location.end_line == Some(0)
+                })
+            {
+                return Err(crate::store::StoreError::Artifact(format!(
+                    "report {report_id} violates FindingReport@1 semantics"
+                )));
+            }
+            let first = report.locations.first();
+            let file = first
+                .map(|location| location.path.clone())
+                .unwrap_or_else(|| "(change-wide)".to_string());
+            let line = first.and_then(|location| location.line).map(i64::from);
+            let location = if report.locations.is_empty() {
+                ReportLocation::ChangeWide
+            } else {
+                ReportLocation::Paths(
+                    report
+                        .locations
+                        .iter()
+                        .map(|location| location.path.clone())
+                        .collect(),
+                )
+            };
+            return Ok(Self {
+                severity: report.severity,
+                file,
+                location,
+                line,
+                title: report.title,
+                body: report.body,
+                fix: Some(report.fix),
+                confidence: Some(report.confidence),
+            });
+        }
         let required = |field: &str| {
             value[field]
                 .as_str()
@@ -687,7 +751,7 @@ impl ReportProjection {
         let location = if file.trim().is_empty() {
             ReportLocation::ChangeWide
         } else {
-            ReportLocation::Path(file.to_string())
+            ReportLocation::Paths(vec![file.to_string()])
         };
         Ok(Self {
             severity,

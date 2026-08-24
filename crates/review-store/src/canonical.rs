@@ -14,6 +14,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
 /// Domain separator for `content_id` — hashes the payload alone.
 const DOMAIN_CONTENT: &[u8] = b"review.kernel/content-id/v1\0";
@@ -161,6 +162,25 @@ pub fn blob_content_id(bytes: &[u8]) -> String {
     digest(DOMAIN_CONTENT, bytes)
 }
 
+/// Stream an opaque blob into the same domain-separated identity without materializing it.
+pub fn blob_content_id_reader(mut reader: impl Read) -> std::io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_CONTENT);
+    let mut size = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size = size
+            .checked_add(read as u64)
+            .ok_or_else(|| std::io::Error::other("blob size exceeds u64"))?;
+    }
+    Ok((format!("sha256:{:x}", hasher.finalize()), size))
+}
+
 /// `artifact_id` — the identity of the record: type, content, producer, exact inputs, subject.
 ///
 /// Deliberately excludes `artifact_id` itself, and is computed over the same canonical form the
@@ -177,6 +197,14 @@ pub fn artifact_id(envelope: &review_core::ArtifactEnvelope) -> Result<String, C
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn streaming_blob_identity_matches_the_in_memory_form() {
+        let bytes = vec![0x5a; 200_000];
+        let (streamed, size) = blob_content_id_reader(std::io::Cursor::new(&bytes)).unwrap();
+        assert_eq!(streamed, blob_content_id(&bytes));
+        assert_eq!(size, bytes.len() as u64);
+    }
 
     #[test]
     fn members_are_ordered_and_whitespace_is_gone() {

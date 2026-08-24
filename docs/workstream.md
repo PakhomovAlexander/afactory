@@ -1,7 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2.1-M2.6 implementation is complete and `make check` is
-green; complete the M2 dogfood Campaign before resuming M3.1.
+**Status:** M0 and M1 are complete. M2 dogfood Round 1 found correctness and performance defects;
+fix its Ledger to convergence before resuming M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -11,7 +11,8 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0, M1, and M2.1-M2.6 implementation are complete. The repository/release
+are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood, whose first Round reopened M2
+with fourteen Findings. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
 complete. The M2 dogfood Campaign must converge before work resumes at M3.1.
 
@@ -88,9 +89,10 @@ identity, authority, isolation, and verification prerequisites exist.
       persisted; legacy replay remains pinned by fixtures.
 - [x] M1 — `af review show` prints every attached report whole; `ledger --long` carries body and
       fix; `report --format md` emits what SKILL.md §5 asks the agent to produce.
-- [x] M2 — Campaign authority and Base are pinned before candidate capture; committed and
+- [ ] M2 — Campaign authority and Base are pinned before candidate capture; committed and
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses
-      `diff`; renames do not alter canonical Finding identity.
+      `diff`; both rename endpoints govern Report Scope and replay never rewrites existing legacy
+      keys. Canonical path-independent Finding identity remains M3.1.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
@@ -111,7 +113,7 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0, M1, and M2.1-M2.6 implementation are complete. Campaigns now publish one immutable
+M0 and M1 are complete. M2.1-M2.6 reached dogfood. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,
 publish `Subject@1` and Subject-bound Round inputs, reuse incomplete Round inputs, and require an
 explicit epoch supersession to capture a changed head. The Git adapter now resolves opaque tree
@@ -122,9 +124,12 @@ its exact Round Subject; convergence excludes wholly out-of-set Findings and fai
 legacy `unknown` evidence. Bounded, resumable Provider Operations now probe explicit machine-local
 contexts, run a real inference smoke, fence exact continuations, and charge failed work before
 dispatch. Change Sets include both rename endpoints, so Reports at either path project `in`
-without rewriting the existing Finding key. `make check` is green. Run the M2 dogfood Campaign
-to convergence, then resume M3.1. Continue in milestone order; do not pull Proposal or scatter
-work forward past Subject, authority, isolation, and verification prerequisites.
+without rewriting the existing Finding key. Dogfood Round 1 produced fourteen Findings at
+317,395 tokens, including a path-encoding Scope blocker, multi-location loss, misleading reviewer
+Subject prose, and performance costs. The accepted Round 1 claims are implemented and locally
+verified; resolve them in the ledger and continue Campaign `m2-rename-scope` to convergence. Only
+then resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
+Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes
 
@@ -138,15 +143,11 @@ work forward past Subject, authority, isolation, and verification prerequisites.
 - **File and line references in `backlog.md` will drift** as soon as M1.1 lands. Treat them as
   where-to-look, not as ground truth, and prefer grepping the symbol.
 - **CI gates on markdownlint across `**/*.md`.** Run
-  `npx --yes markdownlint-cli2@0.22.1 --config template/.markdownlint-cli2.jsonc "**/*.md"`
+  `npx --yes markdownlint-cli2@0.22.1 --config .markdownlint-cli2.jsonc "**/*.md"`
   before pushing. A missing blank line before `---` turns the preceding paragraph into a setext
   heading and fails the build.
-- **This is the template repo.** `{{TOKEN}}` placeholders under `template/` are inputs, not bugs
-  — never resolve them in place. See the root `AGENTS.md`.
-- **Agent work on the hub happens in a worktree** (`make worktree NAME=<task>`), not on the
-  owner's live checkout. Root `AGENTS.md` has the rule.
 - **Editing a reviewer package requires re-locking**, or the digest check fails at load:
-  `make -C template review-kernel-lock` from this repository, or `make review-kernel-lock` from
-  a generated hub.
+  `cargo run -p review-config --example lock -- .review/reviewers architecture performance` is
+  the kernel repo's shipped generator. Replace `.review/review.lock` with its stdout atomically.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.

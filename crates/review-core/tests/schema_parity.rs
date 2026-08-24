@@ -295,6 +295,8 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
     )
     .unwrap();
     change_set.validate().unwrap();
+    assert!(change_set.contains_report_path("src/old.rs"));
+    assert!(!change_set.contains_report_path("src/untouched.rs"));
     assert_eq!(
         change_set.canonical_patch().unwrap(),
         b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"

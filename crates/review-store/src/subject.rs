@@ -9,7 +9,7 @@ use crate::{Cas, StoreError};
 #[derive(Debug, Clone)]
 pub struct ResolvedSubject {
     pub subject: SubjectV1,
-    pub changed_paths: Option<Arc<[String]>>,
+    pub change_set: Option<Arc<ChangeSetV1>>,
 }
 
 pub fn resolve_subject(cas: &Cas, subject_id: &str) -> Result<ResolvedSubject, StoreError> {
@@ -35,7 +35,7 @@ fn resolve(
         StoreError::Artifact(format!("Subject {subject_id} is invalid: {error}"))
     })?;
 
-    let changed_paths = match subject.kind {
+    let change_set = match subject.kind {
         SubjectKind::WholeTree => None,
         SubjectKind::Diff => {
             let change_set_id = subject.change_set_id.as_deref().ok_or_else(|| {
@@ -67,11 +67,11 @@ fn resolve(
                     "Change Set {change_set_id} contradicts Subject {subject_id}"
                 )));
             }
-            Some(Arc::from(change_set.changed_paths))
+            Some(Arc::new(change_set))
         }
     };
     Ok(ResolvedSubject {
         subject,
-        changed_paths,
+        change_set,
     })
 }
