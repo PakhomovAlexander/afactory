@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use review_source_git::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
-use review_store::canonical::blob_content_id_reader;
+use review_store::canonical::blob_content_id_reader_with_buffer;
 
 use crate::{Mode, Sandbox};
 
@@ -69,8 +69,8 @@ impl SealedSandbox {
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
-    let (root, baseline, mode, dir) = sandbox.into_parts();
-    let (final_manifest, mutations) = scan_and_diff(&root, &baseline)?;
+    let (root, baseline, mode, worker_budget, dir) = sandbox.into_parts();
+    let (final_manifest, mutations) = scan_and_diff(&root, &baseline, worker_budget)?;
     Ok(SealedSandbox {
         root,
         mode,
@@ -93,6 +93,7 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
 fn scan_and_diff(
     root: &Path,
     baseline: &Manifest,
+    worker_budget: usize,
 ) -> Result<(Manifest, MutationSet), std::io::Error> {
     let index: BTreeMap<&str, &Entry> = baseline
         .entries
@@ -151,7 +152,7 @@ fn scan_and_diff(
             }
         }
     }
-    for (entry, modified) in hash_baseline_candidates(&baseline_candidates)? {
+    for (entry, modified) in hash_baseline_candidates(&baseline_candidates, worker_budget)? {
         if modified {
             mutations.modified.push(entry.path.clone());
         }
@@ -178,17 +179,16 @@ struct BaselineCandidate {
 
 fn hash_baseline_candidates(
     candidates: &[BaselineCandidate],
+    worker_budget: usize,
 ) -> Result<Vec<(Entry, bool)>, std::io::Error> {
-    let workers = std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(4)
-        .min(candidates.len().max(1));
+    let workers = worker_budget.max(1).min(candidates.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> Result<Vec<(Entry, bool)>, std::io::Error> {
                     let mut hashed = Vec::new();
+                    let mut buffer = [0u8; 64 * 1024];
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(candidate) = candidates.get(index) else {
@@ -199,7 +199,10 @@ fn hash_baseline_candidates(
                             let bytes = path_bytes(&target);
                             (digest_bytes(bytes), bytes.len() as u64)
                         } else {
-                            blob_content_id_reader(std::fs::File::open(&candidate.path)?)?
+                            blob_content_id_reader_with_buffer(
+                                std::fs::File::open(&candidate.path)?,
+                                &mut buffer,
+                            )?
                         };
                         let modified = candidate.previous_content != content
                             || candidate.previous_kind != candidate.kind;

@@ -127,8 +127,11 @@ dispatch. Change Sets include both rename endpoints, so Reports at either path p
 without rewriting the existing Finding key. Dogfood Round 1 produced fourteen Findings at
 317,395 tokens, including a path-encoding Scope blocker, multi-location loss, misleading reviewer
 Subject prose, and performance costs. The accepted Round 1 claims are implemented and locally
-verified; resolve them in the ledger and continue Campaign `m2-rename-scope` to convergence. Only
-then resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
+verified. Round 2 kept all fourteen fixed and opened ten further claims; the duplicate
+rename-limit reports reduce that to nine obligations. Their corrections are locally implemented;
+full verification and markdownlint pass. Commit and resolve them in Campaign `m2-rename-scope`,
+then continue to convergence. Only then
+resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
 Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes

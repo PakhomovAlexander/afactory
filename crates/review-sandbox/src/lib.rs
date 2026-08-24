@@ -35,7 +35,7 @@ pub use seal::{MutationSet, SealedSandbox};
 
 use std::path::{Path, PathBuf};
 
-use review_source_git::{Manifest, materialize};
+use review_source_git::{Manifest, materialize_with_workers};
 use review_store::Cas;
 
 /// What a provider genuinely enforces. Ordered: a stronger level satisfies a weaker requirement.
@@ -128,6 +128,7 @@ pub struct Sandbox {
     /// The manifest as materialized. Sealing diffs against this, so "what did the reviewer
     /// change" is computed rather than reported by the reviewer.
     baseline: Manifest,
+    worker_budget: usize,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
     /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
     _dir: Option<tempfile::TempDir>,
@@ -175,9 +176,10 @@ fn restore_writable_dirs(_root: &Path) {}
 /// not be dereferenced), and regular files are reflinked — sharing blocks until one side
 /// writes — with a plain copy where the filesystem does not support reflinks. Both preserve
 /// the source permissions, so the exec bit survives.
-fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn clone_tree(src: &Path, dst: &Path, workers: usize) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    let mut files = Vec::new();
     while let Some((from_dir, to_dir)) = stack.pop() {
         for entry in std::fs::read_dir(&from_dir)? {
             let entry = entry?;
@@ -187,16 +189,36 @@ fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
             if file_type.is_dir() {
                 std::fs::create_dir(&to)?;
                 stack.push((from, to));
-            } else if file_type.is_symlink() {
-                symlink_raw(&std::fs::read_link(&from)?, &to)?;
             } else {
-                // COW clone, or a plain copy where reflinks are unavailable — either way the
-                // content and permissions are those of the template.
-                reflink_copy::reflink_or_copy(&from, &to)?;
+                files.push((from, to, file_type.is_symlink()));
             }
         }
     }
-    Ok(())
+    let workers = workers.max(1).min(files.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| -> std::io::Result<()> {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((from, to, is_symlink)) = files.get(index) else {
+                            return Ok(());
+                        };
+                        if *is_symlink {
+                            symlink_raw(&std::fs::read_link(from)?, to)?;
+                        } else {
+                            reflink_copy::reflink_or_copy(from, to)?;
+                        }
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("sandbox clone worker")?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(unix)]
@@ -211,25 +233,41 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 
 /// A snapshot materialized once, to be cloned per sandbox.
 ///
-/// Materializing walks the manifest and, per entry, does a CAS read (open + full SHA-256
-/// verification) + write + chmod — syscall-bound, and paid once for the gate and once per
-/// reviewer attempt when each sandbox re-materialized from scratch. A template materializes
-/// exactly once; every sandbox is then a copy-on-write clone of it, which shares blocks
-/// instead of re-reading and re-writing the tree, with writes still fully isolated per clone.
+/// Materialization prepares paths serially, then verifies each distinct CAS object once and
+/// writes independent content groups within the scheduler-derived worker budget. A template is
+/// built exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which
+/// shares blocks instead of re-reading and re-writing the tree while keeping writes isolated.
 pub struct SandboxTemplate {
     manifest: Manifest,
     root: PathBuf,
+    worker_budget: usize,
     _dir: tempfile::TempDir,
 }
 
 impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
+        Self::materialize_for_parallelism(manifest, cas, 1)
+    }
+
+    pub fn materialize_for_parallelism(
+        manifest: &Manifest,
+        cas: &Cas,
+        max_parallel: usize,
+    ) -> Result<SandboxTemplate, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
+        let worker_budget = std::thread::available_parallelism()
+            .map(|workers| workers.get())
+            .unwrap_or(1)
+            .checked_div(max_parallel.max(1))
+            .unwrap_or(1)
+            .max(1);
+        materialize_with_workers(manifest, cas, &root, worker_budget)
+            .map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
             manifest: manifest.clone(),
             root,
+            worker_budget,
             _dir: dir,
         })
     }
@@ -248,13 +286,18 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
+        let worker_budget = std::thread::available_parallelism()
+            .map(|workers| workers.get())
+            .unwrap_or(1);
+        materialize_with_workers(manifest, cas, &root, worker_budget)
+            .map_err(std::io::Error::other)?;
 
         let sandbox = Sandbox {
             root,
             mode,
             isolation: Isolation::None,
             baseline: manifest.clone(),
+            worker_budget,
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -271,13 +314,14 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root)?;
+        clone_tree(&template.root, &root, template.worker_budget)?;
 
         let sandbox = Sandbox {
             root,
             mode,
             isolation: Isolation::None,
             baseline: template.manifest.clone(),
+            worker_budget: template.worker_budget,
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -363,7 +407,7 @@ impl Sandbox {
         seal::seal(self)
     }
 
-    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, tempfile::TempDir) {
+    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, usize, tempfile::TempDir) {
         // Restore writability here, while the real root is still known: the TempDir moves to the
         // SealedSandbox, so its later cleanup must find directories it can empty. The residual
         // `self` (emptied below) then drops as a no-op.
@@ -371,6 +415,6 @@ impl Sandbox {
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);
-        (root, baseline, self.mode, dir)
+        (root, baseline, self.mode, self.worker_budget, dir)
     }
 }

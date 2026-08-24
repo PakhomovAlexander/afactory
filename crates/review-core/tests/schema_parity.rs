@@ -145,6 +145,27 @@ fn finding_report_rejects_what_the_design_forbids() {
 }
 
 #[test]
+fn finding_report_semantic_conformance_corpus_matches_schema_and_reader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/finding-report-v1-conformance.json");
+    let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        assert_valid("finding-report-v1.json", &case["payload"]);
+        let report: FindingReport = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(report.validate().is_ok(), "{}", case["name"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        assert_invalid(
+            "finding-report-v1.json",
+            &case["payload"],
+            case["name"].as_str().unwrap(),
+        );
+        let report: FindingReport = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(report.validate().is_err(), "{}", case["name"]);
+    }
+}
+
+#[test]
 fn source_snapshot_roundtrips_every_capture_kind() {
     let digest = format!("sha256:{}", "a".repeat(64));
     let captures = [

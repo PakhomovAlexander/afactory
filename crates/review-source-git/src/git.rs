@@ -86,7 +86,7 @@ pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-
 
 /// The kernel-owned policy whose output M2.4 records with each Change Set.
 pub const TREE_DIFF_POLICY_VERSION: &str =
-    "review.kernel/git-tree-diff@1;binary=git-deflate-level-6";
+    "review.kernel/git-tree-diff@2;binary=git-deflate-level-6;rename-limit=1000";
 
 /// A tree object id admitted by [`Repo::resolve_tree`] or the kernel's synthetic-tree builder.
 ///
@@ -129,6 +129,7 @@ pub struct TreeDiff {
     pub changes: Vec<TreeChange>,
     pub git_version: String,
     pub diff_policy: String,
+    pub rename_detection_truncated: bool,
     output: Vec<u8>,
     patch_start: usize,
 }
@@ -174,6 +175,9 @@ impl TreeDiff {
             &self.git_version,
             &self.diff_policy,
         )
+        .map(|change_set| {
+            change_set.with_rename_detection_truncated(self.rename_detection_truncated)
+        })
     }
 }
 
@@ -319,7 +323,7 @@ impl Repo {
         object_dir: &Path,
         alternate_object_dir: Option<&Path>,
         args: &[S],
-    ) -> Result<(Output, String), GitError> {
+    ) -> Result<(Output, String, bool), GitError> {
         let mut version_cmd = self.command();
         version_cmd
             .current_dir(&self.home)
@@ -360,13 +364,8 @@ impl Repo {
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
-        if rename_detection_was_truncated(&output.stderr) {
-            return Err(GitError::MalformedTreeDiff {
-                detail: "rename detection was truncated at the fixed 1000-candidate safety limit; partition the Subject before retrying"
-                    .to_string(),
-            });
-        }
-        Ok((output, git_version))
+        let rename_detection_truncated = rename_detection_was_truncated(&output.stderr);
+        Ok((output, git_version, rename_detection_truncated))
     }
 
     fn run_isolated_with_input(
@@ -573,7 +572,7 @@ impl Repo {
                 Some(candidate_objects.as_path()),
             ),
         };
-        let (output, git_version) = self.run_tree_diff_unchecked(
+        let (output, git_version, rename_detection_truncated) = self.run_tree_diff_unchecked(
             &git_dir,
             object_dir,
             alternate,
@@ -605,7 +604,9 @@ impl Repo {
                 "--",
             ],
         )?;
-        Ok((head, parse_tree_diff(output.stdout, git_version)?))
+        let mut diff = parse_tree_diff(output.stdout, git_version)?;
+        diff.rename_detection_truncated = rename_detection_truncated;
+        Ok((head, diff))
     }
 
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
@@ -900,6 +901,7 @@ fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, Git
         changes,
         git_version,
         diff_policy: TREE_DIFF_POLICY_VERSION.to_string(),
+        rename_detection_truncated: false,
         output,
         patch_start,
     })
@@ -1056,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_limit_warnings_fail_closed_even_when_git_exits_zero() {
+    fn rename_limit_warnings_are_detected_even_when_git_exits_zero() {
         assert!(rename_detection_was_truncated(
             b"warning: exhaustive rename detection was skipped due to too many files.\n"
         ));

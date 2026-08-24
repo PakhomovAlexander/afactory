@@ -44,6 +44,32 @@ pub fn decode_path(encoded: &str) -> Vec<u8> {
     decoded
 }
 
+/// Whether a JSON path is a canonical repository-relative path.
+///
+/// This is the semantic rule shared by Change Sets and Report locations. A malformed Report
+/// path must be refused at admission; treating it as merely absent from a Change Set would turn
+/// a spelling error into an `out` Scope and could make a real blocker stop blocking.
+pub fn is_valid_repo_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|component| !matches!(component, "" | "." | ".."))
+}
+
+/// Match a Report spelling against a sorted set of losslessly encoded repository paths.
+pub fn contains_report_path(changed_paths: &[String], report_path: &str) -> bool {
+    is_valid_repo_path(report_path)
+        && (changed_paths
+            .binary_search_by(|path| path.as_str().cmp(report_path))
+            .is_ok()
+            || {
+                let encoded = encode_path(report_path.as_bytes());
+                encoded != report_path && changed_paths.binary_search(&encoded).is_ok()
+            })
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -71,5 +97,15 @@ mod tests {
         }
         assert_eq!(encode_path(b"docs/50%-off.md"), "docs/50%25-off.md");
         assert_eq!(encode_path(&[b'a', 0xff, b'b']), "a%FFb");
+    }
+
+    #[test]
+    fn repository_paths_are_relative_and_canonical() {
+        for valid in ["src/a.rs", "docs/50%-off.md", "a\\b", ".../x"] {
+            assert!(is_valid_repo_path(valid), "{valid:?}");
+        }
+        for invalid in ["", "/src/a.rs", "./src/a.rs", "src//a.rs", "src/../a.rs"] {
+            assert!(!is_valid_repo_path(invalid), "{invalid:?}");
+        }
     }
 }

@@ -73,12 +73,26 @@ pub fn materialize(
     cas: &Cas,
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
+    let workers = std::thread::available_parallelism()
+        .map(|workers| workers.get())
+        .unwrap_or(1);
+    materialize_with_workers(manifest, cas, root, workers)
+}
+
+/// Materialize with an explicit worker budget supplied by the owning scheduler.
+pub fn materialize_with_workers(
+    manifest: &Manifest,
+    cas: &Cas,
+    root: impl AsRef<Path>,
+    workers: usize,
+) -> Result<(), MaterializeError> {
     let root = root.as_ref();
     fs::create_dir_all(root)?;
 
     // Each distinct parent is prepared once: `create_dir_all` stats every component, so doing
     // it per entry costs O(files × depth) syscalls where O(directories × depth) suffices.
     let mut prepared: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut targets = Vec::with_capacity(manifest.entries.len());
     for entry in &manifest.entries {
         let target = safe_join(root, &entry.path)?;
         if let Some(parent) = target.parent()
@@ -95,23 +109,68 @@ pub fn materialize(
             prepared.insert(parent.to_path_buf());
         }
 
-        // `cas.get` verifies the bytes against the digest it is asked for and refuses a
-        // mismatch, so these are the manifest's bytes by construction — no second hash.
-        let bytes = cas
-            .get(&entry.content)
-            .map_err(|e| MaterializeError::Cas(e.to_string()))?;
-
-        match entry.kind {
-            EntryKind::Symlink => {
-                symlink(&bytes, &target)?;
-            }
-            EntryKind::File | EntryKind::Executable => {
-                fs::write(&target, &bytes)?;
-                set_executable(&target, entry.kind == EntryKind::Executable)?;
-            }
-        }
+        targets.push((target, entry));
     }
-    Ok(())
+
+    let symlinks: Vec<&Path> = targets
+        .iter()
+        .filter(|(_, entry)| entry.kind == EntryKind::Symlink)
+        .map(|(target, _)| target.as_path())
+        .collect();
+    if let Some((_, entry)) = targets.iter().find(|(target, _)| {
+        symlinks
+            .iter()
+            .any(|symlink| target != symlink && target.starts_with(symlink))
+    }) {
+        return Err(MaterializeError::Escape {
+            path: entry.path.clone(),
+        });
+    }
+
+    // One verified CAS read per distinct digest. Distinct content groups run concurrently;
+    // repeated content is then written to every occurrence without being re-read or re-hashed.
+    let mut grouped: std::collections::BTreeMap<_, Vec<_>> = std::collections::BTreeMap::new();
+    for (target, entry) in targets {
+        grouped
+            .entry(entry.content.as_str())
+            .or_default()
+            .push((target, entry.kind));
+    }
+    let groups: Vec<_> = grouped.into_iter().collect();
+    let workers = workers.max(1).min(groups.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| -> Result<(), MaterializeError> {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((content, targets)) = groups.get(index) else {
+                            return Ok(());
+                        };
+
+                        let bytes = cas
+                            .get(content)
+                            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+
+                        for (target, kind) in targets {
+                            match kind {
+                                EntryKind::Symlink => symlink(&bytes, target)?,
+                                EntryKind::File | EntryKind::Executable => {
+                                    fs::write(target, &bytes)?;
+                                    set_executable(target, *kind == EntryKind::Executable)?;
+                                }
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("materialize worker")?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(unix)]

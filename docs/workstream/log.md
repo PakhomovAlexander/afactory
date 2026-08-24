@@ -92,3 +92,22 @@ detection, and sandbox sealing hashes baseline files through bounded parallel 64
 completed in 0.589 seconds; the over-limit Git integration test exercised 1,001 delete and 1,001
 add candidates and observed the fail-closed diagnostic. Campaign Round 2 remains the convergence
 gate before M3.1.
+
+## 2026-08-24 — M2 dogfood Round 2 corrections
+
+Round 2 spent 367,930 tokens, retained all fourteen prior resolutions as fixed, and opened ten
+Reports representing nine obligations. Canonical repository-relative validation now has one core
+implementation shared by Change Sets and Reports; malformed live paths are refused, while an
+unreadable persisted Report becomes diagnostic `unknown` blocker evidence instead of bricking
+replay. `FindingReport@1` has one semantic validator and a schema/reader conformance corpus.
+Multi-location projection displays the location that actually established Scope, and repeated
+Round Subject resolution reuses cached, path-only authority.
+
+[ADR-0017](adr/0017-record-rename-truncation-and-continue.md) records the choice to preserve a
+complete diff Subject when Git truncates rename linkage: `ChangeSet@1` carries the durable flag
+and the policy identity carries the limit. Template materialization deduplicates CAS verification
+and parallelizes distinct content, template cloning is bounded-parallel, seal hash buffers are
+reused per worker, and the production worker budget is divided by scheduler concurrency. The
+manual 5,000-file / 199 MiB production-budget measurement recorded 1.138 s materialization,
+0.243 s clone, and 2.512 s seal. `scripts/verify.sh` and markdownlint pass on the complete Round 2
+correction tree. Round 3 remains the convergence gate before M3.1.

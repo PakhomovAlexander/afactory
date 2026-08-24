@@ -101,6 +101,9 @@ pub struct AttachedReport {
     pub round: u32,
     pub source: String,
     pub severity: Severity,
+    /// The deterministic location selected for presentation from this immutable Report.
+    pub file: String,
+    pub line: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<ReportScope>,
 }
@@ -189,6 +192,7 @@ pub struct Ledger {
     order: Vec<String>,
     active_scope: Option<ActiveScope>,
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
+    subject_scope_cache: BTreeMap<String, Result<SubjectScope, String>>,
     pub round: u32,
 }
 
@@ -202,7 +206,7 @@ struct ActiveScope {
 #[derive(Debug, Clone)]
 enum SubjectScope {
     WholeTree,
-    Diff(Arc<review_core::ChangeSetV1>),
+    Diff(Arc<[String]>),
     Unavailable,
 }
 
@@ -311,7 +315,7 @@ impl Ledger {
         let source = required_string(payload, "FindingReported@1", "source")?;
         let round = required_round(payload, "FindingReported@1")?;
         let imported = payload.get("imported").and_then(Value::as_bool) == Some(true);
-        let (report_id, report) = match (artifact_refs, imported) {
+        let (report_id, mut report) = match (artifact_refs, imported) {
             ([report_id], false) => {
                 if payload.get("report_id").and_then(Value::as_str) != Some(report_id) {
                     return Err(malformed(
@@ -319,15 +323,21 @@ impl Ledger {
                         "payload `report_id` does not match its sole artifact reference",
                     ));
                 }
-                let value = cas.get_json(report_id).map_err(|error| {
-                    crate::store::StoreError::Artifact(format!(
-                        "FindingReported@1 references {report_id}: {error}"
-                    ))
-                })?;
-                (
-                    report_id.clone(),
-                    ReportProjection::from_artifact(report_id, &value)?,
-                )
+                let projected = cas
+                    .get_json(report_id)
+                    .map_err(|error| format!("FindingReported@1 references {report_id}: {error}"))
+                    .and_then(|value| {
+                        ReportProjection::from_artifact(report_id, &value)
+                            .map_err(|error| error.to_string())
+                    });
+                let report = match projected {
+                    Ok(report) => report,
+                    Err(reason) => {
+                        self.record_authority_failure(round, report_id, &reason);
+                        ReportProjection::unreadable(report_id, &reason)
+                    }
+                };
+                (report_id.clone(), report)
             }
             ([], true) => (
                 String::new(),
@@ -347,12 +357,15 @@ impl Ledger {
             }
         };
         let severity = report.severity;
-        let scope = self.report_scope(round, &report.location);
+        let (scope, selected_location) = self.report_scope(round, &report.location);
+        report.select_location(selected_location);
         let attached = AttachedReport {
             report_id,
             round,
             source: source.clone(),
             severity,
+            file: report.file.clone(),
+            line: report.line,
             scope,
         };
 
@@ -465,24 +478,32 @@ impl Ledger {
         started
             .validate()
             .map_err(|error| malformed("RoundStarted@1", &error))?;
-        let subject_scope = match crate::resolve_subject_scope(cas, &started.subject_id)
-            .map_err(|error| error.to_string())
-            .and_then(|resolved| match resolved.subject.kind {
-                SubjectKind::WholeTree => Ok(SubjectScope::WholeTree),
-                SubjectKind::Diff => resolved.change_set.map(SubjectScope::Diff).ok_or_else(|| {
-                    format!(
-                        "diff Subject {} resolved without changed paths",
-                        started.subject_id
-                    )
-                }),
-            }) {
+        let resolved_scope =
+            if let Some(cached) = self.subject_scope_cache.get(&started.subject_id) {
+                cached.clone()
+            } else {
+                let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
+                    .map_err(|error| error.to_string())
+                    .and_then(|resolved| match resolved.subject.kind {
+                        SubjectKind::WholeTree => Ok(SubjectScope::WholeTree),
+                        SubjectKind::Diff => resolved
+                            .changed_paths
+                            .map(SubjectScope::Diff)
+                            .ok_or_else(|| {
+                                format!(
+                                    "diff Subject {} resolved without changed paths",
+                                    started.subject_id
+                                )
+                            }),
+                    });
+                self.subject_scope_cache
+                    .insert(started.subject_id.clone(), resolved.clone());
+                resolved
+            };
+        let subject_scope = match resolved_scope {
             Ok(scope) => scope,
             Err(reason) => {
-                self.scope_authority_failures.push(ScopeAuthorityFailure {
-                    round: started.round,
-                    subject_id: started.subject_id.clone(),
-                    reason,
-                });
+                self.record_authority_failure(started.round, &started.subject_id, &reason);
                 SubjectScope::Unavailable
             }
         };
@@ -494,7 +515,11 @@ impl Ledger {
         Ok(())
     }
 
-    fn report_scope(&mut self, round: u32, location: &ReportLocation) -> Option<ReportScope> {
+    fn report_scope(
+        &mut self,
+        round: u32,
+        location: &ReportLocation,
+    ) -> (Option<ReportScope>, Option<usize>) {
         if let Some(active) = self
             .active_scope
             .as_ref()
@@ -504,35 +529,41 @@ impl Ledger {
                 "Report round {round} disagrees with active RoundStarted@1 round {}",
                 active.round
             );
-            if !self.scope_authority_failures.iter().any(|failure| {
-                failure.round == round
-                    && failure.subject_id == active.subject_id
-                    && failure.reason == reason
-            }) {
-                self.scope_authority_failures.push(ScopeAuthorityFailure {
-                    round,
-                    subject_id: active.subject_id.clone(),
-                    reason,
-                });
-            }
-            return None;
+            let subject_id = active.subject_id.clone();
+            self.record_authority_failure(round, &subject_id, &reason);
+            return (None, location.first_index());
         }
-        let active = self.active_scope.as_ref()?;
+        let Some(active) = self.active_scope.as_ref() else {
+            return (None, location.first_index());
+        };
         match (&active.subject, location) {
-            (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => None,
-            (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
-                Some(ReportScope::In)
+            (SubjectScope::Unavailable, _) | (_, ReportLocation::Unrecorded) => {
+                (None, location.first_index())
             }
-            (SubjectScope::Diff(change_set), ReportLocation::Paths(paths)) => Some(
-                if paths
-                    .iter()
-                    .any(|path| change_set.contains_report_path(path))
-                {
-                    ReportScope::In
+            (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
+                (Some(ReportScope::In), location.first_index())
+            }
+            (SubjectScope::Diff(changed_paths), ReportLocation::Paths(paths)) => {
+                if let Some(index) = paths.iter().position(|location| {
+                    review_core::contains_report_path(changed_paths, &location.path)
+                }) {
+                    (Some(ReportScope::In), Some(index))
                 } else {
-                    ReportScope::Out
-                },
-            ),
+                    (Some(ReportScope::Out), location.first_index())
+                }
+            }
+        }
+    }
+
+    fn record_authority_failure(&mut self, round: u32, authority_id: &str, reason: &str) {
+        if !self.scope_authority_failures.iter().any(|failure| {
+            failure.round == round && failure.subject_id == authority_id && failure.reason == reason
+        }) {
+            self.scope_authority_failures.push(ScopeAuthorityFailure {
+                round,
+                subject_id: authority_id.to_string(),
+                reason: reason.to_string(),
+            });
         }
     }
 
@@ -654,8 +685,19 @@ struct ReportProjection {
 
 enum ReportLocation {
     ChangeWide,
-    Paths(Vec<String>),
+    Paths(Vec<ProjectedLocation>),
     Unrecorded,
+}
+
+struct ProjectedLocation {
+    path: String,
+    line: Option<i64>,
+}
+
+impl ReportLocation {
+    fn first_index(&self) -> Option<usize> {
+        matches!(self, Self::Paths(paths) if !paths.is_empty()).then_some(0)
+    }
 }
 
 impl ReportProjection {
@@ -667,20 +709,9 @@ impl ReportProjection {
                         "report {report_id} is not FindingReport@1: {error}"
                     ))
                 })?;
-            if report.title.trim().is_empty()
-                || report.body.trim().is_empty()
-                || report.fix.trim().is_empty()
-                || !(0.0..=1.0).contains(&report.confidence)
-                || report.locations.iter().any(|location| {
-                    location.path.trim().is_empty()
-                        || location.line == Some(0)
-                        || location.end_line == Some(0)
-                })
-            {
-                return Err(crate::store::StoreError::Artifact(format!(
-                    "report {report_id} violates FindingReport@1 semantics"
-                )));
-            }
+            report.validate().map_err(|reason| {
+                crate::store::StoreError::Artifact(format!("report {report_id}: {reason}"))
+            })?;
             let first = report.locations.first();
             let file = first
                 .map(|location| location.path.clone())
@@ -693,7 +724,10 @@ impl ReportProjection {
                     report
                         .locations
                         .iter()
-                        .map(|location| location.path.clone())
+                        .map(|location| ProjectedLocation {
+                            path: location.path.clone(),
+                            line: location.line.map(i64::from),
+                        })
                         .collect(),
                 )
             };
@@ -751,7 +785,15 @@ impl ReportProjection {
         let location = if file.trim().is_empty() {
             ReportLocation::ChangeWide
         } else {
-            ReportLocation::Paths(vec![file.to_string()])
+            if !review_core::is_valid_repo_path(file) {
+                return Err(crate::store::StoreError::Artifact(format!(
+                    "report {report_id} has a non-canonical repository-relative `file`"
+                )));
+            }
+            ReportLocation::Paths(vec![ProjectedLocation {
+                path: file.to_string(),
+                line,
+            }])
         };
         Ok(Self {
             severity,
@@ -787,6 +829,32 @@ impl ReportProjection {
             fix: None,
             confidence: payload["confidence"].as_f64(),
         })
+    }
+
+    fn unreadable(report_id: &str, reason: &str) -> Self {
+        Self {
+            severity: Severity::Blocker,
+            file: "(unavailable)".into(),
+            location: ReportLocation::Unrecorded,
+            line: None,
+            title: format!("Unreadable Report artifact {report_id}"),
+            body: reason.to_string(),
+            fix: Some("Restore or migrate the exact content-addressed Report artifact".into()),
+            confidence: None,
+        }
+    }
+
+    fn select_location(&mut self, selected: Option<usize>) {
+        let Some(selected) = selected else {
+            return;
+        };
+        let ReportLocation::Paths(locations) = &self.location else {
+            return;
+        };
+        if let Some(location) = locations.get(selected) {
+            self.file.clone_from(&location.path);
+            self.line = location.line;
+        }
     }
 }
 

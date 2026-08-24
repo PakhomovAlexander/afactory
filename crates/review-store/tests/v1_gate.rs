@@ -107,6 +107,39 @@ fn legacy_live_identity_remains_path_based_until_m3() {
     );
 }
 
+#[test]
+fn a_noncanonical_report_path_is_refused_instead_of_projecting_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let stage: LegacyStageOutput = serde_json::from_value(serde_json::json!({
+        "verdict": "request-changes",
+        "summary": null,
+        "findings": [{
+            "severity": "blocker",
+            "file": "./src/in.rs",
+            "line": 1,
+            "title": "bad spelling",
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        }],
+        "benchmark_demands": [],
+        "disputes": []
+    }))
+    .unwrap();
+    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
+    let error = ingest
+        .add_live_stage_output("architecture", &stage)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("canonical repository-relative path")
+    );
+    assert!(ingest.ledger().is_empty());
+}
+
 /// A reviewer's dispute is folded into the ledger: a `refute` on a prior claim contests it,
 /// which the campaign loop and `reviewctl ledger`/`resolve` then see. Before, disputes sat in
 /// raw CAS output and affected nothing.

@@ -41,7 +41,10 @@ after, no markdown fence. Shape:\n\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
 \"disputes\":[{\"claim_id\":string,\"position\":\"confirm\"|\"refute\",\"reason\":string}]}\n\
 An empty findings list is a valid answer. Every finding needs a concrete fix. Use exactly \
-these fields and no others - an extra field is discarded, a missing one fails the answer.";
+these fields and no others - an extra field is discarded, a missing one fails the answer. \
+Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
+from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
+path component.";
 
 /// Maximum encoded size of the exact prior Finding Set delivered to any reviewer.
 pub const MAX_PRIOR_FINDINGS_BYTES: usize = 64 * 1024;
@@ -323,6 +326,7 @@ impl ReviewerInputs {
                     "head_snapshot_id": change_set.head_snapshot_id,
                     "changed_paths": change_set.changed_paths,
                     "renames": change_set.renames,
+                    "rename_detection_truncated": change_set.rename_detection_truncated,
                     "git_version": change_set.git_version,
                     "diff_policy_version": change_set.diff_policy_version,
                     "canonical_patch_bytes": patch.len(),

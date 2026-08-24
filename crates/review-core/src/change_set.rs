@@ -20,6 +20,11 @@ pub struct ChangeSetV1 {
     pub head_snapshot_id: String,
     pub changed_paths: Vec<String>,
     pub renames: Vec<PathRenameV1>,
+    /// Git returned a complete add/delete path set but skipped exhaustive rename linkage at the
+    /// fixed policy limit. Scope remains authoritative; consumers must not treat an empty rename
+    /// map as proof that no rename occurred.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub rename_detection_truncated: bool,
     /// Exact patch bytes. Base64 keeps arbitrary text and binary patches lossless in JSON.
     pub canonical_patch_base64: String,
     pub git_version: String,
@@ -45,12 +50,18 @@ impl ChangeSetV1 {
             head_snapshot_id: head_snapshot_id.into(),
             changed_paths,
             renames,
+            rename_detection_truncated: false,
             canonical_patch_base64: STANDARD.encode(canonical_patch),
             git_version: git_version.into(),
             diff_policy_version: diff_policy_version.into(),
         };
         value.validate()?;
         Ok(value)
+    }
+
+    pub fn with_rename_detection_truncated(mut self, truncated: bool) -> Self {
+        self.rename_detection_truncated = truncated;
+        self
     }
 
     pub fn canonical_patch(&self) -> Result<Vec<u8>, String> {
@@ -68,13 +79,7 @@ impl ChangeSetV1 {
     /// percent-bearing string is ambiguous, membership is deliberately a union: projecting a
     /// claim `in` is the fail-closed result for convergence.
     pub fn contains_report_path(&self, report_path: &str) -> bool {
-        self.changed_paths
-            .binary_search_by(|path| path.as_str().cmp(report_path))
-            .is_ok()
-            || {
-                let encoded = crate::encode_path(report_path.as_bytes());
-                encoded != report_path && self.changed_paths.binary_search(&encoded).is_ok()
-            }
+        crate::contains_report_path(&self.changed_paths, report_path)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -117,10 +122,10 @@ impl ChangeSetV1 {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn valid_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && path
-            .split('/')
-            .all(|component| !matches!(component, "" | "." | ".."))
+    crate::is_valid_repo_path(path)
 }

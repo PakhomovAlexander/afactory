@@ -92,6 +92,8 @@ pub enum ImportReason {
     MissingFix,
     EmptyTitle,
     EmptyBody,
+    /// A non-empty location that is not a canonical repository-relative path.
+    InvalidPath,
     /// A line number that is not a positive 32-bit value.
     InvalidLine,
     /// Outside 0.0..=1.0.
@@ -104,6 +106,7 @@ impl std::fmt::Display for LegacyImportError {
             ImportReason::MissingFix => "no fix: FindingReport@1 requires a proposed remedy",
             ImportReason::EmptyTitle => "empty title",
             ImportReason::EmptyBody => "empty body",
+            ImportReason::InvalidPath => "file is not a canonical repository-relative path",
             ImportReason::InvalidLine => "line is not a positive 32-bit number",
             ImportReason::ConfidenceOutOfRange => "confidence outside 0.0..=1.0",
         };
@@ -151,6 +154,9 @@ impl LegacyFinding {
             }
             Vec::new()
         } else {
+            if !crate::is_valid_repo_path(path) {
+                return Err(err(ImportReason::InvalidPath));
+            }
             vec![Location {
                 path: path.to_string(),
                 line,
@@ -158,7 +164,7 @@ impl LegacyFinding {
             }]
         };
 
-        Ok(FindingReport {
+        let report = FindingReport {
             title: self.title,
             severity: self.severity,
             locations,
@@ -169,7 +175,11 @@ impl LegacyFinding {
             rule_id: None,
             occurrence_key: None,
             relations: Vec::new(),
-        })
+        };
+        report
+            .validate()
+            .map_err(|_| err(ImportReason::InvalidPath))?;
+        Ok(report)
     }
 }
 

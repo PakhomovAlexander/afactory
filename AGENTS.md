@@ -18,3 +18,9 @@ belong in consuming repositories, not here.
 
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
 budget, or sandbox boundary to make a test or review pass.
+
+## Invariants
+
+- A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
+  path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
+  ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).

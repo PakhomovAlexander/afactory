@@ -13,6 +13,19 @@
         "git_version": "git version test",
         "diff_policy_version": "review.kernel/git-tree-diff@test"
       }
+    },
+    {
+      "name": "rename linkage truncated but scope paths complete",
+      "payload": {
+        "base_snapshot_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_snapshot_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "changed_paths": ["new", "old"],
+        "renames": [],
+        "rename_detection_truncated": true,
+        "canonical_patch_base64": "",
+        "git_version": "git version test",
+        "diff_policy_version": "review.kernel/git-tree-diff@2;rename-limit=1000"
+      }
     }
   ],
   "invalid": [

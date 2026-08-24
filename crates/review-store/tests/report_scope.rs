@@ -204,9 +204,54 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
         .unwrap();
 
     let finding = ledger.get("multi").unwrap();
-    assert_eq!(finding.file, "src/untouched.rs");
+    assert_eq!(finding.file, "src/new.rs");
     assert_eq!(finding.reports[0].scope, Some(ReportScope::In));
+    assert_eq!(finding.reports[0].file, "src/new.rs");
     assert_eq!(finding.convergence_scope, Some(ReportScope::In));
+}
+
+#[test]
+fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["src/in.rs"]);
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "title": "bad path spelling",
+            "severity": "major",
+            "locations": [{"path": "./src/in.rs"}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "bad-path",
+                    "round": 1,
+                    "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+
+    let finding = ledger.get("bad-path").unwrap();
+    assert_eq!(finding.severity, Severity::Blocker);
+    assert_eq!(finding.convergence_scope, None);
+    assert_eq!(finding.reports[0].scope, None);
+    assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert!(
+        ledger.scope_authority_failures()[0]
+            .reason
+            .contains("canonical repository-relative paths")
+    );
 }
 
 fn apply_whole_tree_round(ledger: &mut Ledger, cas: &Cas, round: u32) {
@@ -469,6 +514,63 @@ fn a_later_round_does_not_rewrite_an_earlier_report_scope() {
         Some(ReportScope::In)
     );
     assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
+}
+
+#[test]
+fn repeated_round_subject_resolution_reuses_the_verified_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+
+    let change_set = ChangeSetV1::new(
+        digest('a'),
+        digest('b'),
+        vec!["src/in.rs".into()],
+        vec![],
+        b"patch",
+        "git test",
+        "policy test",
+    )
+    .unwrap();
+    let change_set_id = cas
+        .put_json(&serde_json::to_value(change_set).unwrap())
+        .unwrap();
+    let subject = SubjectV1::diff(digest('b'), digest('a'), change_set_id);
+    let subject_id = cas
+        .put_json(&serde_json::to_value(subject).unwrap())
+        .unwrap();
+    let start = |round| {
+        event(
+            EventType::RoundStartedV1,
+            serde_json::to_value(RoundStartedPayloadV1 {
+                round,
+                epoch: 1,
+                campaign_manifest_id: digest('c'),
+                subject_id: subject_id.clone(),
+                prior_finding_set_id: digest('d'),
+                prior_demand_set_id: digest('e'),
+            })
+            .unwrap(),
+            vec![],
+        )
+    };
+    ledger.apply_event(&start(1), &cas).unwrap();
+
+    let hex = subject_id.strip_prefix("sha256:").unwrap();
+    std::fs::write(
+        dir.path().join("objects").join(&hex[..2]).join(&hex[2..]),
+        b"corrupt after verified resolution",
+    )
+    .unwrap();
+    ledger.apply_event(&start(2), &cas).unwrap();
+    ledger.round = 2;
+    apply_report(&mut ledger, &cas, "cached", 2, Severity::Major, "src/in.rs");
+
+    assert_eq!(
+        ledger.get("cached").unwrap().convergence_scope,
+        Some(ReportScope::In)
+    );
+    assert!(ledger.scope_authority_failures().is_empty());
 }
 
 #[test]

@@ -164,12 +164,27 @@ pub fn blob_content_id(bytes: &[u8]) -> String {
 
 /// Stream an opaque blob into the same domain-separated identity without materializing it.
 pub fn blob_content_id_reader(mut reader: impl Read) -> std::io::Result<(String, u64)> {
+    let mut buffer = [0u8; 64 * 1024];
+    blob_content_id_reader_with_buffer(&mut reader, &mut buffer)
+}
+
+/// Streaming blob identity with caller-owned scratch, so a worker can reuse one allocation
+/// across every file it hashes.
+pub fn blob_content_id_reader_with_buffer(
+    mut reader: impl Read,
+    buffer: &mut [u8],
+) -> std::io::Result<(String, u64)> {
+    if buffer.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "blob hash buffer must not be empty",
+        ));
+    }
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN_CONTENT);
     let mut size = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = reader.read(&mut buffer)?;
+        let read = reader.read(buffer)?;
         if read == 0 {
             break;
         }

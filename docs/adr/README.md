@@ -42,3 +42,5 @@ options you rejected and why — that is the part future-you needs.
   secrets](0015-safe-attempts-receive-handles-not-secrets.md)
 - [0016 — Provider preflight is a fenced, charged
   operation](0016-provider-preflight-is-a-fenced-operation.md)
+- [0017 — Record rename truncation and continue the diff
+  Subject](0017-record-rename-truncation-and-continue.md)

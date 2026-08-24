@@ -1073,8 +1073,12 @@ impl<'a> Kernel<'a> {
                 Some(template) => template.clone(),
                 None => {
                     let template = std::sync::Arc::new(
-                        review_sandbox::SandboxTemplate::materialize(&self.snapshot, self.cas)
-                            .map_err(|e| e.to_string())?,
+                        review_sandbox::SandboxTemplate::materialize_for_parallelism(
+                            &self.snapshot,
+                            self.cas,
+                            review_graph::DEFAULT_MAX_PARALLEL,
+                        )
+                        .map_err(|e| e.to_string())?,
                     );
                     *guard = Some(template.clone());
                     template

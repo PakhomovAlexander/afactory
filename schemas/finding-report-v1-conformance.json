@@ -1,0 +1,67 @@
+{
+  "contract": "review.kernel/FindingReport@1",
+  "description": "Semantic cases shared by the JSON Schema and every permanent reader.",
+  "valid": [
+    {
+      "name": "whitespace content is non-empty JSON text",
+      "payload": {
+        "title": " ",
+        "severity": "minor",
+        "locations": [{ "path": "docs/50%-off.md", "line": 1 }],
+        "body": " ",
+        "fix": " ",
+        "confidence": 0,
+        "rule_id": "review.rules/path-check@2",
+        "occurrence_key": "one"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "absolute location",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "/src/a.rs" }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "dot component",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": "./src/a.rs" }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
+      "name": "empty occurrence key",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5,
+        "occurrence_key": ""
+      }
+    },
+    {
+      "name": "unversioned rule",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5,
+        "rule_id": "review.rules/path-check"
+      }
+    }
+  ]
+}

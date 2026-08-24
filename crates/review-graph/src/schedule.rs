@@ -111,6 +111,8 @@ pub struct Scheduler<'a> {
     max_parallel: usize,
 }
 
+pub const DEFAULT_MAX_PARALLEL: usize = 4;
+
 impl<'a> Scheduler<'a> {
     pub fn new(plan: &'a Planned) -> Scheduler<'a> {
         Scheduler {
@@ -118,7 +120,7 @@ impl<'a> Scheduler<'a> {
             // The design's default. Reviewers are model calls: minutes of latency each, no
             // local CPU — running them one after another priced a review at the *sum* of
             // model latencies.
-            max_parallel: 4,
+            max_parallel: DEFAULT_MAX_PARALLEL,
         }
     }
 

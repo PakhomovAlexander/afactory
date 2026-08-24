@@ -255,11 +255,10 @@ fn added_files_are_not_hashed() {
     assert!(!cas.contains(&review_source_git::digest_bytes(&big)));
 }
 
-/// Manual evidence for the sealing budget named by the performance reviewer. Setup is excluded
-/// from the measurement: the timer covers only sealing an unchanged 5,000-file / ~200 MiB tree.
+/// Manual evidence for the 5,000-file / ~200 MiB sandbox preparation and sealing budgets.
 #[test]
-#[ignore = "manual 5,000-file / 200 MiB sealing measurement"]
-fn unchanged_large_tree_seal_measurement() {
+#[ignore = "manual 5,000-file / 200 MiB sandbox measurement"]
+fn unchanged_large_tree_sandbox_measurement() {
     let dir = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
     let bytes = vec![0xA5; 41_943];
@@ -274,17 +273,26 @@ fn unchanged_large_tree_seal_measurement() {
             })
             .collect(),
     );
-    let sandbox = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+    let started = std::time::Instant::now();
+    let template =
+        review_sandbox::SandboxTemplate::materialize_for_parallelism(&manifest, &cas, 4).unwrap();
+    let materialize_elapsed = started.elapsed();
+
+    let started = std::time::Instant::now();
+    let sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite).unwrap();
+    let clone_elapsed = started.elapsed();
 
     let started = std::time::Instant::now();
     let sealed = sandbox.seal().unwrap();
-    let elapsed = started.elapsed();
+    let seal_elapsed = started.elapsed();
 
     assert!(sealed.unchanged(), "{:?}", sealed.mutations);
     eprintln!(
-        "sealed 5,000 unchanged files / {} MiB in {:.3}s",
+        "5,000 unchanged files / {} MiB: materialize {:.3}s, clone {:.3}s, seal {:.3}s",
         (bytes.len() * 5_000) / (1024 * 1024),
-        elapsed.as_secs_f64()
+        materialize_elapsed.as_secs_f64(),
+        clone_elapsed.as_secs_f64(),
+        seal_elapsed.as_secs_f64()
     );
 }
 

@@ -489,10 +489,12 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                     .iter()
                     .map(|report| {
                         format!(
-                            "{} round {}={}",
+                            "{} round {}={} at {}:{}",
                             report.source,
                             report.round,
-                            report.scope_label()
+                            report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string())
                         )
                     })
                     .collect::<Vec<_>>()
@@ -549,12 +551,16 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     );
     for (index, attached) in finding.reports.iter().enumerate() {
         println!(
-            "\nreport {}: reviewer={} round={} severity={} scope={} id={}",
+            "\nreport {}: reviewer={} round={} severity={} scope={} location={}:{} id={}",
             index + 1,
             attached.source,
             attached.round,
             format!("{:?}", attached.severity).to_lowercase(),
             attached.scope_label(),
+            attached.file,
+            attached
+                .line
+                .map_or("-".to_string(), |line| line.to_string()),
             if attached.report_id.is_empty() {
                 "(unavailable: legacy import)"
             } else {
@@ -706,17 +712,21 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 .map(|report| {
                     if report.report_id.is_empty() {
                         format!(
-                            "{} round {} scope={} (legacy import)",
-                            report.source,
-                            report.round,
-                            report.scope_label()
-                        )
-                    } else {
-                        format!(
-                            "{} round {} scope={} `{}`",
+                            "{} round {} scope={} at {}:{} (legacy import)",
                             report.source,
                             report.round,
                             report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string())
+                        )
+                    } else {
+                        format!(
+                            "{} round {} scope={} at {}:{} `{}`",
+                            report.source,
+                            report.round,
+                            report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string()),
                             report.report_id
                         )
                     }
@@ -778,7 +788,7 @@ fn title_case(value: &str) -> String {
 fn print_scope_authority_warnings(ledger: &Ledger) {
     for failure in ledger.scope_authority_failures() {
         eprintln!(
-            "warning: round {} Report Scope is unknown: Subject {} is unavailable: {}",
+            "warning: round {} Report Scope is unknown: authority {} is unavailable: {}",
             failure.round, failure.subject_id, failure.reason
         );
     }

@@ -43,7 +43,7 @@ pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use json::{NumericDomainError, admit};
 pub use legacy::{LegacyImportError, LegacyStageOutput};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
-pub use path::{decode_path, encode_path};
+pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};
 

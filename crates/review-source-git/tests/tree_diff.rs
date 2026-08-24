@@ -135,7 +135,7 @@ fn revision_like_options_cannot_become_tree_operands() {
 }
 
 #[test]
-fn an_over_limit_rename_search_fails_closed_instead_of_losing_the_map() {
+fn an_over_limit_rename_search_records_truncation_without_losing_scope_paths() {
     let fixture = Fixture::new();
     for index in 0..=1000 {
         fixture.write(
@@ -155,16 +155,23 @@ fn an_over_limit_rename_search_fails_closed_instead_of_losing_the_map() {
     let head_revision = fixture.commit_all("head");
 
     let repo = repo_of(&fixture);
-    let error = repo
+    let diff = repo
         .tree_diff(
             &repo.resolve_tree(&base_revision).unwrap(),
             &repo.resolve_tree(&head_revision).unwrap(),
         )
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("rename detection was truncated"),
-        "expected a fail-closed rename-limit diagnostic, got {error}"
-    );
+        .unwrap();
+    assert!(diff.rename_detection_truncated);
+    let change_set = diff
+        .change_set(
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        )
+        .unwrap();
+    assert!(change_set.rename_detection_truncated);
+    assert_eq!(change_set.changed_paths.len(), 2_002);
+    assert!(change_set.contains_report_path("old/0000.txt"));
+    assert!(change_set.contains_report_path("new/1000.txt"));
 }
 
 #[test]
