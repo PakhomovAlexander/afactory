@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use review_source_git::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
 use review_store::canonical::blob_content_id_reader_with_buffer;
 
-use crate::{Mode, Sandbox};
+use crate::{Mode, Sandbox, restore_known_dirs, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,8 +69,18 @@ impl SealedSandbox {
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
-    let (root, baseline, mode, worker_budget, dir) = sandbox.into_parts();
-    let (final_manifest, mutations) = scan_and_diff(&root, &baseline, worker_budget)?;
+    let (root, baseline, mode, dir) = sandbox.into_parts();
+    let (final_manifest, mutations, directories) =
+        match scan_and_diff(&root, &baseline, review_core::worker_limit()) {
+            Ok(result) => result,
+            Err(error) => {
+                // A mutable reviewer may remove directory permissions. Restore best-effort before
+                // returning so TempDir cleanup still has a chance to remove the hostile tree.
+                restore_writable_dirs(&root);
+                return Err(error);
+            }
+        };
+    restore_known_dirs(&directories);
     Ok(SealedSandbox {
         root,
         mode,
@@ -94,7 +104,7 @@ fn scan_and_diff(
     root: &Path,
     baseline: &Manifest,
     worker_budget: usize,
-) -> Result<(Manifest, MutationSet), std::io::Error> {
+) -> Result<(Manifest, MutationSet, Vec<PathBuf>), std::io::Error> {
     let index: BTreeMap<&str, &Entry> = baseline
         .entries
         .iter()
@@ -105,9 +115,11 @@ fn scan_and_diff(
     let mut mutations = MutationSet::default();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut baseline_candidates = Vec::new();
+    let mut directories = Vec::new();
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        directories.push(dir.clone());
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
             let meta = std::fs::symlink_metadata(&path)?;
@@ -166,7 +178,7 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    Ok((Manifest::new(entries), mutations))
+    Ok((Manifest::new(entries), mutations, directories))
 }
 
 struct BaselineCandidate {
@@ -187,6 +199,7 @@ fn hash_baseline_candidates(
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> Result<Vec<(Entry, bool)>, std::io::Error> {
+                    let _permit = review_core::acquire_worker_permit();
                     let mut hashed = Vec::new();
                     let mut buffer = [0u8; 64 * 1024];
                     loop {

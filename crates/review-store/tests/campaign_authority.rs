@@ -431,7 +431,7 @@ fn a_campaign_cannot_append_a_legacy_run_report() {
 }
 
 #[test]
-fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
+fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -439,7 +439,21 @@ fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
     let round = opened_round(&mut store, &cas, "run", &ids);
     let attempt = "b".repeat(26);
     let malformed_result = cas
-        .put_json(&serde_json::json!({"verdict": "approve", "reports": []}))
+        .put_json(&serde_json::json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [{
+                "severity": "major",
+                "file": "./src/main.rs",
+                "line": 1,
+                "title": "bad path",
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }],
+            "benchmark_demands": [],
+            "disputes": []
+        }))
         .unwrap();
     let provenance = cas.put(b"test provenance").unwrap();
 
@@ -523,5 +537,5 @@ fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("ReviewerResult@1"), "{error}");
+    assert!(error.to_string().contains("canonical"), "{error}");
 }

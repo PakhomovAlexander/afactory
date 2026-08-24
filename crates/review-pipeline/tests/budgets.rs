@@ -176,6 +176,45 @@ impl ReviewerAdapter for FlakyOnce {
     }
 }
 
+/// A reviewer whose first syntactically valid answer violates FindingReport path admission.
+struct InvalidOnce {
+    calls: AtomicU32,
+    cost: u64,
+}
+
+impl ReviewerAdapter for InvalidOnce {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        _inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        let output = if first {
+            serde_json::from_str(
+                r#"{"verdict":"request-changes","summary":null,
+                    "findings":[{"severity":"major","file":"./src/main.rs","line":1,
+                    "title":"bad path","body":"body","fix":"fix","confidence":0.9}],
+                    "benchmark_demands":[],"disputes":[]}"#,
+            )
+            .unwrap()
+        } else {
+            clean_output()
+        };
+        Ok(ReviewerReturn {
+            output,
+            cost_tokens: self.cost,
+            raw_artifact: cas
+                .put(if first {
+                    b"invalid answer"
+                } else {
+                    b"valid answer"
+                })
+                .unwrap(),
+        })
+    }
+}
+
 /// gate → three reviewers → gather → ledger.
 fn three_reviewer_pipeline() -> Pipeline {
     let mut pipeline = Pipeline::default()
@@ -353,6 +392,47 @@ fn a_timeout_is_fenced_charged_and_retried() {
 
     let convergence = kernel.convergence(ConvergencePolicy::default());
     assert!(run_verdict(&report, &convergence).passed());
+}
+
+#[test]
+fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries() {
+    let mut run = run_fixture();
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(InvalidOnce {
+            calls: AtomicU32::new(0),
+            cost: 20_000,
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
+    assert!(
+        report.complete(),
+        "the corrected retry must complete: {report:?}"
+    );
+    assert_eq!(kernel.spent(), Some(20_000 + 20_000 + 10_000 + 10_000));
+
+    let attempts = kernel.attempts();
+    let alpha_attempts: Vec<_> = attempts
+        .attempts()
+        .into_iter()
+        .filter(|attempt| attempt.node == "r-alpha")
+        .collect();
+    assert_eq!(alpha_attempts.len(), 2);
+    assert!(run_verdict(&report, &kernel.convergence(ConvergencePolicy::default())).passed());
 }
 
 /// Exhaustion by repeated hangs: with the run cap equal to two reservations, a reviewer that

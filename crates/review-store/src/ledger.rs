@@ -41,11 +41,19 @@ impl ReportScope {
     }
 }
 
-/// A Round whose Subject could not supply Report Scope authority during replay.
+/// The immutable artifact class that failed to supply Scope authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeAuthorityKind {
+    Subject,
+    Report,
+}
+
+/// A Round whose Subject or Report could not supply Report Scope authority during replay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeAuthorityFailure {
     pub round: u32,
-    pub subject_id: String,
+    pub authority: ScopeAuthorityKind,
+    pub authority_id: String,
     pub reason: String,
 }
 
@@ -101,7 +109,7 @@ pub struct AttachedReport {
     pub round: u32,
     pub source: String,
     pub severity: Severity,
-    /// The deterministic location selected for presentation from this immutable Report.
+    /// The Subject-dependent location selected for presentation from this immutable Report.
     pub file: String,
     pub line: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -333,7 +341,12 @@ impl Ledger {
                 let report = match projected {
                     Ok(report) => report,
                     Err(reason) => {
-                        self.record_authority_failure(round, report_id, &reason);
+                        self.record_authority_failure(
+                            round,
+                            ScopeAuthorityKind::Report,
+                            report_id,
+                            &reason,
+                        );
                         ReportProjection::unreadable(report_id, &reason)
                     }
                 };
@@ -357,6 +370,7 @@ impl Ledger {
             }
         };
         let severity = report.severity;
+        let unreadable = report.unreadable;
         let (scope, selected_location) = self.report_scope(round, &report.location);
         report.select_location(selected_location);
         let attached = AttachedReport {
@@ -368,6 +382,16 @@ impl Ledger {
             line: report.line,
             scope,
         };
+
+        // Authority failure evidence must not replace readable claim content. If this key has
+        // readable history, retain the diagnostic attachment without adopting it; if it does not,
+        // the authority-failure list itself blocks convergence without inventing a Finding.
+        if unreadable {
+            if let Some(existing) = self.findings.get_mut(&key) {
+                existing.reports.push(attached);
+            }
+            return Ok(());
+        }
 
         let Some(existing) = self.findings.get_mut(&key) else {
             let convergence_severity = (scope != Some(ReportScope::Out)).then_some(severity);
@@ -503,7 +527,12 @@ impl Ledger {
         let subject_scope = match resolved_scope {
             Ok(scope) => scope,
             Err(reason) => {
-                self.record_authority_failure(started.round, &started.subject_id, &reason);
+                self.record_authority_failure(
+                    started.round,
+                    ScopeAuthorityKind::Subject,
+                    &started.subject_id,
+                    &reason,
+                );
                 SubjectScope::Unavailable
             }
         };
@@ -530,7 +559,7 @@ impl Ledger {
                 active.round
             );
             let subject_id = active.subject_id.clone();
-            self.record_authority_failure(round, &subject_id, &reason);
+            self.record_authority_failure(round, ScopeAuthorityKind::Subject, &subject_id, &reason);
             return (None, location.first_index());
         }
         let Some(active) = self.active_scope.as_ref() else {
@@ -555,13 +584,23 @@ impl Ledger {
         }
     }
 
-    fn record_authority_failure(&mut self, round: u32, authority_id: &str, reason: &str) {
+    fn record_authority_failure(
+        &mut self,
+        round: u32,
+        authority: ScopeAuthorityKind,
+        authority_id: &str,
+        reason: &str,
+    ) {
         if !self.scope_authority_failures.iter().any(|failure| {
-            failure.round == round && failure.subject_id == authority_id && failure.reason == reason
+            failure.round == round
+                && failure.authority == authority
+                && failure.authority_id == authority_id
+                && failure.reason == reason
         }) {
             self.scope_authority_failures.push(ScopeAuthorityFailure {
                 round,
-                subject_id: authority_id.to_string(),
+                authority,
+                authority_id: authority_id.to_string(),
                 reason: reason.to_string(),
             });
         }
@@ -655,7 +694,10 @@ impl Ledger {
             })
             .count();
 
-        let verdict = if open_blocking == 0 && new_recent == 0 && self.round >= policy.clean_rounds
+        let verdict = if self.scope_authority_failures.is_empty()
+            && open_blocking == 0
+            && new_recent == 0
+            && self.round >= policy.clean_rounds
         {
             Verdict::Converged
         } else if self.round >= policy.max_rounds {
@@ -681,6 +723,7 @@ struct ReportProjection {
     body: String,
     fix: Option<String>,
     confidence: Option<f64>,
+    unreadable: bool,
 }
 
 enum ReportLocation {
@@ -740,6 +783,7 @@ impl ReportProjection {
                 body: report.body,
                 fix: Some(report.fix),
                 confidence: Some(report.confidence),
+                unreadable: false,
             });
         }
         let required = |field: &str| {
@@ -785,11 +829,6 @@ impl ReportProjection {
         let location = if file.trim().is_empty() {
             ReportLocation::ChangeWide
         } else {
-            if !review_core::is_valid_repo_path(file) {
-                return Err(crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has a non-canonical repository-relative `file`"
-                )));
-            }
             ReportLocation::Paths(vec![ProjectedLocation {
                 path: file.to_string(),
                 line,
@@ -808,6 +847,7 @@ impl ReportProjection {
             body: required("body")?.to_string(),
             fix: Some(required("fix")?.to_string()),
             confidence,
+            unreadable: false,
         })
     }
 
@@ -828,6 +868,7 @@ impl ReportProjection {
             body: required_string(payload, "imported FindingReported@1", "body")?,
             fix: None,
             confidence: payload["confidence"].as_f64(),
+            unreadable: false,
         })
     }
 
@@ -841,6 +882,7 @@ impl ReportProjection {
             body: reason.to_string(),
             fix: Some("Restore or migrate the exact content-addressed Report artifact".into()),
             confidence: None,
+            unreadable: true,
         }
     }
 

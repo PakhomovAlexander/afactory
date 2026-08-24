@@ -128,7 +128,6 @@ pub struct Sandbox {
     /// The manifest as materialized. Sealing diffs against this, so "what did the reviewer
     /// change" is computed rather than reported by the reviewer.
     baseline: Manifest,
-    worker_budget: usize,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
     /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
     _dir: Option<tempfile::TempDir>,
@@ -150,26 +149,70 @@ impl Drop for Sandbox {
 #[cfg(unix)]
 fn restore_writable_dirs(root: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if entry
-                .file_type()
-                .map(|t| t.is_dir() && !t.is_symlink())
-                .unwrap_or(false)
-            {
-                stack.push(entry.path());
+    let mut level = vec![root.to_path_buf()];
+    while !level.is_empty() {
+        let workers = review_core::worker_limit().min(level.len());
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let children = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    let _permit = review_core::acquire_worker_permit();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(dir) = level.get(index) else { return };
+                        let _ =
+                            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+                        let Ok(entries) = std::fs::read_dir(dir) else {
+                            continue;
+                        };
+                        let mut local = Vec::new();
+                        for entry in entries.flatten() {
+                            if entry
+                                .file_type()
+                                .map(|kind| kind.is_dir() && !kind.is_symlink())
+                                .unwrap_or(false)
+                            {
+                                local.push(entry.path());
+                            }
+                        }
+                        children
+                            .lock()
+                            .expect("writable directory children")
+                            .extend(local);
+                    }
+                });
             }
-        }
+        });
+        level = children.into_inner().expect("writable directory children");
     }
 }
 
 #[cfg(not(unix))]
 fn restore_writable_dirs(_root: &Path) {}
+
+/// Restore directories already discovered by sealing without walking the tree a second time.
+#[cfg(unix)]
+pub(crate) fn restore_known_dirs(dirs: &[PathBuf]) {
+    use std::os::unix::fs::PermissionsExt;
+    let workers = review_core::worker_limit().min(dirs.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let _permit = review_core::acquire_worker_permit();
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(dir) = dirs.get(index) else { return };
+                    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+                }
+            });
+        }
+    });
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restore_known_dirs(_dirs: &[PathBuf]) {}
 
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
 /// recreated (a clone is a fresh writable tree), symlinks are recreated as symlinks (they must
@@ -200,6 +243,7 @@ fn clone_tree(src: &Path, dst: &Path, workers: usize) -> std::io::Result<()> {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> std::io::Result<()> {
+                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((from, to, is_symlink)) = files.get(index) else {
@@ -234,42 +278,36 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 /// A snapshot materialized once, to be cloned per sandbox.
 ///
 /// Materialization prepares paths serially, then verifies each distinct CAS object once and
-/// writes independent content groups within the scheduler-derived worker budget. A template is
-/// built exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which
-/// shares blocks instead of re-reading and re-writing the tree while keeping writes isolated.
+/// writes independent content groups through the process-wide worker pool. A template is built
+/// exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which shares
+/// blocks instead of re-reading and re-writing the tree while keeping writes isolated.
 pub struct SandboxTemplate {
     manifest: Manifest,
     root: PathBuf,
-    worker_budget: usize,
     _dir: tempfile::TempDir,
 }
 
 impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
-        Self::materialize_for_parallelism(manifest, cas, 1)
-    }
-
-    pub fn materialize_for_parallelism(
-        manifest: &Manifest,
-        cas: &Cas,
-        max_parallel: usize,
-    ) -> Result<SandboxTemplate, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        let worker_budget = std::thread::available_parallelism()
-            .map(|workers| workers.get())
-            .unwrap_or(1)
-            .checked_div(max_parallel.max(1))
-            .unwrap_or(1)
-            .max(1);
-        materialize_with_workers(manifest, cas, &root, worker_budget)
+        materialize_with_workers(manifest, cas, &root, review_core::worker_limit())
             .map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
             manifest: manifest.clone(),
             root,
-            worker_budget,
             _dir: dir,
         })
+    }
+
+    /// Compatibility entry point retained for callers that supplied scheduler width before all
+    /// filesystem phases shared one occupancy-aware process-wide permit pool.
+    pub fn materialize_for_parallelism(
+        manifest: &Manifest,
+        cas: &Cas,
+        _max_parallel: usize,
+    ) -> Result<SandboxTemplate, std::io::Error> {
+        Self::materialize(manifest, cas)
     }
 }
 
@@ -286,10 +324,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        let worker_budget = std::thread::available_parallelism()
-            .map(|workers| workers.get())
-            .unwrap_or(1);
-        materialize_with_workers(manifest, cas, &root, worker_budget)
+        materialize_with_workers(manifest, cas, &root, review_core::worker_limit())
             .map_err(std::io::Error::other)?;
 
         let sandbox = Sandbox {
@@ -297,7 +332,6 @@ impl Sandbox {
             mode,
             isolation: Isolation::None,
             baseline: manifest.clone(),
-            worker_budget,
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -314,14 +348,13 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root, template.worker_budget)?;
+        clone_tree(&template.root, &root, review_core::worker_limit())?;
 
         let sandbox = Sandbox {
             root,
             mode,
             isolation: Isolation::None,
             baseline: template.manifest.clone(),
-            worker_budget: template.worker_budget,
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -367,6 +400,7 @@ impl Sandbox {
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
         let mut dirs = vec![self.root.clone()];
         let mut seen_dirs = Vec::new();
+        let mut files = Vec::new();
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir)? {
                 let path = entry?.path();
@@ -381,11 +415,33 @@ impl Sandbox {
                     use std::os::unix::fs::PermissionsExt;
                     let executable = meta.permissions().mode() & 0o111 != 0;
                     let mode = if executable { 0o555 } else { 0o444 };
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+                    files.push((path, mode));
                 }
             }
             seen_dirs.push(dir);
         }
+        let workers = review_core::worker_limit().min(files.len().max(1));
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| -> std::io::Result<()> {
+                        let _permit = review_core::acquire_worker_permit();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((path, mode)) = files.get(index) else {
+                                return Ok(());
+                            };
+                            std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))?;
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("read-only permission worker")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })?;
         for dir in seen_dirs.into_iter().rev() {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))?;
         }
@@ -407,14 +463,12 @@ impl Sandbox {
         seal::seal(self)
     }
 
-    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, usize, tempfile::TempDir) {
-        // Restore writability here, while the real root is still known: the TempDir moves to the
-        // SealedSandbox, so its later cleanup must find directories it can empty. The residual
-        // `self` (emptied below) then drops as a no-op.
-        restore_writable_dirs(&self.root);
+    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, tempfile::TempDir) {
+        // Sealing discovers every populated directory while scanning and restores that exact set
+        // without a second walk. The residual `self` (emptied below) then drops as a no-op.
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);
-        (root, baseline, self.mode, self.worker_budget, dir)
+        (root, baseline, self.mode, dir)
     }
 }

@@ -9,6 +9,7 @@
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -73,13 +74,12 @@ pub fn materialize(
     cas: &Cas,
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
-    let workers = std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(1);
+    let workers = review_core::worker_limit();
     materialize_with_workers(manifest, cas, root, workers)
 }
 
-/// Materialize with an explicit worker budget supplied by the owning scheduler.
+/// Materialize with an explicit per-phase worker cap. Every worker also acquires a process-wide
+/// permit, so concurrent phases share actual CPU capacity without throttling a lone phase.
 pub fn materialize_with_workers(
     manifest: &Manifest,
     cas: &Cas,
@@ -91,7 +91,7 @@ pub fn materialize_with_workers(
 
     // Each distinct parent is prepared once: `create_dir_all` stats every component, so doing
     // it per entry costs O(files × depth) syscalls where O(directories × depth) suffices.
-    let mut prepared: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut prepared: BTreeSet<PathBuf> = BTreeSet::new();
     let mut targets = Vec::with_capacity(manifest.entries.len());
     for entry in &manifest.entries {
         let target = safe_join(root, &entry.path)?;
@@ -112,15 +112,16 @@ pub fn materialize_with_workers(
         targets.push((target, entry));
     }
 
-    let symlinks: Vec<&Path> = targets
+    let symlinks: HashSet<&Path> = targets
         .iter()
         .filter(|(_, entry)| entry.kind == EntryKind::Symlink)
         .map(|(target, _)| target.as_path())
         .collect();
     if let Some((_, entry)) = targets.iter().find(|(target, _)| {
-        symlinks
-            .iter()
-            .any(|symlink| target != symlink && target.starts_with(symlink))
+        target
+            .ancestors()
+            .skip(1)
+            .any(|ancestor| symlinks.contains(ancestor))
     }) {
         return Err(MaterializeError::Escape {
             path: entry.path.clone(),
@@ -129,7 +130,7 @@ pub fn materialize_with_workers(
 
     // One verified CAS read per distinct digest. Distinct content groups run concurrently;
     // repeated content is then written to every occurrence without being re-read or re-hashed.
-    let mut grouped: std::collections::BTreeMap<_, Vec<_>> = std::collections::BTreeMap::new();
+    let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for (target, entry) in targets {
         grouped
             .entry(entry.content.as_str())
@@ -143,6 +144,7 @@ pub fn materialize_with_workers(
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> Result<(), MaterializeError> {
+                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((content, targets)) = groups.get(index) else {
@@ -212,5 +214,32 @@ mod tests {
         assert!(safe_join(root, "a/b/c.rs").is_ok());
         // A path that merely *contains* dots is fine; only a real parent component escapes.
         assert!(safe_join(root, "a/..b/c").is_ok());
+    }
+
+    #[test]
+    fn a_manifest_entry_below_a_symlink_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let link = cas.put(b"../outside").unwrap();
+        let file = cas.put(b"content").unwrap();
+        let manifest = Manifest::new(vec![
+            crate::manifest::Entry {
+                path: "link".into(),
+                kind: EntryKind::Symlink,
+                content: link,
+                size: 10,
+            },
+            crate::manifest::Entry {
+                path: "link/escape".into(),
+                kind: EntryKind::File,
+                content: file,
+                size: 7,
+            },
+        ]);
+
+        assert!(matches!(
+            materialize(&manifest, &cas, dir.path().join("tree")),
+            Err(MaterializeError::Escape { path }) if path == "link/escape"
+        ));
     }
 }

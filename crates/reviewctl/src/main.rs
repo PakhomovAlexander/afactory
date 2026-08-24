@@ -788,8 +788,8 @@ fn title_case(value: &str) -> String {
 fn print_scope_authority_warnings(ledger: &Ledger) {
     for failure in ledger.scope_authority_failures() {
         eprintln!(
-            "warning: round {} Report Scope is unknown: authority {} is unavailable: {}",
-            failure.round, failure.subject_id, failure.reason
+            "warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}",
+            failure.round, failure.authority, failure.authority_id, failure.reason
         );
     }
 }

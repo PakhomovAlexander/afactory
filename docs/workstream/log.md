@@ -111,3 +111,21 @@ reused per worker, and the production worker budget is divided by scheduler conc
 manual 5,000-file / 199 MiB production-budget measurement recorded 1.138 s materialization,
 0.243 s clone, and 2.512 s seal. `scripts/verify.sh` and markdownlint pass on the complete Round 2
 correction tree. Round 3 remains the convergence gate before M3.1.
+
+## 2026-08-24 — M2 dogfood Round 3 corrections
+
+Round 3 spent 366,517 tokens, retained all 24 prior resolutions as fixed, and opened nine Reports.
+Frozen M1 flat Reports remain readable under their original admission rules; unreadable typed
+Reports now attach diagnostics without replacing readable claim content, and typed Subject/Report
+authority failures block convergence. Reviewer-result admission applies the same semantic path
+contract before selection and retries only the offending reviewer. The temporary multi-location
+bridge key is order-independent pending M3 identity.
+
+Filesystem phases now share one process-wide worker permit pool: a lone materialize, clone, seal,
+permission, or CAS durability phase can use every available core while overlapping phases share
+the same capacity. Symlink-parent containment uses ancestor hash lookup, and both read-only file
+permission changes and cleanup restoration fan out without skipping hostile reviewer mutations. The
+corrected manual fixture has 4,500 distinct blobs and 500 symlinks. For 5,000 entries / 199 MiB it
+recorded 0.999 s materialization; writable clone+permissions 0.681 s and seal 0.656 s; read-only
+clone+permissions 1.078 s and seal 0.650 s. `scripts/verify.sh` and markdownlint pass on the complete
+Round 3 correction tree.

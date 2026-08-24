@@ -68,6 +68,18 @@ pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     format!("{:x}", hasher.finalize())[..12].to_string()
 }
 
+/// Stable bridge identity until M3 replaces path-based fingerprints. A report's location order
+/// is model output and therefore not identity; sorting is unnecessary when only the minimum is
+/// needed, and the existing one-location legacy shape retains its exact key.
+fn report_identity_path(report: &review_core::FindingReport) -> &str {
+    report
+        .locations
+        .iter()
+        .map(|location| location.path.as_str())
+        .min()
+        .unwrap_or("")
+}
+
 /// What `ledger.sh add` prints. Compared against the frozen transcripts verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AddSummary {
@@ -240,10 +252,7 @@ impl<'a> Ingest<'a> {
                         )));
                     }
                 };
-                let location = report.locations.first();
-                let file = location
-                    .map(|location| location.path.as_str())
-                    .unwrap_or("");
+                let file = report_identity_path(&report);
                 let key = legacy_fingerprint(file, &report.title);
 
                 // The report is an immutable artifact; the event references it. Even a duplicate
@@ -580,6 +589,33 @@ mod tests {
         assert_eq!(
             legacy_fingerprint("", "x"),
             legacy_fingerprint(CHANGE_WIDE, "x")
+        );
+    }
+
+    #[test]
+    fn multi_location_bridge_identity_is_independent_of_model_order() {
+        let report = review_core::FindingReport {
+            title: "same claim".into(),
+            severity: Severity::Major,
+            locations: vec![
+                review_core::Location::file("src/z.rs"),
+                review_core::Location::file("src/a.rs"),
+            ],
+            body: "body".into(),
+            fix: "fix".into(),
+            confidence: 0.9,
+            failure_trace: None,
+            rule_id: None,
+            occurrence_key: None,
+            relations: Vec::new(),
+        };
+        let mut reversed = report.clone();
+        reversed.locations.reverse();
+
+        assert_eq!(report_identity_path(&report), "src/a.rs");
+        assert_eq!(
+            legacy_fingerprint(report_identity_path(&report), &report.title),
+            legacy_fingerprint(report_identity_path(&reversed), &reversed.title)
         );
     }
 }

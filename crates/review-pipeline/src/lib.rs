@@ -569,8 +569,8 @@ pub struct Kernel<'a> {
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
-    /// Retries per node, spent only on timeouts. A retry is a new attempt: it fences its
-    /// predecessor and reserves its own budget.
+    /// Retries per node, spent on timeouts or an inadmissible returned result. A retry is a new
+    /// attempt: it fences its predecessor and reserves its own budget.
     timeout_retries: u32,
     /// Gate decisions by gate node. Keyed, so two gates in one pipeline never share a verdict.
     gates: Mutex<BTreeMap<String, GateDecision>>,
@@ -822,7 +822,7 @@ impl<'a> Kernel<'a> {
         &self,
         node_id: &str,
         prior_findings_artifact: Option<&String>,
-        timeouts: &[String],
+        prior_failures: &[String],
     ) -> Result<PreparedReviewerAttempt, String> {
         let reservation = match &self.budgets {
             Some(budgets) => Some(
@@ -835,10 +835,10 @@ impl<'a> Kernel<'a> {
                         budgets.attempt_cap,
                     )
                     .map_err(|error| {
-                        if timeouts.is_empty() {
+                        if prior_failures.is_empty() {
                             format!("never dispatched: {error}")
                         } else {
-                            format!("{}; retry refused: {error}", timeouts.join("; "))
+                            format!("{}; retry refused: {error}", prior_failures.join("; "))
                         }
                     })?,
             ),
@@ -1073,12 +1073,8 @@ impl<'a> Kernel<'a> {
                 Some(template) => template.clone(),
                 None => {
                     let template = std::sync::Arc::new(
-                        review_sandbox::SandboxTemplate::materialize_for_parallelism(
-                            &self.snapshot,
-                            self.cas,
-                            review_graph::DEFAULT_MAX_PARALLEL,
-                        )
-                        .map_err(|e| e.to_string())?,
+                        review_sandbox::SandboxTemplate::materialize(&self.snapshot, self.cas)
+                            .map_err(|e| e.to_string())?,
                     );
                     *guard = Some(template.clone());
                     template
@@ -1270,10 +1266,10 @@ impl<'a> Kernel<'a> {
             }
         }
 
-        let mut timeouts: Vec<String> = Vec::new();
+        let mut retry_failures: Vec<String> = Vec::new();
         for _ in 0..=self.timeout_retries {
             // The scheduler prepares the first attempt in plan order before spawning this
-            // worker. Timeout retries are prepared here only after the predecessor is fenced.
+            // worker. Retries are prepared here only after the predecessor is terminal.
             let PreparedReviewerAttempt {
                 attempt,
                 reservation,
@@ -1282,7 +1278,7 @@ impl<'a> Kernel<'a> {
                 None => self.prepare_reviewer_attempt(
                     node_id,
                     prior_findings_artifact.as_ref(),
-                    &timeouts,
+                    &retry_failures,
                 )?,
             };
 
@@ -1320,11 +1316,27 @@ impl<'a> Kernel<'a> {
 
             match invoked {
                 Ok(returned) => {
+                    let result_value = match reviewer_result_value(&returned.output) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.fail_started_attempt(
+                                node_id,
+                                &attempt,
+                                reservation.as_ref(),
+                                &error,
+                                returned.cost_tokens,
+                            )?;
+                            retry_failures.push(format!(
+                                "attempt {attempt} returned an invalid result: {error}"
+                            ));
+                            continue;
+                        }
+                    };
                     let artifacts = (|| -> Result<(String, String), String> {
                         let sealed = sandbox.seal().map_err(|error| error.to_string())?;
                         let result_artifact = self
                             .cas
-                            .put_json(&reviewer_result_value(&returned.output)?)
+                            .put_json(&result_value)
                             .map_err(|error| error.to_string())?;
                         // The mutation set can be enormous — a reviewer that built to verify a
                         // claim leaves a whole target/ behind. The full list lives once in the
@@ -1458,7 +1470,7 @@ impl<'a> Kernel<'a> {
                         .node(node_id)
                         .attempt(attempt.to_string()),
                     )?;
-                    timeouts.push(format!("attempt {attempt} timed out after {after_ms}ms"));
+                    retry_failures.push(format!("attempt {attempt} timed out after {after_ms}ms"));
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
                     // Nothing executed, so nothing was spent: the reservation is released,
@@ -1515,7 +1527,10 @@ impl<'a> Kernel<'a> {
                 }
             }
         }
-        Err(format!("every attempt timed out: {}", timeouts.join("; ")))
+        Err(format!(
+            "every reviewer attempt failed: {}",
+            retry_failures.join("; ")
+        ))
     }
 
     /// A real gather: one artifact holding exactly the report artifacts the edges delivered.
@@ -1630,6 +1645,11 @@ impl<'a> Kernel<'a> {
 }
 
 fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value, String> {
+    for (index, finding) in stage.findings.iter().cloned().enumerate() {
+        finding
+            .into_report(index)
+            .map_err(|error| format!("ReviewerResult@1 is not admissible: {error}"))?;
+    }
     let mut object = serde_json::to_value(stage)
         .map_err(|error| error.to_string())?
         .as_object()

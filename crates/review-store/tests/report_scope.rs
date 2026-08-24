@@ -2,7 +2,9 @@ use review_core::{
     ChangeSetV1, EventType, FindingReport, Location, PathRenameV1, RoundStartedPayloadV1, RunEvent,
     Severity, SubjectV1,
 };
-use review_store::{Cas, ConvergencePolicy, Ledger, ReportScope, Status, Verdict};
+use review_store::{
+    Cas, ConvergencePolicy, Ledger, ReportScope, ScopeAuthorityKind, Status, Verdict,
+};
 
 fn digest(byte: char) -> String {
     format!("sha256:{}", byte.to_string().repeat(64))
@@ -242,15 +244,88 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
         )
         .unwrap();
 
-    let finding = ledger.get("bad-path").unwrap();
-    assert_eq!(finding.severity, Severity::Blocker);
-    assert_eq!(finding.convergence_scope, None);
-    assert_eq!(finding.reports[0].scope, None);
+    assert!(ledger.get("bad-path").is_none());
     assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert_eq!(
+        ledger.scope_authority_failures()[0].authority,
+        ScopeAuthorityKind::Report
+    );
     assert!(
         ledger.scope_authority_failures()[0]
             .reason
             .contains("canonical repository-relative paths")
+    );
+    assert_eq!(
+        convergence(&ledger, Severity::Major).verdict,
+        Verdict::NotConverged
+    );
+}
+
+#[test]
+fn a_frozen_flat_report_keeps_the_path_spelling_the_m1_writer_admitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
+    apply_report(&mut ledger, &cas, "flat", 1, Severity::Major, "./src/a.rs");
+
+    let finding = ledger.get("flat").unwrap();
+    assert_eq!(finding.title, "claim");
+    assert_eq!(finding.body, "body");
+    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert_eq!(finding.severity, Severity::Major);
+    assert_eq!(finding.file, "./src/a.rs");
+    assert_eq!(finding.convergence_scope, Some(ReportScope::Out));
+    assert!(ledger.scope_authority_failures().is_empty());
+}
+
+#[test]
+fn an_unreadable_later_report_does_not_overwrite_a_readable_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_whole_tree_round(&mut ledger, &cas, 1);
+    apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
+    apply_resolution(&mut ledger, &cas, "claim", 1, Status::Fixed);
+    apply_whole_tree_round(&mut ledger, &cas, 2);
+
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "title": "unreadable replacement",
+            "severity": "blocker",
+            "locations": [{"path": "./src/a.rs"}],
+            "body": "replacement body",
+            "fix": "replacement fix",
+            "confidence": 1.0
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "claim",
+                    "round": 2,
+                    "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+
+    let finding = ledger.get("claim").unwrap();
+    assert_eq!(finding.status, Status::Fixed);
+    assert_eq!(finding.severity, Severity::Major);
+    assert_eq!(finding.title, "claim");
+    assert_eq!(finding.body, "body");
+    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert_eq!(finding.reports.len(), 2);
+    assert_eq!(finding.reports[1].scope, None);
+    assert_eq!(
+        convergence(&ledger, Severity::Major).verdict,
+        Verdict::NotConverged
     );
 }
 

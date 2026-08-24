@@ -261,39 +261,48 @@ fn added_files_are_not_hashed() {
 fn unchanged_large_tree_sandbox_measurement() {
     let dir = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
-    let bytes = vec![0xA5; 41_943];
-    let content = cas.put(&bytes).unwrap();
-    let manifest = Manifest::new(
-        (0..5_000)
-            .map(|index| Entry {
-                path: format!("files/{index:04}.bin"),
-                kind: EntryKind::File,
-                content: content.clone(),
-                size: bytes.len() as u64,
-            })
-            .collect(),
-    );
+    let mut entries = Vec::with_capacity(5_000);
+    for index in 0_u64..4_500 {
+        let mut bytes = vec![0xA5; 46_603];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        entries.push(Entry {
+            path: format!("files/{index:04}.bin"),
+            kind: EntryKind::File,
+            content: cas.put(&bytes).unwrap(),
+            size: bytes.len() as u64,
+        });
+    }
+    for index in 0..500 {
+        let target = format!("../files/{index:04}.bin").into_bytes();
+        entries.push(Entry {
+            path: format!("links/{index:04}.bin"),
+            kind: EntryKind::Symlink,
+            content: cas.put(&target).unwrap(),
+            size: target.len() as u64,
+        });
+    }
+    let manifest = Manifest::new(entries);
     let started = std::time::Instant::now();
-    let template =
-        review_sandbox::SandboxTemplate::materialize_for_parallelism(&manifest, &cas, 4).unwrap();
+    let template = review_sandbox::SandboxTemplate::materialize(&manifest, &cas).unwrap();
     let materialize_elapsed = started.elapsed();
 
-    let started = std::time::Instant::now();
-    let sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite).unwrap();
-    let clone_elapsed = started.elapsed();
+    for mode in [Mode::EphemeralWrite, Mode::ReadOnly] {
+        let started = std::time::Instant::now();
+        let sandbox = Sandbox::from_template(&template, mode).unwrap();
+        let clone_elapsed = started.elapsed();
 
-    let started = std::time::Instant::now();
-    let sealed = sandbox.seal().unwrap();
-    let seal_elapsed = started.elapsed();
+        let started = std::time::Instant::now();
+        let sealed = sandbox.seal().unwrap();
+        let seal_elapsed = started.elapsed();
 
-    assert!(sealed.unchanged(), "{:?}", sealed.mutations);
-    eprintln!(
-        "5,000 unchanged files / {} MiB: materialize {:.3}s, clone {:.3}s, seal {:.3}s",
-        (bytes.len() * 5_000) / (1024 * 1024),
-        materialize_elapsed.as_secs_f64(),
-        clone_elapsed.as_secs_f64(),
-        seal_elapsed.as_secs_f64()
-    );
+        assert!(sealed.unchanged(), "{:?}", sealed.mutations);
+        eprintln!(
+            "5,000 entries / 199 MiB / {mode:?}: materialize {:.3}s, clone+permissions {:.3}s, seal {:.3}s",
+            materialize_elapsed.as_secs_f64(),
+            clone_elapsed.as_secs_f64(),
+            seal_elapsed.as_secs_f64()
+        );
+    }
 }
 
 /// A COW clone must isolate writes: two sandboxes cloned from one template are independent,

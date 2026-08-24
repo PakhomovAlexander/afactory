@@ -865,6 +865,24 @@ fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
             "ReviewerResult@1 violates its top-level payload contract".into(),
         ));
     }
+    for (index, report) in value["reports"]
+        .as_array()
+        .expect("top-level contract checked reports")
+        .iter()
+        .enumerate()
+    {
+        let legacy: review_core::legacy::LegacyFinding = serde_json::from_value(report.clone())
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "ReviewerResult@1 report {index} violates its payload contract: {error}"
+                ))
+            })?;
+        legacy.into_report(index).map_err(|error| {
+            StoreError::Conflict(format!(
+                "ReviewerResult@1 report is not admissible: {error}"
+            ))
+        })?;
+    }
     for demand in value
         .get("benchmark_demands")
         .and_then(Value::as_array)

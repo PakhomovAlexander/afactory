@@ -23,7 +23,7 @@ pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
 pub use cas::{Cas, CasError};
 pub use ledger::{
     AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, ReportScope,
-    ScopeAuthorityFailure, Status, Verdict,
+    ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
 pub use store::{EventStore, NewEvent, StoreError};
