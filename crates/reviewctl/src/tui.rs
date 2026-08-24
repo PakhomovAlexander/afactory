@@ -445,6 +445,26 @@ fn draw_reviewer_body(
     Ok(())
 }
 
+fn provider_limit_rows(limits: &[providers::ProviderLimit]) -> [String; 4] {
+    std::array::from_fn(|row| match row {
+        0..=2 => limits
+            .get(row)
+            .map(providers::format_limit)
+            .unwrap_or_else(|| {
+                if row == 0 {
+                    "not exposed by provider CLI".to_string()
+                } else {
+                    String::new()
+                }
+            }),
+        3 if limits.len() > 3 => format!(
+            "+{} more; run `af provider status` for all limits",
+            limits.len() - 3
+        ),
+        _ => String::new(),
+    })
+}
+
 fn draw_provider_body(
     stdout: &mut Stdout,
     app: &App,
@@ -487,7 +507,7 @@ fn draw_provider_body(
         "  ID                     KIND      STATUS              SUBSCRIPTION",
         Paint::Muted,
     )?;
-    let detail_top = footer - 10;
+    let detail_top = footer - 11;
     let list_top = 6;
     let capacity = usize::from(detail_top.saturating_sub(list_top));
     if app.providers.providers.is_empty() {
@@ -559,18 +579,7 @@ fn draw_provider_body(
         &format!("SUBSCRIPTION {}", provider.subscription),
         Paint::Muted,
     )?;
-    for row in 0..3 {
-        let value = provider
-            .limits
-            .get(row)
-            .map(providers::format_limit)
-            .unwrap_or_else(|| {
-                if row == 0 {
-                    "not exposed by provider CLI".to_string()
-                } else {
-                    String::new()
-                }
-            });
+    for (row, value) in provider_limit_rows(&provider.limits).iter().enumerate() {
         paint(
             stdout,
             detail_top + 3 + row as u16,
@@ -582,7 +591,7 @@ fn draw_provider_body(
     }
     paint(
         stdout,
-        detail_top + 6,
+        detail_top + 7,
         content_x,
         content_width,
         &format!("COMMAND      {}", provider.command),
@@ -590,7 +599,7 @@ fn draw_provider_body(
     )?;
     paint(
         stdout,
-        detail_top + 7,
+        detail_top + 8,
         content_x,
         content_width,
         &format!("AUTH CONTEXT {}", provider.auth_context),
@@ -598,7 +607,7 @@ fn draw_provider_body(
     )?;
     paint(
         stdout,
-        detail_top + 8,
+        detail_top + 9,
         content_x,
         content_width,
         &format!("SOURCE       {}", provider.source),
@@ -606,7 +615,7 @@ fn draw_provider_body(
     )?;
     paint(
         stdout,
-        detail_top + 9,
+        detail_top + 10,
         content_x,
         content_width,
         &format!(
@@ -2708,7 +2717,9 @@ fn paint(
 mod tests {
     use super::{
         AsciiGraph, PipelineGraph, append_full_file_patch, display_ascii, proposal_directory,
+        provider_limit_rows,
     };
+    use crate::providers::ProviderLimit;
     use review_config::pipeline_edit::pipeline_view;
 
     const ASCII_PIPELINE: &str = r#"version = 1
@@ -2825,6 +2836,21 @@ gate = "major"
         assert!(escaped.contains("\\u{1b}"));
         assert!(escaped.contains("\\n"));
         assert!(escaped.contains("\\u{96ea}"));
+    }
+
+    #[test]
+    fn provider_limit_rows_disclose_hidden_windows() {
+        let limits: Vec<ProviderLimit> = (0..5)
+            .map(|index| ProviderLimit {
+                name: format!("window-{index}"),
+                used_percent: index,
+                resets_at: None,
+            })
+            .collect();
+        let rows = provider_limit_rows(&limits);
+        assert!(rows[0].contains("window-0"));
+        assert!(rows[2].contains("window-2"));
+        assert_eq!(rows[3], "+2 more; run `af provider status` for all limits");
     }
 
     #[test]

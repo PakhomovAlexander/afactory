@@ -541,6 +541,12 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
+                if let Some(warning) = snapshot.warning {
+                    if !detail.is_empty() {
+                        detail.push_str("; ");
+                    }
+                    detail.push_str(&format!("subscription status partial: {warning}"));
+                }
             }
             Err(error) => {
                 if !detail.is_empty() {
@@ -617,6 +623,7 @@ struct ProbeOutput {
 struct SubscriptionSnapshot {
     subscription: String,
     limits: Vec<ProviderLimit>,
+    warning: Option<String>,
 }
 
 fn configure_probe_environment(command: &mut Command, spec: &ProviderSpec) {
@@ -681,18 +688,22 @@ fn probe_codex_subscription(
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut exceeded = false;
     let mut requested_limits = false;
-    loop {
-        while drain_available(&mut stdout, &mut captured, &mut exceeded)? && !exceeded {}
+    let result = 'probe: loop {
+        loop {
+            match drain_available(&mut stdout, &mut captured, &mut exceeded) {
+                Ok(true) if !exceeded => {}
+                Ok(_) => break,
+                Err(error) => break 'probe Err(error),
+            }
+        }
         if exceeded {
-            stop_probe(&mut child);
-            return Err(format!(
+            break Err(format!(
                 "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
         if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
             if response.get("error").is_some() {
-                stop_probe(&mut child);
-                return Err("Codex app-server rejected initialization".to_string());
+                break Err("Codex app-server rejected initialization".to_string());
             }
             if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
                 .and_then(|()| {
@@ -700,38 +711,35 @@ fn probe_codex_subscription(
                 })
                 .and_then(|()| stdin.flush())
             {
-                stop_probe(&mut child);
-                return Err(format!("cannot request Codex subscription status: {error}"));
+                break Err(format!("cannot request Codex subscription status: {error}"));
             }
             requested_limits = true;
         }
         if requested_limits && let Some(response) = response_for_id(&captured, 2) {
-            stop_probe(&mut child);
-            return parse_codex_subscription_response(&response);
+            break parse_codex_subscription_response(&response);
         }
         match child.try_wait() {
             Ok(Some(_)) => {
-                return Err("Codex app-server probe exited without a rate-limit response".into());
+                break Err("Codex app-server probe exited without a rate-limit response".into());
             }
             Ok(None) => {}
             Err(error) => {
-                stop_probe(&mut child);
-                return Err(format!("Codex app-server probe failed: {error}"));
+                break Err(format!("Codex app-server probe failed: {error}"));
             }
         }
         if cancelled.load(Ordering::Acquire) {
-            stop_probe(&mut child);
-            return Err("provider status refresh cancelled".to_string());
+            break Err("provider status refresh cancelled".to_string());
         }
         if Instant::now() >= deadline {
-            stop_probe(&mut child);
-            return Err(format!(
+            break Err(format!(
                 "Codex subscription probe timed out after {} seconds",
                 PROBE_TIMEOUT.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(25));
-    }
+    };
+    stop_probe(&mut child);
+    result
 }
 
 #[cfg(not(unix))]
@@ -787,6 +795,8 @@ fn parse_codex_subscription_response(
             .and_then(normalize_codex_plan)
     });
     let mut limits = Vec::new();
+    let mut skipped_windows = 0_usize;
+    let mut truncated = false;
     for snapshot in snapshots {
         let bucket = snapshot
             .get("limitName")
@@ -798,17 +808,25 @@ fn parse_codex_subscription_response(
             let Some(window) = snapshot.get(field).and_then(serde_json::Value::as_object) else {
                 continue;
             };
-            let used = window
+            let used_percent = match window
                 .get("usedPercent")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| "Codex rate-limit window has no usedPercent".to_string())?;
-            let used_percent = u8::try_from(used)
-                .ok()
+                .and_then(|used| u8::try_from(used).ok())
                 .filter(|used| *used <= 100)
-                .ok_or_else(|| "Codex rate-limit percentage is outside 0..=100".to_string())?;
+            {
+                Some(used) => used,
+                None => {
+                    skipped_windows += 1;
+                    continue;
+                }
+            };
             let window_minutes = window
                 .get("windowDurationMins")
                 .and_then(serde_json::Value::as_u64);
+            if limits.len() == MAX_PROVIDER_LIMITS {
+                truncated = true;
+                continue;
+            }
             limits.push(ProviderLimit {
                 name: match window_minutes {
                     Some(minutes) => format!("{bucket} {}", format_window(minutes)),
@@ -817,19 +835,28 @@ fn parse_codex_subscription_response(
                 used_percent,
                 resets_at: window.get("resetsAt").and_then(serde_json::Value::as_u64),
             });
-            if limits.len() == MAX_PROVIDER_LIMITS {
-                break;
-            }
         }
-        if limits.len() == MAX_PROVIDER_LIMITS {
-            break;
-        }
+    }
+    if plan.is_none() && limits.is_empty() {
+        return Err("Codex rate-limit response has no usable subscription information".to_string());
+    }
+    let mut warnings = Vec::new();
+    if skipped_windows > 0 {
+        warnings.push(format!(
+            "skipped {skipped_windows} malformed rate-limit windows"
+        ));
+    }
+    if truncated {
+        warnings.push(format!(
+            "additional rate-limit windows omitted at the {MAX_PROVIDER_LIMITS}-window safety limit"
+        ));
     }
     Ok(SubscriptionSnapshot {
         subscription: plan
             .map(|plan| format!("ChatGPT {plan}"))
             .unwrap_or_else(|| "ChatGPT (plan unavailable)".to_string()),
         limits,
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
     })
 }
 
@@ -1337,6 +1364,74 @@ auth_dir = "{}"
         assert_eq!(snapshot.limits[0].used_percent, 37);
         assert_eq!(snapshot.limits[1].name, "GPT-5.3-Codex-Spark 5h");
         assert_eq!(snapshot.limits[2].name, "GPT-5.3-Codex-Spark 1w");
+        assert!(snapshot.warning.is_none());
+    }
+
+    #[test]
+    fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
+        let response: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/providers/codex-0.149.0-rate-limits-mixed.json"
+        ))
+        .unwrap();
+        let snapshot = parse_codex_subscription_response(&response).unwrap();
+        assert_eq!(snapshot.subscription, "ChatGPT Pro");
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].name, "codex 1w");
+        assert_eq!(
+            snapshot.warning.as_deref(),
+            Some("skipped 2 malformed rate-limit windows")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let pid_file = directory.path().join("descendant.pid");
+        let script = format!(
+            "#!/bin/sh\n\
+             IFS= read -r _\n\
+             printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+             IFS= read -r _\n\
+             IFS= read -r _\n\
+             sleep 30 &\n\
+             echo $! > '{}'\n\
+             exit 0\n",
+            pid_file.display()
+        );
+        fs::write(&program, script).unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            source: "test".to_string(),
+        };
+
+        let Err(error) = probe_codex_subscription(&program, &spec, &AtomicBool::new(false)) else {
+            panic!("early app-server exit unexpectedly returned subscription data");
+        };
+        assert!(error.contains("exited without a rate-limit response"));
+        let process = nix::unistd::Pid::from_raw(
+            fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap(),
+        );
+        for _ in 0..100 {
+            if nix::sys::signal::kill(process, None) == Err(nix::errno::Errno::ESRCH) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("Codex app-server descendant {process} survived probe cleanup");
     }
 
     #[test]
