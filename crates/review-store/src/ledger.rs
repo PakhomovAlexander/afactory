@@ -10,7 +10,10 @@
 //! *not* reproduce is the loss — every report stays attached, and a resolution never overwrites
 //! the note that preceded it.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use review_core::{EventType, RoundStartedPayloadV1, Severity, SubjectKind};
 use serde::{Deserialize, Serialize};
@@ -42,14 +45,14 @@ impl ReportScope {
 }
 
 /// The immutable artifact class that failed to supply Scope authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeAuthorityKind {
     Subject,
     Report,
 }
 
 /// A Round whose Subject or Report could not supply Report Scope authority during replay.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ScopeAuthorityFailure {
     pub round: u32,
     pub authority: ScopeAuthorityKind,
@@ -200,6 +203,7 @@ pub struct Ledger {
     order: Vec<String>,
     active_scope: Option<ActiveScope>,
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
+    scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
     subject_scope_cache: BTreeMap<String, Result<SubjectScope, String>>,
     pub round: u32,
 }
@@ -386,7 +390,7 @@ impl Ledger {
         // Authority failure evidence must not replace readable claim content. If this key has
         // readable history, retain the diagnostic attachment without adopting it; if it does not,
         // the authority-failure list itself blocks convergence without inventing a Finding.
-        if unreadable {
+        if unreadable && self.findings.contains_key(&key) {
             if let Some(existing) = self.findings.get_mut(&key) {
                 existing.reports.push(attached);
             }
@@ -591,18 +595,14 @@ impl Ledger {
         authority_id: &str,
         reason: &str,
     ) {
-        if !self.scope_authority_failures.iter().any(|failure| {
-            failure.round == round
-                && failure.authority == authority
-                && failure.authority_id == authority_id
-                && failure.reason == reason
-        }) {
-            self.scope_authority_failures.push(ScopeAuthorityFailure {
-                round,
-                authority,
-                authority_id: authority_id.to_string(),
-                reason: reason.to_string(),
-            });
+        let failure = ScopeAuthorityFailure {
+            round,
+            authority,
+            authority_id: authority_id.to_string(),
+            reason: reason.to_string(),
+        };
+        if self.scope_authority_failure_keys.insert(failure.clone()) {
+            self.scope_authority_failures.push(failure);
         }
     }
 
@@ -694,7 +694,11 @@ impl Ledger {
             })
             .count();
 
-        let verdict = if self.scope_authority_failures.is_empty()
+        let authority_failure_recent = self
+            .scope_authority_failures
+            .iter()
+            .any(|failure| i64::from(failure.round) > since);
+        let verdict = if !authority_failure_recent
             && open_blocking == 0
             && new_recent == 0
             && self.round >= policy.clean_rounds
@@ -828,6 +832,8 @@ impl ReportProjection {
         };
         let location = if file.trim().is_empty() {
             ReportLocation::ChangeWide
+        } else if !review_core::is_valid_repo_path(file) {
+            ReportLocation::Unrecorded
         } else {
             ReportLocation::Paths(vec![ProjectedLocation {
                 path: file.to_string(),

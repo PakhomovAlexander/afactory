@@ -1033,7 +1033,6 @@ fn prior_rows(
                 "key": finding.key,
                 "severity": severity,
                 "status": finding.status.as_str(),
-                "file": finding.file,
                 "line": finding.line,
                 "title": finding.title,
                 "body": finding.body,
@@ -1041,6 +1040,11 @@ fn prior_rows(
                 "last_seen_round": finding.last_seen_round,
             });
             let object = row.as_object_mut().expect("prior row is an object");
+            let (file, location_unrecorded) = prior_location(&finding.file);
+            object.insert("file".into(), file);
+            if location_unrecorded {
+                object.insert("location_unrecorded".into(), serde_json::Value::Bool(true));
+            }
             if scope != "in" {
                 object.insert("scope".into(), serde_json::Value::String(scope.into()));
             }
@@ -1053,6 +1057,14 @@ fn prior_rows(
             row
         })
         .collect())
+}
+
+fn prior_location(file: &str) -> (serde_json::Value, bool) {
+    if review_core::is_valid_repo_path(file) {
+        (serde_json::Value::String(file.to_string()), false)
+    } else {
+        (serde_json::Value::Null, true)
+    }
 }
 
 fn publish_snapshot(snapshot: &Snapshot, cas: &Cas) -> Result<(String, String), String> {
@@ -1154,4 +1166,19 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
         return Err("the pipeline path is empty".into());
     }
     Ok(components.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn prior_findings_never_echo_a_path_live_admission_would_refuse() {
+        assert_eq!(
+            super::prior_location("src/main.rs"),
+            (serde_json::Value::String("src/main.rs".into()), false)
+        );
+        assert_eq!(
+            super::prior_location("./src/main.rs"),
+            (serde_json::Value::Null, true)
+        );
+    }
 }

@@ -268,13 +268,15 @@ fn sync_concurrently<'p>(
     sync: fn(&fs::File) -> std::io::Result<()>,
 ) -> Result<(), CasError> {
     let paths: Vec<&Path> = paths.collect();
-    let workers = review_core::worker_limit().min(paths.len().max(1));
+    let workers = std::thread::available_parallelism()
+        .map(|workers| workers.get())
+        .unwrap_or(1)
+        .min(paths.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> std::io::Result<()> {
-                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(path) = paths.get(i) else {

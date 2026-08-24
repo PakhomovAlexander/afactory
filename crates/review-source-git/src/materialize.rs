@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use review_store::Cas;
 
@@ -74,7 +75,7 @@ pub fn materialize(
     cas: &Cas,
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
-    let workers = review_core::worker_limit();
+    let workers = review_parallel::worker_limit();
     materialize_with_workers(manifest, cas, root, workers)
 }
 
@@ -128,8 +129,9 @@ pub fn materialize_with_workers(
         });
     }
 
-    // One verified CAS read per distinct digest. Distinct content groups run concurrently;
-    // repeated content is then written to every occurrence without being re-read or re-hashed.
+    // One verified CAS read per distinct digest. Repeated bytes are cached once, then every
+    // occurrence becomes an independent work item; singleton digests remain bounded-memory tasks
+    // that read and write together.
     let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for (target, entry) in targets {
         grouped
@@ -138,30 +140,83 @@ pub fn materialize_with_workers(
             .push((target, entry.kind));
     }
     let groups: Vec<_> = grouped.into_iter().collect();
-    let workers = workers.max(1).min(groups.len().max(1));
+    let repeated: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, targets))| (targets.len() > 1).then_some(index))
+        .collect();
+    let loaded: Vec<OnceLock<Result<Arc<Vec<u8>>, String>>> =
+        (0..groups.len()).map(|_| OnceLock::new()).collect();
+    let load_workers = workers.max(1).min(repeated.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..load_workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(group_index) = repeated.get(index).copied() else {
+                            return;
+                        };
+                        let _permit = review_parallel::acquire_worker_permit();
+                        let bytes = cas
+                            .get(groups[group_index].0)
+                            .map(Arc::new)
+                            .map_err(|error| error.to_string());
+                        loaded[group_index]
+                            .set(bytes)
+                            .expect("one loader owns each repeated digest");
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("materialize CAS loader");
+        }
+    });
+
+    enum Task<'a> {
+        Singleton(&'a str, &'a Path, EntryKind),
+        Repeated(Arc<Vec<u8>>, &'a Path, EntryKind),
+    }
+    let mut tasks = Vec::with_capacity(manifest.entries.len());
+    for (index, (content, targets)) in groups.iter().enumerate() {
+        if targets.len() == 1 {
+            let (target, kind) = &targets[0];
+            tasks.push(Task::Singleton(content, target, *kind));
+        } else {
+            let bytes = loaded[index]
+                .get()
+                .expect("repeated digest was loaded")
+                .as_ref()
+                .map_err(|error| MaterializeError::Cas(error.clone()))?;
+            for (target, kind) in targets {
+                tasks.push(Task::Repeated(bytes.clone(), target, *kind));
+            }
+        }
+    }
+
+    let workers = workers.max(1).min(tasks.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> Result<(), MaterializeError> {
-                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((content, targets)) = groups.get(index) else {
+                        let Some(task) = tasks.get(index) else {
                             return Ok(());
                         };
-
-                        let bytes = cas
-                            .get(content)
-                            .map_err(|error| MaterializeError::Cas(error.to_string()))?;
-
-                        for (target, kind) in targets {
-                            match kind {
-                                EntryKind::Symlink => symlink(&bytes, target)?,
-                                EntryKind::File | EntryKind::Executable => {
-                                    fs::write(target, &bytes)?;
-                                    set_executable(target, *kind == EntryKind::Executable)?;
-                                }
+                        let _permit = review_parallel::acquire_worker_permit();
+                        match task {
+                            Task::Singleton(content, target, kind) => {
+                                let bytes = cas
+                                    .get(content)
+                                    .map_err(|error| MaterializeError::Cas(error.to_string()))?;
+                                write_entry(&bytes, target, *kind)?;
+                            }
+                            Task::Repeated(bytes, target, kind) => {
+                                write_entry(bytes, target, *kind)?;
                             }
                         }
                     }
@@ -173,6 +228,16 @@ pub fn materialize_with_workers(
         }
         Ok(())
     })
+}
+
+fn write_entry(bytes: &[u8], target: &Path, kind: EntryKind) -> std::io::Result<()> {
+    match kind {
+        EntryKind::Symlink => symlink(bytes, target),
+        EntryKind::File | EntryKind::Executable => {
+            fs::write(target, bytes)?;
+            set_executable(target, kind == EntryKind::Executable)
+        }
+    }
 }
 
 #[cfg(unix)]

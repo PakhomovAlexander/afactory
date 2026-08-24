@@ -296,13 +296,36 @@ fn unchanged_large_tree_sandbox_measurement() {
         let seal_elapsed = started.elapsed();
 
         assert!(sealed.unchanged(), "{:?}", sealed.mutations);
+        let started = std::time::Instant::now();
+        drop(sealed);
+        let teardown_elapsed = started.elapsed();
         eprintln!(
-            "5,000 entries / 199 MiB / {mode:?}: materialize {:.3}s, clone+permissions {:.3}s, seal {:.3}s",
+            "5,000 entries / 199 MiB / {mode:?}: materialize {:.3}s, clone+permissions {:.3}s, seal {:.3}s, teardown {:.3}s",
             materialize_elapsed.as_secs_f64(),
             clone_elapsed.as_secs_f64(),
-            seal_elapsed.as_secs_f64()
+            seal_elapsed.as_secs_f64(),
+            teardown_elapsed.as_secs_f64()
         );
     }
+
+    let repeated_bytes = vec![0x5A; 41_943];
+    let repeated_content = cas.put(&repeated_bytes).unwrap();
+    let repeated = Manifest::new(
+        (0..5_000)
+            .map(|index| Entry {
+                path: format!("repeated/{index:04}.bin"),
+                kind: EntryKind::File,
+                content: repeated_content.clone(),
+                size: repeated_bytes.len() as u64,
+            })
+            .collect(),
+    );
+    let started = std::time::Instant::now();
+    let _repeated_template = review_sandbox::SandboxTemplate::materialize(&repeated, &cas).unwrap();
+    eprintln!(
+        "5,000 repeated-content files / 199 MiB: materialize {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
 }
 
 /// A COW clone must isolate writes: two sandboxes cloned from one template are independent,

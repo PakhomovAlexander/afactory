@@ -995,6 +995,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-parallel"
+version = "0.1.0"
+
+[[package]]
 name = "review-pipeline"
 version = "0.1.0"
 dependencies = [
@@ -1056,7 +1060,7 @@ version = "0.1.0"
 dependencies = [
  "reflink-copy",
  "review-check",
- "review-core",
+ "review-parallel",
  "review-source-git",
  "review-store",
  "tempfile",
@@ -1069,6 +1073,7 @@ dependencies = [
  "jsonschema",
  "notify",
  "review-core",
+ "review-parallel",
  "review-store",
  "serde",
  "serde_json",

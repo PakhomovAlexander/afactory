@@ -53,7 +53,7 @@ pub struct SealedSandbox {
     /// The tree as it stood at seal time.
     pub final_manifest: Manifest,
     pub mutations: MutationSet,
-    _dir: tempfile::TempDir,
+    _cleanup: CleanupDir,
 }
 
 impl SealedSandbox {
@@ -68,10 +68,26 @@ impl SealedSandbox {
     }
 }
 
+struct CleanupDir {
+    plan: CleanupPlan,
+    dir: Option<tempfile::TempDir>,
+}
+
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        let Some(dir) = self.dir.take() else { return };
+        let temp_root = dir.keep();
+        remove_tree_parallel(&self.plan);
+        // The recorded plan is exact at seal time. This fallback handles a caller that writes
+        // through `root()` afterwards and any per-path removal failure without losing cleanup.
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+}
+
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     let (root, baseline, mode, dir) = sandbox.into_parts();
-    let (final_manifest, mutations, directories) =
-        match scan_and_diff(&root, &baseline, review_core::worker_limit()) {
+    let (final_manifest, mutations, directories, cleanup) =
+        match scan_and_diff(&root, &baseline, mode, review_parallel::worker_limit()) {
             Ok(result) => result,
             Err(error) => {
                 // A mutable reviewer may remove directory permissions. Restore best-effort before
@@ -87,7 +103,10 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
         baseline,
         final_manifest,
         mutations,
-        _dir: dir,
+        _cleanup: CleanupDir {
+            plan: cleanup,
+            dir: Some(dir),
+        },
     })
 }
 
@@ -103,8 +122,9 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
 fn scan_and_diff(
     root: &Path,
     baseline: &Manifest,
+    mode: Mode,
     worker_budget: usize,
-) -> Result<(Manifest, MutationSet, Vec<PathBuf>), std::io::Error> {
+) -> Result<(Manifest, MutationSet, Vec<PathBuf>, CleanupPlan), std::io::Error> {
     let index: BTreeMap<&str, &Entry> = baseline
         .entries
         .iter()
@@ -116,10 +136,14 @@ fn scan_and_diff(
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut baseline_candidates = Vec::new();
     let mut directories = Vec::new();
+    let mut cleanup = CleanupPlan::default();
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        directories.push(dir.clone());
+        cleanup.directories.push(dir.clone());
+        if mode == Mode::ReadOnly || directory_needs_restore(&dir)? {
+            directories.push(dir.clone());
+        }
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
             let meta = std::fs::symlink_metadata(&path)?;
@@ -127,6 +151,7 @@ fn scan_and_diff(
                 stack.push(path);
                 continue;
             }
+            cleanup.files.push(path.clone());
             // The manifest key must be capture's *encoding* of the raw path bytes, not
             // `to_string_lossy`, which collapses two distinct non-UTF-8 names to one key.
             let relative_path = path.strip_prefix(root).expect("walked path is under root");
@@ -178,7 +203,48 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    Ok((Manifest::new(entries), mutations, directories))
+    Ok((Manifest::new(entries), mutations, directories, cleanup))
+}
+
+#[derive(Default)]
+struct CleanupPlan {
+    files: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+}
+
+fn remove_tree_parallel(plan: &CleanupPlan) {
+    let workers = review_parallel::worker_limit().min(plan.files.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(path) = plan.files.get(index) else {
+                        return;
+                    };
+                    let _permit = review_parallel::acquire_worker_permit();
+                    let _ = std::fs::remove_file(path);
+                }
+            });
+        }
+    });
+    let mut directories: Vec<&PathBuf> = plan.directories.iter().collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        let _ = std::fs::remove_dir(directory);
+    }
+}
+
+#[cfg(unix)]
+fn directory_needs_restore(path: &Path) -> Result<bool, std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(std::fs::symlink_metadata(path)?.permissions().mode() & 0o200 == 0)
+}
+
+#[cfg(not(unix))]
+fn directory_needs_restore(_path: &Path) -> Result<bool, std::io::Error> {
+    Ok(false)
 }
 
 struct BaselineCandidate {
@@ -199,7 +265,6 @@ fn hash_baseline_candidates(
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> Result<Vec<(Entry, bool)>, std::io::Error> {
-                    let _permit = review_core::acquire_worker_permit();
                     let mut hashed = Vec::new();
                     let mut buffer = [0u8; 64 * 1024];
                     loop {
@@ -207,6 +272,7 @@ fn hash_baseline_candidates(
                         let Some(candidate) = candidates.get(index) else {
                             return Ok(hashed);
                         };
+                        let _permit = review_parallel::acquire_worker_permit();
                         let (content, size) = if candidate.kind == EntryKind::Symlink {
                             let target = std::fs::read_link(&candidate.path)?;
                             let bytes = path_bytes(&target);

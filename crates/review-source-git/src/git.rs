@@ -85,6 +85,7 @@ impl std::error::Error for GitError {}
 pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
 
 /// The kernel-owned policy whose output M2.4 records with each Change Set.
+pub const RENAME_LIMIT: u32 = 1000;
 pub const TREE_DIFF_POLICY_VERSION: &str =
     "review.kernel/git-tree-diff@2;binary=git-deflate-level-6;rename-limit=1000";
 
@@ -230,6 +231,7 @@ impl Repo {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new("git");
+        let rename_limit_config = format!("diff.renameLimit={RENAME_LIMIT}");
         // Nothing inherited. Not "most things filtered" — nothing.
         cmd.env_clear();
         for (key, value) in self.environment() {
@@ -261,7 +263,7 @@ impl Repo {
             "-c",
             "diff.suppressBlankEmpty=false",
             "-c",
-            "diff.renameLimit=1000",
+            &rename_limit_config,
             // No transport may be attempted; a submodule URL cannot become a fetch.
             "-c",
             "protocol.allow=never",
@@ -572,6 +574,7 @@ impl Repo {
                 Some(candidate_objects.as_path()),
             ),
         };
+        let rename_limit_arg = format!("-l{RENAME_LIMIT}");
         let (output, git_version, rename_detection_truncated) = self.run_tree_diff_unchecked(
             &git_dir,
             object_dir,
@@ -597,7 +600,7 @@ impl Repo {
                 "--no-relative",
                 "--submodule=short",
                 "--ignore-submodules=none",
-                "-l1000",
+                &rename_limit_arg,
                 "-O/dev/null",
                 base.as_str(),
                 head.as_str(),
@@ -1059,6 +1062,11 @@ mod tests {
 
     #[test]
     fn rename_limit_warnings_are_detected_even_when_git_exits_zero() {
+        assert!(
+            super::TREE_DIFF_POLICY_VERSION
+                .contains(&format!("rename-limit={}", super::RENAME_LIMIT)),
+            "the durable diff-policy identity must record the executable rename limit"
+        );
         assert!(rename_detection_was_truncated(
             b"warning: exhaustive rename detection was skipped due to too many files.\n"
         ));

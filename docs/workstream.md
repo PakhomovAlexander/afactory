@@ -1,7 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. M2 dogfood Round 3 retained 24 fixes and opened nine further
-claims; fix its Ledger to convergence before resuming M3.1.
+**Status:** M0 and M1 are complete. M2's first dogfood Campaign exhausted after Round 4 opened 12
+further claims; fix its Ledger and converge a fresh unchanged-policy Campaign before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -11,8 +11,8 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and sixteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood; its first three Rounds opened
-33 Findings while retaining every prior correction. The repository/release
+are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood; its first Campaign exhausted
+after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
 complete. The M2 dogfood Campaign must converge before work resumes at M3.1.
 
@@ -124,12 +124,12 @@ its exact Round Subject; convergence excludes wholly out-of-set Findings and fai
 legacy `unknown` evidence. Bounded, resumable Provider Operations now probe explicit machine-local
 contexts, run a real inference smoke, fence exact continuations, and charge failed work before
 dispatch. Change Sets include both rename endpoints, so Reports at either path project `in`
-without rewriting the existing Finding key. Dogfood Rounds 1 and 2 produced 24 Findings whose
-corrections are committed and fully verified. Round 3 retained all 24 as fixed and opened nine
-further claims. Their replay/admission and sandbox-scalability corrections are locally implemented;
-full verification, markdownlint, and the corrected 5,000-entry measurement pass. Commit and resolve
-them in Campaign `m2-rename-scope`, then continue to convergence. Only then
-resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
+without rewriting the existing Finding key. Dogfood Rounds 1–3 produced 33 Findings whose
+corrections are committed and fully verified. Round 4 retained all 33 as fixed, opened twelve
+further claims, and exhausted Campaign `m2-rename-scope`. Their corrections are locally implemented
+and `scripts/verify.sh`, markdownlint, affected tests, and measurements pass. Commit and resolve the
+exhausted Ledger, then open a fresh Campaign under the unchanged two-clean-Round/four-Round policy.
+Only then resume M3.1. Continue in milestone order; do not pull Proposal or scatter work forward past
 Subject, authority, isolation, and verification prerequisites.
 
 ## Risks / notes

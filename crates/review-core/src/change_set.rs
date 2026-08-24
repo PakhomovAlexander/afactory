@@ -84,7 +84,7 @@ impl ChangeSetV1 {
 
     pub fn validate(&self) -> Result<(), String> {
         self.validate_scope_shape()?;
-        self.canonical_patch().map(|_| ())
+        validate_canonical_base64(&self.canonical_patch_base64)
     }
 
     /// Validate the identity and path data needed to derive Report Scope without decoding the
@@ -122,10 +122,66 @@ impl ChangeSetV1 {
     }
 }
 
+fn validate_canonical_base64(encoded: &str) -> Result<(), String> {
+    let bytes = encoded.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return Err("ChangeSet@1 canonical patch is not canonical base64: invalid length".into());
+    }
+    let padding = if bytes.ends_with(b"==") {
+        2
+    } else if bytes.ends_with(b"=") {
+        1
+    } else {
+        0
+    };
+    let data_len = bytes.len().saturating_sub(padding);
+    let value = |byte: u8| match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    if bytes[..data_len].iter().any(|byte| value(*byte).is_none())
+        || bytes[data_len..].iter().any(|byte| *byte != b'=')
+    {
+        return Err("ChangeSet@1 canonical patch is not canonical base64: invalid alphabet".into());
+    }
+    if padding > 0 && data_len == 0 {
+        return Err("ChangeSet@1 canonical patch is not canonical base64: invalid padding".into());
+    }
+    let trailing = data_len
+        .checked_sub(1)
+        .and_then(|index| value(bytes[index]))
+        .unwrap_or(0);
+    if (padding == 1 && trailing & 0b11 != 0) || (padding == 2 && trailing & 0b1111 != 0) {
+        return Err(
+            "ChangeSet@1 canonical patch is not canonical base64: non-zero trailing bits".into(),
+        );
+    }
+    Ok(())
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
 fn valid_path(path: &str) -> bool {
     crate::is_valid_repo_path(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_canonical_base64;
+
+    #[test]
+    fn canonical_base64_is_checked_without_decoding_the_patch() {
+        for valid in ["", "Zg==", "Zm8=", "Zm9v"] {
+            assert!(validate_canonical_base64(valid).is_ok(), "{valid}");
+        }
+        for invalid in ["Z", "Zh==", "Zm9=", "Zm=v", "Zm9v="] {
+            assert!(validate_canonical_base64(invalid).is_err(), "{invalid}");
+        }
+    }
 }

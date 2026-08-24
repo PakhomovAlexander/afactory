@@ -129,3 +129,24 @@ corrected manual fixture has 4,500 distinct blobs and 500 symlinks. For 5,000 en
 recorded 0.999 s materialization; writable clone+permissions 0.681 s and seal 0.656 s; read-only
 clone+permissions 1.078 s and seal 0.650 s. `scripts/verify.sh` and markdownlint pass on the complete
 Round 3 correction tree.
+
+## 2026-08-24 — M2 dogfood Round 4 corrections
+
+Round 4 spent 443,431 tokens, retained all 33 prior resolutions as fixed, opened twelve Reports,
+and exhausted Campaign `m2-rename-scope`. Frozen flat non-canonical paths now project fail-closed
+`unknown`; first unreadable Reports materialize actionable blocker Findings, and authority failures
+age out only after the clean window. Prior Findings never echo a path live admission refuses. The
+rename limit has one executable constant guarded against its durable policy identity, Report
+authority deduplication is constant-time, and canonical base64 admission validates without decoding
+the patch.
+
+Worker permits moved from the contracts crate into configurable, re-entrant `review-parallel` and
+are acquired per item so concurrent phases interleave. CAS `fsync` uses an independent I/O fan-out.
+Repeated-content materialization caches one verified read while distributing occurrences. Sandbox
+seal restores only directories that are actually non-writable and parallelizes known-file teardown
+with a recursive safety fallback. For 5,000 entries / 199 MiB, the current measurement recorded
+1.644 s distinct-content materialization, 1.507 s repeated-content materialization, 0.687/1.143 s
+writable/read-only clone+permissions, 0.699/0.694 s seal, and 0.131/0.130 s teardown. Affected tests
+and measurements pass; `scripts/verify.sh` and markdownlint pass over the full workspace. Because the
+first Campaign is durably exhausted, convergence now requires a fresh Campaign under the same
+unchanged policy, not a larger round cap or weaker gate.

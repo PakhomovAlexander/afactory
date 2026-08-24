@@ -151,16 +151,16 @@ fn restore_writable_dirs(root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let mut level = vec![root.to_path_buf()];
     while !level.is_empty() {
-        let workers = review_core::worker_limit().min(level.len());
+        let workers = review_parallel::worker_limit().min(level.len());
         let next = std::sync::atomic::AtomicUsize::new(0);
         let children = std::sync::Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
-                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(dir) = level.get(index) else { return };
+                        let _permit = review_parallel::acquire_worker_permit();
                         let _ =
                             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
                         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -195,15 +195,18 @@ fn restore_writable_dirs(_root: &Path) {}
 #[cfg(unix)]
 pub(crate) fn restore_known_dirs(dirs: &[PathBuf]) {
     use std::os::unix::fs::PermissionsExt;
-    let workers = review_core::worker_limit().min(dirs.len().max(1));
+    if dirs.is_empty() {
+        return;
+    }
+    let workers = review_parallel::worker_limit().min(dirs.len());
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                let _permit = review_core::acquire_worker_permit();
                 loop {
                     let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(dir) = dirs.get(index) else { return };
+                    let _permit = review_parallel::acquire_worker_permit();
                     let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
                 }
             });
@@ -243,12 +246,12 @@ fn clone_tree(src: &Path, dst: &Path, workers: usize) -> std::io::Result<()> {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| -> std::io::Result<()> {
-                    let _permit = review_core::acquire_worker_permit();
                     loop {
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((from, to, is_symlink)) = files.get(index) else {
                             return Ok(());
                         };
+                        let _permit = review_parallel::acquire_worker_permit();
                         if *is_symlink {
                             symlink_raw(&std::fs::read_link(from)?, to)?;
                         } else {
@@ -291,23 +294,13 @@ impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize_with_workers(manifest, cas, &root, review_core::worker_limit())
+        materialize_with_workers(manifest, cas, &root, review_parallel::worker_limit())
             .map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
             manifest: manifest.clone(),
             root,
             _dir: dir,
         })
-    }
-
-    /// Compatibility entry point retained for callers that supplied scheduler width before all
-    /// filesystem phases shared one occupancy-aware process-wide permit pool.
-    pub fn materialize_for_parallelism(
-        manifest: &Manifest,
-        cas: &Cas,
-        _max_parallel: usize,
-    ) -> Result<SandboxTemplate, std::io::Error> {
-        Self::materialize(manifest, cas)
     }
 }
 
@@ -324,7 +317,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        materialize_with_workers(manifest, cas, &root, review_core::worker_limit())
+        materialize_with_workers(manifest, cas, &root, review_parallel::worker_limit())
             .map_err(std::io::Error::other)?;
 
         let sandbox = Sandbox {
@@ -348,7 +341,7 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root, review_core::worker_limit())?;
+        clone_tree(&template.root, &root, review_parallel::worker_limit())?;
 
         let sandbox = Sandbox {
             root,
@@ -420,18 +413,18 @@ impl Sandbox {
             }
             seen_dirs.push(dir);
         }
-        let workers = review_core::worker_limit().min(files.len().max(1));
+        let workers = review_parallel::worker_limit().min(files.len().max(1));
         let next = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|_| {
                     scope.spawn(|| -> std::io::Result<()> {
-                        let _permit = review_core::acquire_worker_permit();
                         loop {
                             let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let Some((path, mode)) = files.get(index) else {
                                 return Ok(());
                             };
+                            let _permit = review_parallel::acquire_worker_permit();
                             std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode))?;
                         }
                     })

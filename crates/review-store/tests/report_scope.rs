@@ -244,7 +244,10 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
         )
         .unwrap();
 
-    assert!(ledger.get("bad-path").is_none());
+    let finding = ledger.get("bad-path").unwrap();
+    assert_eq!(finding.severity, Severity::Blocker);
+    assert_eq!(finding.convergence_scope, None);
+    assert_eq!(finding.reports[0].scope, None);
     assert_eq!(ledger.scope_authority_failures().len(), 1);
     assert_eq!(
         ledger.scope_authority_failures()[0].authority,
@@ -262,21 +265,74 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
 }
 
 #[test]
-fn a_frozen_flat_report_keeps_the_path_spelling_the_m1_writer_admitted() {
+fn frozen_flat_noncanonical_paths_remain_readable_and_fail_closed_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
     apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
-    apply_report(&mut ledger, &cas, "flat", 1, Severity::Major, "./src/a.rs");
+    for (index, path) in ["./src/a.rs", "/sandbox/src/a.rs", "src/../a.rs"]
+        .into_iter()
+        .enumerate()
+    {
+        let key = format!("flat-{index}");
+        apply_report(&mut ledger, &cas, &key, 1, Severity::Major, path);
+        let finding = ledger.get(&key).unwrap();
+        assert_eq!(finding.title, "claim");
+        assert_eq!(finding.body, "body");
+        assert_eq!(finding.fix.as_deref(), Some("fix"));
+        assert_eq!(finding.severity, Severity::Major);
+        assert_eq!(finding.file, path);
+        assert_eq!(finding.convergence_scope, None);
+        assert_eq!(finding.convergence_scope_label(), "unknown");
+    }
+    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 3);
+}
 
-    let finding = ledger.get("flat").unwrap();
-    assert_eq!(finding.title, "claim");
-    assert_eq!(finding.body, "body");
-    assert_eq!(finding.fix.as_deref(), Some("fix"));
-    assert_eq!(finding.severity, Severity::Major);
-    assert_eq!(finding.file, "./src/a.rs");
-    assert_eq!(finding.convergence_scope, Some(ReportScope::Out));
-    assert!(ledger.scope_authority_failures().is_empty());
+#[test]
+fn an_old_authority_failure_ages_out_after_the_clean_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "title": "bad path",
+            "severity": "major",
+            "locations": [{"path": "./src/a.rs"}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "bad-path",
+                    "round": 1,
+                    "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+    apply_resolution(&mut ledger, &cas, "bad-path", 1, Status::Fixed);
+    apply_diff_round(&mut ledger, &cas, 2, &["src/a.rs"]);
+    apply_diff_round(&mut ledger, &cas, 3, &["src/a.rs"]);
+
+    assert_eq!(
+        ledger
+            .convergence(ConvergencePolicy {
+                clean_rounds: 2,
+                max_rounds: 4,
+                gate: Severity::Major,
+            })
+            .verdict,
+        Verdict::Converged
+    );
 }
 
 #[test]
