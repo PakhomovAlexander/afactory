@@ -204,3 +204,20 @@ memory footprint. The 5,000-entry / 199 MiB measurement recorded 2.008 s distinc
 0.680/0.693 s seal, and 0.127/0.130 s teardown. Focused contract, ledger, source, sandbox, cleanup,
 and prompt tests pass. Full workspace clippy, tests, byte-identical fixture reproduction, and
 markdownlint pass before the Round 2 correction commit.
+
+## 2026-08-24 — M2 fresh dogfood Round 3 pre-dispatch gate correction
+
+Round 3 epoch 1 reached no reviewer and spent no reviewer tokens. Its required `scripts/verify.sh`
+check blocked for 53 minutes in `/usr/local/bin/docker info`: container capability detection had no
+deadline, so an installed client with a wedged daemon could hold the review gate forever. A stack
+sample showed the scheduler waiting on the check while the test process waited on Docker. The
+incomplete run was interrupted; the exact orphaned Docker leaf was terminated and its verification
+subtree then exited naturally.
+
+Container runtime probes now have a five-second deadline, run in their own process group, capture
+output through temporary files rather than pipes descendants can retain, and kill surviving group
+members on either timeout or wrapper exit. Timeout is `Unusable`, preserving the fail-closed
+isolation claim. A synthetic wedged-runtime test returns in 0.11 s; the real wedged host Docker
+probe returns in 5.08 s. Full verification now passes naturally without a Docker environment
+override, including the real-host detection test and byte-identical fixture reproduction. Restart
+the incomplete Round 3 against the corrected snapshot; it has not established a clean Round.

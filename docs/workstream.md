@@ -131,7 +131,9 @@ further claims, and exhausted Campaign `m2-rename-scope`; all 45 are fixed and i
 corrections are committed and verified. Fresh Campaign `m2-rename-scope-final` Round 1 spent 396,132
 tokens and opened sixteen further claims; Round 2 retained those fixes and spent 473,552 tokens on
 eleven further claims. Round 2 corrections are locally implemented; measurements, full verification,
-and markdownlint pass. Commit, resolve the fresh Ledger, and continue under the
+and markdownlint pass. Those corrections are committed and resolved. Round 3 epoch 1 reached no
+reviewer: the gate exposed an unbounded installed-runtime probe, whose bounded correction is
+verified locally. Commit it and restart the incomplete Round 3 against the new exact snapshot under the
 unchanged two-clean-Round/four-Round policy. Only then resume M3.1. Continue in milestone order; do
 not pull Proposal or scatter work forward past Subject, authority, isolation, and verification
 prerequisites.

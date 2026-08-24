@@ -1112,6 +1112,7 @@ dependencies = [
 name = "review-sandbox"
 version = "0.1.0"
 dependencies = [
+ "nix",
  "reflink-copy",
  "review-check",
  "review-parallel",

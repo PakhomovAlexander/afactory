@@ -23,12 +23,19 @@
 //! isolation, run against a live daemon locally and in CI, each paired with a control proving
 //! the container genuinely runs work.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use crate::Isolation;
 
 /// Runtimes tried in order. Docker first only because it is the likeliest to be present.
 const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
+
+/// Capability detection runs in every full verification gate. A wedged daemon is unavailable,
+/// not authority to keep the gate open forever.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The default sandbox image, pinned by manifest digest — the same never-`latest` rule as
 /// reviewer packages. The digest names a multi-arch manifest list (amd64 CI, arm64 laptops),
@@ -109,13 +116,14 @@ impl ContainerProvider {
 
     /// The probe itself: ask the runtime to describe itself, and require success.
     fn probe_one(path: &Path) -> Availability {
+        Self::probe_one_with_timeout(path, PROBE_TIMEOUT)
+    }
+
+    fn probe_one_with_timeout(path: &Path, timeout: Duration) -> Availability {
         if !path.exists() {
             return Availability::Absent;
         }
-        let output = std::process::Command::new(path)
-            .arg("info")
-            .stdin(std::process::Stdio::null())
-            .output();
+        let output = run_probe(path, timeout);
         match output {
             Ok(output) if output.status.success() => Availability::Usable {
                 runtime: path.to_path_buf(),
@@ -198,6 +206,63 @@ impl ContainerProvider {
     }
 }
 
+fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std::io::Error> {
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut command = std::process::Command::new(path);
+    command
+        .arg("info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_probe_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("`info` did not finish within {}s", timeout.as_secs_f64()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // A successful wrapper does not license descendants to outlive capability detection.
+    kill_probe_group(child.id());
+    let read_output = |file: &mut std::fs::File| -> std::io::Result<Vec<u8>> {
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: read_output(&mut stdout)?,
+        stderr: read_output(&mut stderr)?,
+    })
+}
+
+#[cfg(unix)]
+fn kill_probe_group(pid: u32) {
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
+#[cfg(not(unix))]
+fn kill_probe_group(_pid: u32) {}
+
 fn which(name: &str) -> Result<PathBuf, ()> {
     let path = std::env::var_os("PATH").ok_or(())?;
     for dir in std::env::split_paths(&path) {
@@ -264,6 +329,24 @@ mod tests {
             err.starts_with("refusing to run outside a container"),
             "{err}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wedged_runtime_is_bounded_and_unusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("wedged-runtime");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 60\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        let availability =
+            ContainerProvider::probe_one_with_timeout(&fake, Duration::from_millis(100));
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(matches!(availability, Availability::Unusable { .. }));
+        assert!(availability.reason().contains("did not finish"));
     }
 
     #[test]
