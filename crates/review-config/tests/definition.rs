@@ -179,6 +179,30 @@ fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
 }
 
 #[test]
+fn a_version_one_generation_keeps_its_name_keyed_output() {
+    let legacy = r#"
+version = 1
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = ["findings"]
+runner = { program = "/bin/true" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "findings" }
+"#;
+
+    Definition::from_toml(legacy).unwrap().load().unwrap();
+}
+
+#[test]
 fn a_diff_pipeline_cannot_omit_the_change_set_port() {
     let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
     let error = Definition::from_toml(&diff)

@@ -668,3 +668,29 @@ Focused store, source, pipeline, and CLI suites pass with all-target Clippy warn
 workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass before
 commit. Resolve all five Reports against this commit and run Round 4 to retain them. Because Round
 3 was not clean, open a fresh unchanged-policy Campaign afterward for two clean Rounds.
+
+## 2026-08-25 — M2 final-verified Campaign Round 4 corrections
+
+Round 4 spent 1,032,208 tokens, retained all 21 Round 1-3 fixes, opened five minor Reports, and
+exhausted Campaign `m2-rename-scope-final-verified`.
+
+On a cold streaming CAS write, the second read is now the authoritative publication pass. If a
+worktree source changes between reads, its observed bytes are filed under their actual digest and
+the capture boundary compares unequal, retries, and never misreports ordinary instability as CAS
+corruption. Deterministic CAS-reader and new-untracked-file capture regressions cover both layers.
+
+A child observed exiting near its command deadline gets 500 ms for the stdin writer to observe
+closure; a blocked descendant still exceeds that grace and remains a charged timeout. Pipeline
+format version is carried into kernel execution: only version 1 may interpret opaque Generation
+ports named `findings` or `change_set`, restoring its name-keyed compatibility without weakening
+version 2's typed contract. Load and end-to-end delivery regressions cover the boundary.
+
+`EventStore` reads the unique Campaign opening and latest Round start through the existing
+type/sequence index, retaining full event-id, payload, and artifact-reference validation without a
+whole-log replay. Resume preparation passes its already-loaded event slice through round counting
+and Ledger projection; only a newly opened Campaign performs the one post-open replay it needs.
+
+Focused config, runner, store, source, pipeline, and CLI suites pass with all-target Clippy warnings
+denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction
+pass before commit. Resolve all five Reports against this commit, then open a fresh unchanged-policy
+Campaign and require two clean Rounds before M3.1.

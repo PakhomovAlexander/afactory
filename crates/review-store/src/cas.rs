@@ -156,8 +156,9 @@ impl Cas {
     }
 
     /// Hash a seekable source through caller-owned scratch, then publish it only when its object
-    /// is absent. A warm CAS performs no temporary write; a cold CAS rereads the source into a
-    /// temporary in the final shard and rejects a source that changed between the two passes.
+    /// is absent. A warm CAS performs no temporary write; on a cold CAS the second read is the
+    /// authoritative publication pass, so a changing source is filed under its actual identity
+    /// for the caller's surrounding stability comparison to reject and retry.
     pub fn put_reader_with_buffer(
         &self,
         reader: &mut (impl Read + Seek),
@@ -180,10 +181,7 @@ impl Cas {
             };
             canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
         };
-        if published_digest != digest || published_size != size {
-            return Err(CasError::Corrupt { digest });
-        }
-        self.publish_streamed_object(temporary, digest, size, buffer)
+        self.publish_streamed_object(temporary, published_digest, published_size, buffer)
     }
 
     /// Publish a source whose digest was established by a preceding stability pass. On the normal
@@ -637,6 +635,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    struct ChangesOnRewind {
+        current: std::io::Cursor<Vec<u8>>,
+        replacement: Option<Vec<u8>>,
+    }
+
+    impl Read for ChangesOnRewind {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.current.read(buffer)
+        }
+    }
+
+    impl Seek for ChangesOnRewind {
+        fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+            if position == std::io::SeekFrom::Start(0)
+                && let Some(replacement) = self.replacement.take()
+            {
+                self.current = std::io::Cursor::new(replacement);
+            }
+            self.current.seek(position)
+        }
+    }
+
     fn cas() -> (tempfile::TempDir, Cas) {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path()).unwrap();
@@ -719,6 +739,25 @@ mod tests {
             Err(CasError::Corrupt { .. })
         ));
         drop(directory);
+    }
+
+    #[test]
+    fn a_changing_cold_source_publishes_its_second_pass_identity() {
+        let (_directory, cas) = cas();
+        let replacement = b"second authoritative read".to_vec();
+        let mut source = ChangesOnRewind {
+            current: std::io::Cursor::new(b"first observation".to_vec()),
+            replacement: Some(replacement.clone()),
+        };
+        let mut scratch = vec![0_u8; 64];
+
+        let (digest, size) = cas
+            .put_reader_with_buffer(&mut source, &mut scratch)
+            .unwrap();
+
+        assert_eq!(digest, canonical::blob_content_id(&replacement));
+        assert_eq!(size, replacement.len() as u64);
+        assert_eq!(cas.get(&digest).unwrap(), replacement);
     }
 
     #[test]

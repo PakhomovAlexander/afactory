@@ -199,6 +199,18 @@ impl CaptureObserver for MutateOnce<'_> {
     }
 }
 
+struct CreateUntrackedOnce<'a> {
+    fixture: &'a Fixture,
+}
+
+impl CaptureObserver for CreateUntrackedOnce<'_> {
+    fn between_passes(&self, attempt: u32) {
+        if attempt == 1 {
+            self.fixture.write("new.txt", b"stable after creation\n");
+        }
+    }
+}
+
 /// One edit is a retry, not a failure — and the snapshot records how many passes it took.
 #[test]
 fn a_settled_worktree_is_admitted_on_retry() {
@@ -217,6 +229,28 @@ fn a_settled_worktree_is_admitted_on_retry() {
         snapshot.manifest.get("src/main.rs").unwrap().content,
         review_source_git::digest_bytes(b"fn main() { /* one edit */ }\n"),
         "the admitted content is the settled content"
+    );
+}
+
+#[test]
+fn an_untracked_file_created_between_passes_retries_without_a_cas_error() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas)
+        .dirty_observed(&CreateUntrackedOnce { fixture: &fixture })
+        .unwrap();
+
+    assert_eq!(snapshot.attempts, 2);
+    assert!(
+        snapshot
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path == "new.txt")
     );
 }
 

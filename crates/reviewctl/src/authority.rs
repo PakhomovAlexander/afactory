@@ -57,13 +57,16 @@ pub(super) fn prepare(
         .unwrap_or_else(|| campaign_run_id("local"));
     let pipeline_path = authority_path(&options.repo, &options.pipeline)?;
     let events = store.replay(&run_id).map_err(|error| error.to_string())?;
-    let campaign = if events.is_empty() {
-        open_new(options, cas, store, repo, &run_id, &pipeline_path)?
+    let (campaign, events) = if events.is_empty() {
+        let campaign = open_new(options, cas, store, repo, &run_id, &pipeline_path)?;
+        let events = store.replay(&run_id).map_err(|error| error.to_string())?;
+        (campaign, events)
     } else {
-        resume(options, cas, &events, &pipeline_path)?
+        let campaign = resume(options, cas, &events, &pipeline_path)?;
+        (campaign, events)
     };
 
-    let round = prepare_round(options, cas, store, repo, &run_id, &campaign)?;
+    let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
     let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
     Ok(PreparedRun {
         loaded: campaign.loaded,
@@ -491,6 +494,7 @@ fn prepare_round(
     repo: &Repo,
     run_id: &str,
     campaign: &OpenCampaign,
+    events: &[review_core::RunEvent],
 ) -> Result<RoundInput, String> {
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
@@ -498,11 +502,10 @@ fn prepare_round(
     )
     .map_err(|error| error.to_string())?;
     let repository_id = authority_snapshot.repository_id.clone();
-    let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let ledger_projection =
-        LedgerProjection::from_events(run_id, &events, cas).map_err(|error| error.to_string())?;
+        LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
-    for event in &events {
+    for event in events {
         if run_report_closes_round(event)
             .map_err(|error| format!("decoding {}: {error}", event.event_type))?
             .unwrap_or(false)

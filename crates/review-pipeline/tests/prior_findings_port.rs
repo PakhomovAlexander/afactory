@@ -9,6 +9,7 @@ mod support;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use review_config::Definition;
 use review_core::LegacyStageOutput;
 use review_graph::{Node, NodeKind, Pipeline, Port, PortContract, Scheduler};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
@@ -42,6 +43,39 @@ outputs = ["findings"]
 [[edges]]
 from = { node = "generation", port = "findings" }
 to = { node = "reviewer", port = "prior_findings" }
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "gather", port = "reviewer" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
+const LEGACY_PRIOR_PIPELINE: &str = r#"
+version = 1
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = ["findings"]
+outputs = ["result"]
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["reviewer"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "gather", port = "reviewer" }
@@ -191,4 +225,45 @@ fn round_one_delivers_an_empty_set_as_no_prior_findings() {
         seen, None,
         "an empty generation set delivers no prior findings"
     );
+}
+
+#[test]
+fn version_one_generation_delivers_name_keyed_prior_findings() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let prior = cas
+        .put_json(&serde_json::json!({
+            "subject_id": "test-subject",
+            "round": 1,
+            "prior_findings": [{"key": "legacy", "title": "T", "file": "src/a.rs"}],
+        }))
+        .unwrap();
+    let seen = Arc::new(Mutex::new(None));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        Some(prior),
+        LEGACY_PRIOR_PIPELINE,
+    )
+    .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
+    let loaded = Definition::from_toml(LEGACY_PRIOR_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    let delivered = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("reviewer ran")
+        .expect("legacy prior findings were delivered");
+    assert_eq!(delivered["prior_findings"][0]["key"], "legacy");
 }

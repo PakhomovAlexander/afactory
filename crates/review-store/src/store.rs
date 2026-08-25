@@ -66,6 +66,19 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
+struct StoredEventRow {
+    event_id: String,
+    sequence: i64,
+    event_type: String,
+    occurred_at: String,
+    node_id: Option<String>,
+    attempt_id: Option<String>,
+    causation_id: Option<String>,
+    correlation_id: Option<String>,
+    artifact_refs: String,
+    payload: String,
+}
+
 /// What an appender supplies. `event_id` and `sequence` are the store's to assign — a caller
 /// that could choose its own sequence could rewrite history by racing.
 #[derive(Debug, Clone)]
@@ -551,6 +564,52 @@ impl EventStore {
             out.push(event);
         }
         Ok(out)
+    }
+
+    /// The immutable Campaign opening event, read through the type/sequence index.
+    pub fn campaign_opened(&self, run_id: &str) -> Result<Option<RunEvent>, StoreError> {
+        self.indexed_event(run_id, EventType::CampaignOpenedV1, false)
+    }
+
+    /// The active Round epoch, read through the type/sequence index.
+    pub fn latest_round_started(&self, run_id: &str) -> Result<Option<RunEvent>, StoreError> {
+        self.indexed_event(run_id, EventType::RoundStartedV1, true)
+    }
+
+    fn indexed_event(
+        &self,
+        run_id: &str,
+        event_type: EventType,
+        latest: bool,
+    ) -> Result<Option<RunEvent>, StoreError> {
+        let sql = if latest {
+            "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE run_id = ?1 AND type = ?2 ORDER BY sequence DESC LIMIT 1"
+        } else {
+            "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE run_id = ?1 AND type = ?2 ORDER BY sequence LIMIT 1"
+        };
+        let event_type = event_type.to_string();
+        let row = self
+            .conn
+            .query_row(sql, params![run_id, event_type], |row| {
+                Ok(StoredEventRow {
+                    event_id: row.get(0)?,
+                    sequence: row.get(1)?,
+                    event_type: row.get(2)?,
+                    occurred_at: row.get(3)?,
+                    node_id: row.get(4)?,
+                    attempt_id: row.get(5)?,
+                    causation_id: row.get(6)?,
+                    correlation_id: row.get(7)?,
+                    artifact_refs: row.get(8)?,
+                    payload: row.get(9)?,
+                })
+            })
+            .optional()?;
+        row.map(|row| decode_stored_event(run_id, row)).transpose()
     }
 
     pub fn len(&self, run_id: &str) -> Result<u64, StoreError> {
@@ -2024,6 +2083,44 @@ fn report_closes(event_type: EventType, payload: &Value) -> Result<bool, StoreEr
 
 /// Event IDs are derived, not random: a replay of the same run must reproduce them, and a
 /// random ID would make two otherwise identical runs incomparable.
+fn decode_stored_event(run_id: &str, row: StoredEventRow) -> Result<RunEvent, StoreError> {
+    let sequence = u64::try_from(row.sequence).map_err(|_| {
+        StoreError::Conflict(format!(
+            "negative sequence {} in run {run_id}",
+            row.sequence
+        ))
+    })?;
+    let expected_id = derive_event_id(run_id, row.sequence);
+    if row.event_id != expected_id {
+        return Err(StoreError::Conflict(format!(
+            "event {} has invalid derived id; expected {expected_id}",
+            row.event_id
+        )));
+    }
+    let event_type = row
+        .event_type
+        .parse::<EventType>()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let artifact_refs = serde_json::from_str(&row.artifact_refs)?;
+    let payload = serde_json::from_str(&row.payload)?;
+    review_core::event::validate_event_payload(event_type, &payload).map_err(|error| {
+        StoreError::Conflict(format!("invalid replayed event payload: {error}"))
+    })?;
+    Ok(RunEvent {
+        event_id: row.event_id,
+        run_id: run_id.to_string(),
+        sequence,
+        event_type,
+        occurred_at: row.occurred_at,
+        node_id: row.node_id,
+        attempt_id: row.attempt_id,
+        causation_id: row.causation_id,
+        correlation_id: row.correlation_id,
+        artifact_refs,
+        payload,
+    })
+}
+
 fn derive_event_id(run_id: &str, sequence: i64) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

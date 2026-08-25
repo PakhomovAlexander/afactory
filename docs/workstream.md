@@ -1,10 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. Five M2 dogfood Campaigns exhausted with all 179 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-final-verified` Round 1 opened nine further
-Findings; Round 2 retained them and opened seven more; Round 3 retained all sixteen and opened five.
-All 21 corrections are fully verified. Resolve Round 3, retain them in Round 4, then a fresh
-unchanged-policy Campaign must establish M2's two-Round clean window before M3.1.
+**Status:** M0 and M1 are complete. Six M2 dogfood Campaigns exhausted with all 205 Findings
+fixed. Campaign `m2-rename-scope-final-verified` opened 26 across four Rounds; all corrections are
+fully verified. A fresh unchanged-policy Campaign must establish M2's two-Round clean window before
+M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -222,9 +221,12 @@ the claims are committed and resolved. Round 3 spent 969,363 tokens, retained al
 and opened five claims. Their corrections release every prepared reviewer attempt on pre-adapter
 failure, verify CAS length before `fast-import` framing, bind the scope-only Change Set reader to
 the full wire shape with parity coverage, move consumed Ledger projections, and fold the already
-loaded Campaign event vector. The full kernel gate passes; resolve these claims and run Round 4 to
-retain them. Because Round 3 was not clean, a fresh unchanged-policy Campaign must then establish
-the two-Round clean window.
+loaded Campaign event vector. Round 4 spent 1,032,208 tokens, retained all 21 fixes, opened five
+claims, and exhausted the Campaign. Their corrections publish a moving cold CAS source under its
+second-pass identity, give completed commands fixed stdin-writer grace, preserve version-1
+name-keyed Generation semantics, read Round authority through indexed events, and reuse the
+already-loaded Campaign log across preparation. The full kernel gate passes; resolve these claims
+and open a fresh unchanged-policy Campaign for the two-Round clean window.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

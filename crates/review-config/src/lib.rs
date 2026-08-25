@@ -239,7 +239,11 @@ fn validate_diff_change_set_wiring(
 fn validate_generation_output_contracts(
     nodes: &[NodeSpec],
     subject: review_core::SubjectKind,
+    version: u32,
 ) -> Result<(), ConfigError> {
+    if version == 1 {
+        return Ok(());
+    }
     let mut change_sets = 0_usize;
     for node in nodes
         .iter()
@@ -441,6 +445,7 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
+    version: u32,
     subject: SubjectSpec,
     plan: Planned,
     checks: Vec<CheckDefinition>,
@@ -458,6 +463,10 @@ pub trait SubjectDispatch: Dispatch + Sync {
 }
 
 impl Loaded {
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     pub fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject.kind
     }
@@ -557,7 +566,7 @@ impl Definition {
             }
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
-        validate_generation_output_contracts(&self.nodes, subject.kind)?;
+        validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }
@@ -695,6 +704,7 @@ impl Definition {
             .collect();
 
         Ok(Loaded {
+            version: self.version,
             subject,
             plan,
             checks,

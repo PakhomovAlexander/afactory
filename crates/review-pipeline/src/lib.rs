@@ -51,6 +51,20 @@ use review_store::{
     Verdict,
 };
 
+fn is_prior_findings_port(port: &PortContract, pipeline_version: u32) -> bool {
+    port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
+        || pipeline_version == 1
+            && port.artifact_type == review_core::contract::OPAQUE_V1
+            && port.name == "findings"
+}
+
+fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
+    port.artifact_type == review_core::contract::CHANGE_SET_V1
+        || pipeline_version == 1
+            && port.artifact_type == review_core::contract::OPAQUE_V1
+            && port.name == "change_set"
+}
+
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
 /// (gather, ledger) that consume artifacts regardless of which port delivered them.
 fn artifact_ids(inputs: &ArtifactMap) -> Vec<String> {
@@ -147,17 +161,15 @@ impl RoundAuthority {
         run_id: &str,
         round_event_id: &str,
     ) -> Result<Self, String> {
-        let events = store.replay(run_id).map_err(|error| error.to_string())?;
-        let opened = events
-            .iter()
-            .find(|event| event.event_type == EventType::CampaignOpenedV1)
+        let opened = store
+            .campaign_opened(run_id)
+            .map_err(|error| error.to_string())?
             .ok_or("Round authority has no CampaignOpened@1")?;
         let opened: CampaignOpenedPayloadV1 =
-            serde_json::from_value(opened.payload.clone()).map_err(|error| error.to_string())?;
-        let round = events
-            .iter()
-            .rev()
-            .find(|event| event.event_type == EventType::RoundStartedV1)
+            serde_json::from_value(opened.payload).map_err(|error| error.to_string())?;
+        let round = store
+            .latest_round_started(run_id)
+            .map_err(|error| error.to_string())?
             .ok_or("Round authority has no RoundStarted@1")?;
         if round.event_id != round_event_id {
             return Err("requested Round is not the active Round epoch".into());
@@ -215,7 +227,7 @@ impl RoundAuthority {
         }
         Ok(Self {
             run_id: run_id.to_string(),
-            round_event_id: round.event_id.clone(),
+            round_event_id: round.event_id,
             round: payload.round,
             epoch: payload.epoch,
             authority_snapshot_id: opened.authority_snapshot_id,
@@ -621,6 +633,7 @@ pub struct Kernel<'a> {
     /// same content by construction rather than by discipline.
     snapshot: Manifest,
     subject: review_core::SubjectKind,
+    pipeline_version: u32,
     authority: RoundAuthority,
     checks: Vec<CheckDefinition>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
@@ -704,6 +717,7 @@ impl<'a> Kernel<'a> {
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
+        pipeline_version: u32,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
         let run_id = run_id.into();
@@ -751,6 +765,7 @@ impl<'a> Kernel<'a> {
             run_id,
             snapshot,
             subject,
+            pipeline_version,
             authority,
             checks: Vec::new(),
             reviewers: BTreeMap::new(),
@@ -782,9 +797,18 @@ impl<'a> Kernel<'a> {
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
+        pipeline_version: u32,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        Kernel::new(cas, store, run_id, snapshot, subject, authority)
+        Kernel::new(
+            cas,
+            store,
+            run_id,
+            snapshot,
+            subject,
+            pipeline_version,
+            authority,
+        )
     }
 
     /// Compose execution from the exact validated pipeline definition.
@@ -802,6 +826,7 @@ impl<'a> Kernel<'a> {
             run_id,
             snapshot,
             loaded.subject_kind(),
+            loaded.version(),
             authority,
         )
     }
@@ -1280,21 +1305,20 @@ impl<'a> Kernel<'a> {
     fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
         let mut outputs = ArtifactMap::new();
         for port in &node.outputs {
-            let value = match port.artifact_type.as_str() {
-                review_core::contract::PRIOR_FINDINGS_V1 => self.prior_findings.clone().ok_or(
+            let value = if is_prior_findings_port(port, self.pipeline_version) {
+                self.prior_findings.clone().ok_or(
                     "campaign execution has no exact prior Finding Set from RoundStarted@1",
-                )?,
-                review_core::contract::CHANGE_SET_V1 => self
-                    .authority
+                )?
+            } else if is_change_set_port(port, self.pipeline_version) {
+                self.authority
                     .change_set_id
                     .clone()
-                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
-                artifact_type => {
-                    return Err(format!(
-                        "generation output `{}` has unsupported artifact type `{artifact_type}`",
-                        port.name
-                    ));
-                }
+                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?
+            } else {
+                return Err(format!(
+                    "generation output `{}` has unsupported artifact type `{}`",
+                    port.name, port.artifact_type
+                ));
             };
             outputs.insert(port.name.clone(), vec![value]);
         }
@@ -1379,7 +1403,7 @@ impl<'a> Kernel<'a> {
         let prior_findings_port = node
             .inputs
             .iter()
-            .find(|port| port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1)
+            .find(|port| is_prior_findings_port(port, self.pipeline_version))
             .map(|port| port.name.as_str());
         let prior_findings_artifact = prior_findings_port
             .and_then(|port| node_inputs.get(port))
@@ -1395,10 +1419,10 @@ impl<'a> Kernel<'a> {
                     .ok_or_else(|| {
                         format!("reviewer input port '{port}' has no declared contract")
                     })?;
-                if contract.artifact_type == review_core::contract::PRIOR_FINDINGS_V1 {
+                if is_prior_findings_port(contract, self.pipeline_version) {
                     continue;
                 }
-                let is_change_set = contract.artifact_type == review_core::contract::CHANGE_SET_V1;
+                let is_change_set = is_change_set_port(contract, self.pipeline_version);
                 let mut resolved = Vec::with_capacity(artifacts.len());
                 for artifact in artifacts {
                     if is_change_set
@@ -2027,20 +2051,21 @@ fn validate_generation_outputs(
     authority: &RoundAuthority,
     node: &Node,
     outputs: &ArtifactMap,
+    pipeline_version: u32,
 ) -> Result<(), String> {
     if node.kind != NodeKind::Generation {
         return Ok(());
     }
     for port in &node.outputs {
-        let expected = match port.artifact_type.as_str() {
-            review_core::contract::PRIOR_FINDINGS_V1 => Some(&authority.prior_finding_set_id),
-            review_core::contract::CHANGE_SET_V1 => authority.change_set_id.as_ref(),
-            artifact_type => {
-                return Err(format!(
-                    "generation receipt port `{}` has unsupported artifact type `{artifact_type}`",
-                    port.name
-                ));
-            }
+        let expected = if is_prior_findings_port(port, pipeline_version) {
+            Some(&authority.prior_finding_set_id)
+        } else if is_change_set_port(port, pipeline_version) {
+            authority.change_set_id.as_ref()
+        } else {
+            return Err(format!(
+                "generation receipt port `{}` has unsupported artifact type `{}`",
+                port.name, port.artifact_type
+            ));
         };
         if outputs.get(&port.name).and_then(|ids| ids.first()) != expected
             || outputs.get(&port.name).is_some_and(|ids| ids.len() != 1)
@@ -2084,7 +2109,7 @@ impl Dispatch for Kernel<'_> {
             let prior_findings = node
                 .inputs
                 .iter()
-                .find(|port| port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1)
+                .find(|port| is_prior_findings_port(port, self.pipeline_version))
                 .and_then(|port| inputs.get(&port.name))
                 .and_then(|artifacts| artifacts.first());
             let replayed_failures = self
@@ -2137,7 +2162,7 @@ impl Dispatch for Kernel<'_> {
                 .iter()
                 .map(|port| (port.port.clone(), port.artifact_ids.clone()))
                 .collect();
-            validate_generation_outputs(&self.authority, node, &outputs)?;
+            validate_generation_outputs(&self.authority, node, &outputs, self.pipeline_version)?;
             let expected =
                 port_artifacts(&node.outputs, &outputs, &self.authority.head_snapshot_id);
             if receipt.node != node.id || receipt.outputs != expected {
@@ -2166,7 +2191,7 @@ impl Dispatch for Kernel<'_> {
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
-        validate_generation_outputs(&self.authority, node, outputs)?;
+        validate_generation_outputs(&self.authority, node, outputs, self.pipeline_version)?;
         if let Some(recorded) = self.replayed_outputs.get(&node.id) {
             let expected = NodeOutputReceiptPayloadV1 {
                 node: node.id.clone(),
