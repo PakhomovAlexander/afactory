@@ -68,6 +68,34 @@ fn a_killed_reviewer_keeps_what_it_wrote_so_far() {
     );
 }
 
+#[test]
+fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_millis(100));
+    let command = sh("sleep 30 <&0 & printf answer");
+    let started = Instant::now();
+
+    assert!(matches!(
+        runner.capture_with_stdin(&cas, &command, vec![b'x'; 1024 * 1024]),
+        Err(RunnerError::TimedOut { .. })
+    ));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_model_descendant_holding_output_is_unavailable_not_empty_evidence() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
+    let error = runner
+        .capture(&cas, &sh("sleep 30 & printf partial"))
+        .unwrap_err();
+
+    assert!(
+        matches!(error, RunnerError::Unavailable(ref detail) if detail.contains("stdout pipe was still held")),
+        "{error:?}"
+    );
+}
+
 /// A granted credential reaches the child — and nothing this layer stores or reports. The
 /// fake model does the worst thing a CLI does in practice: echoes its environment into both
 /// streams on failure.

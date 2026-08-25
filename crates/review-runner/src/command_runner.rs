@@ -8,18 +8,11 @@
 use review_core::Command;
 use review_core::LegacyStageOutput;
 use review_store::Cas;
-use std::io::{Read, Write};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::process::{SupervisedError, run_supervised};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(1_800);
-const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
-
-fn stdin_writer_wait(deadline: Instant) -> Duration {
-    deadline
-        .saturating_duration_since(Instant::now())
-        .max(STDIN_EXIT_GRACE)
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerError {
@@ -124,118 +117,16 @@ impl<'a> CommandRunner<'a> {
         cmd.env_clear();
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("LC_ALL", "C");
-        cmd.stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
-        let stdin_result = input.map(|input| {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
-            let (send, receive) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = match stdin.write_all(&input) {
-                    Ok(()) => Ok(()),
-                    // A command may intentionally ignore wired inputs. Its actual exit status
-                    // and answer remain authoritative when closing stdin races the writer.
-                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-                    Err(error) => Err(error.to_string()),
-                };
-                let _ = send.send(result);
-            });
-            receive
-        });
-
-        // Drain both output pipes while stdin is written. Otherwise a child that reports before
-        // reading a large ReviewerInputs document can deadlock against its own parent.
-        let stdout_pipe = child.stdout.take().expect("stdout was piped");
-        let stderr_pipe = child.stderr.take().expect("stderr was piped");
-        let (stdout_send, stdout_recv) = std::sync::mpsc::channel();
-        let (stderr_send, stderr_recv) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = stdout_send.send(drain(stdout_pipe));
-        });
-        std::thread::spawn(move || {
-            let _ = stderr_send.send(drain(stderr_pipe));
-        });
-
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                // `try_wait` reaps the leader. Never signal its numeric PID after this point: it
-                // may already have been reused by an unrelated process group.
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Ok(None) => {
-                    kill_process_group(child.id());
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                Err(error) => {
-                    kill_process_group(child.id());
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(RunnerError::Unavailable(error.to_string()));
-                }
-            }
-        };
-        let Some(status) = status else {
-            return Err(RunnerError::TimedOut {
-                after_ms: self.timeout.as_millis() as u64,
-            });
-        };
-        if let Some(receiver) = stdin_result {
-            match receiver.recv_timeout(stdin_writer_wait(deadline)) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    return Err(RunnerError::Unavailable(format!(
-                        "delivering reviewer inputs: {error}"
-                    )));
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(RunnerError::TimedOut {
-                        after_ms: self.timeout.as_millis() as u64,
-                    });
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(RunnerError::Unavailable(
-                        "reviewer input writer stopped without a result".into(),
-                    ));
-                }
-            }
-        }
-
-        // The execution deadline governs the child. After a normal exit, allow a fixed bounded
-        // drain grace for buffered output; a still-held pipe is infrastructure failure, never
-        // fabricated empty reviewer evidence.
-        let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
-            receiver
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| {
-                    RunnerError::Unavailable(format!(
-                        "reviewer output pipe was still held after 5 seconds: {error}"
-                    ))
-                })?
-                .map_err(|error| {
-                    RunnerError::Unavailable(format!("reading reviewer output: {error}"))
-                })
-        };
-        let stdout = collect(stdout_recv)?;
-        let stderr = collect(stderr_recv)?;
+        let output =
+            run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
+                SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
+                    after_ms: self.timeout.as_millis() as u64,
+                },
+                error => RunnerError::Unavailable(format!("{}: {error}", command.program)),
+            })?;
+        let status = output.status;
+        let stdout = output.stdout;
+        let stderr = output.stderr;
 
         if !status.success() {
             let stderr = String::from_utf8_lossy(&stderr);
@@ -263,27 +154,11 @@ impl<'a> CommandRunner<'a> {
     }
 }
 
-fn drain(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    pipe.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    );
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use review_core::Arg;
+    use std::time::Instant;
 
     fn runner_dir() -> (tempfile::TempDir, Cas) {
         let dir = tempfile::tempdir().unwrap();
@@ -377,12 +252,6 @@ mod tests {
             Err(RunnerError::TimedOut { .. })
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn an_expired_child_deadline_still_gets_stdin_writer_grace() {
-        let expired = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-        assert_eq!(stdin_writer_wait(expired), STDIN_EXIT_GRACE);
     }
 
     #[test]

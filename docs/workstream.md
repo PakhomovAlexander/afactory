@@ -3,8 +3,9 @@
 **Status:** M0 and M1 are complete. Six M2 dogfood Campaigns exhausted with all 205 Findings
 fixed. Campaign `m2-rename-scope-final-verified` opened 26 across four Rounds; all corrections are
 fully verified. Fresh unchanged-policy Campaign `m2-rename-scope-clean-window` has an incomplete,
-zero-spend Round 1 epoch after its gate exposed and corrected a timing-dependent test; restart that
-epoch and establish M2's two-Round clean window before M3.1.
+zero-spend Round 1 epoch after its gate exposed and corrected a timing-dependent test. Restarted
+epoch 2 spent 956,628 tokens and opened seven Findings; all corrections pass the full kernel gate.
+Commit and resolve them, then establish M2's two-Round clean window before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -231,7 +232,11 @@ and open a fresh unchanged-policy Campaign for the two-Round clean window. Campa
 `m2-rename-scope-clean-window` is open with the same authority and policy. Round 1 epoch 1 stopped
 at the pre-dispatch gate with zero spend; its timing-dependent command-runner regression is now
 deterministic and the full kernel gate passes. Restart the incomplete epoch, then require two clean
-Rounds.
+Rounds. Restarted epoch 2 spent 956,628 tokens and opened seven claims. Their corrections restore
+the historical version-1 reviewer input name, consolidate bounded subprocess supervision, retain
+stable kernel-owned retry rejection codes, enforce Change Set bounds at the CAS reader, close the
+Ledger cache repopulation race, and stream synthetic-tree objects from one verified handle. The
+full kernel gate passes; commit and resolve all seven, then run Round 2.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

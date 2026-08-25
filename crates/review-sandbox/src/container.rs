@@ -23,10 +23,10 @@
 //! isolation, run against a live daemon locally and in CI, each paired with a control proving
 //! the container genuinely runs work.
 
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use review_runner::{SupervisedError, run_supervised};
 
 use crate::Isolation;
 
@@ -217,60 +217,23 @@ fn run_bounded(
     timeout: Duration,
     operation: &str,
 ) -> Result<std::process::Output, std::io::Error> {
-    let mut stdout = tempfile::tempfile()?;
-    let mut stderr = tempfile::tempfile()?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout.try_clone()?))
-        .stderr(Stdio::from(stderr.try_clone()?));
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            kill_process_group(child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
+    run_supervised(&mut command, None, timeout)
+        .map(|output| std::process::Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+        .map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
                     "{operation} did not finish within {}s",
                     timeout.as_secs_f64()
                 ),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let read_output = |file: &mut std::fs::File| -> std::io::Result<Vec<u8>> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    };
-    Ok(std::process::Output {
-        status,
-        stdout: read_output(&mut stdout)?,
-        stderr: read_output(&mut stderr)?,
-    })
+            ),
+            error => std::io::Error::other(format!("{operation}: {error}")),
+        })
 }
-
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    );
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
 
 fn which(name: &str) -> Result<PathBuf, ()> {
     let path = std::env::var_os("PATH").ok_or(())?;
@@ -286,6 +249,7 @@ fn which(name: &str) -> Result<PathBuf, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     /// The real host, whatever it is. Both outcomes are correct; what matters is that the
     /// provider never claims containment it has not verified.

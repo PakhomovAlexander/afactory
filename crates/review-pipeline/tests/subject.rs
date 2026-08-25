@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 
 use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
-use review_core::EventType;
 use review_pipeline::Kernel;
 use review_runner::{
     MAX_CHANGE_SET_BYTES, ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError,
@@ -115,62 +114,26 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
 }
 
 #[test]
-fn rejected_change_set_resolution_releases_its_dispatched_attempt() {
+fn oversized_change_set_is_refused_before_round_authority_allocates_it() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let reviewers = directory.path().join("reviewers");
-    let package = reviewers.join("tester");
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(
-        package.join("reviewer.toml"),
-        "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n\n\
-         [runner]\nprogram = \"codex\"\nargs = []\n",
-    )
-    .unwrap();
-    let registry = Registry::new([&reviewers]);
-    let mut lockfile = Lockfile::empty();
-    lockfile
-        .reviewers
-        .insert("tester".into(), Lockfile::pin("tester", &registry).unwrap());
-    let loaded = Definition::from_toml(DIFF_PIPELINE)
-        .unwrap()
-        .load_with(&lockfile, &registry)
-        .unwrap();
     let manifest = Manifest::new(vec![]).unwrap();
     let patch = vec![b'x'; MAX_CHANGE_SET_BYTES + 1];
-    let authority = support::test_diff_round_authority_with_patch(
+    let error = support::test_diff_round_authority_with_patch(
         &cas,
         &mut store,
         "run",
         &manifest,
         DIFF_PIPELINE,
         &patch,
-    );
-    let seen = Arc::new(Mutex::new(None));
-    let kernel = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
-        .unwrap()
-        .with_budgets(300_000, 600_000)
-        .with_adapter("reviewer", Box::new(Recorder { seen }));
-
-    let report = loaded.run(&kernel).unwrap();
-    assert!(!report.complete());
-    assert_eq!(kernel.spent(), Some(0));
-    drop(kernel);
-
-    let events = store.replay("run").unwrap();
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.event_type == EventType::AttemptDispatchedV1)
-            .count(),
-        1
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| event.event_type == EventType::AttemptReleasedV1)
-            .count(),
-        1
-    );
+    )
+    .unwrap_err();
+    assert!(error.contains("limit is 4194304"), "{error}");
+    assert!(store.replay("run").unwrap().iter().all(|event| {
+        !matches!(
+            event.event_type,
+            review_core::EventType::AttemptDispatchedV1 | review_core::EventType::AttemptReleasedV1
+        )
+    }));
 }

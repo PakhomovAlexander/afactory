@@ -35,15 +35,14 @@ use review_core::event::{
     AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV3,
+    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
+    MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
+    PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1, RunFailureReasonV3,
     RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3,
     SnapshotAffinity, SourceSnapshot, run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
-use review_runner::{
-    MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError,
-};
+use review_runner::{ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
@@ -51,11 +50,18 @@ use review_store::{
     Verdict,
 };
 
-fn is_prior_findings_port(port: &PortContract, pipeline_version: u32) -> bool {
+fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
         || pipeline_version == 1
             && port.artifact_type == review_core::contract::OPAQUE_V1
             && port.name == "findings"
+}
+
+fn is_reviewer_prior_findings_input(port: &PortContract, pipeline_version: u32) -> bool {
+    port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
+        || pipeline_version == 1
+            && port.artifact_type == review_core::contract::OPAQUE_V1
+            && port.name == "prior_findings"
 }
 
 fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
@@ -576,8 +582,17 @@ fn replay_execution(
     Ok(replayed)
 }
 
-fn failed_retry_context(attempt: &str, failure_class: &str) -> String {
-    format!("attempt {attempt} returned an invalid result: {failure_class}")
+fn failed_retry_context(
+    attempt: &str,
+    failure_class: &str,
+    rejection_code: Option<&str>,
+) -> String {
+    match rejection_code {
+        Some(code) => {
+            format!("attempt {attempt} returned an invalid result: {failure_class}:{code}")
+        }
+        None => format!("attempt {attempt} returned an invalid result: {failure_class}"),
+    }
 }
 
 fn fenced_retry_context(attempt: &str, reason: &str) -> String {
@@ -917,12 +932,13 @@ impl<'a> Kernel<'a> {
         if let Some(projection) = cached.as_ref() {
             return inspect(projection.ledger());
         }
-        drop(cached);
-
+        // Keep the cache lock across replay. Appends release the store lock before invalidating
+        // this cache, so there is no nested inverse lock order; an invalidating append can only
+        // clear the rebuilt value after it becomes visible, never race an older value back in.
         let rebuilt = self.rebuild_ledger_projection();
-        cached = self.ledger_cache.lock().expect("ledger cache");
-        let projection = cached.get_or_insert(rebuilt);
-        inspect(projection.ledger())
+        let result = inspect(rebuilt.ledger());
+        *cached = Some(rebuilt);
+        result
     }
 
     fn take_ledger_projection(&self) -> LedgerProjection {
@@ -930,7 +946,7 @@ impl<'a> Kernel<'a> {
         if let Some(projection) = cached.take() {
             return projection;
         }
-        drop(cached);
+        // See `with_ledger`: keeping this lock closes the same stale-repopulation window.
         self.rebuild_ledger_projection()
     }
 
@@ -1305,7 +1321,7 @@ impl<'a> Kernel<'a> {
     fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
         let mut outputs = ArtifactMap::new();
         for port in &node.outputs {
-            let value = if is_prior_findings_port(port, self.pipeline_version) {
+            let value = if is_generation_prior_findings_output(port, self.pipeline_version) {
                 self.prior_findings.clone().ok_or(
                     "campaign execution has no exact prior Finding Set from RoundStarted@1",
                 )?
@@ -1403,7 +1419,7 @@ impl<'a> Kernel<'a> {
         let prior_findings_port = node
             .inputs
             .iter()
-            .find(|port| is_prior_findings_port(port, self.pipeline_version))
+            .find(|port| is_reviewer_prior_findings_input(port, self.pipeline_version))
             .map(|port| port.name.as_str());
         let prior_findings_artifact = prior_findings_port
             .and_then(|port| node_inputs.get(port))
@@ -1419,7 +1435,7 @@ impl<'a> Kernel<'a> {
                     .ok_or_else(|| {
                         format!("reviewer input port '{port}' has no declared contract")
                     })?;
-                if is_prior_findings_port(contract, self.pipeline_version) {
+                if is_reviewer_prior_findings_input(contract, self.pipeline_version) {
                     continue;
                 }
                 let is_change_set = is_change_set_port(contract, self.pipeline_version);
@@ -1437,12 +1453,15 @@ impl<'a> Kernel<'a> {
                         )?);
                         continue;
                     }
-                    let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                    if !is_change_set && encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
-                        return Err(format!(
-                            "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
-                        ));
-                    }
+                    let limit = if is_change_set {
+                        MAX_CHANGE_SET_BYTES
+                    } else {
+                        MAX_PRIOR_FINDINGS_BYTES
+                    };
+                    let encoded = self
+                        .cas
+                        .get_bounded(artifact, limit as u64)
+                        .map_err(|error| error.to_string())?;
                     if is_change_set {
                         resolved.push(ReviewerInputArtifact::change_set_from_encoded(
                             artifact.clone(),
@@ -1475,7 +1494,10 @@ impl<'a> Kernel<'a> {
             return Err(error);
         }
         if let Some(artifact) = &prior_findings_artifact {
-            let encoded = match self.cas.get(artifact) {
+            let encoded = match self
+                .cas
+                .get_bounded(artifact, MAX_PRIOR_FINDINGS_BYTES as u64)
+            {
                 Ok(encoded) => encoded,
                 Err(error) => {
                     if let Some(prepared) = prepared.take() {
@@ -1489,22 +1511,6 @@ impl<'a> Kernel<'a> {
                     return Err(error.to_string());
                 }
             };
-            if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
-                let error = format!(
-                    "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    encoded.len(),
-                    MAX_PRIOR_FINDINGS_BYTES
-                );
-                if let Some(prepared) = prepared.take() {
-                    self.release_prepared_attempt(
-                        node_id,
-                        &prepared.attempt,
-                        prepared.reservation.as_ref(),
-                        &error,
-                    )?;
-                }
-                return Err(error);
-            }
             let value: serde_json::Value = match serde_json::from_slice(&encoded) {
                 Ok(value) => value,
                 Err(error) => {
@@ -1611,13 +1617,17 @@ impl<'a> Kernel<'a> {
                     let result_value = match reviewer_result_value(&returned.output) {
                         Ok(value) => value,
                         Err(error) => {
-                            retry_failures
-                                .push(failed_retry_context(&attempt.to_string(), "contract_error"));
+                            retry_failures.push(failed_retry_context(
+                                &attempt.to_string(),
+                                "contract_error",
+                                Some(error.code()),
+                            ));
+                            let detail = error.to_string();
                             self.fail_started_attempt(
                                 node_id,
                                 &attempt,
                                 reservation.as_ref(),
-                                &error,
+                                &detail,
                                 returned.cost_tokens,
                                 AttemptFailureEvidence {
                                     raw_artifact: Some(&returned.raw_artifact),
@@ -1741,7 +1751,11 @@ impl<'a> Kernel<'a> {
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
                     let error = format!("reviewer output is not a ReviewerResult@1: {why}");
-                    retry_failures.push(failed_retry_context(&attempt.to_string(), "parse_error"));
+                    retry_failures.push(failed_retry_context(
+                        &attempt.to_string(),
+                        "parse_error",
+                        None,
+                    ));
                     let charged = reservation
                         .as_ref()
                         .map_or(0, |reservation| reservation.amount);
@@ -1970,14 +1984,17 @@ impl<'a> Kernel<'a> {
     }
 }
 
-fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value, String> {
-    let mut object = match serde_json::to_value(stage).map_err(|error| error.to_string())? {
-        serde_json::Value::Object(object) => object,
-        _ => return Err("reviewer result did not serialize as an object".into()),
-    };
+fn reviewer_result_value(
+    stage: &LegacyStageOutput,
+) -> Result<serde_json::Value, ReviewerResultRejection> {
+    let mut object =
+        match serde_json::to_value(stage).map_err(|_| ReviewerResultRejection::ReportPayload)? {
+            serde_json::Value::Object(object) => object,
+            _ => return Err(ReviewerResultRejection::NotObject),
+        };
     let reports = object
         .remove("findings")
-        .ok_or("reviewer result has no findings field")?;
+        .ok_or(ReviewerResultRejection::UnexpectedFields)?;
     object.insert("reports".into(), reports);
     if let Some(disputes) = object
         .get_mut("disputes")
@@ -1986,21 +2003,21 @@ fn reviewer_result_value(stage: &LegacyStageOutput) -> Result<serde_json::Value,
         for dispute in disputes {
             let dispute = dispute
                 .as_object_mut()
-                .ok_or("reviewer result has a non-object dispute")?;
+                .ok_or(ReviewerResultRejection::MalformedDispute)?;
             let claim_id = dispute
                 .remove("fp")
-                .ok_or("reviewer dispute has no claim ID")?;
+                .ok_or(ReviewerResultRejection::InvalidDispute)?;
             dispute.insert("claim_id".into(), claim_id);
             if !matches!(
                 dispute.get("position").and_then(serde_json::Value::as_str),
                 Some("confirm" | "refute")
             ) {
-                return Err("reviewer dispute has an invalid position".into());
+                return Err(ReviewerResultRejection::InvalidDispute);
             }
         }
     }
     let value = serde_json::Value::Object(object);
-    review_core::validate_reviewer_result(&value)?;
+    review_core::validate_reviewer_result_classified(&value)?;
     Ok(value)
 }
 
@@ -2057,7 +2074,7 @@ fn validate_generation_outputs(
         return Ok(());
     }
     for port in &node.outputs {
-        let expected = if is_prior_findings_port(port, pipeline_version) {
+        let expected = if is_generation_prior_findings_output(port, pipeline_version) {
             Some(&authority.prior_finding_set_id)
         } else if is_change_set_port(port, pipeline_version) {
             authority.change_set_id.as_ref()
@@ -2109,7 +2126,7 @@ impl Dispatch for Kernel<'_> {
             let prior_findings = node
                 .inputs
                 .iter()
-                .find(|port| is_prior_findings_port(port, self.pipeline_version))
+                .find(|port| is_reviewer_prior_findings_input(port, self.pipeline_version))
                 .and_then(|port| inputs.get(&port.name))
                 .and_then(|artifacts| artifacts.first());
             let replayed_failures = self

@@ -1004,8 +1004,8 @@ name = "review-check"
 version = "0.1.0"
 dependencies = [
  "jsonschema",
- "nix",
  "review-core",
+ "review-runner",
  "review-store",
  "serde",
  "serde_json",
@@ -1116,6 +1116,7 @@ dependencies = [
  "reflink-copy",
  "review-check",
  "review-parallel",
+ "review-runner",
  "review-source-git",
  "review-store",
  "tempfile",

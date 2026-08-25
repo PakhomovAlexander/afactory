@@ -20,7 +20,7 @@ pub mod store;
 pub mod subject;
 
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
-pub use cas::{Cas, CasError};
+pub use cas::{Cas, CasError, OpenedCasObject};
 pub use ledger::{
     AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,

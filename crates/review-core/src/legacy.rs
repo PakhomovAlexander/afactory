@@ -79,12 +79,68 @@ pub struct LegacyStageOutput {
     pub disputes: Vec<LegacyDispute>,
 }
 
+/// Closed, kernel-owned reasons a `ReviewerResult@1` can be refused at admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewerResultRejection {
+    NotObject,
+    UnexpectedFields,
+    TopLevelPayload,
+    ReportPayload,
+    MissingFix,
+    EmptyTitle,
+    EmptyBody,
+    NoncanonicalReportPath,
+    InvalidLine,
+    ConfidenceOutOfRange,
+    MalformedBenchmarkDemand,
+    EmptyBenchmarkDemand,
+    MalformedDispute,
+    InvalidDispute,
+}
+
+impl ReviewerResultRejection {
+    /// Stable code safe to place in retry prompts: it contains no reviewer-controlled bytes.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotObject => "not_object",
+            Self::UnexpectedFields => "unexpected_or_missing_fields",
+            Self::TopLevelPayload => "invalid_top_level_payload",
+            Self::ReportPayload => "invalid_report_payload",
+            Self::MissingFix => "missing_fix",
+            Self::EmptyTitle => "empty_title",
+            Self::EmptyBody => "empty_body",
+            Self::NoncanonicalReportPath => "noncanonical_report_path",
+            Self::InvalidLine => "invalid_line",
+            Self::ConfidenceOutOfRange => "confidence_out_of_range",
+            Self::MalformedBenchmarkDemand => "malformed_benchmark_demand",
+            Self::EmptyBenchmarkDemand => "empty_benchmark_demand",
+            Self::MalformedDispute => "malformed_dispute",
+            Self::InvalidDispute => "invalid_dispute",
+        }
+    }
+}
+
+impl std::fmt::Display for ReviewerResultRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReviewerResult@1 admission refused: {}", self.code())
+    }
+}
+
+impl std::error::Error for ReviewerResultRejection {}
+
 /// Validate the produced flat `ReviewerResult@1` wire value in the crate that owns its Rust
 /// report types. Persistence and pipeline admission both call this one rule.
 pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String> {
+    validate_reviewer_result_classified(value).map_err(|error| error.to_string())
+}
+
+/// Validate a result while retaining a stable, reviewer-byte-free rejection classification.
+pub fn validate_reviewer_result_classified(
+    value: &serde_json::Value,
+) -> Result<(), ReviewerResultRejection> {
     let object = value
         .as_object()
-        .ok_or_else(|| "ReviewerResult@1 is not an object".to_string())?;
+        .ok_or(ReviewerResultRejection::NotObject)?;
     exact_reviewer_keys(
         object,
         &[
@@ -94,7 +150,7 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
             "benchmark_demands",
             "disputes",
         ],
-        "ReviewerResult@1",
+        ReviewerResultRejection::UnexpectedFields,
     )?;
     if !matches!(
         value["verdict"].as_str(),
@@ -106,7 +162,7 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
         || value["benchmark_demands"].as_array().is_none()
         || value["disputes"].as_array().is_none()
     {
-        return Err("ReviewerResult@1 violates its top-level payload contract".into());
+        return Err(ReviewerResultRejection::TopLevelPayload);
     }
     for (index, report) in value["reports"]
         .as_array()
@@ -114,12 +170,16 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
         .iter()
         .enumerate()
     {
-        let legacy: LegacyFinding = serde::Deserialize::deserialize(report).map_err(|error| {
-            format!("ReviewerResult@1 report {index} violates its payload contract: {error}")
+        let legacy: LegacyFinding = serde::Deserialize::deserialize(report)
+            .map_err(|_| ReviewerResultRejection::ReportPayload)?;
+        legacy.validate(index).map_err(|error| match error.reason {
+            ImportReason::MissingFix => ReviewerResultRejection::MissingFix,
+            ImportReason::EmptyTitle => ReviewerResultRejection::EmptyTitle,
+            ImportReason::EmptyBody => ReviewerResultRejection::EmptyBody,
+            ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
+            ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
+            ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
         })?;
-        legacy
-            .validate(index)
-            .map_err(|error| format!("ReviewerResult@1 report is not admissible: {error}"))?;
     }
     for demand in value["benchmark_demands"]
         .as_array()
@@ -127,17 +187,17 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
     {
         let demand = demand
             .as_object()
-            .ok_or_else(|| "ReviewerResult@1 has a malformed benchmark demand".to_string())?;
+            .ok_or(ReviewerResultRejection::MalformedBenchmarkDemand)?;
         exact_reviewer_keys(
             demand,
             &["claim", "why", "suggested_method"],
-            "benchmark demand",
+            ReviewerResultRejection::UnexpectedFields,
         )?;
         if demand
             .values()
             .any(|field| field.as_str().is_none_or(str::is_empty))
         {
-            return Err("ReviewerResult@1 has an empty benchmark demand".into());
+            return Err(ReviewerResultRejection::EmptyBenchmarkDemand);
         }
     }
     for dispute in value["disputes"]
@@ -146,13 +206,17 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
     {
         let dispute = dispute
             .as_object()
-            .ok_or_else(|| "ReviewerResult@1 has a malformed dispute".to_string())?;
-        exact_reviewer_keys(dispute, &["claim_id", "position", "reason"], "dispute")?;
+            .ok_or(ReviewerResultRejection::MalformedDispute)?;
+        exact_reviewer_keys(
+            dispute,
+            &["claim_id", "position", "reason"],
+            ReviewerResultRejection::UnexpectedFields,
+        )?;
         if dispute["claim_id"].as_str().is_none_or(str::is_empty)
             || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
             || dispute["reason"].as_str().is_none_or(str::is_empty)
         {
-            return Err("ReviewerResult@1 has an invalid dispute".into());
+            return Err(ReviewerResultRejection::InvalidDispute);
         }
     }
     Ok(())
@@ -161,11 +225,11 @@ pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String>
 fn exact_reviewer_keys(
     object: &serde_json::Map<String, serde_json::Value>,
     expected: &[&str],
-    context: &str,
-) -> Result<(), String> {
+    rejection: ReviewerResultRejection,
+) -> Result<(), ReviewerResultRejection> {
     if object.len() != expected.len() || object.keys().any(|key| !expected.contains(&key.as_str()))
     {
-        return Err(format!("{context} has unexpected or missing fields"));
+        return Err(rejection);
     }
     Ok(())
 }

@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 review-parallel = { path = "../review-parallel" }
+review-runner = { path = "../review-runner" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 # Copy-on-write clone (clonefile on macOS, FICLONE on Linux) with a plain-copy fallback, so a
@@ -19,7 +20,7 @@ tempfile = "3.27.0"
 # A runtime capability probe is bounded and kills the probe's whole process group on timeout.
 # An installed Docker client with a wedged daemon must not hang the review gate forever.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"] }
+nix = { version = "0.30.1", default-features = false, features = ["fs"] }
 
 [dev-dependencies]
 review-check = { path = "../review-check" }

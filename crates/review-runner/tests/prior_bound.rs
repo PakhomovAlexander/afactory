@@ -127,7 +127,7 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
 }
 
 #[test]
-fn oversized_resolved_change_sets_are_refused_before_any_adapter() {
+fn oversized_change_sets_are_refused_while_resolving_subject_authority() {
     let directory = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(directory.path()).unwrap();
     let base = format!("sha256:{}", "a".repeat(64));
@@ -149,11 +149,6 @@ fn oversized_resolved_change_sets_are_refused_before_any_adapter() {
     let subject_id = cas
         .put_json(&serde_json::to_value(SubjectV1::diff(head, base, artifact_id)).unwrap())
         .unwrap();
-    let resolved = review_store::resolve_subject(&cas, &subject_id)
-        .unwrap()
-        .change_set
-        .unwrap();
-
-    let error = ReviewerInputArtifact::from_resolved_change_set(resolved).unwrap_err();
-    assert!(error.contains("exceeds"), "{error}");
+    let error = review_store::resolve_subject(&cas, &subject_id).unwrap_err();
+    assert!(error.to_string().contains("limit is 4194304"), "{error}");
 }

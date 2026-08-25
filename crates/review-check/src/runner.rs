@@ -1,11 +1,10 @@
 //! Executing a check and recording what happened.
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-
+use review_runner::{ExitPolicy, SupervisedError, run_supervised_with_policy};
 use review_store::{Cas, EventStore, NewEvent, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 use review_core::{
     EventType,
@@ -157,12 +156,6 @@ impl<'a> CheckRunner<'a> {
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
-        // A check that reads stdin would otherwise consume whatever the parent had open — the
-        // shell harness hit exactly this, where one `ssh` swallowed the rest of the check list.
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
         let output = match self.run_with_deadline(&mut cmd) {
             RunResult::Completed(output) => output,
             RunResult::TimedOut => {
@@ -267,94 +260,22 @@ enum RunResult {
 }
 
 impl CheckRunner<'_> {
-    /// Spawn the command in its own process group and wait for it, killing the whole group past
-    /// the deadline. The supervision mirrors `ModelRunner` because it must survive the same
-    /// hazard: a wrapper check (`npx` → node, `sh` → a backgrounded child) leaves a grandchild
-    /// holding the stdout pipe, so an unbounded `join` on the drain never returns EOF and the
-    /// deadline the gate depends on is not enforceable. Two defenses, together: the child is a
-    /// group leader (`process_group(0)`) so `killpg` reaps every descendant, and the drains
-    /// report over channels collected with a bounded `recv_timeout` — never a plain `join` —
-    /// so even a process that escaped the group (a `setsid` daemon) cannot hold the gate
-    /// hostage.
+    /// Use the shared process supervisor with the check-specific exit policy: a successful check
+    /// is over when its leader exits, so background descendants are reaped immediately rather
+    /// than being allowed to hold evidence pipes open.
     fn run_with_deadline(&self, cmd: &mut std::process::Command) -> RunResult {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(error) => return RunResult::CouldNotStart(error),
-        };
-
-        let stdout_pipe = child.stdout.take().expect("stdout piped");
-        let stderr_pipe = child.stderr.take().expect("stderr piped");
-        let (out_send, out_recv) = std::sync::mpsc::channel();
-        let (err_send, err_recv) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = out_send.send(drain(stdout_pipe));
-        });
-        std::thread::spawn(move || {
-            let _ = err_send.send(drain(stderr_pipe));
-        });
-
-        let deadline = std::time::Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break None;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(_) => break None,
-            }
-        };
-        // Reap the whole group whatever the outcome: the check is over, and any surviving
-        // descendant is an orphan holding the pipe. Killing it closes the write ends, so the
-        // drains hit EOF at once — a check that passes but backgrounded a child returns now,
-        // not after the 5s collection grace. (On the timeout path the leader is already gone;
-        // this reaps what it left.)
-        kill_process_group(child.id());
-        let collect = |receiver: std::sync::mpsc::Receiver<Vec<u8>>| {
-            receiver
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_default()
-        };
-        let stdout = collect(out_recv);
-        let stderr = collect(err_recv);
-        match status {
-            Some(status) => RunResult::Completed(std::process::Output {
-                status,
-                stdout,
-                stderr,
+        match run_supervised_with_policy(cmd, None, self.timeout, ExitPolicy::KillProcessGroup) {
+            Ok(output) => RunResult::Completed(std::process::Output {
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
             }),
-            None => RunResult::TimedOut,
+            Err(SupervisedError::TimedOut { .. }) => RunResult::TimedOut,
+            Err(SupervisedError::Spawn(error)) => RunResult::CouldNotStart(error),
+            Err(error) => RunResult::CouldNotStart(std::io::Error::other(error)),
         }
     }
 }
-
-fn drain(mut pipe: impl std::io::Read) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    let _ = pipe.read_to_end(&mut buffer);
-    buffer
-}
-
-/// Kill everything in the child's process group, not only the child — a wrapper's grandchild
-/// holding the pipe is exactly what the deadline must reach.
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    );
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
 
 fn describe(error: &ArgError) -> String {
     format!("refused before execution: {error}")

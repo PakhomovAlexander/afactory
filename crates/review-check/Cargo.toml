@@ -9,14 +9,10 @@ license.workspace = true
 
 [dependencies]
 review-core = { path = "../review-core" }
+review-runner = { path = "../review-runner" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-
-# killpg without unsafe: the gate's check deadline must reap a whole process group, not one
-# PID — a wrapper check (npx -> node) leaves a grandchild holding the pipe otherwise.
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.26.1", default-features = false }

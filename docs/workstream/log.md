@@ -706,3 +706,26 @@ The regression now asserts directly that an already-expired child deadline still
 500 ms stdin-writer grace. The focused runner suite and full workspace formatting, Clippy, tests,
 doc tests, and byte-identical fixture reproduction pass. Commit the correction, then restart the
 same incomplete Round epoch; no reviewer Round was consumed.
+
+## 2026-08-25 — M2 clean-window Campaign Round 1 corrections
+
+Restarted Round 1 epoch 2 spent 956,628 tokens and opened three major and four minor Reports.
+Version-1 pipelines again distinguish the historical Generation output `findings` from reviewer
+input `prior_findings`; delivery and durable dispatch references are pinned end to end.
+
+One subprocess supervisor now owns exact child-exit waits, process-group killing, bounded input and
+output handling, and partial timeout evidence for model, command, check, and container execution.
+An explicit exit policy preserves the gate contract that reaps successful background work while
+reviewers refuse held pipes instead of fabricating empty evidence. Model-specific regressions cover
+both a descendant holding stdin and one holding stdout.
+
+Retry feedback carries a stable closed rejection code generated only by the kernel. Change Set and
+prior-Finding limits live with the core contracts and are enforced by bounded CAS reads before
+allocation. Ledger projection rebuilds remain under the cache lock, so an invalidating append
+cannot race an older projection back into the cache. Synthetic Git tree construction opens each
+CAS object once and uses that handle for both framing length and verified streaming.
+
+Focused core, store, source, runner, check, sandbox, pipeline, and CLI suites pass with all-target
+Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical
+fixture reproduction pass. Commit and resolve all seven Reports, then run Round 2; two clean Rounds
+are still required before M3.1.

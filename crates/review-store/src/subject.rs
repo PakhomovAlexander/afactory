@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use review_core::{ChangeSetV1, PathRenameV1, SubjectKind, SubjectV1};
+use review_core::{ChangeSetV1, MAX_CHANGE_SET_BYTES, PathRenameV1, SubjectKind, SubjectV1};
 
 use crate::{Cas, StoreError};
 
@@ -92,7 +92,9 @@ pub fn resolve_subject(cas: &Cas, subject_id: &str) -> Result<ResolvedSubject, S
             let change_set_id = subject.change_set_id.as_deref().ok_or_else(|| {
                 StoreError::Artifact(format!("diff Subject {subject_id} has no Change Set"))
             })?;
-            let change_set_bytes = cas.get(change_set_id).map_err(|error| {
+            let change_set_bytes = cas
+                .get_bounded(change_set_id, MAX_CHANGE_SET_BYTES as u64)
+                .map_err(|error| {
                 StoreError::Artifact(format!(
                     "Subject {subject_id} references unreadable Change Set {change_set_id}: {error}"
                 ))
@@ -131,7 +133,9 @@ pub fn resolve_subject_scope(
             let change_set_id = subject.change_set_id.as_deref().ok_or_else(|| {
                 StoreError::Artifact(format!("diff Subject {subject_id} has no Change Set"))
             })?;
-            let change_set_bytes = cas.get(change_set_id).map_err(|error| {
+            let change_set_bytes = cas
+                .get_bounded(change_set_id, MAX_CHANGE_SET_BYTES as u64)
+                .map_err(|error| {
                 StoreError::Artifact(format!(
                     "Subject {subject_id} references unreadable Change Set {change_set_id}: {error}"
                 ))

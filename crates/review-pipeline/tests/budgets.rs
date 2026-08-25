@@ -236,6 +236,10 @@ impl ReviewerAdapter for InvalidOnce {
                 "the retry must learn the prior failure class: {rendered}"
             );
             assert!(
+                rendered.contains("noncanonical_report_path"),
+                "the retry must learn the kernel-owned rejection rule: {rendered}"
+            );
+            assert!(
                 !rendered.contains("canonical repository-relative path"),
                 "durable retry feedback must not echo reviewer-controlled bytes: {rendered}"
             );
@@ -655,6 +659,7 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
         serde_json::from_value(run.cas.get_json(&payload.refusal_history_id).unwrap()).unwrap();
     assert_eq!(refusal_history.len(), 1);
     assert!(refusal_history[0].contains("contract_error"));
+    assert!(refusal_history[0].contains("noncanonical_report_path"));
     assert!(!refusal_history[0].contains("canonical repository-relative path"));
     assert_ne!(retry_input.attempt_id, failed.attempt_id);
 }

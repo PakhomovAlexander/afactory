@@ -60,7 +60,7 @@ outputs = ["findings"]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-inputs = ["findings"]
+inputs = ["prior_findings"]
 outputs = ["result"]
 runner = { program = "/bin/true" }
 [[nodes]]
@@ -75,7 +75,7 @@ inputs = ["reports"]
 outputs = ["findings"]
 [[edges]]
 from = { node = "generation", port = "findings" }
-to = { node = "reviewer", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "gather", port = "reviewer" }
@@ -248,7 +248,7 @@ fn version_one_generation_delivers_name_keyed_prior_findings() {
         &mut store,
         "run",
         snapshot.manifest,
-        Some(prior),
+        Some(prior.clone()),
         LEGACY_PRIOR_PIPELINE,
     )
     .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
@@ -259,6 +259,7 @@ fn version_one_generation_delivers_name_keyed_prior_findings() {
 
     let report = loaded.run(&kernel).unwrap();
     assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
     let delivered = seen
         .lock()
         .unwrap()
@@ -266,4 +267,11 @@ fn version_one_generation_delivers_name_keyed_prior_findings() {
         .expect("reviewer ran")
         .expect("legacy prior findings were delivered");
     assert_eq!(delivered["prior_findings"][0]["key"], "legacy");
+    let dispatch = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::AttemptDispatchedV1)
+        .expect("attempt dispatch");
+    assert_eq!(dispatch.payload["prior_findings"], prior);
 }

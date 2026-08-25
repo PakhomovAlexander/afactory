@@ -580,9 +580,10 @@ impl Repo {
                         detail: format!("synthetic manifest has invalid path {:?}", entry.path),
                     });
                 }
-                let stored_len = cas
-                    .stored_len(&entry.content)
+                let mut object = cas
+                    .open_for_verified_read(&entry.content)
                     .map_err(|error| GitError::Cas(error.to_string()))?;
+                let stored_len = object.len();
                 if stored_len != entry.size {
                     return Err(GitError::MalformedTreeDiff {
                         detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
@@ -596,8 +597,8 @@ impl Repo {
                 )
                 .map_err(GitError::Io)?;
                 writeln!(input, "data {stored_len}").map_err(GitError::Io)?;
-                let copied = cas
-                    .copy_to_and_verify(&entry.content, &mut input)
+                let copied = object
+                    .copy_to_and_verify(&mut input)
                     .map_err(|error| GitError::Cas(error.to_string()))?;
                 if copied != stored_len {
                     return Err(GitError::MalformedTreeDiff {

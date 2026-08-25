@@ -88,6 +88,36 @@ impl From<canonical::CanonicalError> for CasError {
     }
 }
 
+/// One opened CAS object whose stored length and verifying stream share the same file handle.
+///
+/// The bytes are not trusted until [`OpenedCasObject::copy_to_and_verify`] succeeds. Keeping the
+/// handle private prevents callers from accidentally replacing the verified stream with a second
+/// path lookup after using the length for framing.
+pub struct OpenedCasObject {
+    digest: String,
+    file: fs::File,
+    stored_len: u64,
+}
+
+impl OpenedCasObject {
+    pub fn len(&self) -> u64 {
+        self.stored_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stored_len == 0
+    }
+
+    /// Stream the already-open object while verifying its content identity.
+    pub fn copy_to_and_verify(&mut self, writer: &mut impl Write) -> Result<u64, CasError> {
+        let mut copying = CopyingReader {
+            source: &mut self.file,
+            destination: writer,
+        };
+        with_verify_scratch(|buffer| Cas::verify_reader(&self.digest, &mut copying, buffer))
+    }
+}
+
 pub struct Cas {
     root: PathBuf,
     /// Objects renamed into place but not yet synced. Drained by [`Cas::flush`].
@@ -337,6 +367,26 @@ impl Cas {
         Ok(file.metadata()?.len())
     }
 
+    /// Open an object once for length-framed, content-verified streaming.
+    pub fn open_for_verified_read(&self, digest: &str) -> Result<OpenedCasObject, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let path = self.path_for(digest);
+        let file = fs::File::open(&path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => CasError::NotFound {
+                digest: digest.to_string(),
+            },
+            _ => CasError::Io(error),
+        })?;
+        let stored_len = file.metadata()?.len();
+        Ok(OpenedCasObject {
+            digest: digest.to_string(),
+            file,
+            stored_len,
+        })
+    }
+
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         if !valid_digest(digest) {
@@ -437,21 +487,8 @@ impl Cas {
         digest: &str,
         writer: &mut impl Write,
     ) -> Result<u64, CasError> {
-        if !valid_digest(digest) {
-            return Err(CasError::InvalidDigest(digest.to_string()));
-        }
-        let path = self.path_for(digest);
-        let mut file = fs::File::open(&path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => CasError::NotFound {
-                digest: digest.to_string(),
-            },
-            _ => CasError::Io(error),
-        })?;
-        let mut copying = CopyingReader {
-            source: &mut file,
-            destination: writer,
-        };
-        with_verify_scratch(|buffer| Self::verify_reader(digest, &mut copying, buffer))
+        self.open_for_verified_read(digest)?
+            .copy_to_and_verify(writer)
     }
 
     fn verify_reader(

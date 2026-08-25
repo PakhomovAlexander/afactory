@@ -20,16 +20,15 @@
 //! some other envelope) is the provider adapter's job, behind [`ReviewerAdapter`].
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use review_core::Command;
-use review_core::LegacyStageOutput;
+use review_core::{Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
+use crate::process::{SupervisedError, run_supervised};
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -46,12 +45,6 @@ these fields and no others - an extra field is discarded, a missing one fails th
 Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
 from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
 path component. An empty `file` means the claim is change-wide.";
-
-/// Maximum encoded size of the exact prior Finding Set delivered to any reviewer.
-pub const MAX_PRIOR_FINDINGS_BYTES: usize = 64 * 1024;
-
-/// Maximum encoded size of one exact Change Set delivered to a reviewer.
-pub const MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
 
 /// Models fence JSON despite instructions often enough that refusing to look inside the fence
 /// would manufacture failures. Anything beyond a fence is still malformed.
@@ -745,121 +738,29 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        cmd.stdin(if input.is_some() {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        });
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        // Its own process group, so the deadline can kill everything the reviewer spawned. A
-        // killed `sh` whose orphaned child still holds the stdout pipe would leave the drain
-        // threads blocked until the *orphan* exits — the supervisor held hostage by exactly
-        // the surviving-process scenario fencing exists for.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
-
-        let stdin_writer = input.map(|input| {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(&input);
-            })
-        });
-
-        // Readers on their own threads: a child that fills a pipe while nobody reads it
-        // deadlocks against its own supervisor, and a killed child must still have whatever it
-        // wrote so far collected rather than dropped. They report over channels rather than
-        // joins so collection can be time-bounded below.
-        let stdout_pipe = child.stdout.take().expect("stdout was piped");
-        let stderr_pipe = child.stderr.take().expect("stderr was piped");
-        let (stdout_send, stdout_recv) = std::sync::mpsc::channel();
-        let (stderr_send, stderr_recv) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = stdout_send.send(drain(stdout_pipe));
-        });
-        std::thread::spawn(move || {
-            let _ = stderr_send.send(drain(stderr_pipe));
-        });
-
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        kill_process_group(child.id());
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break None;
+        let output =
+            run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
+                SupervisedError::TimedOut { stdout, .. } => {
+                    let stdout = redact(stdout, &self.grants);
+                    let _ = cas.put(&stdout);
+                    RunnerError::TimedOut {
+                        after_ms: self.timeout.as_millis() as u64,
                     }
-                    std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(e) => return Err(RunnerError::Unavailable(e.to_string())),
-            }
-        };
-        if let Some(writer) = stdin_writer {
-            let _ = writer.join();
-        }
-
-        // The group kill above closes the pipes in every ordinary case. The one thing that can
-        // still hold them is a process that escaped the group entirely (a `setsid` daemon) —
-        // no longer the reviewer, and not owed a wait: after the grace period its stream is
-        // recorded as empty rather than holding the supervisor hostage.
-        let collect = |receiver: std::sync::mpsc::Receiver<Vec<u8>>| {
-            receiver
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap_or_default()
-        };
-        let stdout = redact(collect(stdout_recv), &self.grants);
-        let stderr = redact(collect(stderr_recv), &self.grants);
+                error => RunnerError::Unavailable(format!("{}: {error}", command.program)),
+            })?;
+        let stdout = redact(output.stdout, &self.grants);
+        let stderr = redact(output.stderr, &self.grants);
         let raw_artifact = cas
             .put(&stdout)
             .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
-
-        let Some(status) = status else {
-            return Err(RunnerError::TimedOut {
-                after_ms: self.timeout.as_millis() as u64,
-            });
-        };
         Ok(RawCapture {
-            status,
+            status: output.status,
             stdout,
             stderr,
             raw_artifact,
         })
     }
-}
-
-/// Kill everything in the child's process group, not only the child.
-///
-/// This went through two wrong versions, both of which *passed on the machine that wrote
-/// them*: shelling to `kill -KILL -pgid` (BSD kill accepts it, procps refuses it — red on the
-/// CI runner), then a binary-plus-builtin fallback chain (slim images ship no `kill` binary,
-/// and dash's builtin cannot target a process group at all — red in the Linux container).
-/// `nix::killpg` is the direct syscall behind a safe wrapper: no unsafe in this crate, and
-/// nothing borrowed from whatever userland happens to be installed.
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    let _ = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGKILL,
-    );
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
-fn drain(mut pipe: impl Read) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    let _ = pipe.read_to_end(&mut buffer);
-    buffer
 }
 
 /// Replace every occurrence of every grant value. Byte-level, because captured output is not

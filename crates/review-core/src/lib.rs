@@ -42,11 +42,20 @@ pub use event::{
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use json::{NumericDomainError, admit};
-pub use legacy::{LegacyImportError, LegacyStageOutput, validate_reviewer_result};
+pub use legacy::{
+    LegacyImportError, LegacyStageOutput, ReviewerResultRejection, validate_reviewer_result,
+    validate_reviewer_result_classified,
+};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};
+
+/// Maximum encoded size of the exact prior Finding Set delivered to any reviewer.
+pub const MAX_PRIOR_FINDINGS_BYTES: usize = 64 * 1024;
+
+/// Maximum encoded size of one exact Change Set delivered to a reviewer.
+pub const MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) fn is_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
