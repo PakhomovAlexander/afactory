@@ -694,3 +694,15 @@ Focused config, runner, store, source, pipeline, and CLI suites pass with all-ta
 denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction
 pass before commit. Resolve all five Reports against this commit, then open a fresh unchanged-policy
 Campaign and require two clean Rounds before M3.1.
+
+## 2026-08-25 — M2 clean-window Campaign Round 1 gate correction
+
+Fresh unchanged-policy Campaign `m2-rename-scope-clean-window` pins the same authority and policy.
+Round 1 epoch 1 stopped at the pre-dispatch gate before any reviewer ran, so it spent zero tokens
+and remains incomplete. Under full sandbox-suite load, the command-runner regression raced a
+100 ms process deadline against an 80 ms sleep instead of testing the intended post-exit invariant.
+
+The regression now asserts directly that an already-expired child deadline still grants the fixed
+500 ms stdin-writer grace. The focused runner suite and full workspace formatting, Clippy, tests,
+doc tests, and byte-identical fixture reproduction pass. Commit the correction, then restart the
+same incomplete Round epoch; no reviewer Round was consumed.

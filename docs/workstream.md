@@ -2,8 +2,9 @@
 
 **Status:** M0 and M1 are complete. Six M2 dogfood Campaigns exhausted with all 205 Findings
 fixed. Campaign `m2-rename-scope-final-verified` opened 26 across four Rounds; all corrections are
-fully verified. A fresh unchanged-policy Campaign must establish M2's two-Round clean window before
-M3.1.
+fully verified. Fresh unchanged-policy Campaign `m2-rename-scope-clean-window` has an incomplete,
+zero-spend Round 1 epoch after its gate exposed and corrected a timing-dependent test; restart that
+epoch and establish M2's two-Round clean window before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -226,7 +227,11 @@ claims, and exhausted the Campaign. Their corrections publish a moving cold CAS 
 second-pass identity, give completed commands fixed stdin-writer grace, preserve version-1
 name-keyed Generation semantics, read Round authority through indexed events, and reuse the
 already-loaded Campaign log across preparation. The full kernel gate passes; resolve these claims
-and open a fresh unchanged-policy Campaign for the two-Round clean window.
+and open a fresh unchanged-policy Campaign for the two-Round clean window. Campaign
+`m2-rename-scope-clean-window` is open with the same authority and policy. Round 1 epoch 1 stopped
+at the pre-dispatch gate with zero spend; its timing-dependent command-runner regression is now
+deterministic and the full kernel gate passes. Restart the incomplete epoch, then require two clean
+Rounds.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

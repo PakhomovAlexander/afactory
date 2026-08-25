@@ -13,6 +13,13 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(1_800);
+const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
+
+fn stdin_writer_wait(deadline: Instant) -> Duration {
+    deadline
+        .saturating_duration_since(Instant::now())
+        .max(STDIN_EXIT_GRACE)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerError {
@@ -192,9 +199,7 @@ impl<'a> CommandRunner<'a> {
             });
         };
         if let Some(receiver) = stdin_result {
-            const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match receiver.recv_timeout(remaining.max(STDIN_EXIT_GRACE)) {
+            match receiver.recv_timeout(stdin_writer_wait(deadline)) {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
                     return Err(RunnerError::Unavailable(format!(
@@ -375,20 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn a_late_clean_exit_gets_stdin_writer_grace() {
-        let (dir, cas) = runner_dir();
-        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_millis(100));
-        let command = Command::new(
-            "/bin/sh",
-            vec![
-                Arg::literal("-c"),
-                Arg::literal(format!("sleep 0.08; cat <<'EOF'\n{EMPTY_RESULT}\nEOF")),
-            ],
-        );
-
-        let input = vec![b'x'; 8 * 1024 * 1024];
-        let (result, _) = runner.invoke_raw_with_input(&command, input).unwrap();
-        assert!(result.findings.is_empty());
+    fn an_expired_child_deadline_still_gets_stdin_writer_grace() {
+        let expired = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        assert_eq!(stdin_writer_wait(expired), STDIN_EXIT_GRACE);
     }
 
     #[test]
