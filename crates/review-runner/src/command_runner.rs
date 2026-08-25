@@ -263,7 +263,10 @@ mod tests {
             ],
         );
         let started = Instant::now();
-        let input = vec![b'x'; 1024 * 1024];
+        // Linux may grow a pipe to 1 MiB, so the old 1 MiB input could fit completely and let
+        // the writer finish before the descendant released stdin. Exceed that ceiling so this
+        // test actually exercises the post-exit writer deadline on every supported platform.
+        let input = vec![b'x'; 16 * 1024 * 1024];
         assert!(matches!(
             runner.invoke_raw_with_input(&command, input),
             Err(RunnerError::TimedOut { .. })
