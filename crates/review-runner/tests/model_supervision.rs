@@ -73,11 +73,13 @@ fn a_killed_reviewer_keeps_what_it_wrote_so_far() {
 fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_millis(100));
-    let command = sh("sleep 30 <&0 & printf answer");
+    // Preserve the original pipe before POSIX asynchronous-command stdin redirection replaces
+    // fd 0 with /dev/null; the descendant must genuinely hold the writer open.
+    let command = sh("exec 3<&0; sleep 30 <&3 & printf answer");
     let started = Instant::now();
 
     assert!(matches!(
-        runner.capture_with_stdin(&cas, &command, vec![b'x'; 1024 * 1024]),
+        runner.capture_with_stdin(&cas, &command, vec![b'x'; 16 * 1024 * 1024]),
         Err(RunnerError::TimedOut { .. })
     ));
     assert!(started.elapsed() < Duration::from_secs(5));
