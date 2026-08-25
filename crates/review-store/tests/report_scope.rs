@@ -217,6 +217,56 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
 }
 
 #[test]
+fn one_noncanonical_typed_location_makes_the_whole_scope_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["src/in.rs"]);
+    let report_id = cas
+        .put_json(&serde_json::json!({
+            "title": "mixed locations",
+            "severity": "major",
+            "locations": [
+                {"path": "src/out.rs", "line": 1},
+                {"path": "./src/in.rs", "line": 2}
+            ],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "mixed",
+                    "round": 1,
+                    "source": "typed",
+                    "report_id": report_id,
+                }),
+                vec![report_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+
+    let finding = ledger.get("mixed").unwrap();
+    assert_eq!(finding.convergence_scope, None);
+    assert_eq!(finding.reports[0].scope, None);
+    assert_eq!(ledger.scope_authority_failures().len(), 1);
+    assert!(
+        ledger.scope_authority_failures()[0]
+            .reason
+            .contains("./src/in.rs")
+    );
+    assert_eq!(
+        convergence(&ledger, Severity::Major).verdict,
+        Verdict::NotConverged
+    );
+}
+
+#[test]
 fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
@@ -264,7 +314,7 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
     assert!(
         ledger.scope_authority_failures()[0]
             .reason
-            .contains("no canonical repository-relative location")
+            .contains("noncanonical repository-relative location")
     );
     assert_eq!(
         convergence(&ledger, Severity::Major).verdict,

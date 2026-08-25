@@ -2,16 +2,17 @@
 
 /// Render raw repository-relative path bytes losslessly for JSON.
 ///
-/// Valid UTF-8 without a percent sign stays human-readable. Every other path uses an
-/// unambiguous percent encoding, including a literal `%`.
+/// Valid UTF-8 without a percent sign stays human-readable when it is also a canonical Report
+/// spelling. Every other path uses an unambiguous percent encoding, including literal `%` and
+/// leading/trailing whitespace that could not otherwise be reported exactly.
 pub fn encode_path(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
-        Ok(path) if !path.contains('%') => path.to_string(),
+        Ok(path) if !path.contains('%') && is_valid_repo_path(path) => path.to_string(),
         _ => {
             let mut encoded = String::with_capacity(bytes.len());
             for byte in bytes {
                 if byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
+                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
                 {
                     encoded.push(*byte as char);
                 } else {
@@ -98,6 +99,9 @@ mod tests {
         }
         assert_eq!(encode_path(b"docs/50%-off.md"), "docs/50%25-off.md");
         assert_eq!(encode_path(&[b'a', 0xff, b'b']), "a%FFb");
+        assert_eq!(encode_path(b" notes.md"), "%20notes.md");
+        assert_eq!(encode_path(b"notes.md "), "notes.md%20");
+        assert_eq!(decode_path("%20notes.md"), b" notes.md");
     }
 
     #[test]

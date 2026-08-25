@@ -236,7 +236,11 @@ fn validate_diff_change_set_wiring(
     Ok(())
 }
 
-fn validate_generation_output_contracts(nodes: &[NodeSpec]) -> Result<(), ConfigError> {
+fn validate_generation_output_contracts(
+    nodes: &[NodeSpec],
+    subject: review_core::SubjectKind,
+) -> Result<(), ConfigError> {
+    let mut change_sets = 0_usize;
     for node in nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Generation)
@@ -245,7 +249,17 @@ fn validate_generation_output_contracts(nodes: &[NodeSpec]) -> Result<(), Config
         for port in node.outputs.iter().map(PortContractSpec::build) {
             match port.artifact_type.as_str() {
                 review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
-                review_core::contract::CHANGE_SET_V1 => {}
+                review_core::contract::CHANGE_SET_V1 => {
+                    if subject != review_core::SubjectKind::Diff {
+                        return Err(ConfigError::Binding(format!(
+                            "generation node `{}` output `{}` declares `{}`, which only a `diff` Subject can supply",
+                            node.id,
+                            port.name,
+                            review_core::contract::CHANGE_SET_V1,
+                        )));
+                    }
+                    change_sets += 1;
+                }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
                         "generation node `{}` output `{}` has unsupported type `{artifact_type}`; declare `{}` or `{}` explicitly",
@@ -264,6 +278,12 @@ fn validate_generation_output_contracts(nodes: &[NodeSpec]) -> Result<(), Config
                 review_core::contract::PRIOR_FINDINGS_V1,
             )));
         }
+    }
+    if subject == review_core::SubjectKind::Diff && change_sets != 1 {
+        return Err(ConfigError::Binding(format!(
+            "a `diff` pipeline must declare exactly one generation `{}` output",
+            review_core::contract::CHANGE_SET_V1,
+        )));
     }
     Ok(())
 }
@@ -536,7 +556,7 @@ impl Definition {
             }
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
-        validate_generation_output_contracts(&self.nodes)?;
+        validate_generation_output_contracts(&self.nodes, subject.kind)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }

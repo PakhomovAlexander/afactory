@@ -134,16 +134,21 @@ impl<'a> CommandRunner<'a> {
         let mut child = cmd
             .spawn()
             .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
-        let stdin_writer = input.map(|input| {
+        let stdin_result = input.map(|input| {
             let mut stdin = child.stdin.take().expect("stdin was piped");
             let input = input.to_vec();
-            std::thread::spawn(move || match stdin.write_all(&input) {
-                Ok(()) => Ok(()),
-                // A command may intentionally ignore wired inputs. Its actual exit status and
-                // answer remain authoritative when closing stdin races the writer.
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-                Err(error) => Err(error.to_string()),
-            })
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = match stdin.write_all(&input) {
+                    Ok(()) => Ok(()),
+                    // A command may intentionally ignore wired inputs. Its actual exit status
+                    // and answer remain authoritative when closing stdin races the writer.
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    Err(error) => Err(error.to_string()),
+                };
+                let _ = send.send(result);
+            });
+            receive
         });
 
         // Drain both output pipes while stdin is written. Otherwise a child that reports before
@@ -162,7 +167,12 @@ impl<'a> CommandRunner<'a> {
         let deadline = Instant::now() + self.timeout;
         let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
+                Ok(Some(status)) => {
+                    // The parent exited, but helpers may still hold stdin/stdout/stderr. They are
+                    // part of this reviewer attempt and must not outlive its captured deadline.
+                    kill_process_group(child.id());
+                    break Some(status);
+                }
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -180,13 +190,26 @@ impl<'a> CommandRunner<'a> {
                 }
             }
         };
-        if let Some(writer) = stdin_writer {
-            writer
-                .join()
-                .map_err(|_| RunnerError::Unavailable("reviewer input writer panicked".into()))?
-                .map_err(|error| {
-                    RunnerError::Unavailable(format!("delivering reviewer inputs: {error}"))
-                })?;
+        if let Some(receiver) = stdin_result {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(remaining) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    return Err(RunnerError::Unavailable(format!(
+                        "delivering reviewer inputs: {error}"
+                    )));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(RunnerError::TimedOut {
+                        after_ms: self.timeout.as_millis() as u64,
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(RunnerError::Unavailable(
+                        "reviewer input writer stopped without a result".into(),
+                    ));
+                }
+            }
         }
 
         let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
@@ -327,6 +350,26 @@ mod tests {
             runner.invoke_raw(&command),
             Err(RunnerError::TimedOut { .. })
         ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_parent_exit_reaps_a_descendant_that_kept_stdin_open() {
+        let (dir, cas) = runner_dir();
+        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_secs(1));
+        let command = Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(format!(
+                    "/bin/sh -c 'cat >/dev/null' <&0 & cat <<'EOF'\n{EMPTY_RESULT}\nEOF"
+                )),
+            ],
+        );
+        let started = Instant::now();
+        let input = vec![b'x'; 1024 * 1024];
+        let (result, _) = runner.invoke_raw_with_input(&command, &input).unwrap();
+        assert!(result.findings.is_empty());
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

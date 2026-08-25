@@ -560,3 +560,27 @@ runner, sandbox, source, store, and CLI suites pass with all-target Clippy warni
 workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass before
 commit. Resolve all six Reports against this commit and run Round 4 to retain them. Because Round 3
 was not clean, open a fresh unchanged-policy Campaign afterward for the two-Round clean window.
+
+## 2026-08-25 — M2 verified Campaign Round 4 corrections
+
+Round 4 first stopped incomplete after 819,042 tokens when a performance review returned truncated
+JSON. Resuming the exact captured Round and Snapshot completed at 1,179,641 tokens, retained all
+seventeen Round 1-3 resolutions, opened four Reports, and exhausted Campaign
+`m2-rename-scope-verified`.
+
+Generation validation now derives its Change Set contract from Subject kind: a whole-tree pipeline
+cannot declare `ChangeSet@1`, while a diff pipeline must declare exactly one. Typed Reports with any
+noncanonical location keep readable claim content but project their entire Scope as unknown; they
+can no longer discard a bad location and project from a valid subset.
+
+Git paths with leading or trailing whitespace use their exact percent-encoded wire spelling, so a
+legal repository filename remains capturable, diffable, reportable, and materializable without
+weakening live Report path validation. Unit, committed-capture, materialization, and tree-diff
+regressions cover the boundary. Command reviewer input delivery now shares the captured attempt
+deadline: after the parent exits, its process group is reaped and a descendant retaining stdin
+cannot make the writer join unbounded.
+
+Focused config, core, runner, source, and store tests pass with all-target Clippy warnings denied.
+Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass
+before commit. Resolve all four Reports against this commit, then open a fresh unchanged-policy
+Campaign and require two clean Rounds before M3.1.

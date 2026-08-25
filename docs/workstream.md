@@ -1,10 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. Four M2 dogfood Campaigns exhausted with all 158 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-verified` Round 1 opened seven further
-Findings; Round 2 retained their fixes and opened four, then Round 3 retained all eleven and opened
-six further Findings. Their corrections are committed, resolved, and fully verified. Round 4 must
-retain them, then a fresh unchanged-policy Campaign must establish two clean Rounds before M3.1.
+**Status:** M0 and M1 are complete. Five M2 dogfood Campaigns exhausted with all 179 Findings
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-verified` retained every correction across
+four Rounds but opened 21 further Findings; Round 4's final four corrections are fully verified.
+A fresh unchanged-policy Campaign must establish two clean Rounds before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)

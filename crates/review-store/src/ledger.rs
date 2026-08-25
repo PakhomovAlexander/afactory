@@ -900,13 +900,18 @@ impl ReportProjection {
                     line: location.line.map(i64::from),
                 })
                 .collect();
-            let scope_authority_reason =
-                (!report.locations.is_empty() && valid_locations.is_empty()).then(|| {
-                    format!(
-                        "report {report_id} has no canonical repository-relative location; \
-                     claim content remains readable with unknown Scope"
-                    )
-                });
+            let invalid_locations: Vec<_> = report
+                .locations
+                .iter()
+                .filter(|location| !review_core::is_valid_repo_path(&location.path))
+                .map(|location| location.path.as_str())
+                .collect();
+            let scope_authority_reason = (!invalid_locations.is_empty()).then(|| {
+                format!(
+                    "report {report_id} has noncanonical repository-relative location(s) \
+                         {invalid_locations:?}; claim content remains readable with unknown Scope"
+                )
+            });
             let first = valid_locations.first();
             let file = first
                 .map(|location| location.path.clone())
@@ -925,7 +930,7 @@ impl ReportProjection {
             });
             let location = if report.locations.is_empty() {
                 ReportLocation::ChangeWide
-            } else if valid_locations.is_empty() {
+            } else if !invalid_locations.is_empty() {
                 ReportLocation::Unrecorded
             } else {
                 ReportLocation::Paths(valid_locations)

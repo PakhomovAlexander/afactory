@@ -600,3 +600,31 @@ id = "gate""#,
     assert!(error.to_string().contains("unsupported type"), "{error}");
     assert!(error.to_string().contains("PriorFindings@1"), "{error}");
 }
+
+#[test]
+fn a_whole_tree_generation_cannot_declare_a_change_set() {
+    let text = MINIMAL.replace(
+        r#"[[nodes]]
+id = "gate""#,
+        r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[nodes]]
+id = "gate""#,
+    );
+
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("only a `diff` Subject"),
+        "{error}"
+    );
+}

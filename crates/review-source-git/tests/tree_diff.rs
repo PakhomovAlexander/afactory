@@ -47,6 +47,7 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
     fixture.git(&["mv", "old-name.txt", "new-name.txt"]);
     fixture.write("modified.txt", b"after\n");
     fixture.write("odd\t\"name.txt", b"after\n");
+    fixture.write(" notes.md", b"leading whitespace is legal in Git\n");
     let head_revision = fixture.commit_all("head");
 
     let repo = repo_of(&fixture);
@@ -90,6 +91,7 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
     assert_eq!(
         change_set.changed_paths,
         [
+            "%20notes.md",
             "modified.txt",
             "new-name.txt",
             "odd\t\"name.txt",

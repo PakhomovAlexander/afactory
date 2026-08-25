@@ -429,11 +429,12 @@ fn an_object_git_cannot_produce_is_refused_not_zeroed() {
 }
 
 #[test]
-fn a_percent_in_a_filename_survives_capture_and_materialize() {
+fn encoded_filenames_survive_capture_and_materialize() {
     let fixture = Fixture::new();
     // The reviewer's example: a literal '%' in the name. encode_path escapes it to %25 in the
     // manifest key; without a decoder, materialize would create `docs/50%25-off.md`.
     fixture.write("docs/50%-off.md", b"half price\n");
+    fixture.write(" notes.md", b"leading whitespace\n");
     fixture.write("src/main.rs", b"fn main() {}\n");
     fixture.commit_all("initial");
     let repo = repo_of(&fixture);
@@ -452,6 +453,11 @@ fn a_percent_in_a_filename_survives_capture_and_materialize() {
     assert!(
         !out.path().join("docs/50%25-off.md").exists(),
         "the encoded name must not leak to the filesystem"
+    );
+    assert!(snapshot.manifest.get("%20notes.md").is_some());
+    assert_eq!(
+        std::fs::read(out.path().join(" notes.md")).unwrap(),
+        b"leading whitespace\n"
     );
 }
 

@@ -221,14 +221,17 @@ fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
 }
 
 /// Allocation-free equivalent of `encode_path(decoded) == encoded` after the caller has already
-/// decoded the path. Human-readable UTF-8 without `%` is literal. Percent mode is canonical only
-/// for invalid UTF-8 or a decoded literal `%`, uses uppercase hex, and never escapes a byte the
-/// encoder would render literally.
+/// decoded the path. Human-readable UTF-8 without `%` is literal only when it is also a canonical
+/// Report spelling. Percent mode is canonical for invalid UTF-8, a decoded literal `%`, or a path
+/// whose raw leading/trailing whitespace requires encoding; it uses uppercase hex and never
+/// escapes a byte the encoder would render literally in that mode.
 fn is_canonical_path_encoding(encoded: &str, decoded: &[u8]) -> bool {
     if !encoded.as_bytes().contains(&b'%') {
-        return true;
+        return std::str::from_utf8(decoded).is_ok_and(review_core::is_valid_repo_path);
     }
-    if std::str::from_utf8(decoded).is_ok() && !decoded.contains(&b'%') {
+    if std::str::from_utf8(decoded).is_ok_and(review_core::is_valid_repo_path)
+        && !decoded.contains(&b'%')
+    {
         return false;
     }
     let bytes = encoded.as_bytes();
@@ -258,7 +261,7 @@ fn is_canonical_path_encoding(encoded: &str, decoded: &[u8]) -> bool {
 }
 
 fn path_byte_is_literal(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
 }
 
 fn hex_value(byte: u8) -> u8 {
