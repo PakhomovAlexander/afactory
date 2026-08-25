@@ -29,7 +29,10 @@ pub enum RunnerError {
     MalformedOutput { raw_artifact: String, why: String },
     /// The reviewer did not answer by its deadline and was killed. Whatever it spent is gone;
     /// whether to retry is the kernel's decision, not this layer's.
-    TimedOut { after_ms: u64 },
+    TimedOut {
+        after_ms: u64,
+        raw_artifact: Option<String>,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -44,7 +47,7 @@ impl std::fmt::Display for RunnerError {
             RunnerError::MalformedOutput { why, .. } => {
                 write!(f, "reviewer output is not a ReviewerResult@1: {why}")
             }
-            RunnerError::TimedOut { after_ms } => {
+            RunnerError::TimedOut { after_ms, .. } => {
                 write!(
                     f,
                     "reviewer did not answer within {after_ms}ms and was killed"
@@ -119,8 +122,9 @@ impl<'a> CommandRunner<'a> {
         cmd.env("LC_ALL", "C");
         let output =
             run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
-                SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
+                SupervisedError::TimedOut { stdout, .. } => RunnerError::TimedOut {
                     after_ms: self.timeout.as_millis() as u64,
+                    raw_artifact: self.cas.put(&stdout).ok(),
                 },
                 SupervisedError::Spawn(error) => {
                     RunnerError::Unavailable(format!("{}: {error}", command.program))
@@ -132,7 +136,10 @@ impl<'a> CommandRunner<'a> {
             })?;
         let status = output.status;
         let stdout = output.stdout;
-        let stderr = output.stderr;
+        let mut stderr = output.stderr;
+        if output.stderr_held {
+            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+        }
 
         if !status.success() {
             let stderr = String::from_utf8_lossy(&stderr);
@@ -230,13 +237,17 @@ mod tests {
         let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_millis(100));
         let command = Command::new(
             "/bin/sh",
-            vec![Arg::literal("-c"), Arg::literal("sleep 60")],
+            vec![Arg::literal("-c"), Arg::literal("printf partial; sleep 60")],
         );
         let started = Instant::now();
-        assert!(matches!(
-            runner.invoke_raw(&command),
-            Err(RunnerError::TimedOut { .. })
-        ));
+        let Err(RunnerError::TimedOut {
+            raw_artifact: Some(raw_artifact),
+            ..
+        }) = runner.invoke_raw(&command)
+        else {
+            panic!("command timeout did not retain partial output");
+        };
+        assert_eq!(cas.get(&raw_artifact).unwrap(), b"partial");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

@@ -2,9 +2,10 @@
 
 **Status:** M0 and M1 are complete. Six M2 dogfood Campaigns exhausted with all 205 Findings
 fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean-window` Round 1 spent 956,628 tokens;
-its seven corrections are committed and resolved. Round 2 spent 973,217 tokens, retained all seven,
-and opened five Findings. Their corrections pass the full kernel gate. Commit and resolve them;
-Rounds 3 and 4 must both be clean to establish M2's clean window before M3.1.
+its seven corrections are committed and resolved. Round 2 spent 973,217 tokens and opened five
+Findings; their corrections are committed and resolved. Round 3 spent 1,020,400 tokens, retained
+all twelve fixes, and opened six Findings. Their corrections pass the full kernel gate. Because
+Round 3 was not clean, exhaust Round 4 after resolving them, then open a fresh clean-window Campaign.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -238,8 +239,12 @@ Ledger cache repopulation race, and stream synthetic-tree objects from one verif
 full kernel gate passes; all seven are resolved. Round 2 spent 973,217 tokens, retained every fix,
 and opened five claims. Their verified corrections charge post-spawn failures, move shared process
 supervision into a leaf crate, reverify cached Change Sets, watermark Ledger projections by log
-position, and parallelize entries inside wide directories. Commit and resolve them, then require
-Rounds 3 and 4 to be clean.
+position, and parallelize entries inside wide directories. All five are committed and resolved.
+Round 3 spent 1,020,400 tokens, retained all twelve fixes, and opened six claims. Their verified
+corrections fast-forward and preserve watermarked projections, bound every Git subprocess, retain
+complete stdout when only stderr is held, reference timeout evidence, and cache Subject validation
+per transition batch. Resolve them and run Round 4; this Campaign then exhausts, so a fresh
+unchanged-policy Campaign must establish the two-Round clean window.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

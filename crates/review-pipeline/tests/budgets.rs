@@ -13,13 +13,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use review_check::{Arg, CheckDefinition, Command};
 use review_config::Definition;
-use review_core::event::AttemptInputPayloadV1;
+use review_core::NodeInvocationPayloadV1;
+use review_core::event::{AttemptDispatchedPayloadV1, AttemptInputPayloadV1};
 use review_core::{EventType, LegacyStageOutput};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
 use review_pipeline::{Kernel, RoundAuthority, RunVerdict, run_verdict};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
-use review_store::{Cas, ConvergencePolicy, EventStore};
+use review_store::{Cas, ConvergencePolicy, EventStore, LedgerProjection, NewEvent};
 
 const BUDGET_PIPELINE: &str = r#"
 version = 2
@@ -126,6 +127,81 @@ fn passing_check() -> Vec<CheckDefinition> {
     )]
 }
 
+#[test]
+fn a_seeded_projection_fast_forwards_past_the_resume_fence() {
+    const PIPELINE: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+runner = { program = "/bin/true" }
+"#;
+    let mut run = run_fixture();
+    let authority = support::test_round_authority_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        &run.snapshot,
+        PIPELINE,
+    );
+    let attempt = "00000000000000000000000000";
+    run.store
+        .append(
+            "run",
+            &run.cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(NodeInvocationPayloadV1 {
+                    node: "reviewer".into(),
+                    inputs: vec![],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .caused_by(authority.round_event_id()),
+        )
+        .unwrap();
+    run.store
+        .append(
+            "run",
+            &run.cas,
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(AttemptDispatchedPayloadV1 {
+                    reserved: Some(1),
+                    prior_findings: None,
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(attempt)
+            .caused_by(authority.round_event_id()),
+        )
+        .unwrap();
+    let projection = LedgerProjection::rebuild(&run.store, &run.cas, "run").unwrap();
+    let loaded = Definition::from_toml(PIPELINE).unwrap().load().unwrap();
+
+    let kernel = Kernel::from_loaded(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_ledger_projection(projection)
+    .unwrap();
+    assert!(kernel.ledger().is_empty());
+    drop(kernel);
+    assert!(run.store.replay("run").unwrap().iter().any(|event| {
+        event.event_type == EventType::AttemptFencedV1
+            && event.attempt_id.as_deref() == Some(attempt)
+    }));
+}
+
 fn clean_output() -> LegacyStageOutput {
     serde_json::from_str(
         r#"{"verdict":"approve","summary":null,"findings":[],
@@ -168,7 +244,10 @@ impl ReviewerAdapter for FlakyOnce {
         _inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            return Err(RunnerError::TimedOut { after_ms: 200 });
+            return Err(RunnerError::TimedOut {
+                after_ms: 200,
+                raw_artifact: Some(cas.put(b"partial timed-out answer").unwrap()),
+            });
         }
         Ok(ReviewerReturn {
             output: clean_output(),
@@ -590,6 +669,19 @@ fn a_timeout_is_fenced_charged_and_retried() {
 
     let convergence = kernel.convergence(ConvergencePolicy::default());
     assert!(run_verdict(&report, &convergence).passed());
+    drop(kernel);
+    let fenced = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == EventType::AttemptFencedV1)
+        .unwrap();
+    assert!(fenced.artifact_refs.iter().any(|artifact| {
+        run.cas
+            .get(artifact)
+            .is_ok_and(|bytes| bytes == b"partial timed-out answer")
+    }));
 }
 
 #[test]
@@ -922,7 +1014,10 @@ fn repeated_timeouts_exhaust_rather_than_loop() {
             _root: &Path,
             _inputs: &ReviewerInputs,
         ) -> Result<ReviewerReturn, RunnerError> {
-            Err(RunnerError::TimedOut { after_ms: 200 })
+            Err(RunnerError::TimedOut {
+                after_ms: 200,
+                raw_artifact: None,
+            })
         }
     }
 

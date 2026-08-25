@@ -15,9 +15,8 @@
 //! reviewed snapshot X, and no such X was ever on disk.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -208,7 +207,7 @@ pub struct NoObserver;
 impl CaptureObserver for NoObserver {}
 
 /// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives.
-type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + 'a;
+type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send + 'a;
 
 pub struct Capture<'a> {
     repo: &'a Repo,
@@ -533,43 +532,28 @@ impl<'a> Capture<'a> {
         if oids.is_empty() {
             return Ok(());
         }
-        let mut child = self
-            .repo
-            .streaming(&["cat-file", "--batch"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| CaptureError::Git(GitError::Spawn(e)))?;
-
-        // Feed the request on its own thread: with the whole tree's oids, writing them all
-        // before reading any output is the deadlock the two threads exist to prevent.
-        let mut stdin = child.stdin.take().expect("stdin piped");
         let requested: Vec<String> = oids.to_vec();
-        let writer = std::thread::spawn(move || {
-            for oid in &requested {
-                if writeln!(stdin, "{oid}").is_err() {
-                    break; // git went away (killed on our early exit); nothing left to ask.
-                }
-            }
-        });
-        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-        let stderr_thread = std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let _ = stderr_pipe.read_to_end(&mut buffer);
-            buffer
-        });
-
-        let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
-        let streamed = parse_batch_stream(&mut stdout, sink);
-        if streamed.is_err() {
-            // Stop reading before we finish asking: kill git so the writer's next `writeln`
-            // fails rather than blocking on a pipe nobody is draining.
-            let _ = child.kill();
-        }
-        let _ = writer.join();
-        let stderr = stderr_thread.join().unwrap_or_default();
-        let status = child.wait()?;
+        let supervised = self
+            .repo
+            .streaming(
+                &["cat-file", "--batch"],
+                move |stdin| {
+                    for oid in &requested {
+                        if writeln!(stdin, "{oid}").is_err() {
+                            break; // git went away; nothing remains safe or useful to request.
+                        }
+                    }
+                    Ok::<_, std::convert::Infallible>(())
+                },
+                |stdout| {
+                    let mut stdout = BufReader::new(stdout);
+                    parse_batch_stream(&mut stdout, sink)
+                },
+            )
+            .map_err(CaptureError::Git)?;
+        let streamed = supervised.output;
+        let stderr = supervised.stderr;
+        let status = supervised.status;
 
         let git_failed = || {
             CaptureError::Git(GitError::Failed {

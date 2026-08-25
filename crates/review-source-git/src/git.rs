@@ -18,43 +18,21 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use review_core::{ChangeSetV1, PathRenameV1};
+use review_process::{
+    ExitPolicy, SupervisedError, SupervisedStreamError, run_supervised_duplex,
+    run_supervised_streaming, run_supervised_with_policy,
+};
 use review_store::Cas;
 
 use crate::manifest::{Manifest, decode_path, encode_path};
 
-type DrainThread = std::thread::JoinHandle<std::io::Result<Vec<u8>>>;
-
-fn drain_pipe(mut pipe: impl Read + Send + 'static) -> DrainThread {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    })
-}
-
-fn finish_child_output(
-    mut child: std::process::Child,
-    stdout: DrainThread,
-    stderr: DrainThread,
-) -> Result<Output, GitError> {
-    let status = child.wait().map_err(GitError::Io)?;
-    let join = |thread: DrainThread| {
-        thread
-            .join()
-            .map_err(|_| GitError::Io(std::io::Error::other("Git output drainer panicked")))?
-            .map_err(GitError::Io)
-    };
-    Ok(Output {
-        status,
-        stdout: join(stdout)?,
-        stderr: join(stderr)?,
-    })
-}
+const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
 pub enum GitError {
@@ -75,6 +53,10 @@ pub enum GitError {
         detail: String,
     },
     Cas(String),
+    Supervision {
+        args: Vec<String>,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GitError {
@@ -94,6 +76,9 @@ impl std::fmt::Display for GitError {
                 write!(f, "git produced a malformed tree diff: {detail}")
             }
             GitError::Cas(detail) => write!(f, "reading a synthetic tree artifact: {detail}"),
+            GitError::Supervision { args, detail } => {
+                write!(f, "git {} supervision failed: {detail}", args.join(" "))
+            }
         }
     }
 }
@@ -219,11 +204,13 @@ enum DiffHead<'a> {
 /// A repository we may only read.
 pub struct Repo {
     workdir: PathBuf,
+    program: std::ffi::OsString,
     /// A private, empty HOME so a global config cannot be discovered even by accident.
     home: PathBuf,
     /// The root-commit walk is O(history) and its answer never changes for an open `Repo`,
     /// so it is paid once, not once per capture.
     repository_id: std::sync::OnceLock<String>,
+    timeout: Duration,
 }
 
 impl Repo {
@@ -233,9 +220,24 @@ impl Repo {
     pub fn open(workdir: impl AsRef<Path>, home: impl AsRef<Path>) -> Self {
         Self {
             workdir: workdir.as_ref().to_path_buf(),
+            program: "git".into(),
             home: home.as_ref().to_path_buf(),
             repository_id: std::sync::OnceLock::new(),
+            timeout: DEFAULT_GIT_TIMEOUT,
         }
+    }
+
+    /// Override the bounded deadline applied independently to every Git subprocess.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Select the trusted Git executable. Primarily useful for hermetic embedders and deadline
+    /// tests; repository content and configuration never influence this value.
+    pub fn with_git_program(mut self, program: impl Into<std::ffi::OsString>) -> Self {
+        self.program = program.into();
+        self
     }
 
     pub fn workdir(&self) -> &Path {
@@ -259,7 +261,7 @@ impl Repo {
     ];
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(&self.program);
         let rename_limit_config = format!("diff.renameLimit={RENAME_LIMIT}");
         // Nothing inherited. Not "most things filtered" — nothing.
         cmd.env_clear();
@@ -318,6 +320,36 @@ impl Repo {
         ]
     }
 
+    fn supervision_error(&self, args: Vec<String>, error: SupervisedError) -> GitError {
+        match error {
+            SupervisedError::Spawn(error) => GitError::Spawn(error),
+            error => GitError::Supervision {
+                args,
+                detail: error.to_string(),
+            },
+        }
+    }
+
+    fn run_command(
+        &self,
+        command: &mut Command,
+        args: Vec<String>,
+        input: Option<Vec<u8>>,
+    ) -> Result<Output, GitError> {
+        let output =
+            run_supervised_with_policy(command, input, self.timeout, ExitPolicy::KillProcessGroup)
+                .map_err(|error| self.supervision_error(args, error))?;
+        let mut stderr = output.stderr;
+        if output.stderr_held {
+            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+        }
+        Ok(Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr,
+        })
+    }
+
     fn run_raw<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Output, GitError> {
         let subcommand = args
             .first()
@@ -328,13 +360,14 @@ impl Repo {
         }
         let mut cmd = self.command();
         cmd.args(args);
-        let output = cmd.output().map_err(GitError::Spawn)?;
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let output = self.run_command(&mut cmd, args.clone(), None)?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args
-                    .iter()
-                    .map(|a| a.as_ref().to_string_lossy().into_owned())
-                    .collect(),
+                args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -359,10 +392,11 @@ impl Repo {
         version_cmd
             .current_dir(&self.home)
             .args(["version", "--build-options"]);
-        let version_output = version_cmd.output().map_err(GitError::Spawn)?;
+        let version_args = vec!["version".to_string(), "--build-options".to_string()];
+        let version_output = self.run_command(&mut version_cmd, version_args.clone(), None)?;
         if !version_output.status.success() {
             return Err(GitError::Failed {
-                args: vec!["version".to_string(), "--build-options".to_string()],
+                args: version_args,
                 stderr: String::from_utf8_lossy(&version_output.stderr).into_owned(),
             });
         }
@@ -385,13 +419,14 @@ impl Repo {
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         cmd.args(args);
-        let output = cmd.output().map_err(GitError::Spawn)?;
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let output = self.run_command(&mut cmd, args.clone(), None)?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args
-                    .iter()
-                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
-                    .collect(),
+                args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -413,10 +448,7 @@ impl Repo {
             .arg(git_dir)
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .args(args);
         if let Some(alternate) = alternate_object_dir {
             let joined =
                 std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
@@ -424,41 +456,11 @@ impl Repo {
                 })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
-        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| GitError::MalformedTreeDiff {
-                detail: "isolated Git command has no stdin".to_string(),
-            })?;
-        let stdout =
-            drain_pipe(
-                child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| GitError::MalformedTreeDiff {
-                        detail: "isolated Git command has no stdout".to_string(),
-                    })?,
-            );
-        let stderr =
-            drain_pipe(
-                child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| GitError::MalformedTreeDiff {
-                        detail: "isolated Git command has no stderr".to_string(),
-                    })?,
-            );
-        let write_result = stdin.write_all(input).map_err(GitError::Io);
-        drop(stdin);
-        if write_result.is_err() {
-            let _ = child.kill();
-        }
-        let output = finish_child_output(child, stdout, stderr)?;
-        write_result?;
+        let display_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let output = self.run_command(&mut cmd, display_args.clone(), Some(input.to_vec()))?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                args: display_args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -525,10 +527,7 @@ impl Repo {
             .arg(git_dir)
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .args(["fast-import", "--quiet", "--force"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .args(["fast-import", "--quiet", "--force"]);
         if let Some(alternate) = alternate_object_dir {
             let joined =
                 std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
@@ -536,33 +535,13 @@ impl Repo {
                 })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
-        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        let input = child
-            .stdin
-            .take()
-            .ok_or_else(|| GitError::MalformedTreeDiff {
-                detail: "isolated fast-import has no stdin".to_string(),
-            })?;
-        let stdout =
-            drain_pipe(
-                child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| GitError::MalformedTreeDiff {
-                        detail: "isolated fast-import has no stdout".to_string(),
-                    })?,
-            );
-        let stderr =
-            drain_pipe(
-                child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| GitError::MalformedTreeDiff {
-                        detail: "isolated fast-import has no stderr".to_string(),
-                    })?,
-            );
-        let mut input = BufWriter::with_capacity(256 * 1024, input);
-        let write_result = (|| -> Result<(), GitError> {
+        let display_args = vec!["fast-import".into(), "--quiet".into(), "--force".into()];
+        let output = run_supervised_streaming(
+            &mut cmd,
+            self.timeout,
+            ExitPolicy::KillProcessGroup,
+            |input| -> Result<(), GitError> {
+            let mut input = BufWriter::with_capacity(256 * 1024, input);
             input
                 .write_all(
                     b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
@@ -610,16 +589,17 @@ impl Repo {
             input.write_all(b"done\n").map_err(GitError::Io)?;
             input.flush().map_err(GitError::Io)?;
             Ok(())
-        })();
-        drop(input);
-        if write_result.is_err() {
-            let _ = child.kill();
-        }
-        let output = finish_child_output(child, stdout, stderr)?;
-        write_result?;
+        },
+        )
+        .map_err(|error| match error {
+            SupervisedStreamError::Process(error) => {
+                self.supervision_error(display_args.clone(), error)
+            }
+            SupervisedStreamError::Input(error) => error,
+        })?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: vec!["fast-import".into(), "--quiet".into(), "--force".into()],
+                args: display_args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -783,7 +763,18 @@ impl Repo {
     /// does not; it is built from exactly the same cleared environment and `-c` overrides as
     /// every other call ([`Self::command`]), and the subcommand is checked against
     /// [`SAFE_SUBCOMMANDS`] here so the allowlist is not bypassed by taking this door.
-    pub(crate) fn streaming(&self, args: &[&str]) -> Command {
+    pub(crate) fn streaming<I, R, F, G>(
+        &self,
+        args: &[&str],
+        writer: F,
+        reader: G,
+    ) -> Result<review_process::SupervisedDuplexOutput<I, R>, GitError>
+    where
+        I: Send,
+        R: Send,
+        F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
+        G: FnOnce(&mut dyn std::io::Read) -> R + Send,
+    {
         let subcommand = args.first().copied().unwrap_or_default();
         assert!(
             SAFE_SUBCOMMANDS.contains(&subcommand),
@@ -791,7 +782,15 @@ impl Repo {
         );
         let mut cmd = self.command();
         cmd.args(args);
-        cmd
+        let display_args = args.iter().map(|arg| (*arg).to_string()).collect();
+        run_supervised_duplex(
+            &mut cmd,
+            self.timeout,
+            ExitPolicy::KillProcessGroup,
+            writer,
+            reader,
+        )
+        .map_err(|error| self.supervision_error(display_args, error))
     }
 
     /// The repository's own identity, independent of clone path: its sorted root commit set.

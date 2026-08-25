@@ -679,9 +679,9 @@ pub struct Kernel<'a> {
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
-    /// Latest projection of this generation's durable log. Every append invalidates it because
-    /// the projection capability includes a log-position watermark even when the event leaves
-    /// the visible Ledger unchanged. Gather installs the exact projection it updated in ingest.
+    /// Latest projection of this generation's durable log. Every append advances its watermark,
+    /// including events that leave the visible Ledger unchanged; an out-of-order concurrent
+    /// observation drops the cache so the next reader rebuilds. Gather installs its live ingest.
     ledger_cache: Mutex<Option<LedgerProjection>>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
@@ -882,23 +882,18 @@ impl<'a> Kernel<'a> {
         self
     }
 
-    /// Seed the generation-local projection with the exact Ledger already rebuilt while its
-    /// Round input was prepared. Every subsequent append invalidates this watermarked cache.
-    pub fn with_ledger_projection(self, projection: LedgerProjection) -> Result<Self, String> {
+    /// Seed the generation-local projection with the Ledger rebuilt while its Round input was
+    /// prepared. Any intervening durable suffix is folded before installation, and subsequent
+    /// appends advance the watermarked cache in sequence.
+    pub fn with_ledger_projection(self, mut projection: LedgerProjection) -> Result<Self, String> {
         if !projection.belongs_to(&self.run_id) {
             return Err("Ledger projection belongs to a different Campaign run".into());
         }
-        let durable_count = self
-            .store
-            .lock()
-            .expect("event store")
-            .len(&self.run_id)
-            .map_err(|error| error.to_string())?;
-        if projection.event_count() != durable_count {
-            return Err(format!(
-                "Ledger projection covers {} events, but Campaign log contains {durable_count}",
-                projection.event_count()
-            ));
+        {
+            let store = self.store.lock().expect("event store");
+            projection
+                .fast_forward(*store, self.cas)
+                .map_err(|error| error.to_string())?;
         }
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
         Ok(self)
@@ -987,14 +982,14 @@ impl<'a> Kernel<'a> {
 
     fn append(&self, event: NewEvent) -> Result<(), String> {
         let event = self.bind_authority(event);
-        {
+        let appended = {
             self.store
                 .lock()
                 .expect("event store")
                 .append(&self.run_id, self.cas, event)
-                .map_err(|e| e.to_string())?;
-        }
-        *self.ledger_cache.lock().expect("ledger cache") = None;
+                .map_err(|e| e.to_string())?
+        };
+        self.fold_appended_into_ledger_cache(std::slice::from_ref(&appended));
         Ok(())
     }
 
@@ -1007,15 +1002,36 @@ impl<'a> Kernel<'a> {
             .cloned()
             .map(|event| self.bind_authority(event))
             .collect();
-        {
+        let appended = {
             self.store
                 .lock()
                 .expect("event store")
                 .append_batch(&self.run_id, self.cas, &events)
-                .map_err(|e| e.to_string())?;
-        }
-        *self.ledger_cache.lock().expect("ledger cache") = None;
+                .map_err(|e| e.to_string())?
+        };
+        self.fold_appended_into_ledger_cache(&appended);
         Ok(())
+    }
+
+    fn fold_appended_into_ledger_cache(&self, events: &[review_core::RunEvent]) {
+        let mut cached = self.ledger_cache.lock().expect("ledger cache");
+        let Some(projection) = cached.as_mut() else {
+            return;
+        };
+        for event in events {
+            if event.sequence < projection.event_count() {
+                // A concurrent reader rebuilt through this append before we acquired the cache.
+                continue;
+            }
+            if event.sequence > projection.event_count()
+                || projection.apply_event(event, self.cas).is_err()
+            {
+                // Concurrent appends may reach this lock out of sequence. Dropping the cache is
+                // safe; the next reader replays the exact durable log under the cache lock.
+                *cached = None;
+                return;
+            }
+        }
     }
 
     fn prepare_reviewer_attempt(
@@ -1777,7 +1793,10 @@ impl<'a> Kernel<'a> {
                     )?;
                     continue;
                 }
-                Err(RunnerError::TimedOut { after_ms }) => {
+                Err(RunnerError::TimedOut {
+                    after_ms,
+                    raw_artifact,
+                }) => {
                     // Fence, charge, retry. The killed process's true spend is unreportable,
                     // so the full reservation is charged — the conservative reading of "a
                     // fenced attempt charges", and the one that keeps a hang from being a
@@ -1806,7 +1825,8 @@ impl<'a> Kernel<'a> {
                         }),
                     )
                     .node(node_id)
-                    .attempt(attempt.to_string());
+                    .attempt(attempt.to_string())
+                    .referencing(raw_artifact.into_iter().collect());
                     let feedback = self.feedback_event(node_id, &attempt, &retry_failures)?;
                     self.append_batch(&[fenced, feedback])?;
                 }

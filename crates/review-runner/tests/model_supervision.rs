@@ -32,7 +32,7 @@ fn a_hung_reviewer_is_killed_at_the_deadline() {
     let error = runner.capture(&cas, &sh("sleep 30")).unwrap_err();
     let waited = started.elapsed();
 
-    assert!(matches!(error, RunnerError::TimedOut { after_ms: 200 }));
+    assert!(matches!(error, RunnerError::TimedOut { after_ms: 200, .. }));
     assert!(
         waited < Duration::from_secs(5),
         "the deadline must be enforced by killing, not by waiting out the sleep ({waited:?})"
@@ -53,19 +53,20 @@ fn a_killed_reviewer_keeps_what_it_wrote_so_far() {
     let error = runner
         .capture(&cas, &sh("echo partial answer; sleep 30"))
         .unwrap_err();
-    assert!(matches!(error, RunnerError::TimedOut { .. }));
+    let RunnerError::TimedOut {
+        raw_artifact: Some(raw_artifact),
+        ..
+    } = error
+    else {
+        panic!("timeout did not retain its partial artifact: {error:?}");
+    };
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "an orphaned grandchild must not hold the supervisor hostage"
     );
 
     // The partial stdout was stored to the CAS before the error was returned.
-    assert!(
-        cas.contains(&review_store::canonical::blob_content_id(
-            b"partial answer\n"
-        )),
-        "the bytes written before the kill must be inspectable"
-    );
+    assert_eq!(cas.get(&raw_artifact).unwrap(), b"partial answer\n");
 }
 
 #[test]
@@ -93,6 +94,22 @@ fn a_model_descendant_holding_output_is_charged_not_empty_evidence() {
     assert!(
         matches!(error, RunnerError::Failed { ref stderr_excerpt, .. } if stderr_excerpt.contains("stdout pipe was still held")),
         "{error:?}"
+    );
+}
+
+#[test]
+fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
+    let capture = runner
+        .capture(&cas, &sh("sleep 30 >&2 & printf complete"))
+        .unwrap();
+
+    assert_eq!(capture.stdout, b"complete");
+    assert!(
+        String::from_utf8_lossy(&capture.stderr).contains("stderr was still held"),
+        "{:?}",
+        capture.stderr
     );
 }
 

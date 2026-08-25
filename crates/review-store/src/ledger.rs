@@ -924,8 +924,31 @@ impl LedgerProjection {
                 self.run_id, self.event_count, event.sequence
             )));
         }
-        self.ledger.apply_event(event, cas)?;
+        if Ledger::event_affects_projection(event.event_type) {
+            self.ledger.apply_event(event, cas)?;
+        }
         self.event_count += 1;
+        Ok(())
+    }
+
+    /// Fold the exact durable suffix after this projection's watermark. This tolerates runtime
+    /// events appended between preparation and installation while preserving dense ordering and
+    /// still applying every event type the Ledger declares as projection input.
+    pub fn fast_forward(
+        &mut self,
+        store: &crate::EventStore,
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        let durable_count = store.len(&self.run_id)?;
+        if self.event_count > durable_count {
+            return Err(crate::store::StoreError::Conflict(format!(
+                "Ledger projection for `{}` covers {} events, but the log contains {durable_count}",
+                self.run_id, self.event_count
+            )));
+        }
+        for event in store.replay_from(&self.run_id, self.event_count)? {
+            self.apply_event(&event, cas)?;
+        }
         Ok(())
     }
 

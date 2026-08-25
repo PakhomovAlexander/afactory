@@ -29,7 +29,8 @@ pub use model::{
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{
-    ExitPolicy, SupervisedError, SupervisedOutput, run_supervised, run_supervised_with_policy,
+    ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,
+    run_supervised, run_supervised_duplex, run_supervised_streaming, run_supervised_with_policy,
 };
 
 use std::collections::BTreeMap;

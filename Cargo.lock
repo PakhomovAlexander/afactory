@@ -1138,6 +1138,7 @@ dependencies = [
  "reflink-copy",
  "review-core",
  "review-parallel",
+ "review-process",
  "review-store",
  "serde",
  "serde_json",

@@ -2,14 +2,15 @@
 
 **Status:** proposed
 
-Model reviewers, command reviewers, gate checks, and container-runtime probes all need the same
-bounded subprocess lifecycle: their own process group, an exact deadline, bounded stdin delivery,
-concurrent bounded pipe draining, group killing, and explicit post-exit policy. Four local copies
+Git source capture, model reviewers, command reviewers, gate checks, and container-runtime probes
+all need the same bounded subprocess lifecycle: their own process group, an exact deadline,
+bounded streaming stdin delivery, concurrent bounded pipe draining, group killing, and explicit
+post-exit policy. Local copies
 had already diverged on whether held pipes fabricated empty output, whether stdin could block past
 the deadline, and whether successful background work survived.
 
-We will keep one policy-parameterized supervisor in the leaf crate `review-process`. Reviewer,
-check, and sandbox crates depend on that leaf directly. `review-runner` may re-export the primitive
+We will keep one policy-parameterized supervisor in the leaf crate `review-process`. Source,
+reviewer, check, and sandbox crates depend on that leaf directly. `review-runner` may re-export it
 for source compatibility, but no lower infrastructure crate depends on reviewer adapters to obtain
 process supervision. Consumer-specific result and charging semantics remain at each caller.
 
@@ -30,8 +31,8 @@ process supervision. Consumer-specific result and charging semantics remain at e
 
 - `review-process` is the only crate that owns process-group creation and killing, exact child
   waits, bounded stdin delivery, and bounded output collection.
-- `review-runner`, `review-check`, and `review-sandbox` depend on `review-process`; the leaf depends
-  only on platform process support.
+- `review-source-git`, `review-runner`, `review-check`, and `review-sandbox` depend on
+  `review-process`; the leaf depends only on platform process support.
 - Exit policy is explicit. Reviewers preserve the group after leader exit and refuse held pipes;
   successful checks kill background descendants because their work ends with the check leader.
 - Spawn failure remains distinct from post-spawn failure so budget accounting can release only

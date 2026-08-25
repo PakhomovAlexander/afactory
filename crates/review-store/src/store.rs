@@ -497,12 +497,25 @@ impl EventStore {
 
     /// Every event of a run, in sequence order. This is the only read replay needs.
     pub fn replay(&self, run_id: &str) -> Result<Vec<RunEvent>, StoreError> {
+        self.replay_from(run_id, 0)
+    }
+
+    /// The ordered suffix beginning at `first_sequence`, for advancing a watermarked projection
+    /// without parsing and validating the prefix it already covers.
+    pub fn replay_from(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
+            StoreError::Conflict("event replay sequence exceeds SQLite range".into())
+        })?;
         let mut stmt = self.conn.prepare(
             "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
                     causation_id, correlation_id, artifact_refs, payload
-             FROM events WHERE run_id = ?1 ORDER BY sequence",
+             FROM events WHERE run_id = ?1 AND sequence >= ?2 ORDER BY sequence",
         )?;
-        let rows = stmt.query_map(params![run_id], |row| {
+        let rows = stmt.query_map(params![run_id, first_sequence_sql], |row| {
             let refs: String = row.get(8)?;
             let payload: String = row.get(9)?;
             let sequence: i64 = row.get(1)?;
@@ -535,7 +548,7 @@ impl EventStore {
             ))
         })?;
         let mut out = Vec::new();
-        for (expected_sequence, row) in (0u64..).zip(rows) {
+        for (expected_sequence, row) in (first_sequence..).zip(rows) {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
@@ -1156,6 +1169,7 @@ fn validate_campaign_transition(
         None
     };
     let mut active = latest_round(tx, run_id)?;
+    let mut active_subject: Option<(String, review_core::SubjectV1)> = None;
     let mut terminal = match &active {
         Some((event_id, _)) => round_has_terminal_report(tx, run_id, event_id)?,
         None => false,
@@ -1305,6 +1319,7 @@ fn validate_campaign_transition(
                     ));
                 }
                 active = Some((event_id, payload));
+                active_subject = None;
                 terminal = false;
             }
             event_type if round_runtime_event(event_type) => {
@@ -1338,13 +1353,20 @@ fn validate_campaign_transition(
                 }
                 if let Some((active_id, active_payload)) = &active {
                     let plan = authority_plan.as_ref();
-                    let subject: review_core::SubjectV1 = serde_json::from_value(
-                        cas.get_json(&active_payload.subject_id)
-                            .map_err(|error| StoreError::Conflict(error.to_string()))?,
-                    )?;
-                    let subject_snapshot_id = subject.head_snapshot_id;
-                    let subject_base_snapshot_id = subject.base_snapshot_id;
-                    let subject_change_set_id = subject.change_set_id;
+                    if active_subject
+                        .as_ref()
+                        .is_none_or(|(id, _)| id != &active_payload.subject_id)
+                    {
+                        let subject: review_core::SubjectV1 = serde_json::from_value(
+                            cas.get_json(&active_payload.subject_id)
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                        )?;
+                        active_subject = Some((active_payload.subject_id.clone(), subject));
+                    }
+                    let subject = &active_subject.as_ref().expect("active Subject cached").1;
+                    let subject_snapshot_id = &subject.head_snapshot_id;
+                    let subject_base_snapshot_id = &subject.base_snapshot_id;
+                    let subject_change_set_id = &subject.change_set_id;
                     if terminal {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} cannot publish after the active Round concluded"
@@ -1421,7 +1443,7 @@ fn validate_campaign_transition(
                                     prepared,
                                     &expected.inputs,
                                     &invocation.inputs,
-                                    &subject_snapshot_id,
+                                    subject_snapshot_id,
                                     subject_base_snapshot_id.as_deref(),
                                     subject_change_set_id.as_deref(),
                                 )?;
@@ -1733,7 +1755,7 @@ fn validate_campaign_transition(
                                     prepared,
                                     &expected.outputs,
                                     &receipt.outputs,
-                                    &subject_snapshot_id,
+                                    subject_snapshot_id,
                                     subject_base_snapshot_id.as_deref(),
                                     subject_change_set_id.as_deref(),
                                 )?;

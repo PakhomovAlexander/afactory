@@ -753,3 +753,26 @@ Focused process, runner, check, sandbox, store, pipeline, and campaign-loop suit
 all-target Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and
 byte-identical fixture reproduction pass. Commit and resolve all five Reports, then run Round 3;
 Rounds 3 and 4 must both be clean for this Campaign to converge before M3.1.
+
+## 2026-08-25 — M2 clean-window Campaign Round 3 corrections
+
+Round 3 spent 1,020,400 tokens, retained all twelve prior resolutions, and opened three major and
+three minor Reports. Watermarked Ledger projections now fast-forward through the exact durable log
+suffix after provider or crash-recovery events, while ordinary kernel appends fold into the cached
+projection instead of forcing whole-log replay. Dense ordering and ahead-of-log refusal remain.
+
+The `review-process` leaf now owns borrowed streaming stdin and duplex protocols as well as buffered
+execution. Every Git capture subprocess, including `cat-file --batch` and streaming `fast-import`,
+uses its process group and five-minute default deadline. A fake wedged Git is killed at 100 ms.
+Complete reviewer stdout survives a descendant holding only stderr; the held diagnostic remains
+visible. Timed-out model and command partial output is named by the durable fence event.
+
+Campaign transition validation caches the active typed Subject across one append batch and refreshes
+it only when `RoundStarted@1` changes authority. The 5,000-object / 195.3 MiB release measurement
+records 1.752 s cold capture, 0.646 s warm capture, and 0.844 s synthetic-tree construction.
+
+Focused supervisor, runner, source, store, pipeline, and campaign-loop suites pass with all-target
+Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical
+fixture reproduction pass. Commit and resolve all six Reports, then run Round 4. Because Round 3
+was not clean, this Campaign cannot converge; open a fresh unchanged-policy Campaign after it
+exhausts and require two clean Rounds before M3.1.

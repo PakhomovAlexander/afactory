@@ -36,6 +36,6 @@ budget, or sandbox boundary to make a test or review pass.
   opaque output shape that the executor cannot dispatch
   ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md)).
 - Process supervision shared across architectural layers lives in the dependency-neutral
-  `review-process` leaf; do not make gates or sandbox providers depend on reviewer adapters, or
-  fork deadline, process-group, stdin, and pipe-drain semantics per consumer
+  `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
+  adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
   ([ADR-0026](docs/adr/0026-share-process-supervision-through-a-leaf-crate.md)).

@@ -146,21 +146,16 @@ impl<'a> Ingest<'a> {
         store: &'a mut EventStore,
         cas: &'a Cas,
         run_id: impl Into<String>,
-        projection: LedgerProjection,
+        mut projection: LedgerProjection,
     ) -> Result<Self, StoreError> {
         let run_id = run_id.into();
-        let (projection_run_id, event_count, ledger) = projection.into_parts();
-        if projection_run_id != run_id {
+        if !projection.belongs_to(&run_id) {
             return Err(StoreError::Conflict(format!(
-                "Ledger projection for `{projection_run_id}` cannot ingest run `{run_id}`"
+                "Ledger projection cannot ingest run `{run_id}` because it belongs to a different run"
             )));
         }
-        let durable_count = store.len(&run_id)?;
-        if event_count != durable_count {
-            return Err(StoreError::Conflict(format!(
-                "Ledger projection for `{run_id}` covers {event_count} events, but the log contains {durable_count}"
-            )));
-        }
+        projection.fast_forward(store, cas)?;
+        let (_, event_count, ledger) = projection.into_parts();
         Ok(Self {
             store,
             cas,
@@ -698,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_cannot_be_reused_after_its_run_log_advances() {
+    fn a_projection_fast_forwards_after_its_run_log_advances() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -711,12 +706,32 @@ mod tests {
             )
             .unwrap();
 
-        let error = match Ingest::from_projection(&mut store, &cas, "run", projection) {
-            Ok(_) => panic!("stale projection was accepted"),
+        let ingest = Ingest::from_projection(&mut store, &cas, "run", projection).unwrap();
+        assert_eq!(ingest.event_count, 1);
+        assert_eq!(ingest.ledger().round, 2);
+    }
+
+    #[test]
+    fn a_projection_ahead_of_the_run_log_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut source = EventStore::open(directory.path().join("source.sqlite")).unwrap();
+        source
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+        let projection = LedgerProjection::rebuild(&source, &cas, "run").unwrap();
+        let mut empty = EventStore::open(directory.path().join("empty.sqlite")).unwrap();
+
+        let error = match Ingest::from_projection(&mut empty, &cas, "run", projection) {
+            Ok(_) => panic!("projection ahead of the log was accepted"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("covers 0 events"), "{error}");
-        assert!(error.to_string().contains("log contains 1"), "{error}");
+        assert!(error.to_string().contains("covers 1 events"), "{error}");
+        assert!(error.to_string().contains("log contains 0"), "{error}");
     }
 
     #[test]

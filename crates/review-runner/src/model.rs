@@ -742,9 +742,9 @@ impl ModelRunner {
             run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
                 SupervisedError::TimedOut { stdout, .. } => {
                     let stdout = redact(stdout, &self.grants);
-                    let _ = cas.put(&stdout);
                     RunnerError::TimedOut {
                         after_ms: self.timeout.as_millis() as u64,
+                        raw_artifact: cas.put(&stdout).ok(),
                     }
                 }
                 SupervisedError::Spawn(error) => {
@@ -756,7 +756,10 @@ impl ModelRunner {
                 },
             })?;
         let stdout = redact(output.stdout, &self.grants);
-        let stderr = redact(output.stderr, &self.grants);
+        let mut stderr = redact(output.stderr, &self.grants);
+        if output.stderr_held {
+            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+        }
         let raw_artifact = cas
             .put(&stdout)
             .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;

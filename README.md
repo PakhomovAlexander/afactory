@@ -42,8 +42,8 @@ crates/
   review-core/   the Rust view of those contracts, plus the legacy importer
   review-parallel/ configurable bounded executor shared by
                  filesystem-heavy infrastructure
-  review-process/ bounded subprocess supervision shared by reviewers,
-                 checks, and sandbox providers
+  review-process/ bounded subprocess supervision shared by source capture,
+                 reviewers, checks, and sandbox providers
   review-store/  canonical identity, the artifact CAS, the append-only log,
                  and the rebuildable Findings Ledger projection
   review-source-git/  offline, read-only capture of a tree as an immutable
