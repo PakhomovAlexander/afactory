@@ -500,7 +500,7 @@ fn prepare_round(
     let repository_id = authority_snapshot.repository_id.clone();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let ledger_projection =
-        LedgerProjection::rebuild(store, cas, run_id).map_err(|error| error.to_string())?;
+        LedgerProjection::from_events(run_id, &events, cas).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
     for event in &events {
         if run_report_closes_round(event)
@@ -559,7 +559,7 @@ fn prepare_round(
         while ingest.ledger().round < target_round {
             ingest.advance().map_err(|error| error.to_string())?;
         }
-        round.ledger_projection = ingest.projection();
+        round.ledger_projection = ingest.into_projection();
     }
     println!(
         "round    {} (epoch {})",

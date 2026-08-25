@@ -1352,15 +1352,26 @@ impl<'a> Kernel<'a> {
 
     fn run_reviewer(&self, node: &Node, node_inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         let node_id = node.id.as_str();
-        let adapter = self
-            .reviewers
-            .get(node_id)
-            .ok_or_else(|| format!("no reviewer bound to node {node_id}"))?;
         let mut prepared = self
             .prepared_attempts
             .lock()
             .expect("prepared attempts")
             .remove(node_id);
+        let adapter = match self.reviewers.get(node_id) {
+            Some(adapter) => adapter,
+            None => {
+                let error = format!("no reviewer bound to node {node_id}");
+                if let Some(prepared) = prepared.take() {
+                    self.release_prepared_attempt(
+                        node_id,
+                        &prepared.attempt,
+                        prepared.reservation.as_ref(),
+                        &error,
+                    )?;
+                }
+                return Err(error);
+            }
+        };
 
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
@@ -1375,53 +1386,69 @@ impl<'a> Kernel<'a> {
             .and_then(|artifacts| artifacts.first())
             .cloned();
         let mut inputs = ReviewerInputs::default();
-        for (port, artifacts) in node_inputs {
-            let contract = node
-                .inputs
-                .iter()
-                .find(|contract| contract.name == *port)
-                .ok_or_else(|| format!("reviewer input port '{port}' has no declared contract"))?;
-            if contract.artifact_type == review_core::contract::PRIOR_FINDINGS_V1 {
-                continue;
-            }
-            let is_change_set = contract.artifact_type == review_core::contract::CHANGE_SET_V1;
-            let mut resolved = Vec::with_capacity(artifacts.len());
-            for artifact in artifacts {
-                if is_change_set
-                    && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
-                {
-                    resolved.push(ReviewerInputArtifact::from_resolved_change_set(
-                        self.authority
-                            .change_set
-                            .as_ref()
-                            .ok_or("Round authority has no validated Change Set input")?
-                            .clone(),
-                    )?);
+        let resolved_inputs = (|| -> Result<(), String> {
+            for (port, artifacts) in node_inputs {
+                let contract = node
+                    .inputs
+                    .iter()
+                    .find(|contract| contract.name == *port)
+                    .ok_or_else(|| {
+                        format!("reviewer input port '{port}' has no declared contract")
+                    })?;
+                if contract.artifact_type == review_core::contract::PRIOR_FINDINGS_V1 {
                     continue;
                 }
-                let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                if !is_change_set && encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
-                    return Err(format!(
-                        "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
-                    ));
+                let is_change_set = contract.artifact_type == review_core::contract::CHANGE_SET_V1;
+                let mut resolved = Vec::with_capacity(artifacts.len());
+                for artifact in artifacts {
+                    if is_change_set
+                        && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
+                    {
+                        resolved.push(ReviewerInputArtifact::from_resolved_change_set(
+                            self.authority
+                                .change_set
+                                .as_ref()
+                                .ok_or("Round authority has no validated Change Set input")?
+                                .clone(),
+                        )?);
+                        continue;
+                    }
+                    let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
+                    if !is_change_set && encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+                        return Err(format!(
+                            "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
+                        ));
+                    }
+                    if is_change_set {
+                        resolved.push(ReviewerInputArtifact::change_set_from_encoded(
+                            artifact.clone(),
+                            &encoded,
+                        )?);
+                    } else {
+                        let value =
+                            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
+                        resolved.push(ReviewerInputArtifact::from_json(
+                            artifact.clone(),
+                            contract.artifact_type.clone(),
+                            value,
+                            encoded.len(),
+                        ));
+                    }
                 }
-                if is_change_set {
-                    resolved.push(ReviewerInputArtifact::change_set_from_encoded(
-                        artifact.clone(),
-                        &encoded,
-                    )?);
-                } else {
-                    let value =
-                        serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-                    resolved.push(ReviewerInputArtifact::from_json(
-                        artifact.clone(),
-                        contract.artifact_type.clone(),
-                        value,
-                        encoded.len(),
-                    ));
-                }
+                inputs.artifacts.insert(port.clone(), resolved);
             }
-            inputs.artifacts.insert(port.clone(), resolved);
+            Ok(())
+        })();
+        if let Err(error) = resolved_inputs {
+            if let Some(prepared) = prepared.take() {
+                self.release_prepared_attempt(
+                    node_id,
+                    &prepared.attempt,
+                    prepared.reservation.as_ref(),
+                    &error,
+                )?;
+            }
+            return Err(error);
         }
         if let Some(artifact) = &prior_findings_artifact {
             let encoded = match self.cas.get(artifact) {
@@ -1497,12 +1524,27 @@ impl<'a> Kernel<'a> {
             };
 
             inputs.refused_attempts = match refusal_history_id {
-                Some(refusal_history_id) => serde_json::from_value(
-                    self.cas
+                Some(refusal_history_id) => {
+                    let decoded = self
+                        .cas
                         .get_json(&refusal_history_id)
-                        .map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?,
+                        .map_err(|error| error.to_string())
+                        .and_then(|value| {
+                            serde_json::from_value(value).map_err(|error| error.to_string())
+                        });
+                    match decoded {
+                        Ok(history) => history,
+                        Err(error) => {
+                            self.release_prepared_attempt(
+                                node_id,
+                                &attempt,
+                                reservation.as_ref(),
+                                &error,
+                            )?;
+                            return Err(error);
+                        }
+                    }
+                }
                 None => Vec::new(),
             };
             retry_failures.clone_from(&inputs.refused_attempts);
@@ -1885,7 +1927,7 @@ impl<'a> Kernel<'a> {
             (
                 ingest.ledger().round,
                 ingest.ledger().len(),
-                ingest.projection(),
+                ingest.into_projection(),
             )
         };
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);

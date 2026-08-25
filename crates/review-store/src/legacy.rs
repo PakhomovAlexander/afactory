@@ -161,8 +161,8 @@ impl<'a> Ingest<'a> {
         })
     }
 
-    pub fn projection(&self) -> LedgerProjection {
-        LedgerProjection::from_parts(self.run_id.clone(), self.ledger.clone())
+    pub fn into_projection(self) -> LedgerProjection {
+        LedgerProjection::from_parts(self.run_id, self.ledger)
     }
 
     /// Bind reducer and generation events to the active durable Round epoch.

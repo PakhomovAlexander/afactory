@@ -184,3 +184,31 @@ fn validate_subject_binding(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ScopeChangeSetV1;
+    use review_core::{ChangeSetV1, PathRenameV1};
+
+    #[test]
+    fn scope_reader_accepts_every_current_change_set_field() {
+        let change_set = ChangeSetV1::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            vec!["src/new.rs".into(), "src/old.rs".into()],
+            vec![PathRenameV1 {
+                old_path: "src/old.rs".into(),
+                new_path: "src/new.rs".into(),
+                similarity: 90,
+            }],
+            b"patch",
+            "git test",
+            "policy test",
+        )
+        .unwrap()
+        .with_rename_detection_truncated(true);
+        let encoded = serde_json::to_vec(&change_set).unwrap();
+
+        serde_json::from_slice::<ScopeChangeSetV1<'_>>(&encoded).unwrap();
+    }
+}

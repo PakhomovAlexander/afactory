@@ -642,3 +642,29 @@ Focused core, config, runner, source, sandbox, store, pipeline, and CLI suites p
 Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical
 fixture reproduction pass before commit. Resolve all seven Reports against this commit and run
 Round 3. If Rounds 3 and 4 are both clean, the Campaign satisfies the two-Round clean window.
+
+## 2026-08-25 — M2 final-verified Campaign Round 3 corrections
+
+Round 3 spent 969,363 tokens, retained all sixteen Round 1-2 fixes, and opened five Reports: one
+major and four minor.
+
+Reviewer input resolution now owns one explicit pre-adapter lifecycle: any contract lookup, CAS
+read, size check, Change Set validation, JSON parse, adapter lookup, or retry-history read failure
+releases the prepared reservation and appends `AttemptReleased@1`. A regression drives an
+oversized authoritative Change Set through the scheduler and proves one dispatch has one release,
+zero committed spend, and no adapter invocation.
+
+Synthetic Git tree construction checks each CAS object's stored length against the Manifest before
+writing `fast-import` framing, then streams and digest-verifies the same object. A command-shaped
+surplus regression is refused before Git can parse it. The scope-only Change Set reader has parity
+coverage that serializes every current `ChangeSet@1` field, including the normally omitted
+rename-truncation flag, and requires the borrowed reader to accept it.
+
+Consumed `Ingest` values move their run-bound Ledger into `LedgerProjection` rather than cloning it.
+Round preparation folds the Campaign events it already loaded through `LedgerProjection::from_events`;
+ordinary projection rebuild delegates to the same fold after one replay.
+
+Focused store, source, pipeline, and CLI suites pass with all-target Clippy warnings denied. Full
+workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass before
+commit. Resolve all five Reports against this commit and run Round 4 to retain them. Because Round
+3 was not clean, open a fresh unchanged-policy Campaign afterward for two clean Rounds.

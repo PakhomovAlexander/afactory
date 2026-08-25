@@ -17,6 +17,12 @@ kind = "reviewer"
 runner = { program = "/bin/true" }
 "#;
 
+#[derive(Clone, Copy)]
+enum TestSubject<'a> {
+    WholeTree,
+    Diff(&'a [u8]),
+}
+
 #[allow(dead_code)]
 pub fn test_round_authority(
     cas: &Cas,
@@ -53,7 +59,27 @@ pub fn test_diff_round_authority(
         snapshot,
         None,
         pipeline,
-        SubjectKind::Diff,
+        TestSubject::Diff(b""),
+    )
+}
+
+#[allow(dead_code)]
+pub fn test_diff_round_authority_with_patch(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+    pipeline: &str,
+    patch: &[u8],
+) -> RoundAuthority {
+    test_round_authority_with_subject(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        pipeline,
+        TestSubject::Diff(patch),
     )
 }
 
@@ -72,7 +98,7 @@ fn test_round_authority_with_prior(
         snapshot,
         prior_finding_set_id,
         pipeline,
-        SubjectKind::WholeTree,
+        TestSubject::WholeTree,
     )
 }
 
@@ -83,8 +109,12 @@ fn test_round_authority_with_subject(
     snapshot: &Manifest,
     prior_finding_set_id: Option<String>,
     pipeline: &str,
-    subject_kind: SubjectKind,
+    test_subject: TestSubject<'_>,
 ) -> RoundAuthority {
+    let subject_kind = match test_subject {
+        TestSubject::WholeTree => SubjectKind::WholeTree,
+        TestSubject::Diff(_) => SubjectKind::Diff,
+    };
     let authority_manifest = Manifest::new(vec![]).unwrap();
     let authority_manifest_id = cas
         .put_json(&serde_json::to_value(&authority_manifest).unwrap())
@@ -152,7 +182,7 @@ fn test_round_authority_with_subject(
             "artifact_manifest": head_manifest_id,
         }))
         .unwrap();
-    let subject = if subject_kind == SubjectKind::Diff {
+    let subject = if let TestSubject::Diff(change_set_patch) = test_subject {
         let change_set = ChangeSetV1::new(
             &authority_snapshot_id,
             &head_snapshot_id,
@@ -162,7 +192,7 @@ fn test_round_authority_with_subject(
                 .map(|entry| entry.path.clone())
                 .collect(),
             vec![],
-            b"",
+            change_set_patch,
             "git version test",
             "review.kernel/git-tree-diff@test",
         )

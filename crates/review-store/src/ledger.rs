@@ -843,15 +843,32 @@ impl Ledger {
 }
 
 impl LedgerProjection {
+    /// Fold an already-loaded run log into one run-bound projection.
+    pub fn from_events(
+        run_id: &str,
+        events: &[review_core::RunEvent],
+        cas: &Cas,
+    ) -> Result<Self, crate::store::StoreError> {
+        let mut projection = Self {
+            run_id: run_id.to_string(),
+            ledger: Ledger {
+                round: 1,
+                ..Default::default()
+            },
+        };
+        for event in events {
+            projection.apply_event(event, cas)?;
+        }
+        Ok(projection)
+    }
+
     pub fn rebuild(
         store: &crate::EventStore,
         cas: &Cas,
         run_id: &str,
     ) -> Result<Self, crate::store::StoreError> {
-        Ok(Self {
-            run_id: run_id.to_string(),
-            ledger: Ledger::rebuild(store, cas, run_id)?,
-        })
+        let events = store.replay(run_id)?;
+        Self::from_events(run_id, &events, cas)
     }
 
     pub fn ledger(&self) -> &Ledger {

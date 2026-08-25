@@ -2,8 +2,9 @@
 
 **Status:** M0 and M1 are complete. Five M2 dogfood Campaigns exhausted with all 179 Findings
 fixed. Fresh unchanged-policy Campaign `m2-rename-scope-final-verified` Round 1 opened nine further
-Findings; Round 2 retained them and opened seven more. All sixteen corrections are fully verified.
-Resolve Round 2, then Rounds 3 and 4 can establish M2's two-Round clean window and allow M3.1.
+Findings; Round 2 retained them and opened seven more; Round 3 retained all sixteen and opened five.
+All 21 corrections are fully verified. Resolve Round 3, retain them in Round 4, then a fresh
+unchanged-policy Campaign must establish M2's two-Round clean window before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -217,7 +218,13 @@ claims. Their corrections preserve baseline Manifest encoding through sandbox se
 output pipe observable after bounded drain grace, bound and classify retry feedback without
 echoing reviewer bytes, build each model prompt in one buffer, borrow cached Ledger state, stream
 CAS replay verification, and avoid decoding ordinary Manifest paths. The full kernel gate passes;
-resolve these claims and run Round 3. If Rounds 3 and 4 are both clean, this Campaign converges.
+the claims are committed and resolved. Round 3 spent 969,363 tokens, retained all sixteen fixes,
+and opened five claims. Their corrections release every prepared reviewer attempt on pre-adapter
+failure, verify CAS length before `fast-import` framing, bind the scope-only Change Set reader to
+the full wire shape with parity coverage, move consumed Ledger projections, and fold the already
+loaded Campaign event vector. The full kernel gate passes; resolve these claims and run Round 4 to
+retain them. Because Round 3 was not clean, a fresh unchanged-policy Campaign must then establish
+the two-Round clean window.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

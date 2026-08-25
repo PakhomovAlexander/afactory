@@ -3,7 +3,7 @@
 mod common;
 
 use common::{Fixture, cas_of, repo_of};
-use review_source_git::{Capture, TreeChangeKind};
+use review_source_git::{Capture, Entry, EntryKind, Manifest, TreeChangeKind};
 
 fn object_store_state(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
     fn walk(
@@ -208,4 +208,22 @@ fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     assert_eq!(object_store_state(&objects), before_objects);
     repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
     assert_eq!(object_store_state(&objects), before_objects);
+}
+
+#[test]
+fn a_synthetic_tree_refuses_an_unverified_manifest_size_before_framing() {
+    let fixture = Fixture::new();
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let content = cas.put(b"blob\ndone\n").unwrap();
+    let manifest = Manifest::new(vec![Entry {
+        path: "payload".into(),
+        kind: EntryKind::File,
+        content,
+        size: 4,
+    }])
+    .unwrap();
+
+    let error = repo.synthetic_tree(&manifest, &cas).unwrap_err();
+    assert!(error.to_string().contains("manifest size disagrees"));
 }

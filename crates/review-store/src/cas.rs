@@ -322,6 +322,23 @@ impl Cas {
         self.get_bounded(digest, u64::MAX)
     }
 
+    /// Read an object's stored length without allocating or claiming its digest is verified.
+    /// Callers that act on the bytes must still use a verifying read such as
+    /// [`Cas::copy_to_and_verify`].
+    pub fn stored_len(&self, digest: &str) -> Result<u64, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let path = self.path_for(digest);
+        let file = fs::File::open(&path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => CasError::NotFound {
+                digest: digest.to_string(),
+            },
+            _ => CasError::Io(error),
+        })?;
+        Ok(file.metadata()?.len())
+    }
+
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         if !valid_digest(digest) {
@@ -741,6 +758,7 @@ mod tests {
     fn bounded_reads_refuse_the_stored_length_before_allocation() {
         let (_dir, cas) = cas();
         let digest = cas.put(b"five!").unwrap();
+        assert_eq!(cas.stored_len(&digest).unwrap(), 5);
         assert_eq!(cas.get_bounded(&digest, 5).unwrap(), b"five!");
         assert!(matches!(
             cas.get_bounded(&digest, 4),
