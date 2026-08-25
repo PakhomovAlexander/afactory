@@ -120,7 +120,8 @@ impl FindingReport {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_claim_fields()?;
         if self.locations.iter().any(|location| {
-            !crate::is_valid_repo_path(&location.path)
+            location.path != location.path.trim()
+                || !crate::is_valid_repo_path(&location.path)
                 || location.line == Some(0)
                 || location.end_line == Some(0)
         }) {

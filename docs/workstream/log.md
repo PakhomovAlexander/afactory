@@ -505,3 +505,28 @@ The release 5,000-file / 195.3 MiB fixture recorded 1.463 s cold capture, 0.519 
 Focused regressions pass. Full workspace formatting, all-target clippy, tests, doc tests, and
 byte-identical fixture reproduction pass before commit. Resolve all seven Reports against this
 commit, then run Rounds 2 and 3; both must be clean for the Campaign to converge before M3.1.
+
+## 2026-08-25 — M2 verified Campaign Round 2 corrections
+
+Round 2 spent 869,129 tokens, retained all seven Round 1 resolutions, and opened four Reports. A
+command reviewer now receives stdin whenever the serialized `ReviewerInputs` document is nonempty;
+empty optional fields are omitted, so the document itself rather than a duplicated field predicate
+decides delivery. A command regression proves refusal history is delivered even when no prior
+Finding or typed artifact is present.
+
+Live legacy and typed Reports now refuse leading or trailing whitespace in locations instead of
+normalizing it or projecting it out of diff Scope. Both permanent Rust readers, both JSON schemas,
+and both conformance corpora enforce the same rule; the byte-exact Git path predicate remains
+unchanged. Frozen historical projection continues to preserve noncanonical claims with unknown
+Scope.
+
+Publication preparation now carries every validated Change Set in a batch independently. The
+one-entry EventStore map remains only a bounded cross-batch parse memo and is never transaction
+validation authority; a two-Change-Set regression prevents order-dependent eviction failures.
+`review-core::contract` now owns `RefusalHistory@1`, and `review-store` imports constants for every
+artifact type it discriminates rather than duplicating wire strings.
+
+Focused core, runner, store, pipeline, schema-parity, campaign-transition, replay, and scope suites
+pass with all-target Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests,
+and byte-identical fixture reproduction pass before commit. Resolve all four Reports against this
+commit, then run Rounds 3 and 4; both must be clean for convergence before M3.1.

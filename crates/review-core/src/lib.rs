@@ -67,6 +67,7 @@ pub mod contract {
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
     pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
+    pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";

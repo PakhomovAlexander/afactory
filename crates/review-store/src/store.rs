@@ -146,6 +146,9 @@ pub struct EventStore {
 struct PreparedArtifacts {
     verified: std::collections::BTreeSet<String>,
     json: std::collections::BTreeMap<String, Value>,
+    /// Every Change Set parsed for this exact append batch. This is validation authority for the
+    /// transaction; the EventStore cache is only a bounded cross-batch parse memo.
+    change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
 }
 
 fn remember_validated_change_set(
@@ -274,8 +277,12 @@ impl EventStore {
                         if self.validated_change_sets.contains_key(digest) =>
                     {
                         cas.prepare_for_publication(digest).map_err(prepare_error)?;
+                        prepared.change_sets.insert(
+                            digest.clone(),
+                            Arc::clone(&self.validated_change_sets[digest]),
+                        );
                     }
-                    Some(artifact_type) if artifact_type != "review.kernel/Opaque@1" => {
+                    Some(artifact_type) if artifact_type != review_core::contract::OPAQUE_V1 => {
                         let value = cas
                             .get_json_for_publication(digest)
                             .map_err(prepare_error)?;
@@ -284,13 +291,17 @@ impl EventStore {
                                 serde_json::from_value(value)
                                     .map_err(|error| StoreError::Conflict(error.to_string()))?;
                             change_set.validate().map_err(StoreError::Conflict)?;
+                            let change_set = Arc::new(change_set);
+                            prepared
+                                .change_sets
+                                .insert(digest.clone(), Arc::clone(&change_set));
                             // One Campaign Round has one Change Set authority. Keep only the
                             // newest parsed value so storage memory cannot grow with Round count;
                             // current-byte integrity is still re-established on every reference.
                             remember_validated_change_set(
                                 &mut self.validated_change_sets,
                                 digest.clone(),
-                                Arc::new(change_set),
+                                change_set,
                             );
                         } else {
                             prepared.json.insert(digest.clone(), value);
@@ -319,15 +330,7 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-        validate_campaign_transition(
-            &tx,
-            cas,
-            run_id,
-            events,
-            first,
-            &mut self.validated_change_sets,
-            &prepared,
-        )?;
+        validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)
@@ -630,7 +633,7 @@ impl AuthorityPort {
 
     fn artifact_type(&self) -> &str {
         match self {
-            Self::Name(_) => "review.kernel/Opaque@1",
+            Self::Name(_) => review_core::contract::OPAQUE_V1,
             Self::Detailed(port) => &port.artifact_type,
         }
     }
@@ -752,7 +755,7 @@ fn typed_json_artifacts(
                 insert_artifact_type(
                     &mut artifacts,
                     payload.refusal_history_id,
-                    "review.kernel/RefusalHistory@1".into(),
+                    review_core::contract::REFUSAL_HISTORY_V1.into(),
                 )?;
                 continue;
             }
@@ -762,7 +765,7 @@ fn typed_json_artifacts(
                 insert_artifact_type(
                     &mut artifacts,
                     payload.refusal_history_id,
-                    "review.kernel/RefusalHistory@1".into(),
+                    review_core::contract::REFUSAL_HISTORY_V1.into(),
                 )?;
                 continue;
             }
@@ -793,7 +796,6 @@ fn insert_artifact_type(
 }
 
 fn validate_plan_ports(
-    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
     prepared: &PreparedArtifacts,
     expected: &[AuthorityPort],
     actual: &[review_core::PortArtifactsV1],
@@ -846,12 +848,9 @@ fn validate_plan_ports(
         }
         let mut validated_change_set = None;
         for artifact in &port.artifact_ids {
-            if let Some(change_set) = validate_artifact_payload(
-                validated_change_sets,
-                prepared,
-                &port.artifact_type,
-                artifact,
-            )? {
+            if let Some(change_set) =
+                validate_artifact_payload(prepared, &port.artifact_type, artifact)?
+            {
                 validated_change_set = Some(change_set);
             }
         }
@@ -881,7 +880,6 @@ fn validate_plan_ports(
 }
 
 fn validate_artifact_payload(
-    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
     prepared: &PreparedArtifacts,
     artifact_type: &str,
     artifact_id: &str,
@@ -891,14 +889,14 @@ fn validate_artifact_payload(
             "typed artifact {artifact_id} is absent from the event's verified references"
         )));
     }
-    if artifact_type == "review.kernel/Opaque@1" {
+    if artifact_type == review_core::contract::OPAQUE_V1 {
         return Ok(None);
     }
     if artifact_type == review_core::contract::CHANGE_SET_V1
-        && let Some(change_set) = validated_change_sets.get(artifact_id)
+        && let Some(change_set) = prepared.change_sets.get(artifact_id)
     {
-        // `append_batch` re-established current CAS integrity for this exact reference before
-        // entering the transaction. The cache removes only JSON/base64 reconstruction.
+        // Publication preparation re-established current CAS integrity for this exact reference
+        // and made every Change Set in the batch independently available to validation.
         return Ok(Some(Arc::clone(change_set)));
     }
     let value = prepared.json.get(artifact_id).ok_or_else(|| {
@@ -915,7 +913,7 @@ fn validate_artifact_payload(
                 "ChangeSet@1 artifact {artifact_id} was not prepared for validation"
             )));
         }
-        "review.kernel/GateDecision@1" => {
+        review_core::contract::GATE_DECISION_V1 => {
             exact_keys(
                 object,
                 &["outcome", "blocking", "reasons", "executed", "required"],
@@ -932,7 +930,7 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/PriorFindings@1" => {
+        review_core::contract::PRIOR_FINDINGS_V1 => {
             exact_keys(
                 object,
                 &["subject_id", "round", "prior_findings"],
@@ -947,8 +945,8 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/ReviewerResult@1" => validate_reviewer_result(value)?,
-        "review.kernel/ReportSet@1" => {
+        review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
+        review_core::contract::REPORT_SET_V1 => {
             if object.is_empty()
                 || object.values().any(|ids| {
                     ids.as_array().is_none_or(|ids| {
@@ -964,7 +962,7 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/FindingSet@1" => {
+        review_core::contract::FINDING_SET_V1 => {
             exact_keys(object, &["round", "sources", "findings"], artifact_type)?;
             if value["round"].as_u64().is_none()
                 || !string_array(&value["sources"])
@@ -1085,7 +1083,6 @@ fn validate_campaign_transition(
     run_id: &str,
     events: &[NewEvent],
     first_sequence: i64,
-    validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
     prepared: &PreparedArtifacts,
 ) -> Result<(), StoreError> {
     let campaign_opened: i64 = tx.query_row(
@@ -1362,7 +1359,6 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    validated_change_sets,
                                     prepared,
                                     &expected.inputs,
                                     &invocation.inputs,
@@ -1675,7 +1671,6 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    validated_change_sets,
                                     prepared,
                                     &expected.outputs,
                                     &receipt.outputs,
@@ -2211,16 +2206,17 @@ mod tests {
             .unwrap();
         let value = cas.get_json_for_publication(&artifact_id).unwrap();
         let change_set: review_core::ChangeSetV1 = serde_json::from_value(value).unwrap();
-        let mut cache =
-            std::collections::BTreeMap::from([(artifact_id.clone(), Arc::new(change_set))]);
         let prepared = PreparedArtifacts {
             verified: std::collections::BTreeSet::from([artifact_id.clone()]),
             json: std::collections::BTreeMap::new(),
+            change_sets: std::collections::BTreeMap::from([(
+                artifact_id.clone(),
+                Arc::new(change_set),
+            )]),
         };
 
         assert!(
             validate_artifact_payload(
-                &mut cache,
                 &prepared,
                 review_core::contract::CHANGE_SET_V1,
                 &artifact_id,
@@ -2249,19 +2245,58 @@ mod tests {
     #[test]
     fn an_unprepared_change_set_is_a_conflict_not_a_panic() {
         let artifact_id = crate::canonical::blob_content_id(b"change set");
-        let mut cache = std::collections::BTreeMap::new();
         let prepared = PreparedArtifacts {
             verified: std::collections::BTreeSet::from([artifact_id.clone()]),
             json: std::collections::BTreeMap::from([(artifact_id.clone(), json!({}))]),
+            change_sets: std::collections::BTreeMap::new(),
         };
         let error = validate_artifact_payload(
-            &mut cache,
             &prepared,
             review_core::contract::CHANGE_SET_V1,
             &artifact_id,
         )
         .unwrap_err();
         assert!(error.to_string().contains("was not prepared"), "{error}");
+    }
+
+    #[test]
+    fn every_change_set_in_one_batch_remains_available_to_validation() {
+        let change_set = |base: &[u8], head: &[u8]| {
+            Arc::new(
+                review_core::ChangeSetV1::new(
+                    crate::canonical::blob_content_id(base),
+                    crate::canonical::blob_content_id(head),
+                    vec!["src/lib.rs".into()],
+                    vec![],
+                    b"patch",
+                    "git version test",
+                    "test-policy@1",
+                )
+                .unwrap(),
+            )
+        };
+        let first_id = crate::canonical::blob_content_id(b"first change set");
+        let second_id = crate::canonical::blob_content_id(b"second change set");
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([first_id.clone(), second_id.clone()]),
+            json: std::collections::BTreeMap::new(),
+            change_sets: std::collections::BTreeMap::from([
+                (first_id.clone(), change_set(b"base-1", b"head-1")),
+                (second_id.clone(), change_set(b"base-2", b"head-2")),
+            ]),
+        };
+
+        for artifact_id in [&first_id, &second_id] {
+            assert!(
+                validate_artifact_payload(
+                    &prepared,
+                    review_core::contract::CHANGE_SET_V1,
+                    artifact_id,
+                )
+                .unwrap()
+                .is_some()
+            );
+        }
     }
 
     #[test]

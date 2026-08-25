@@ -70,7 +70,10 @@
           "description": "Repository-relative path inside the subject snapshot.",
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$"
+          "allOf": [
+            { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+            { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+          ]
         },
         "line": {
           "description": "1-indexed line. Absent when the claim is about the file as a whole.",

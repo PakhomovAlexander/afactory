@@ -48,6 +48,17 @@
       }
     },
     {
+      "name": "whitespace-padded location",
+      "payload": {
+        "title": "t",
+        "severity": "major",
+        "locations": [{ "path": " src/a.rs " }],
+        "body": "b",
+        "fix": "f",
+        "confidence": 0.5
+      }
+    },
+    {
       "name": "line exceeds u32",
       "payload": {
         "title": "t",

@@ -47,6 +47,10 @@
       "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"  ","line":null,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
     },
     {
+      "name": "whitespace-padded file is refused rather than normalized",
+      "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":" src/a.rs ","line":1,"title":"title","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
+    },
+    {
       "name": "whitespace-only title",
       "payload": {"verdict":"block","summary":null,"reports":[{"severity":"major","file":"src/a.rs","line":1,"title":" ","body":"body","fix":"fix","confidence":0.5}],"benchmark_demands":[],"disputes":[]}
     },

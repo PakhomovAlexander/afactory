@@ -2,8 +2,8 @@
 
 **Status:** M0 and M1 are complete. Four M2 dogfood Campaigns exhausted with all 158 Findings
 fixed. Fresh unchanged-policy Campaign `m2-rename-scope-verified` Round 1 opened seven further
-Findings; their corrections are committed, resolved, and fully verified. Rounds 2 and 3 must both
-be clean before M3.1.
+Findings; Round 2 retained their fixes and opened four further Findings. Their corrections are
+committed, resolved, and fully verified. Rounds 3 and 4 must both be clean before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -190,7 +190,12 @@ replace an unreachable Change Set panic with a conflict, bound the parsed Change
 directory modes without following a raced symlink, buffer synthetic-tree `fast-import`, and
 validate frozen Finding claims without deep clones. The full kernel gate passes; the claims are
 committed and resolved. The 5,000-file / 195.3 MiB release fixture records 0.861 s for synthetic
-tree construction. Run Round 2, then Round 3; both must be clean before M3.1.
+tree construction. Round 2 spent 869,129 tokens, retained all seven fixes, and opened four claims.
+Their corrections make serialized command input itself decide whether stdin exists, reject padded
+live Report paths across Rust and both JSON schemas, separate per-batch Change Set validation from
+the bounded cross-batch memo, and centralize the store's artifact-type vocabulary in `review-core`.
+The full kernel gate passes; the claims are committed and resolved. Run Rounds 3 and 4; both must
+be clean before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

@@ -273,6 +273,7 @@ pub struct ReviewerReturn {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ReviewerInputs {
     /// The campaign's findings from earlier rounds, as one JSON document.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prior_findings: Option<serde_json::Value>,
     /// Kernel-generated reasons earlier attempts in this node were refused or fenced. These are
     /// labelled as data and JSON-encoded so a retry can correct a systematic contract failure
@@ -280,6 +281,7 @@ pub struct ReviewerInputs {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refused_attempts: Vec<String>,
     /// Every other resolved reviewer input, labelled by the exact graph port name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub artifacts: BTreeMap<String, Vec<ReviewerInputArtifact>>,
 }
 
@@ -547,14 +549,15 @@ impl ReviewerAdapter for Command {
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
         let runner = crate::CommandRunner::new(cas, sandbox_root);
-        let (output, raw_artifact) =
-            if inputs.prior_findings.is_none() && inputs.artifacts.is_empty() {
-                runner.invoke_raw(self)?
-            } else {
-                let encoded = serde_json::to_vec(inputs)
-                    .map_err(|error| RunnerError::Refused(error.to_string()))?;
-                runner.invoke_raw_with_input(self, &encoded)?
-            };
+        // The serialized document itself decides whether stdin exists. Adding a future input
+        // field cannot silently create durable AttemptInput authority that this adapter drops.
+        let encoded =
+            serde_json::to_vec(inputs).map_err(|error| RunnerError::Refused(error.to_string()))?;
+        let (output, raw_artifact) = if encoded == b"{}" {
+            runner.invoke_raw(self)?
+        } else {
+            runner.invoke_raw_with_input(self, &encoded)?
+        };
         Ok(ReviewerReturn {
             output,
             cost_tokens: 0,
