@@ -10,9 +10,9 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.1-M2.6 are implemented; finish the final M2 review corrections and local gate before M3.1.
-New Campaigns use the bounded correctness-review policy in ADR-0027 rather than extending the
-retired two-specialist clean-window Campaign.
+M2.1-M2.6 are implemented and verified; M3.1 is next. New Campaigns use the bounded
+correctness-review policy in ADR-0027 rather than extending the retired two-specialist
+clean-window Campaign.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
 domain terms. Project-specific pipelines, reviewer packages, campaign state, and private corpora

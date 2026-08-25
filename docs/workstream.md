@@ -247,7 +247,8 @@ per transition batch. All six are committed and resolved. Round 4 spent 1,053,93
 all eighteen fixes, opened seven claims, and exhausted the Campaign. Their corrections pin gate
 and Git deadlines, type run-budget exhaustion, preserve held-stderr check evidence, guard raw
 Change Sets before encoding, unify Ledger projection input, and avoid irrelevant authority-plan
-parsing. The full local gate passes; commit and resolve the seven claims.
+parsing. Commit `d8f0812` passes the full local gate, and all seven claims are resolved; the
+Campaign has 25 fixed findings and zero open. M2 is complete and M3.1 is next.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another

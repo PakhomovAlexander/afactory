@@ -786,8 +786,9 @@ typed failure class and persists `fail{exhausted}` without parsing diagnostic pr
 makes a check explicitly unverifiable, raw patches are refused before base64/JSON amplification,
 Ledger projection uses its reducer as the sole input vocabulary, and store transitions load the
 Campaign plan only for events that consume it. Focused regressions and the full local formatting,
-warnings-denied Clippy, tests, doc tests, and byte-identical fixture gate pass before commit and
-resolution.
+warnings-denied Clippy, tests, doc tests, and byte-identical fixture gate pass. Commit `d8f0812`
+records the corrections; all seven Reports are fixed and the Campaign closes with 25 fixed
+findings and zero open.
 
 The owner explicitly replaced the standard two-specialist policy after this Campaign consumed
 about four million tokens. New Campaign authority uses one Claude Opus correctness reviewer at
