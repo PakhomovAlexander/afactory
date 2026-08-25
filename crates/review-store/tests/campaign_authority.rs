@@ -1,5 +1,6 @@
 use review_core::event::{
-    AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptInputPayloadV1,
+    AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFeedbackPayloadV1,
+    AttemptInputPayloadV1,
 };
 use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
@@ -256,6 +257,69 @@ fn retry_input_and_its_dispatch_are_one_atomic_transition() {
                 .node("reviewer")
                 .attempt(attempt)
                 .caused_by(round.event_id),
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn retry_feedback_and_its_terminal_attempt_are_one_atomic_transition() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "retry-feedback");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let attempt = "d".repeat(26);
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(AttemptDispatchedPayloadV1 {
+                    reserved: None,
+                    prior_findings: None,
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    let history = cas
+        .put_json(&serde_json::json!(["the answer violated the contract"]))
+        .unwrap();
+    let feedback = || {
+        NewEvent::new(
+            EventType::AttemptFeedbackV1,
+            serde_json::to_value(AttemptFeedbackPayloadV1 {
+                refusal_history_id: history.clone(),
+            })
+            .unwrap(),
+        )
+        .node("reviewer")
+        .attempt(&attempt)
+        .caused_by(&round.event_id)
+        .referencing(vec![history.clone()])
+    };
+
+    let error = store.append("run", &cas, feedback()).unwrap_err();
+    assert!(error.to_string().contains("atomically"), "{error}");
+
+    store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                NewEvent::new(
+                    EventType::AttemptFailedV1,
+                    serde_json::json!({"error": "invalid result", "charged": 5}),
+                )
+                .node("reviewer")
+                .attempt(&attempt)
+                .caused_by(&round.event_id),
+                feedback(),
             ],
         )
         .unwrap();

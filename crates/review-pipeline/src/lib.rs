@@ -23,7 +23,7 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
@@ -31,7 +31,8 @@ use review_attempt::{
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
 use review_core::event::{
     AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFailedPayloadV1,
-    AttemptFencedPayloadV1, AttemptInputPayloadV1, AttemptReleasedPayloadV1,
+    AttemptFeedbackPayloadV1, AttemptFencedPayloadV1, AttemptInputPayloadV1,
+    AttemptReleasedPayloadV1,
 };
 use review_core::{
     CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
@@ -102,6 +103,12 @@ struct PreparedReviewerAttempt {
     refusal_history_id: Option<String>,
 }
 
+#[derive(Default)]
+struct AttemptFailureEvidence<'a> {
+    raw_artifact: Option<&'a str>,
+    refusal_history: Option<&'a [String]>,
+}
+
 /// What one whole run amounts to.
 ///
 /// `Incomplete` exists because a partial review must never pass on the strength of the part
@@ -133,9 +140,7 @@ pub struct RoundAuthority {
     prior_finding_set_id: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
-    change_set: Option<Arc<review_core::ChangeSetV1>>,
-    change_set_value: Option<Arc<serde_json::Value>>,
-    change_set_bytes: Option<usize>,
+    change_set_input: Option<ReviewerInputArtifact>,
 }
 
 impl RoundAuthority {
@@ -169,16 +174,19 @@ impl RoundAuthority {
             .map_err(|error| error.to_string())?;
         let change_set = resolved.change_set;
         let change_set_bytes = resolved.change_set_bytes;
-        let change_set_value = change_set
-            .as_ref()
-            .map(|change_set| {
-                serde_json::to_value(change_set.as_ref())
-                    .map(Arc::new)
-                    .map_err(|error| error.to_string())
-            })
-            .transpose()?;
         let subject = resolved.subject;
         let change_set_id = subject.change_set_id.clone();
+        let change_set_input = match (&change_set_id, change_set, change_set_bytes) {
+            (Some(artifact_id), Some(change_set), Some(encoded_bytes)) => {
+                Some(ReviewerInputArtifact::pre_validated_change_set(
+                    artifact_id.clone(),
+                    change_set,
+                    encoded_bytes,
+                )?)
+            }
+            (None, None, None) => None,
+            _ => return Err("resolved Subject has incomplete Change Set authority".into()),
+        };
         let source: SourceSnapshot = serde_json::from_value(
             cas.get_json(&subject.head_snapshot_id)
                 .map_err(|error| error.to_string())?,
@@ -227,9 +235,7 @@ impl RoundAuthority {
             prior_finding_set_id: payload.prior_finding_set_id,
             subject_kind: subject.kind,
             change_set_id,
-            change_set,
-            change_set_value,
-            change_set_bytes,
+            change_set_input,
         })
     }
 
@@ -452,7 +458,7 @@ fn replay_execution(
             EventType::AttemptFailedV1 => {
                 let payload: AttemptFailedPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-                let node = event
+                event
                     .node_id
                     .ok_or("terminal attempt event has no node ID")?;
                 let attempt = event
@@ -466,18 +472,11 @@ fn replay_execution(
                     .committed_tokens
                     .checked_add(payload.charged.unwrap_or(0))
                     .ok_or("replayed token charge overflow")?;
-                if active_epoch {
-                    replayed
-                        .refusal_histories
-                        .entry(node)
-                        .or_default()
-                        .push(failed_retry_context(&attempt, &payload.error));
-                }
             }
             EventType::AttemptFencedV1 => {
                 let payload: AttemptFencedPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-                let node = event
+                event
                     .node_id
                     .ok_or("terminal attempt event has no node ID")?;
                 let attempt = event
@@ -491,13 +490,20 @@ fn replay_execution(
                     .committed_tokens
                     .checked_add(payload.charged.unwrap_or(0))
                     .ok_or("replayed token charge overflow")?;
-                if active_epoch {
-                    replayed
-                        .refusal_histories
-                        .entry(node)
-                        .or_default()
-                        .push(fenced_retry_context(&attempt, &payload.reason));
+            }
+            EventType::AttemptFeedbackV1 if active_epoch => {
+                let payload: AttemptFeedbackPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let node = event.node_id.ok_or("AttemptFeedback@1 has no node ID")?;
+                let failures: Vec<String> = serde_json::from_value(
+                    cas.get_json(&payload.refusal_history_id)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                if failures.is_empty() {
+                    return Err("AttemptFeedback@1 refusal history is empty".into());
                 }
+                replayed.refusal_histories.insert(node, failures);
             }
             EventType::AttemptReleasedV1 => {
                 let _: AttemptReleasedPayloadV1 =
@@ -1034,7 +1040,7 @@ impl<'a> Kernel<'a> {
         reservation: Option<&Reservation>,
         error: &str,
         charged: u64,
-        raw_artifact: Option<&str>,
+        evidence: AttemptFailureEvidence<'_>,
     ) -> Result<(), String> {
         if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
             budgets
@@ -1053,10 +1059,36 @@ impl<'a> Kernel<'a> {
         )
         .node(node_id)
         .attempt(attempt.to_string());
-        if let Some(raw_artifact) = raw_artifact {
+        if let Some(raw_artifact) = evidence.raw_artifact {
             event = event.referencing(vec![raw_artifact.to_string()]);
         }
-        self.append(event)
+        let mut events = vec![event];
+        if let Some(refusal_history) = evidence.refusal_history {
+            events.push(self.feedback_event(node_id, attempt, refusal_history)?);
+        }
+        self.append_batch(&events)
+    }
+
+    fn feedback_event(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        refusal_history: &[String],
+    ) -> Result<NewEvent, String> {
+        let refusal_history_id = self
+            .cas
+            .put_json(&serde_json::to_value(refusal_history).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        Ok(NewEvent::new(
+            EventType::AttemptFeedbackV1,
+            serde_json::to_value(AttemptFeedbackPayloadV1 {
+                refusal_history_id: refusal_history_id.clone(),
+            })
+            .map_err(|error| error.to_string())?,
+        )
+        .node(node_id)
+        .attempt(attempt.to_string())
+        .referencing(vec![refusal_history_id]))
     }
 
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
@@ -1302,31 +1334,13 @@ impl<'a> Kernel<'a> {
                 if port == "change_set"
                     && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
                 {
-                    let encoded_bytes = self
-                        .authority
-                        .change_set_bytes
-                        .ok_or("Round authority has no Change Set byte length")?;
-                    if encoded_bytes > MAX_CHANGE_SET_BYTES {
-                        return Err(format!(
-                            "reviewer input port '{port}' artifact {artifact} exceeds {MAX_CHANGE_SET_BYTES} bytes"
-                        ));
-                    }
-                    resolved.push(ReviewerInputArtifact {
-                        artifact_id: artifact.clone(),
-                        value: Arc::clone(
-                            self.authority
-                                .change_set_value
-                                .as_ref()
-                                .ok_or("Round authority has no Change Set JSON")?,
-                        ),
-                        validated_change_set: Some(Arc::clone(
-                            self.authority
-                                .change_set
-                                .as_ref()
-                                .ok_or("Round authority has no validated Change Set")?,
-                        )),
-                        encoded_bytes: Some(encoded_bytes),
-                    });
+                    resolved.push(
+                        self.authority
+                            .change_set_input
+                            .as_ref()
+                            .ok_or("Round authority has no validated Change Set input")?
+                            .clone(),
+                    );
                     continue;
                 }
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
@@ -1340,13 +1354,20 @@ impl<'a> Kernel<'a> {
                         "reviewer input port '{port}' artifact {artifact} exceeds {limit} bytes"
                     ));
                 }
-                let value = serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-                resolved.push(ReviewerInputArtifact {
-                    artifact_id: artifact.clone(),
-                    value: Arc::new(value),
-                    validated_change_set: None,
-                    encoded_bytes: Some(encoded.len()),
-                });
+                if port == "change_set" {
+                    resolved.push(ReviewerInputArtifact::change_set_from_encoded(
+                        artifact.clone(),
+                        &encoded,
+                    )?);
+                } else {
+                    let value =
+                        serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
+                    resolved.push(ReviewerInputArtifact::from_json(
+                        artifact.clone(),
+                        value,
+                        encoded.len(),
+                    ));
+                }
             }
             inputs.artifacts.insert(port.clone(), resolved);
         }
@@ -1461,7 +1482,7 @@ impl<'a> Kernel<'a> {
                         reservation.as_ref(),
                         &error,
                         charged,
-                        None,
+                        AttemptFailureEvidence::default(),
                     )?;
                     return Err(error);
                 }
@@ -1472,15 +1493,18 @@ impl<'a> Kernel<'a> {
                     let result_value = match reviewer_result_value(&returned.output) {
                         Ok(value) => value,
                         Err(error) => {
+                            retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
                             self.fail_started_attempt(
                                 node_id,
                                 &attempt,
                                 reservation.as_ref(),
                                 &error,
                                 returned.cost_tokens,
-                                Some(&returned.raw_artifact),
+                                AttemptFailureEvidence {
+                                    raw_artifact: Some(&returned.raw_artifact),
+                                    refusal_history: Some(&retry_failures),
+                                },
                             )?;
-                            retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
                             continue;
                         }
                     };
@@ -1525,7 +1549,10 @@ impl<'a> Kernel<'a> {
                                 reservation.as_ref(),
                                 &error,
                                 returned.cost_tokens,
-                                Some(&returned.raw_artifact),
+                                AttemptFailureEvidence {
+                                    raw_artifact: Some(&returned.raw_artifact),
+                                    refusal_history: None,
+                                },
                             )?;
                             return Err(error);
                         }
@@ -1612,21 +1639,19 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, reservation.amount);
                     }
-                    self.append(
-                        NewEvent::new(
-                            EventType::AttemptFencedV1,
-                            serde_json::json!({
-                                "reason": format!("timed out after {after_ms}ms"),
-                                "charged": reservation.as_ref().map(|r| r.amount),
-                            }),
-                        )
-                        .node(node_id)
-                        .attempt(attempt.to_string()),
-                    )?;
-                    retry_failures.push(fenced_retry_context(
-                        &attempt.to_string(),
-                        &format!("timed out after {after_ms}ms"),
-                    ));
+                    let reason = format!("timed out after {after_ms}ms");
+                    retry_failures.push(fenced_retry_context(&attempt.to_string(), &reason));
+                    let fenced = NewEvent::new(
+                        EventType::AttemptFencedV1,
+                        serde_json::json!({
+                            "reason": reason,
+                            "charged": reservation.as_ref().map(|r| r.amount),
+                        }),
+                    )
+                    .node(node_id)
+                    .attempt(attempt.to_string());
+                    let feedback = self.feedback_event(node_id, &attempt, &retry_failures)?;
+                    self.append_batch(&[fenced, feedback])?;
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
                     // Nothing executed, so nothing was spent: the reservation is released,

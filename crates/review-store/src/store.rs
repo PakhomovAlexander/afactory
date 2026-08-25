@@ -142,6 +142,12 @@ pub struct EventStore {
     validated_change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
 }
 
+#[derive(Default)]
+struct PreparedArtifacts {
+    verified: std::collections::BTreeSet<String>,
+    json: std::collections::BTreeMap<String, Value>,
+}
+
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
@@ -231,28 +237,55 @@ impl EventStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let mut has_artifacts = false;
         for event in events {
             review_core::json::admit(&event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
             review_core::event::validate_event_payload(event.event_type, &event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
+        }
+        let typed_artifacts = typed_json_artifacts(events)?;
+        let mut prepared = PreparedArtifacts::default();
+        for event in events {
             for digest in &event.artifact_refs {
-                has_artifacts = true;
-                cas.prepare_for_publication(digest)
-                    .map_err(|error| match error {
-                        CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
-                            StoreError::DanglingArtifact {
-                                digest: digest.clone(),
-                            }
+                if !prepared.verified.insert(digest.clone()) {
+                    continue;
+                }
+                let prepare_error = |error| match error {
+                    CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
+                        StoreError::DanglingArtifact {
+                            digest: digest.clone(),
                         }
-                        other => StoreError::Artifact(format!(
-                            "referenced artifact {digest} failed verification: {other}"
-                        )),
-                    })?;
+                    }
+                    other => StoreError::Artifact(format!(
+                        "referenced artifact {digest} failed verification: {other}"
+                    )),
+                };
+                match typed_artifacts.get(digest).map(String::as_str) {
+                    Some(review_core::contract::CHANGE_SET_V1)
+                        if self.validated_change_sets.contains_key(digest) =>
+                    {
+                        cas.prepare_for_publication(digest).map_err(prepare_error)?;
+                    }
+                    Some(artifact_type) if artifact_type != "review.kernel/Opaque@1" => {
+                        let value = cas
+                            .get_json_for_publication(digest)
+                            .map_err(prepare_error)?;
+                        if artifact_type == review_core::contract::CHANGE_SET_V1 {
+                            let change_set: review_core::ChangeSetV1 =
+                                serde_json::from_value(value)
+                                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            change_set.validate().map_err(StoreError::Conflict)?;
+                            self.validated_change_sets
+                                .insert(digest.clone(), Arc::new(change_set));
+                        } else {
+                            prepared.json.insert(digest.clone(), value);
+                        }
+                    }
+                    _ => cas.prepare_for_publication(digest).map_err(prepare_error)?,
+                }
             }
         }
-        if has_artifacts {
+        if !prepared.verified.is_empty() {
             cas.flush()
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
@@ -278,6 +311,7 @@ impl EventStore {
             events,
             first,
             &mut self.validated_change_sets,
+            &prepared,
         )?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
@@ -679,9 +713,73 @@ fn load_authority_plan_id(
     Ok(AuthorityPlan { nodes, budgeted })
 }
 
+fn typed_json_artifacts(
+    events: &[NewEvent],
+) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+    let mut artifacts = std::collections::BTreeMap::new();
+    for event in events {
+        let ports = match event.event_type {
+            EventType::NodeInvocationV1 => {
+                serde_json::from_value::<review_core::NodeInvocationPayloadV1>(
+                    event.payload.clone(),
+                )?
+                .inputs
+            }
+            EventType::NodeOutputReceiptV1 => {
+                serde_json::from_value::<review_core::NodeOutputReceiptPayloadV1>(
+                    event.payload.clone(),
+                )?
+                .outputs
+            }
+            EventType::AttemptInputV1 => {
+                let payload: review_core::event::AttemptInputPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.refusal_history_id,
+                    "review.kernel/RefusalHistory@1".into(),
+                )?;
+                continue;
+            }
+            EventType::AttemptFeedbackV1 => {
+                let payload: review_core::event::AttemptFeedbackPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.refusal_history_id,
+                    "review.kernel/RefusalHistory@1".into(),
+                )?;
+                continue;
+            }
+            _ => continue,
+        };
+        for port in ports {
+            for artifact_id in port.artifact_ids {
+                insert_artifact_type(&mut artifacts, artifact_id, port.artifact_type.clone())?;
+            }
+        }
+    }
+    Ok(artifacts)
+}
+
+fn insert_artifact_type(
+    artifacts: &mut std::collections::BTreeMap<String, String>,
+    artifact_id: String,
+    artifact_type: String,
+) -> Result<(), StoreError> {
+    if let Some(previous) = artifacts.insert(artifact_id.clone(), artifact_type.clone())
+        && previous != artifact_type
+    {
+        return Err(StoreError::Conflict(format!(
+            "artifact {artifact_id} is assigned conflicting types"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_plan_ports(
-    cas: &Cas,
     validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    prepared: &PreparedArtifacts,
     expected: &[AuthorityPort],
     actual: &[review_core::PortArtifactsV1],
     subject_snapshot_id: &str,
@@ -734,8 +832,8 @@ fn validate_plan_ports(
         let mut validated_change_set = None;
         for artifact in &port.artifact_ids {
             if let Some(change_set) = validate_artifact_payload(
-                cas,
                 validated_change_sets,
+                prepared,
                 &port.artifact_type,
                 artifact,
             )? {
@@ -768,40 +866,36 @@ fn validate_plan_ports(
 }
 
 fn validate_artifact_payload(
-    cas: &Cas,
     validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    prepared: &PreparedArtifacts,
     artifact_type: &str,
     artifact_id: &str,
 ) -> Result<Option<Arc<review_core::ChangeSetV1>>, StoreError> {
+    if !prepared.verified.contains(artifact_id) {
+        return Err(StoreError::Conflict(format!(
+            "typed artifact {artifact_id} is absent from the event's verified references"
+        )));
+    }
     if artifact_type == "review.kernel/Opaque@1" {
-        cas.get(artifact_id)
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         return Ok(None);
     }
     if artifact_type == review_core::contract::CHANGE_SET_V1
         && let Some(change_set) = validated_change_sets.get(artifact_id)
     {
-        // The cache removes JSON/base64 reconstruction only. Integrity is still re-established
-        // from the current object bytes for every reference.
-        cas.verify(artifact_id)
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        // `append_batch` re-established current CAS integrity for this exact reference before
+        // entering the transaction. The cache removes only JSON/base64 reconstruction.
         return Ok(Some(Arc::clone(change_set)));
     }
-    let value = cas
-        .get_json(artifact_id)
-        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let value = prepared.json.get(artifact_id).ok_or_else(|| {
+        StoreError::Conflict(format!(
+            "typed artifact {artifact_id} has no value from publication preparation"
+        ))
+    })?;
     let object = value.as_object().ok_or_else(|| {
         StoreError::Conflict(format!("{artifact_type} artifact is not a JSON object"))
     })?;
     match artifact_type {
-        review_core::contract::CHANGE_SET_V1 => {
-            let change_set: review_core::ChangeSetV1 = serde_json::from_value(value)
-                .map_err(|error| StoreError::Conflict(error.to_string()))?;
-            change_set.validate().map_err(StoreError::Conflict)?;
-            let change_set = Arc::new(change_set);
-            validated_change_sets.insert(artifact_id.to_string(), Arc::clone(&change_set));
-            return Ok(Some(change_set));
-        }
+        review_core::contract::CHANGE_SET_V1 => unreachable!("prepared Change Set is cached"),
         "review.kernel/GateDecision@1" => {
             exact_keys(
                 object,
@@ -834,7 +928,7 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/ReviewerResult@1" => validate_reviewer_result(&value)?,
+        "review.kernel/ReviewerResult@1" => validate_reviewer_result(value)?,
         "review.kernel/ReportSet@1" => {
             if object.is_empty()
                 || object.values().any(|ids| {
@@ -869,6 +963,32 @@ fn validate_artifact_payload(
         }
     }
     Ok(None)
+}
+
+fn validate_prepared_refusal_history(
+    prepared: &PreparedArtifacts,
+    artifact_id: &str,
+    event_type: &str,
+) -> Result<(), StoreError> {
+    let history = prepared
+        .json
+        .get(artifact_id)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "{event_type} refusal history is not a verified JSON array"
+            ))
+        })?;
+    if history.is_empty()
+        || history
+            .iter()
+            .any(|entry| entry.as_str().is_none_or(|entry| entry.trim().is_empty()))
+    {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} has empty refusal history"
+        )));
+    }
+    Ok(())
 }
 
 pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
@@ -947,6 +1067,7 @@ fn validate_campaign_transition(
     events: &[NewEvent],
     first_sequence: i64,
     validated_change_sets: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    prepared: &PreparedArtifacts,
 ) -> Result<(), StoreError> {
     let campaign_opened: i64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1'",
@@ -969,8 +1090,10 @@ fn validate_campaign_transition(
     let mut batch_dispatches = std::collections::BTreeMap::new();
     let mut batch_latest_dispatch = std::collections::BTreeMap::new();
     let mut batch_attempt_inputs = std::collections::BTreeMap::new();
+    let mut batch_attempt_feedback = std::collections::BTreeMap::new();
     let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
         std::collections::BTreeMap::new();
+    let mut batch_terminal_nodes = std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
@@ -1220,8 +1343,8 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    cas,
                                     validated_change_sets,
+                                    prepared,
                                     &expected.inputs,
                                     &invocation.inputs,
                                     &subject_snapshot_id,
@@ -1355,6 +1478,7 @@ fn validate_campaign_transition(
                             }
                             if !quarantined {
                                 batch_terminals.insert(attempt.to_string(), event_type);
+                                batch_terminal_nodes.insert(attempt.to_string(), node.to_string());
                             }
                             if plan.is_some_and(|plan| plan.budgeted) {
                                 let settled = match event_type {
@@ -1454,6 +1578,11 @@ fn validate_campaign_transition(
                                     "AttemptInput@1 does not reference its refusal history".into(),
                                 ));
                             }
+                            validate_prepared_refusal_history(
+                                prepared,
+                                &input.refusal_history_id,
+                                "AttemptInput@1",
+                            )?;
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
                                  WHERE run_id = ?1 AND causation_id = ?2
@@ -1468,6 +1597,43 @@ fn validate_campaign_transition(
                             {
                                 return Err(StoreError::Conflict(
                                     "attempt has duplicate durable input events".into(),
+                                ));
+                            }
+                        }
+                        EventType::AttemptFeedbackV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptFeedback@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptFeedback@1 has no attempt ID".into())
+                            })?;
+                            let feedback: review_core::event::AttemptFeedbackPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if !event.artifact_refs.contains(&feedback.refusal_history_id) {
+                                return Err(StoreError::Conflict(
+                                    "AttemptFeedback@1 does not reference its refusal history"
+                                        .into(),
+                                ));
+                            }
+                            validate_prepared_refusal_history(
+                                prepared,
+                                &feedback.refusal_history_id,
+                                "AttemptFeedback@1",
+                            )?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'AttemptFeedback@1' AND attempt_id = ?3",
+                                params![run_id, active_id, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0
+                                || batch_attempt_feedback
+                                    .insert(attempt.to_string(), node.to_string())
+                                    .is_some()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "attempt has duplicate durable feedback events".into(),
                                 ));
                             }
                         }
@@ -1490,8 +1656,8 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    cas,
                                     validated_change_sets,
+                                    prepared,
                                     &expected.outputs,
                                     &receipt.outputs,
                                     &subject_snapshot_id,
@@ -1674,6 +1840,19 @@ fn validate_campaign_transition(
             ));
         }
     }
+    for (attempt, node) in batch_attempt_feedback {
+        if batch_terminal_nodes.get(&attempt) != Some(&node)
+            || !matches!(
+                batch_terminals.get(&attempt),
+                Some(EventType::AttemptFailedV1 | EventType::AttemptFencedV1)
+            )
+        {
+            return Err(StoreError::Conflict(
+                "AttemptFeedback@1 must append atomically with its matching failed or fenced attempt"
+                    .into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1683,6 +1862,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
             event_type,
             EventType::AttemptAdmittedV1
                 | EventType::AttemptDispatchedV1
+                | EventType::AttemptFeedbackV1
                 | EventType::AttemptInputV1
                 | EventType::AttemptFailedV1
                 | EventType::AttemptFencedV1
@@ -2010,12 +2190,19 @@ mod tests {
         let artifact_id = cas
             .put_json(&serde_json::to_value(change_set).unwrap())
             .unwrap();
-        let mut cache = std::collections::BTreeMap::new();
+        let value = cas.get_json_for_publication(&artifact_id).unwrap();
+        let change_set: review_core::ChangeSetV1 = serde_json::from_value(value).unwrap();
+        let mut cache =
+            std::collections::BTreeMap::from([(artifact_id.clone(), Arc::new(change_set))]);
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([artifact_id.clone()]),
+            json: std::collections::BTreeMap::new(),
+        };
 
         assert!(
             validate_artifact_payload(
-                &cas,
                 &mut cache,
+                &prepared,
                 review_core::contract::CHANGE_SET_V1,
                 &artifact_id,
             )
@@ -2033,13 +2220,7 @@ mod tests {
             b"tampered after validation",
         )
         .unwrap();
-        let error = validate_artifact_payload(
-            &cas,
-            &mut cache,
-            review_core::contract::CHANGE_SET_V1,
-            &artifact_id,
-        )
-        .unwrap_err();
+        let error = cas.prepare_for_publication(&artifact_id).unwrap_err();
         assert!(
             error.to_string().contains("does not match its digest"),
             "{error}"

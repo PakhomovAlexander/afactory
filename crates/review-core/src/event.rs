@@ -17,6 +17,8 @@ pub enum EventType {
     AttemptFailedV1,
     #[serde(rename = "AttemptFenced@1")]
     AttemptFencedV1,
+    #[serde(rename = "AttemptFeedback@1")]
+    AttemptFeedbackV1,
     #[serde(rename = "AttemptInput@1")]
     AttemptInputV1,
     #[serde(rename = "AttemptReleased@1")]
@@ -54,11 +56,12 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
         Self::AttemptFencedV1,
+        Self::AttemptFeedbackV1,
         Self::AttemptInputV1,
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
@@ -84,6 +87,7 @@ impl EventType {
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
             Self::AttemptFailedV1 => "AttemptFailed@1",
             Self::AttemptFencedV1 => "AttemptFenced@1",
+            Self::AttemptFeedbackV1 => "AttemptFeedback@1",
             Self::AttemptInputV1 => "AttemptInput@1",
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
@@ -123,6 +127,7 @@ impl EventType {
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
             Self::AttemptFailedV1 => ("AttemptFailed", 1),
             Self::AttemptFencedV1 => ("AttemptFenced", 1),
+            Self::AttemptFeedbackV1 => ("AttemptFeedback", 1),
             Self::AttemptInputV1 => ("AttemptInput", 1),
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
@@ -182,6 +187,7 @@ impl std::str::FromStr for EventType {
             "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
             "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
             "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
+            "AttemptFeedback@1" => Ok(Self::AttemptFeedbackV1),
             "AttemptInput@1" => Ok(Self::AttemptInputV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
@@ -813,6 +819,14 @@ pub struct AttemptInputPayloadV1 {
     pub refusal_history_id: String,
 }
 
+/// Exact feedback produced by one retryable terminal attempt. Unlike the terminal diagnostic,
+/// this artifact is prompt-input authority and may be carried into a later `AttemptInput@1`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFeedbackPayloadV1 {
+    pub refusal_history_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttemptAdmittedPayloadV1 {
@@ -915,6 +929,14 @@ pub fn validate_event_payload(
                 .map_err(|error| format!("AttemptInput@1: {error}"))?;
             if !crate::is_digest(&value.refusal_history_id) {
                 return Err("AttemptInput@1 has an invalid refusal history ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFeedbackV1 => {
+            let value: AttemptFeedbackPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFeedback@1: {error}"))?;
+            if !crate::is_digest(&value.refusal_history_id) {
+                return Err("AttemptFeedback@1 has an invalid refusal history ID".into());
             }
             Ok(())
         }

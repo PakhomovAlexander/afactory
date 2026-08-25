@@ -11,7 +11,7 @@
 //! the note that preceded it.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::Arc,
 };
 
@@ -175,6 +175,10 @@ pub struct Finding {
     /// The claim content is an actionable placeholder for unreadable Report authority. The first
     /// readable Report for this key replaces it regardless of relative severity.
     pub authority_diagnostic: bool,
+    /// Report artifacts whose claim content could not be read. This remains authoritative even
+    /// when an older readable claim is fixed: resolution cannot erase a later authority failure.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unreadable_reports: BTreeSet<String>,
     /// Aggregate of active Report claims for presentation, never Scope stamped onto identity.
     /// `None` means exact Scope authority was unavailable.
     pub convergence_scope: Option<ReportScope>,
@@ -230,7 +234,7 @@ struct ActiveScope {
 #[derive(Debug, Clone)]
 enum SubjectScope {
     WholeTree,
-    Diff(Arc<[String]>),
+    Diff(Arc<review_core::ChangeSetV1>),
     Unavailable,
 }
 
@@ -409,6 +413,11 @@ impl Ledger {
         // an actionable placeholder that the first readable Report replaces unconditionally.
         if unreadable && self.findings.contains_key(&key) {
             if let Some(existing) = self.findings.get_mut(&key) {
+                if !attached.report_id.is_empty() {
+                    existing
+                        .unreadable_reports
+                        .insert(attached.report_id.clone());
+                }
                 existing.reports.push(attached);
             }
             return Ok(());
@@ -435,6 +444,11 @@ impl Ledger {
                     fix: report.fix,
                     confidence: report.confidence,
                     authority_diagnostic: unreadable,
+                    unreadable_reports: if unreadable {
+                        BTreeSet::from([attached.report_id.clone()])
+                    } else {
+                        BTreeSet::new()
+                    },
                     convergence_scope: scope,
                     convergence_severity,
                     scoped_news_round: convergence_severity.map(|_| round),
@@ -454,6 +468,7 @@ impl Ledger {
 
         if existing.authority_diagnostic {
             existing.authority_diagnostic = false;
+            existing.unreadable_reports.clear();
             existing.last_seen_round = round;
             existing.status = Status::Open;
             existing.news_round = round;
@@ -565,11 +580,11 @@ impl Ledger {
                 .and_then(|resolved| match resolved.subject.kind {
                     SubjectKind::WholeTree => Ok(Arc::new(SubjectScope::WholeTree)),
                     SubjectKind::Diff => resolved
-                        .changed_paths
-                        .map(|paths| Arc::new(SubjectScope::Diff(paths)))
+                        .change_set
+                        .map(|change_set| Arc::new(SubjectScope::Diff(change_set)))
                         .ok_or_else(|| {
                             format!(
-                                "diff Subject {} resolved without changed paths",
+                                "diff Subject {} resolved without a Change Set",
                                 started.subject_id
                             )
                         }),
@@ -633,10 +648,11 @@ impl Ledger {
             (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
                 (Some(ReportScope::In), location.first_index())
             }
-            (SubjectScope::Diff(changed_paths), ReportLocation::Paths(paths)) => {
-                if let Some(index) = paths.iter().position(|location| {
-                    review_core::contains_report_path(changed_paths, &location.path)
-                }) {
+            (SubjectScope::Diff(change_set), ReportLocation::Paths(paths)) => {
+                if let Some(index) = paths
+                    .iter()
+                    .position(|location| change_set.contains_report_path(&location.path))
+                {
                     (Some(ReportScope::In), Some(index))
                 } else {
                     (Some(ReportScope::Out), location.first_index())
@@ -758,21 +774,18 @@ impl Ledger {
             .iter()
             .filter(|failure| i64::from(failure.round) > since)
             .collect();
-        let stale_active_diagnostics = self
+        let unresolved_unrecent_reports: BTreeSet<&str> = self
             .findings
             .values()
-            .filter(|finding| {
-                finding.authority_diagnostic
-                    && finding.status.is_active()
-                    && !finding.reports.iter().any(|report| {
-                        !report.report_id.is_empty()
-                            && recent_authority_failures
-                                .iter()
-                                .any(|failure| failure.authority_id == report.report_id)
-                    })
+            .flat_map(|finding| finding.unreadable_reports.iter().map(String::as_str))
+            .filter(|report_id| {
+                !recent_authority_failures
+                    .iter()
+                    .any(|failure| failure.authority_id == **report_id)
             })
-            .count();
-        let authority_failures_recent = recent_authority_failures.len() + stale_active_diagnostics;
+            .collect();
+        let authority_failures_recent =
+            recent_authority_failures.len() + unresolved_unrecent_reports.len();
         let verdict = if authority_failures_recent == 0
             && open_blocking == 0
             && new_recent == 0

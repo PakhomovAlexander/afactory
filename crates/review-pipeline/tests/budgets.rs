@@ -267,6 +267,40 @@ struct InvalidAfterResume {
     cost: u64,
 }
 
+struct PanicsBeforeAnswer;
+
+impl ReviewerAdapter for PanicsBeforeAnswer {
+    fn invoke(
+        &self,
+        _cas: &Cas,
+        _root: &Path,
+        _inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        panic!("simulated adapter panic before any reviewer answer")
+    }
+}
+
+struct CleanAfterGenericFailure;
+
+impl ReviewerAdapter for CleanAfterGenericFailure {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        assert!(
+            inputs.refused_attempts.is_empty(),
+            "generic execution diagnostics are not reviewer feedback"
+        );
+        Ok(ReviewerReturn {
+            output: clean_output(),
+            cost_tokens: 10_000,
+            raw_artifact: cas.put(b"clean resumed answer").unwrap(),
+        })
+    }
+}
+
 impl ReviewerAdapter for InvalidAfterResume {
     fn invoke(
         &self,
@@ -672,6 +706,76 @@ fn resumed_retry_history_accumulates_instead_of_truncating() {
         })
         .collect();
     assert_eq!(histories.last().unwrap().len(), 2);
+}
+
+#[test]
+fn generic_attempt_failures_do_not_become_retry_feedback_on_resume() {
+    let mut run = run_fixture();
+    let first = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter("r-alpha", Box::new(PanicsBeforeAnswer))
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    assert!(
+        !Scheduler::new(&plan)
+            .with_parallelism(1)
+            .run(&first)
+            .complete()
+    );
+    drop(first);
+
+    let round_event_id = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.event_type == EventType::RoundStartedV1)
+        .unwrap()
+        .event_id;
+    let authority = RoundAuthority::load(&run.store, &run.cas, "run", &round_event_id).unwrap();
+    let loaded = Definition::from_toml(BUDGET_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let resumed = Kernel::from_loaded(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter("r-alpha", Box::new(CleanAfterGenericFailure))
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&resumed);
+    assert!(report.complete(), "resumed run should complete: {report:?}");
+    drop(resumed);
+
+    let events = run.store.replay("run").unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != EventType::AttemptFeedbackV1)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != EventType::AttemptInputV1)
+    );
 }
 
 #[test]

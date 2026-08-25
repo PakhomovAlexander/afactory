@@ -23,6 +23,7 @@
         "AttemptDispatched@1",
         "AttemptFailed@1",
         "AttemptFenced@1",
+        "AttemptFeedback@1",
         "AttemptInput@1",
         "AttemptReleased@1",
         "CheckCompleted@1",

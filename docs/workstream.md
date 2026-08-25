@@ -1,9 +1,10 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0 and M1 are complete. Three M2 dogfood Campaigns exhausted with all 126 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` retained all nine Round 1 fixes in
-Round 2 and opened seven further Findings; their corrections pass the full kernel gate. Rounds 3
-and 4 must both be clean for this Campaign to converge before M3.1.
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` retained all sixteen Round 1-2 fixes
+in Round 3 and opened eight further Findings; their corrections pass the full kernel gate. This
+Campaign can no longer converge, so Round 4 must retain the corrections before a fresh
+unchanged-policy Campaign establishes two clean Rounds ahead of M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -167,8 +168,16 @@ seven claims. Their corrections keep active unreadable-report authority blockers
 beyond the original clean window, reject whitespace-only legacy paths, accumulate durable retry
 history across process resume, stream exact CAS comparisons, parallelize dirty-worktree hashing,
 share validated Change Set authority, and share sandbox baseline manifests. The full kernel gate
-and release measurements pass; commit and resolve these seven claims, then run Rounds 3 and 4.
-Both must be clean for this Campaign to converge before M3.1.
+and release measurements pass; the corrections are committed and resolved. Round 3 spent 839,349
+tokens, retained all sixteen prior resolutions, and opened eight claims. Their corrections keep
+unreadable Report authority attached to a fixed Finding, validate the exact Change Set input at
+the runner boundary, separate durable retry feedback from terminal diagnostics, stream captured
+files into CAS, canonicalize the repository root once per scan, prepare typed artifacts in one
+verified read, reuse per-worker CAS verification scratch, and avoid duplicate changed-path
+ownership. ADR-0023 records the additive `AttemptFeedback@1` boundary. The full kernel gate and
+release measurement pass. Commit and resolve these eight claims, then run Round 4 to retain them.
+Because Round 3 was not clean, this Campaign cannot converge; start a fresh unchanged-policy
+Campaign and require two clean Rounds before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

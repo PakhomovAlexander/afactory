@@ -20,6 +20,7 @@
 //! The failure this ordering prevents is not "the object is missing" — it is a run that replays
 //! into a *different* state than it committed, silently.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
@@ -29,6 +30,19 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use crate::canonical;
+
+const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+
+thread_local! {
+    /// Verification is per-object, but scratch is per worker thread. Source trees commonly have
+    /// files smaller than this buffer, so zeroing a new 64 KiB array per object can exceed the
+    /// actual content traffic by several times.
+    static VERIFY_SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0_u8; STREAM_BUFFER_BYTES]);
+}
+
+fn with_verify_scratch<T>(f: impl FnOnce(&mut [u8]) -> Result<T, CasError>) -> Result<T, CasError> {
+    VERIFY_SCRATCH.with(|scratch| f(&mut scratch.borrow_mut()))
+}
 
 #[derive(Debug)]
 pub enum CasError {
@@ -108,7 +122,7 @@ impl Cas {
         if final_path.exists() {
             // Durability is cacheable, integrity is not: an external mutation after a prior
             // publication must still be detected before idempotent put accepts this object.
-            verify_exact_bytes(&final_path, &digest, bytes)?;
+            with_verify_scratch(|buffer| verify_exact_bytes(&final_path, &digest, bytes, buffer))?;
             if !self
                 .durable
                 .lock()
@@ -139,6 +153,46 @@ impl Cas {
         // event may reference it before then.
         self.pending.lock().expect("cas pending").insert(final_path);
         Ok(digest)
+    }
+
+    /// Stream one object into the CAS while hashing it through caller-owned scratch. Candidate
+    /// size never becomes resident memory; at most one fixed buffer is live per calling worker.
+    pub fn put_reader_with_buffer(
+        &self,
+        reader: &mut impl Read,
+        buffer: &mut [u8],
+    ) -> Result<(String, u64), CasError> {
+        let objects = self.root.join("objects");
+        let mut temporary = tempfile::NamedTempFile::new_in(&objects)?;
+        let (digest, size) = {
+            let mut copying = CopyingReader {
+                source: reader,
+                destination: temporary.as_file_mut(),
+            };
+            canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
+        };
+        let final_path = self.path_for(&digest);
+        if final_path.exists() {
+            let mut existing = fs::File::open(&final_path)?;
+            let (actual, existing_size) =
+                canonical::blob_content_id_reader_with_buffer(&mut existing, buffer)?;
+            if actual != digest || existing_size != size {
+                return Err(CasError::Corrupt { digest });
+            }
+            self.pend_existing_if_needed(final_path);
+            return Ok((digest, size));
+        }
+
+        fs::create_dir_all(final_path.parent().expect("object path has a parent"))?;
+        temporary
+            .persist(&final_path)
+            .map_err(|error| CasError::Io(error.error))?;
+        self.pending.lock().expect("cas pending").insert(final_path);
+        Ok((digest, size))
+    }
+
+    fn pend_existing_if_needed(&self, path: PathBuf) {
+        self.mark_for_publication(path);
     }
 
     /// Make every pending object durable: the object bytes, then each touched directory so
@@ -268,7 +322,9 @@ impl Cas {
                 }
             });
         if let Ok(mut temporary) = cloned {
-            let size = Self::verify_reader(digest, temporary.as_file_mut())?;
+            let size = with_verify_scratch(|buffer| {
+                Self::verify_reader(digest, temporary.as_file_mut(), buffer)
+            })?;
             temporary
                 .persist(target)
                 .map_err(|error| CasError::Io(error.error))?;
@@ -300,12 +356,15 @@ impl Cas {
             source: &mut file,
             destination: writer,
         };
-        Self::verify_reader(digest, &mut copying)
+        with_verify_scratch(|buffer| Self::verify_reader(digest, &mut copying, buffer))
     }
 
-    fn verify_reader(digest: &str, reader: &mut impl Read) -> Result<u64, CasError> {
-        let mut buffer = [0_u8; 64 * 1024];
-        let (actual, size) = canonical::blob_content_id_reader_with_buffer(reader, &mut buffer)?;
+    fn verify_reader(
+        digest: &str,
+        reader: &mut impl Read,
+        buffer: &mut [u8],
+    ) -> Result<u64, CasError> {
+        let (actual, size) = canonical::blob_content_id_reader_with_buffer(reader, buffer)?;
         if actual != digest {
             return Err(CasError::Corrupt {
                 digest: digest.to_string(),
@@ -321,6 +380,17 @@ impl Cas {
         })
     }
 
+    /// Verify, read, parse, and schedule one JSON object for publication in a single content
+    /// pass. Callers may retain the returned value as the exact authority they just verified.
+    pub fn get_json_for_publication(&self, digest: &str) -> Result<Value, CasError> {
+        let bytes = self.get(digest)?;
+        let value = serde_json::from_slice(&bytes).map_err(|_| CasError::Corrupt {
+            digest: digest.to_string(),
+        })?;
+        self.mark_for_publication(self.path_for(digest));
+        Ok(value)
+    }
+
     /// Stream and verify an object without retaining its bytes.
     pub fn verify(&self, digest: &str) -> Result<u64, CasError> {
         if !valid_digest(digest) {
@@ -333,7 +403,7 @@ impl Cas {
             },
             _ => CasError::Io(error),
         })?;
-        Self::verify_reader(digest, &mut file)
+        with_verify_scratch(|buffer| Self::verify_reader(digest, &mut file, buffer))
     }
 
     /// Verify an object and schedule its bytes and directory entries for the next publication
@@ -344,11 +414,14 @@ impl Cas {
         // Hash verification is mandatory for every new reference. The cache below suppresses
         // redundant fsyncs only; it must never turn existence into an integrity assertion.
         self.verify(digest)?;
-        if self.durable.lock().expect("cas durable").contains(&path) {
-            return Ok(());
-        }
-        self.pending.lock().expect("cas pending").insert(path);
+        self.mark_for_publication(path);
         Ok(())
+    }
+
+    fn mark_for_publication(&self, path: PathBuf) {
+        if !self.durable.lock().expect("cas durable").contains(&path) {
+            self.pending.lock().expect("cas pending").insert(path);
+        }
     }
 
     pub fn contains(&self, digest: &str) -> bool {
@@ -356,17 +429,21 @@ impl Cas {
     }
 }
 
-fn verify_exact_bytes(path: &Path, digest: &str, expected: &[u8]) -> Result<(), CasError> {
+fn verify_exact_bytes(
+    path: &Path,
+    digest: &str,
+    expected: &[u8],
+    buffer: &mut [u8],
+) -> Result<(), CasError> {
     let mut file = fs::File::open(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => CasError::NotFound {
             digest: digest.to_string(),
         },
         _ => CasError::Io(error),
     })?;
-    let mut buffer = [0_u8; 64 * 1024];
     let mut offset = 0usize;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = file.read(buffer)?;
         if read == 0 {
             break;
         }
@@ -500,6 +577,30 @@ mod tests {
             fs::write(cas.path_for(&digest), tampered).unwrap();
             assert!(matches!(cas.put(expected), Err(CasError::Corrupt { .. })));
         }
+    }
+
+    #[test]
+    fn streaming_put_uses_caller_scratch_and_reverifies_existing_content() {
+        let (directory, cas) = cas();
+        let bytes = vec![0x5a; 256 * 1024 + 3];
+        let mut scratch = vec![0_u8; 4 * 1024];
+        let (digest, size) = cas
+            .put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch)
+            .unwrap();
+        assert_eq!(size, bytes.len() as u64);
+        assert_eq!(cas.get(&digest).unwrap(), bytes);
+
+        let repeated = cas
+            .put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch)
+            .unwrap();
+        assert_eq!(repeated, (digest.clone(), size));
+
+        fs::write(cas.path_for(&digest), b"tampered").unwrap();
+        assert!(matches!(
+            cas.put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch),
+            Err(CasError::Corrupt { .. })
+        ));
+        drop(directory);
     }
 
     #[test]

@@ -48,7 +48,7 @@ impl ReviewerAdapter for Recorder {
             .artifacts
             .get("change_set")
             .and_then(|artifacts| artifacts.first())
-            .map(|artifact| artifact.artifact_id.clone());
+            .map(|artifact| artifact.artifact_id().to_string());
         Ok(ReviewerReturn {
             output: serde_json::from_str(
                 r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#,

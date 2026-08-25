@@ -54,3 +54,5 @@ options you rejected and why — that is the part future-you needs.
   flat](0021-keep-reviewer-result-wire-shape-flat.md)
 - [0022 — Persist retry feedback as an Attempt
   input](0022-persist-retry-feedback-as-attempt-input.md)
+- [0023 — Separate retry feedback from terminal
+  diagnostics](0023-separate-retry-feedback-from-terminal-diagnostics.md)

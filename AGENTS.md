@@ -25,5 +25,7 @@ budget, or sandbox boundary to make a test or review pass.
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).
 - Retry-only reviewer input is durable invocation authority: publish it as an Attempt input before
-  dispatch; never derive a retry prompt only from process memory or mutate a frozen dispatch event
-  ([ADR-0022](docs/adr/0022-persist-retry-feedback-as-attempt-input.md)).
+  dispatch, and publish produced feedback separately from terminal diagnostics; never derive a
+  retry prompt from process memory or diagnostic prose, or mutate a frozen dispatch event
+  ([ADR-0022](docs/adr/0022-persist-retry-feedback-as-attempt-input.md),
+  [ADR-0023](docs/adr/0023-separate-retry-feedback-from-terminal-diagnostics.md)).

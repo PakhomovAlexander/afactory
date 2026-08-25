@@ -428,3 +428,29 @@ materialization, 0.831/1.096 s writable/read-only clone plus permissions, 0.136/
 0.150/0.142 s teardown. A 5,000-entry baseline plus 10,000 added files sealed in 0.146 s. Full
 workspace formatting, all-target clippy, tests, doc tests, and byte-identical fixture reproduction
 pass before commit. Rounds 3 and 4 must both be clean for this four-Round Campaign to converge.
+
+## 2026-08-25 — M2 clean Campaign Round 3 corrections
+
+Round 3 spent 839,349 tokens, retained all sixteen Round 1-2 resolutions, and opened eight Reports.
+An unreadable Report now remains explicit authority even when its existing Finding was previously
+fixed, so it cannot age out or be hidden by the older claim status. Runner Change Set inputs are
+private and constructible only from validated bytes or an exact canonical prevalidated value;
+production rendering therefore cannot bypass digest, length, schema, or semantic validation.
+
+ADR-0023 separates reviewer feedback from terminal diagnostics through additive
+`AttemptFeedback@1`. Contract refusals and retryable timeouts publish their exact accumulated
+feedback atomically with the matching terminal event; replay never converts generic error prose
+into prompt instructions. `AttemptInput@1` remains the exact input consumed at dispatch. Event
+admission validates both artifacts and enforces the feedback event's same-attempt atomicity.
+
+Dirty capture streams regular files directly into temporary CAS objects through one worker-local
+buffer, including the publishing pass, instead of allocating one whole file per worker. A release
+measurement captured 5,000 distinct 40 KiB files (195.3 MiB) in 1.460 s. Each scan canonicalizes
+the repository root once, and CAS verification reuses thread-local 64 KiB scratch. Event append
+preparation verifies each referenced artifact once and retains exact typed JSON for semantic
+validation; a warmed-cache corruption regression proves cached Change Set semantics never replace
+current-byte integrity. Diff Subjects retain a single shared Change Set rather than a second
+changed-path collection. Focused regressions and all-target clippy pass. Full workspace formatting,
+tests, doc tests, and byte-identical fixture reproduction pass before commit. Round 4 must retain
+the corrections; because Round 3 was not clean, a fresh unchanged-policy Campaign must then
+establish two clean Rounds before M3.1.

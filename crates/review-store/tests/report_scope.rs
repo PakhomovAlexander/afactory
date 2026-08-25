@@ -359,7 +359,56 @@ fn an_active_unreadable_report_blocks_after_its_original_clean_window() {
         .unwrap();
     apply_whole_tree_round(&mut ledger, &cas, 2);
 
-    let summary = convergence(&ledger, Severity::Major);
+    let summary = ledger.convergence(ConvergencePolicy {
+        clean_rounds: 1,
+        max_rounds: 4,
+        gate: Severity::Major,
+    });
+    assert_eq!(summary.open_blocking, 0);
+    assert_eq!(summary.new_recent, 0);
+    assert_eq!(summary.authority_failures_recent, 1);
+    assert_eq!(summary.verdict, Verdict::NotConverged);
+}
+
+#[test]
+fn an_unreadable_rereport_of_a_fixed_claim_never_ages_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_whole_tree_round(&mut ledger, &cas, 1);
+    apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
+    apply_resolution(&mut ledger, &cas, "claim", 1, Status::Fixed);
+
+    apply_whole_tree_round(&mut ledger, &cas, 2);
+    let unreadable_id = cas
+        .put_json(&serde_json::json!({
+            "severity": "major", "locations": [], "body": "body",
+            "fix": "fix", "confidence": 0.9
+        }))
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": "claim", "round": 2, "source": "typed",
+                    "report_id": unreadable_id,
+                }),
+                vec![unreadable_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+    apply_whole_tree_round(&mut ledger, &cas, 3);
+
+    let finding = ledger.get("claim").unwrap();
+    assert_eq!(finding.status, Status::Fixed);
+    assert_eq!(finding.unreadable_reports.len(), 1);
+    let summary = ledger.convergence(ConvergencePolicy {
+        clean_rounds: 1,
+        max_rounds: 4,
+        gate: Severity::Major,
+    });
     assert_eq!(summary.open_blocking, 0);
     assert_eq!(summary.new_recent, 0);
     assert_eq!(summary.authority_failures_recent, 1);
