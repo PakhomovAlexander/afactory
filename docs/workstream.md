@@ -1,11 +1,7 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. Six M2 dogfood Campaigns exhausted with all 205 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean-window` Round 1 spent 956,628 tokens;
-its seven corrections are committed and resolved. Round 2 spent 973,217 tokens and opened five
-Findings; their corrections are committed and resolved. Round 3 spent 1,020,400 tokens, retained
-all twelve fixes, and opened six Findings. Their corrections pass the full kernel gate. Because
-Round 3 was not clean, exhaust Round 4 after resolving them, then open a fresh clean-window Campaign.
+**Status:** M0-M2 are complete and fully verified. Capability work is paused at the M2 boundary
+for the intermediate `v0.2.0` release; resume with M3.1 canonical Finding identity.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -15,10 +11,11 @@ can be read, triaged, and closed only through explicit evidence-bearing policy.
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and nineteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0 and M1 are complete. M2.1-M2.6 reached dogfood; its first Campaign exhausted
+are superseded. M0-M2 are complete; M2's first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
-complete. The M2 dogfood Campaign must converge before work resumes at M3.1.
+complete. M2 converged under the recorded correctness-only review policy; work resumes at M3.1
+after the intermediate release.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -96,7 +93,7 @@ identity, authority, isolation, and verification prerequisites exist.
       persisted; legacy replay remains pinned by fixtures.
 - [x] M1 — `af review show` prints every attached report whole; `ledger --long` carries body and
       fix; `report --format md` emits what SKILL.md §5 asks the agent to produce.
-- [ ] M2 — Campaign authority and Base are pinned before candidate capture; committed and
+- [x] M2 — Campaign authority and Base are pinned before candidate capture; committed and
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses
       `diff`; both rename endpoints govern Report Scope and replay never rewrites existing legacy
       keys. Canonical path-independent Finding identity remains M3.1.
@@ -248,7 +245,8 @@ all eighteen fixes, opened seven claims, and exhausted the Campaign. Their corre
 and Git deadlines, type run-budget exhaustion, preserve held-stderr check evidence, guard raw
 Change Sets before encoding, unify Ledger projection input, and avoid irrelevant authority-plan
 parsing. Commit `d8f0812` passes the full local gate, and all seven claims are resolved; the
-Campaign has 25 fixed findings and zero open. M2 is complete and M3.1 is next.
+Campaign has 25 fixed findings and zero open. M2 is complete; release `v0.2.0`, then resume at
+M3.1.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
