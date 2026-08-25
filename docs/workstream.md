@@ -2,8 +2,8 @@
 
 **Status:** M0 and M1 are complete. Five M2 dogfood Campaigns exhausted with all 179 Findings
 fixed. Fresh unchanged-policy Campaign `m2-rename-scope-final-verified` Round 1 opened nine further
-Findings; their corrections are fully verified. They must be resolved and retained before a new
-two-Round clean window can establish M2 convergence and allow M3.1.
+Findings; Round 2 retained them and opened seven more. All sixteen corrections are fully verified.
+Resolve Round 2, then Rounds 3 and 4 can establish M2's two-Round clean window and allow M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -195,21 +195,29 @@ Their corrections make serialized command input itself decide whether stdin exis
 live Report paths across Rust and both JSON schemas, separate per-batch Change Set validation from
 the bounded cross-batch memo, and centralize the store's artifact-type vocabulary in `review-core`.
 The full kernel gate passes; the claims are committed and resolved. Round 3 spent 990,029 tokens,
-retained all eleven fixes, and opened six
-claims. Their corrections reject unsupported generation contracts at load and receipt replay,
+retained all eleven fixes, and opened six claims. Their corrections reject unsupported generation
+contracts at load and receipt replay,
 centralize Report and Change Set path semantics, restore only requested directory mode bits,
 concurrently drain command-reviewer and Git pipes, bind command deadlines to captured Campaign
 policy, and index recent authority failures for convergence. The 5,000-file / 195.3 MiB release
 fixture records 0.861 s synthetic-tree construction with concurrent draining. The full kernel gate
-passes; the claims are committed and resolved. Run Round 4 to retain them, then start a fresh
-unchanged-policy Campaign because this one can no longer establish two clean Rounds.
+passes; the claims are committed and resolved. Round 4 retained all seventeen prior fixes, opened
+four claims, and exhausted the Campaign. Their corrections derive Generation contracts from
+Subject kind, fail closed on any noncanonical typed Report location, preserve whitespace-edge Git
+paths, and bind command input delivery to the attempt deadline. The full kernel gate passes; all
+four claims are committed and resolved.
 Fresh Campaign `m2-rename-scope-final-verified` pins the same authority and manifest. Round 1 spent
 826,568 tokens and opened nine claims. Their corrections version Manifest path encoding while
 preserving raw-tree identity, make command deadlines safe after parent exit, enforce Change Set
 bounds before adapters, keep runner presentation out of Round authority, document typed
 Generation compatibility, avoid allocating discarded patches, carry one run-bound Ledger
 projection, and transfer command input without copying it. ADR-0024 and ADR-0025 record the two
-compatibility decisions. The full kernel gate passes; resolve these claims and run the next Round.
+compatibility decisions. Round 2 spent 912,203 tokens, retained all nine fixes, and opened seven
+claims. Their corrections preserve baseline Manifest encoding through sandbox seal, make a held
+output pipe observable after bounded drain grace, bound and classify retry feedback without
+echoing reviewer bytes, build each model prompt in one buffer, borrow cached Ledger state, stream
+CAS replay verification, and avoid decoding ordinary Manifest paths. The full kernel gate passes;
+resolve these claims and run Round 3. If Rounds 3 and 4 are both clean, this Campaign converges.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

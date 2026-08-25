@@ -5,7 +5,7 @@ mod common;
 use common::fixture_repo;
 use review_check::{Arg, CheckDefinition, CheckRunner, Command};
 use review_sandbox::{Mode, Sandbox};
-use review_source_git::{Capture, Entry, EntryKind, Manifest};
+use review_source_git::{Capture, Entry, EntryKind, Manifest, PathEncoding};
 
 fn sandbox_of(mode: Mode) -> (tempfile::TempDir, Sandbox, review_store::Cas) {
     let (dir, repo, cas) = fixture_repo();
@@ -72,6 +72,37 @@ fn a_node_that_changed_nothing_seals_clean() {
         sealed.baseline.content_digest(),
         "an untouched sandbox must still be the snapshot it was given"
     );
+}
+
+#[test]
+fn a_legacy_encoded_baseline_seals_in_its_own_key_space() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
+    let leading = cas.put(b"leading").unwrap();
+    let percent_space = cas.put(b"percent and space").unwrap();
+    let manifest = Manifest {
+        path_encoding: PathEncoding::LegacyV1,
+        entries: vec![
+            Entry {
+                path: " notes.md".into(),
+                kind: EntryKind::File,
+                content: leading,
+                size: 7,
+            },
+            Entry {
+                path: "docs/50%25 off.md".into(),
+                kind: EntryKind::File,
+                content: percent_space,
+                size: 17,
+            },
+        ],
+    };
+    let sandbox = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+
+    let sealed = sandbox.seal().unwrap();
+    assert!(sealed.unchanged(), "{:?}", sealed.mutations);
+    assert_eq!(sealed.final_manifest.path_encoding, PathEncoding::LegacyV1);
+    assert_eq!(sealed.final_manifest, manifest);
 }
 
 /// A mutable node may leave a directory unreadable. Seal restores traversal permissions before

@@ -213,16 +213,17 @@ impl<'a> CommandRunner<'a> {
             }
         }
 
-        // A helper that escaped the reviewer's process group may retain a pipe. It is no longer
-        // reviewer authority and is not owed an unbounded join; preserve completed bytes when
-        // available and let malformed/failed-output handling classify an empty capture.
+        // The execution deadline governs the child. After a normal exit, allow a fixed bounded
+        // drain grace for buffered output; a still-held pipe is infrastructure failure, never
+        // fabricated empty reviewer evidence.
         let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
-            let grace = deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_secs(5));
             receiver
-                .recv_timeout(grace)
-                .unwrap_or(Ok(Vec::new()))
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| {
+                    RunnerError::Unavailable(format!(
+                        "reviewer output pipe was still held after 5 seconds: {error}"
+                    ))
+                })?
                 .map_err(|error| {
                     RunnerError::Unavailable(format!("reading reviewer output: {error}"))
                 })
@@ -370,6 +371,27 @@ mod tests {
             Err(RunnerError::TimedOut { .. })
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn post_exit_drain_preserves_a_large_valid_answer() {
+        let (dir, cas) = runner_dir();
+        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_secs(5));
+        let command = Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(
+                    "sleep 1 & printf '%s' '{\"verdict\":\"approve\",\"summary\":\"'; \
+                     head -c 1048576 /dev/zero | tr '\\000' x; \
+                     printf '%s' '\",\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
+                ),
+            ],
+        );
+
+        let (result, raw) = runner.invoke_raw(&command).unwrap();
+        assert_eq!(result.summary.as_deref().map(str::len), Some(1024 * 1024));
+        assert_ne!(raw, review_store::canonical::blob_content_id(b""));
     }
 
     #[test]

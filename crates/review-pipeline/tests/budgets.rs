@@ -202,7 +202,8 @@ impl ReviewerAdapter for MalformedOnce {
             });
         }
         assert_eq!(inputs.refused_attempts.len(), 1);
-        assert!(inputs.refused_attempts[0].contains("expected a quoted object key"));
+        assert!(inputs.refused_attempts[0].contains("parse_error"));
+        assert!(!inputs.refused_attempts[0].contains("quoted object key"));
         Ok(ReviewerReturn {
             output: clean_output(),
             cost_tokens: 10_000,
@@ -231,8 +232,12 @@ impl ReviewerAdapter for InvalidOnce {
                 "the retry must receive the prior refusal: {rendered}"
             );
             assert!(
-                rendered.contains("canonical repository-relative path"),
-                "the retry must learn why the prior path was refused: {rendered}"
+                rendered.contains("contract_error"),
+                "the retry must learn the prior failure class: {rendered}"
+            );
+            assert!(
+                !rendered.contains("canonical repository-relative path"),
+                "durable retry feedback must not echo reviewer-controlled bytes: {rendered}"
             );
         }
         let output = if first {
@@ -649,7 +654,8 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
     let refusal_history: Vec<String> =
         serde_json::from_value(run.cas.get_json(&payload.refusal_history_id).unwrap()).unwrap();
     assert_eq!(refusal_history.len(), 1);
-    assert!(refusal_history[0].contains("canonical repository-relative path"));
+    assert!(refusal_history[0].contains("contract_error"));
+    assert!(!refusal_history[0].contains("canonical repository-relative path"));
     assert_ne!(retry_input.attempt_id, failed.attempt_id);
 }
 

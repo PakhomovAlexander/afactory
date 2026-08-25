@@ -31,7 +31,7 @@ impl PathEncoding {
     }
 }
 
-pub(crate) fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
+fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
     if encoding == PathEncoding::PercentV2 {
         return encode_path(bytes);
     }
@@ -193,7 +193,8 @@ impl Manifest {
         // is needed only when at least one v2 spelling would be rejected by the legacy alphabet,
         // avoiding gratuitous CAS-id churn for ordinary trees.
         let path_encoding = if entries.iter().all(|entry| {
-            encode_path_for(PathEncoding::LegacyV1, &decode_path(&entry.path)) == entry.path
+            !entry.path.contains('%')
+                || encode_path_for(PathEncoding::LegacyV1, &decode_path(&entry.path)) == entry.path
         }) {
             PathEncoding::LegacyV1
         } else {
@@ -207,11 +208,33 @@ impl Manifest {
         Ok(manifest)
     }
 
+    pub fn new_with_encoding(
+        mut entries: Vec<Entry>,
+        path_encoding: PathEncoding,
+    ) -> Result<Manifest, ManifestError> {
+        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+        let manifest = Manifest {
+            path_encoding,
+            entries,
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn encode_key(&self, raw_path: &[u8]) -> String {
+        encode_path_for(self.path_encoding, raw_path)
+    }
+
     /// Validate invariants required by parallel materialization and positional diffing.
     pub fn validate(&self) -> Result<(), ManifestError> {
         for entry in &self.entries {
-            let decoded = decode_path(&entry.path);
-            if !is_canonical_path_encoding(self.path_encoding, &entry.path, &decoded) {
+            let valid = if entry.path.contains('%') {
+                let decoded = decode_path(&entry.path);
+                is_canonical_path_encoding(self.path_encoding, &entry.path, &decoded)
+            } else {
+                is_canonical_path_encoding(self.path_encoding, &entry.path, entry.path.as_bytes())
+            };
+            if !valid {
                 return Err(ManifestError::NoncanonicalPath {
                     path: entry.path.clone(),
                     encoding: self.path_encoding,

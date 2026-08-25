@@ -613,5 +613,32 @@ projection-affecting events alone invalidate it, and a cross-run projection is r
 Focused config, runner, source, store, pipeline, and CLI suites pass with all-target Clippy
 warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture
 reproduction pass before commit. Resolve all nine Reports against this commit and run Round 2 to
-retain them; because Round 1 was not clean, a later fresh unchanged-policy Campaign must still
-establish two clean Rounds before M3.1.
+retain them. Rounds 3 and 4 can still establish the required two clean Rounds if both are clean;
+only another finding-bearing Round would require a fresh Campaign.
+
+## 2026-08-25 — M2 final-verified Campaign Round 2 corrections
+
+Round 2 reproduced the unchanged authority and Campaign Manifest, spent 912,203 tokens, retained
+all nine Round 1 fixes, and opened seven Reports: two major and five minor.
+
+Sandbox seal now encodes every discovered raw path in the baseline Manifest's generation and
+constructs its final Manifest with that same generation; a legacy baseline with literal spaces and
+escaped percent bytes seals byte-identically. Ordinary Manifest paths without `%` bypass decode and
+re-encode validation. Replay uses streaming CAS verification when it needs integrity rather than
+artifact bytes.
+
+A normally exited command gets a fixed five-second output-drain grace. A descendant that still
+holds a pipe now produces an observable unavailable result instead of fabricated empty evidence,
+while a regression proves that a one-megabyte valid answer is preserved. Durable retry feedback
+records fixed `parse_error` or `contract_error` classes, never reviewer-controlled diagnostics,
+and command reviewers enforce the same refusal-history bound as model reviewers.
+
+Claude and Codex append resolved inputs directly to one owned prompt buffer and move its bytes to
+the writer thread. Kernel ledger and convergence reads borrow the cached run-bound projection;
+gather takes that capability without deep clones, and projection rebuilding never nests the ledger
+cache lock over the event-store lock.
+
+Focused core, config, runner, source, sandbox, store, pipeline, and CLI suites pass with all-target
+Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical
+fixture reproduction pass before commit. Resolve all seven Reports against this commit and run
+Round 3. If Rounds 3 and 4 are both clean, the Campaign satisfies the two-Round clean window.

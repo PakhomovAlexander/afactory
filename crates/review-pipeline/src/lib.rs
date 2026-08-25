@@ -348,7 +348,7 @@ fn replay_execution(
                         ));
                     }
                     for artifact in &port.artifact_ids {
-                        cas.get(artifact).map_err(|error| error.to_string())?;
+                        cas.verify(artifact).map_err(|error| error.to_string())?;
                     }
                 }
                 if replayed
@@ -427,9 +427,9 @@ fn replay_execution(
                     let provenance_artifact = payload
                         .provenance_artifact
                         .ok_or("selected attempt has no provenance artifact")?;
-                    cas.get(&result_artifact)
+                    cas.verify(&result_artifact)
                         .map_err(|error| error.to_string())?;
-                    cas.get(&provenance_artifact)
+                    cas.verify(&provenance_artifact)
                         .map_err(|error| error.to_string())?;
                     if replayed
                         .selected_reviewers
@@ -564,8 +564,8 @@ fn replay_execution(
     Ok(replayed)
 }
 
-fn failed_retry_context(attempt: &str, error: &str) -> String {
-    format!("attempt {attempt} returned an invalid result: {error}")
+fn failed_retry_context(attempt: &str, failure_class: &str) -> String {
+    format!("attempt {attempt} returned an invalid result: {failure_class}")
 }
 
 fn fenced_retry_context(attempt: &str, reason: &str) -> String {
@@ -875,26 +875,42 @@ impl<'a> Kernel<'a> {
     /// The ledger as it stands, derived from the log and cached only through a run-bound
     /// projection capability.
     pub fn ledger(&self) -> Ledger {
-        self.ledger_projection().ledger().clone()
+        self.with_ledger(Ledger::clone)
     }
 
-    fn ledger_projection(&self) -> LedgerProjection {
-        let mut cached = self.ledger_cache.lock().expect("ledger cache");
-        if let Some(projection) = cached.as_ref() {
-            return projection.clone();
-        }
-        let projection = LedgerProjection::rebuild(
+    fn rebuild_ledger_projection(&self) -> LedgerProjection {
+        LedgerProjection::rebuild(
             *self.store.lock().expect("event store"),
             self.cas,
             &self.run_id,
         )
-        .expect("replay");
-        *cached = Some(projection.clone());
-        projection
+        .expect("replay")
+    }
+
+    fn with_ledger<R>(&self, inspect: impl FnOnce(&Ledger) -> R) -> R {
+        let mut cached = self.ledger_cache.lock().expect("ledger cache");
+        if let Some(projection) = cached.as_ref() {
+            return inspect(projection.ledger());
+        }
+        drop(cached);
+
+        let rebuilt = self.rebuild_ledger_projection();
+        cached = self.ledger_cache.lock().expect("ledger cache");
+        let projection = cached.get_or_insert(rebuilt);
+        inspect(projection.ledger())
+    }
+
+    fn take_ledger_projection(&self) -> LedgerProjection {
+        let mut cached = self.ledger_cache.lock().expect("ledger cache");
+        if let Some(projection) = cached.take() {
+            return projection;
+        }
+        drop(cached);
+        self.rebuild_ledger_projection()
     }
 
     pub fn convergence(&self, policy: ConvergencePolicy) -> Convergence {
-        self.ledger().convergence(policy)
+        self.with_ledger(|ledger| ledger.convergence(policy))
     }
 
     /// Append one event to the run's log. Everything the kernel decides goes through here:
@@ -1529,7 +1545,8 @@ impl<'a> Kernel<'a> {
                     let result_value = match reviewer_result_value(&returned.output) {
                         Ok(value) => value,
                         Err(error) => {
-                            retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
+                            retry_failures
+                                .push(failed_retry_context(&attempt.to_string(), "contract_error"));
                             self.fail_started_attempt(
                                 node_id,
                                 &attempt,
@@ -1658,7 +1675,7 @@ impl<'a> Kernel<'a> {
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
                     let error = format!("reviewer output is not a ReviewerResult@1: {why}");
-                    retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
+                    retry_failures.push(failed_retry_context(&attempt.to_string(), "parse_error"));
                     let charged = reservation
                         .as_ref()
                         .map_or(0, |reservation| reservation.amount);
@@ -1851,7 +1868,7 @@ impl<'a> Kernel<'a> {
         // Canonical gather order: node id — not completion order, not artifact digest order.
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let projection = self.ledger_projection();
+        let projection = self.take_ledger_projection();
         let (round, finding_count, projection) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =

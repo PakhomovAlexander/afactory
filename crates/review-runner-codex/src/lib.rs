@@ -155,8 +155,10 @@ impl ReviewerAdapter for CodexAdapter {
 
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
-        let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        let prompt = format!("{}{}", self.prompt, inputs);
+        let mut prompt = self.prompt.clone();
+        inputs
+            .render_into(&mut prompt)
+            .map_err(RunnerError::Refused)?;
         let command = codex_command(
             &self.program,
             &self.model_flags,
@@ -169,7 +171,7 @@ impl ReviewerAdapter for CodexAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.as_bytes())?;
+        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
 
         let events = Events::parse(&capture.stdout);
         if !capture.status.success() {
