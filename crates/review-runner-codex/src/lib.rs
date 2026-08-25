@@ -199,17 +199,14 @@ impl ReviewerAdapter for CodexAdapter {
             .ok()
             .filter(|text| !text.trim().is_empty())
             .or(events.final_message)
-            .ok_or_else(|| {
-                RunnerError::MalformedOutput(
-                    "codex exec succeeded but produced no final message".to_string(),
-                )
+            .ok_or_else(|| RunnerError::MalformedOutput {
+                raw_artifact: capture.raw_artifact.clone(),
+                why: "codex exec succeeded but produced no final message".into(),
             })?;
 
-        let output = parse_stage_output(&answer).map_err(|e| {
-            RunnerError::MalformedOutput(format!(
-                "{e}; the raw stream is stored as {}",
-                capture.raw_artifact
-            ))
+        let output = parse_stage_output(&answer).map_err(|e| RunnerError::MalformedOutput {
+            raw_artifact: capture.raw_artifact.clone(),
+            why: e.to_string(),
         })?;
         Ok(ReviewerReturn {
             output,

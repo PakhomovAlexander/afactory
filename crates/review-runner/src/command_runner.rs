@@ -23,7 +23,7 @@ pub enum RunnerError {
         stderr_excerpt: String,
     },
     /// The reviewer ran, succeeded, and returned something that is not a result.
-    MalformedOutput(String),
+    MalformedOutput { raw_artifact: String, why: String },
     /// The reviewer did not answer by its deadline and was killed. Whatever it spent is gone;
     /// whether to retry is the kernel's decision, not this layer's.
     TimedOut { after_ms: u64 },
@@ -38,7 +38,7 @@ impl std::fmt::Display for RunnerError {
                 exit_code,
                 stderr_excerpt,
             } => write!(f, "reviewer failed (exit {exit_code}): {stderr_excerpt}"),
-            RunnerError::MalformedOutput(why) => {
+            RunnerError::MalformedOutput { why, .. } => {
                 write!(f, "reviewer output is not a ReviewerResult@1: {why}")
             }
             RunnerError::TimedOut { after_ms } => {
@@ -158,9 +158,13 @@ impl<'a> CommandRunner<'a> {
             .put(&output.stdout)
             .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
 
-        serde_json::from_slice::<LegacyStageOutput>(&output.stdout)
-            .map(|parsed| (parsed, raw_artifact))
-            .map_err(|e| RunnerError::MalformedOutput(e.to_string()))
+        match serde_json::from_slice::<LegacyStageOutput>(&output.stdout) {
+            Ok(parsed) => Ok((parsed, raw_artifact)),
+            Err(error) => Err(RunnerError::MalformedOutput {
+                raw_artifact,
+                why: error.to_string(),
+            }),
+        }
     }
 }
 
@@ -250,7 +254,7 @@ mod tests {
         );
         assert!(matches!(
             runner.invoke(&command),
-            Err(RunnerError::MalformedOutput(_))
+            Err(RunnerError::MalformedOutput { .. })
         ));
         assert!(
             cas.contains(&review_store::canonical::blob_content_id(

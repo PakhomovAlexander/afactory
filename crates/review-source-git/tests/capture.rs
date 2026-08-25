@@ -473,11 +473,15 @@ fn dirty_capture_large_tree_measurement() {
     let cas = cas_of(&fixture);
     let start = std::time::Instant::now();
     let snapshot = Capture::new(&repo, &cas).dirty().unwrap();
-    let elapsed = start.elapsed();
+    let cold_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    let warm_snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    let warm_elapsed = start.elapsed();
 
     assert_eq!(snapshot.manifest.len(), count as usize + 1);
+    assert_eq!(warm_snapshot.manifest, snapshot.manifest);
     eprintln!(
-        "dirty capture: {count} x 40KiB ({:.1} MiB) in {elapsed:?}",
+        "dirty capture: {count} x 40KiB ({:.1} MiB) cold {cold_elapsed:?}, warm {warm_elapsed:?}",
         f64::from(count) * 40.0 / 1024.0
     );
 }

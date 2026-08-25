@@ -2,6 +2,7 @@ use review_core::{
     ChangeSetV1, EventType, FindingReport, Location, PathRenameV1, RoundStartedPayloadV1, RunEvent,
     Severity, SubjectV1,
 };
+use review_store::ledger::TransitionKind;
 use review_store::{
     Cas, ConvergencePolicy, Ledger, ReportScope, ScopeAuthorityKind, Status, Verdict,
 };
@@ -413,6 +414,23 @@ fn an_unreadable_rereport_of_a_fixed_claim_never_ages_out() {
     assert_eq!(summary.new_recent, 0);
     assert_eq!(summary.authority_failures_recent, 1);
     assert_eq!(summary.verdict, Verdict::NotConverged);
+
+    apply_whole_tree_round(&mut ledger, &cas, 4);
+    apply_report(&mut ledger, &cas, "claim", 4, Severity::Major, "src/a.rs");
+    let finding = ledger.get("claim").unwrap();
+    assert!(finding.unreadable_reports.is_empty());
+    assert!(
+        finding
+            .history
+            .iter()
+            .any(|transition| transition.kind == TransitionKind::AuthorityRecovered)
+    );
+    let recovered = ledger.convergence(ConvergencePolicy {
+        clean_rounds: 1,
+        max_rounds: 5,
+        gate: Severity::Major,
+    });
+    assert_eq!(recovered.authority_failures_recent, 0);
 }
 
 #[test]

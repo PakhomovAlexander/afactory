@@ -184,6 +184,33 @@ struct InvalidOnce {
     cost: u64,
 }
 
+struct MalformedOnce {
+    calls: AtomicU32,
+}
+
+impl ReviewerAdapter for MalformedOnce {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(RunnerError::MalformedOutput {
+                raw_artifact: cas.put(b"{not a ReviewerResult").unwrap(),
+                why: "expected a quoted object key".into(),
+            });
+        }
+        assert_eq!(inputs.refused_attempts.len(), 1);
+        assert!(inputs.refused_attempts[0].contains("expected a quoted object key"));
+        Ok(ReviewerReturn {
+            output: clean_output(),
+            cost_tokens: 10_000,
+            raw_artifact: cas.put(b"corrected answer").unwrap(),
+        })
+    }
+}
+
 impl ReviewerAdapter for InvalidOnce {
     fn invoke(
         &self,
@@ -624,6 +651,58 @@ fn an_invalid_report_is_refused_before_admission_and_only_that_reviewer_retries(
     assert_eq!(refusal_history.len(), 1);
     assert!(refusal_history[0].contains("canonical repository-relative path"));
     assert_ne!(retry_input.attempt_id, failed.attempt_id);
+}
+
+#[test]
+fn malformed_output_is_durable_feedback_and_the_reviewer_retries() {
+    let mut run = run_fixture();
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        BUDGET_PIPELINE,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 2_000_000)
+    .with_adapter(
+        "r-alpha",
+        Box::new(MalformedOnce {
+            calls: AtomicU32::new(0),
+        }),
+    )
+    .with_adapter("r-beta", Box::new(Costed { cost: 10_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 10_000 }));
+
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
+    assert!(
+        report.complete(),
+        "malformed answer should be corrected: {report:?}"
+    );
+    drop(kernel);
+
+    let events = run.store.replay("run").unwrap();
+    let failed = events
+        .iter()
+        .find(|event| event.event_type == EventType::AttemptFailedV1)
+        .unwrap();
+    assert!(failed.artifact_refs.iter().any(|artifact| {
+        run.cas
+            .get(artifact)
+            .is_ok_and(|bytes| bytes == b"{not a ReviewerResult")
+    }));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == EventType::AttemptFeedbackV1)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == EventType::AttemptInputV1)
+    );
 }
 
 #[test]

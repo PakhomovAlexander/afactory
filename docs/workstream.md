@@ -1,10 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0 and M1 are complete. Three M2 dogfood Campaigns exhausted with all 126 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-clean` retained all sixteen Round 1-2 fixes
-in Round 3 and opened eight further Findings; their corrections pass the full kernel gate. This
-Campaign can no longer converge, so Round 4 must retain the corrections before a fresh
-unchanged-policy Campaign establishes two clean Rounds ahead of M3.1.
+**Status:** M0 and M1 are complete. Four M2 dogfood Campaigns exhausted with all 158 Findings
+fixed. Campaign `m2-rename-scope-clean` retained all 24 prior fixes in
+Round 4 and opened eight further Findings; their corrections pass the full kernel gate. A fresh
+unchanged-policy Campaign must establish two clean Rounds before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -177,7 +176,14 @@ verified read, reuse per-worker CAS verification scratch, and avoid duplicate ch
 ownership. ADR-0023 records the additive `AttemptFeedback@1` boundary. The full kernel gate and
 release measurement pass. Commit and resolve these eight claims, then run Round 4 to retain them.
 Because Round 3 was not clean, this Campaign cannot converge; start a fresh unchanged-policy
-Campaign and require two clean Rounds before M3.1.
+Campaign and require two clean Rounds before M3.1. Round 4 spent 828,444 tokens, retained all 24
+prior resolutions, opened eight claims, and exhausted `m2-rename-scope-clean`. Their corrections
+make malformed answers inspectable durable retry feedback, give unreadable Report attachments a
+readable recovery transition, bind renderer authority through an exact store-owned Change Set
+capability, retain only changed paths in Ledger Scope, make warm streaming CAS publication
+write-free, stream synthetic-tree blobs into Git, and serialize each published Change Set once.
+The 195.3 MiB capture fixture records 1.496 s cold and 0.526 s warm. The full kernel gate passes;
+commit and resolve these eight claims, then open the fresh convergence Campaign.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

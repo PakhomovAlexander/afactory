@@ -155,18 +155,13 @@ impl ReviewerAdapter for ClaudeAdapter {
             let text = envelope
                 .result
                 .filter(|t| !t.trim().is_empty())
-                .ok_or_else(|| {
-                    RunnerError::MalformedOutput(format!(
-                        "claude -p succeeded but returned no result text; the raw envelope \
-                         is stored as {}",
-                        capture.raw_artifact
-                    ))
+                .ok_or_else(|| RunnerError::MalformedOutput {
+                    raw_artifact: capture.raw_artifact.clone(),
+                    why: "claude -p succeeded but returned no result text".into(),
                 })?;
-            let output = parse_stage_output(&text).map_err(|e| {
-                RunnerError::MalformedOutput(format!(
-                    "{e}; the raw envelope is stored as {}",
-                    capture.raw_artifact
-                ))
+            let output = parse_stage_output(&text).map_err(|e| RunnerError::MalformedOutput {
+                raw_artifact: capture.raw_artifact.clone(),
+                why: e.to_string(),
             })?;
             return Ok(ReviewerReturn {
                 output,

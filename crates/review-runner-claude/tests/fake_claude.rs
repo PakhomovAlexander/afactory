@@ -153,7 +153,7 @@ fn a_prose_result_is_malformed() {
         adapter
             .invoke(&cas, &sandbox, &Default::default())
             .unwrap_err(),
-        RunnerError::MalformedOutput(_)
+        RunnerError::MalformedOutput { .. }
     ));
 }
 
@@ -181,10 +181,11 @@ fn a_malformed_error_names_the_raw_artifact() {
     let error = adapter
         .invoke(&cas, &sandbox, &Default::default())
         .unwrap_err();
-    let RunnerError::MalformedOutput(message) = &error else {
+    let RunnerError::MalformedOutput { raw_artifact, why } = &error else {
         panic!("expected MalformedOutput, got {error:?}");
     };
-    assert!(message.contains("stored as sha256:"), "{message}");
+    assert!(raw_artifact.starts_with("sha256:"), "{raw_artifact}");
+    assert!(!why.is_empty());
 }
 
 /// A fenced answer is unwrapped, same rule as codex.

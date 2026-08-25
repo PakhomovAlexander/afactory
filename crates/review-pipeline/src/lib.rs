@@ -172,19 +172,13 @@ impl RoundAuthority {
         }
         let resolved = review_store::resolve_subject(cas, &payload.subject_id)
             .map_err(|error| error.to_string())?;
-        let change_set = resolved.change_set;
-        let change_set_bytes = resolved.change_set_bytes;
         let subject = resolved.subject;
         let change_set_id = subject.change_set_id.clone();
-        let change_set_input = match (&change_set_id, change_set, change_set_bytes) {
-            (Some(artifact_id), Some(change_set), Some(encoded_bytes)) => {
-                Some(ReviewerInputArtifact::pre_validated_change_set(
-                    artifact_id.clone(),
-                    change_set,
-                    encoded_bytes,
-                )?)
+        let change_set_input = match (&change_set_id, resolved.change_set) {
+            (Some(artifact_id), Some(change_set)) if change_set.artifact_id() == artifact_id => {
+                Some(ReviewerInputArtifact::from_resolved_change_set(change_set))
             }
-            (None, None, None) => None,
+            (None, None) => None,
             _ => return Err("resolved Subject has incomplete Change Set authority".into()),
         };
         let source: SourceSnapshot = serde_json::from_value(
@@ -1620,6 +1614,25 @@ impl<'a> Kernel<'a> {
                     self.buffer_reviewer_event(node_id, admitted);
                     return Ok(vec![result_artifact]);
                 }
+                Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
+                    let error = format!("reviewer output is not a ReviewerResult@1: {why}");
+                    retry_failures.push(failed_retry_context(&attempt.to_string(), &error));
+                    let charged = reservation
+                        .as_ref()
+                        .map_or(0, |reservation| reservation.amount);
+                    self.fail_started_attempt(
+                        node_id,
+                        &attempt,
+                        reservation.as_ref(),
+                        &error,
+                        charged,
+                        AttemptFailureEvidence {
+                            raw_artifact: Some(&raw_artifact),
+                            refusal_history: Some(&retry_failures),
+                        },
+                    )?;
+                    continue;
+                }
                 Err(RunnerError::TimedOut { after_ms }) => {
                     // Fence, charge, retry. The killed process's true spend is unreportable,
                     // so the full reservation is charged — the conservative reading of "a
@@ -1677,9 +1690,9 @@ impl<'a> Kernel<'a> {
                     return Err(error.to_string());
                 }
                 Err(error) => {
-                    // Failed or malformed: the reviewer did execute, its spend is unreported,
-                    // and forgiving it would make crashing cheaper than answering. Full
-                    // reservation, same rule as a timeout.
+                    // Failed: the reviewer did execute, its spend is unreported, and forgiving
+                    // it would make crashing cheaper than answering. Full reservation, same
+                    // rule as a timeout. Malformed answers took the durable correction loop above.
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger

@@ -454,3 +454,29 @@ changed-path collection. Focused regressions and all-target clippy pass. Full wo
 tests, doc tests, and byte-identical fixture reproduction pass before commit. Round 4 must retain
 the corrections; because Round 3 was not clean, a fresh unchanged-policy Campaign must then
 establish two clean Rounds before M3.1.
+
+## 2026-08-25 — M2 clean Campaign Round 4 corrections
+
+Round 4 spent 828,444 tokens, retained all 24 prior resolutions, opened eight Reports, and
+exhausted Campaign `m2-rename-scope-clean`. Malformed reviewer output now carries its raw CAS
+artifact and enters the same bounded durable-feedback correction loop as a semantically invalid
+answer; generic execution failures still never become prompt instructions under ADR-0023. A
+readable Report clears named unreadable attachments and records `AuthorityRecovered`, so the
+fail-closed blocker has a durable recovery path whether the original Finding was a placeholder or
+an existing claim.
+
+Full Round authority now uses a private store-owned `ResolvedChangeSet` capability that binds the
+verified CAS identity, parsed contract, and exact stored length without demanding byte-identical
+re-serialization. A schema-valid explicit `rename_detection_truncated: false` regression proves
+the stored bytes remain authority. Ledger Scope has its own resolver and retains only the moved
+changed-path set, dropping each Round's potentially multi-megabyte base64 patch after validation.
+
+The dirty capture publishing pass reuses the first pass's digest authority. Cold objects stream
+once into a temporary in the expected shard; warm objects hash and verify without any temporary
+write. The release 5,000-file / 195.3 MiB fixture recorded 1.496 s cold and 0.526 s warm. Synthetic
+Git tree construction streams verified CAS objects directly into `fast-import` through fixed
+scratch instead of allocating each file. Change Set publication builds one JSON value, one
+canonical byte buffer, bounds that exact representation, and stores those bytes directly.
+Focused source, store, runner, adapter, pipeline, and CLI suites pass. Full workspace formatting,
+all-target clippy, tests, doc tests, and byte-identical fixture reproduction pass before commit. A
+fresh unchanged-policy Campaign must establish two clean Rounds before M3.1.

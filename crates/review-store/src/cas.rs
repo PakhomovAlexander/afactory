@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -155,39 +155,112 @@ impl Cas {
         Ok(digest)
     }
 
-    /// Stream one object into the CAS while hashing it through caller-owned scratch. Candidate
-    /// size never becomes resident memory; at most one fixed buffer is live per calling worker.
+    /// Hash a seekable source through caller-owned scratch, then publish it only when its object
+    /// is absent. A warm CAS performs no temporary write; a cold CAS rereads the source into a
+    /// temporary in the final shard and rejects a source that changed between the two passes.
     pub fn put_reader_with_buffer(
         &self,
-        reader: &mut impl Read,
+        reader: &mut (impl Read + Seek),
         buffer: &mut [u8],
     ) -> Result<(String, u64), CasError> {
-        let objects = self.root.join("objects");
-        let mut temporary = tempfile::NamedTempFile::new_in(&objects)?;
-        let (digest, size) = {
+        let (digest, size) = canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
+        let final_path = self.path_for(&digest);
+        if final_path.exists() {
+            return self.accept_existing_streamed_object(digest, size, final_path, buffer);
+        }
+
+        let shard = final_path.parent().expect("object path has a parent");
+        fs::create_dir_all(shard)?;
+        reader.rewind()?;
+        let mut temporary = tempfile::NamedTempFile::new_in(shard)?;
+        let (published_digest, published_size) = {
             let mut copying = CopyingReader {
                 source: reader,
                 destination: temporary.as_file_mut(),
             };
             canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
         };
-        let final_path = self.path_for(&digest);
-        if final_path.exists() {
-            let mut existing = fs::File::open(&final_path)?;
-            let (actual, existing_size) =
-                canonical::blob_content_id_reader_with_buffer(&mut existing, buffer)?;
-            if actual != digest || existing_size != size {
-                return Err(CasError::Corrupt { digest });
+        if published_digest != digest || published_size != size {
+            return Err(CasError::Corrupt { digest });
+        }
+        self.publish_streamed_object(temporary, digest, size, buffer)
+    }
+
+    /// Publish a source whose digest was established by a preceding stability pass. On the normal
+    /// cold path this streams the source once; if the source changed meanwhile, the actual bytes
+    /// are still filed under their actual digest and the caller's pass comparison rejects them.
+    pub fn put_reader_with_expected(
+        &self,
+        expected_digest: &str,
+        reader: &mut (impl Read + Seek),
+        buffer: &mut [u8],
+    ) -> Result<(String, u64), CasError> {
+        if !valid_digest(expected_digest) {
+            return Err(CasError::InvalidDigest(expected_digest.to_string()));
+        }
+        let expected_path = self.path_for(expected_digest);
+        if expected_path.exists() {
+            let (actual_digest, actual_size) =
+                canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
+            let actual_path = self.path_for(&actual_digest);
+            if actual_path.exists() {
+                return self.accept_existing_streamed_object(
+                    actual_digest,
+                    actual_size,
+                    actual_path,
+                    buffer,
+                );
             }
-            self.pend_existing_if_needed(final_path);
-            return Ok((digest, size));
+            reader.rewind()?;
+            return self.put_reader_with_expected(&actual_digest, reader, buffer);
         }
 
+        let expected_shard = expected_path.parent().expect("object path has a parent");
+        fs::create_dir_all(expected_shard)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(expected_shard)?;
+        let (actual_digest, actual_size) = {
+            let mut copying = CopyingReader {
+                source: reader,
+                destination: temporary.as_file_mut(),
+            };
+            canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)?
+        };
+        self.publish_streamed_object(temporary, actual_digest, actual_size, buffer)
+    }
+
+    fn publish_streamed_object(
+        &self,
+        temporary: tempfile::NamedTempFile,
+        digest: String,
+        size: u64,
+        buffer: &mut [u8],
+    ) -> Result<(String, u64), CasError> {
+        let final_path = self.path_for(&digest);
+        if final_path.exists() {
+            return self.accept_existing_streamed_object(digest, size, final_path, buffer);
+        }
         fs::create_dir_all(final_path.parent().expect("object path has a parent"))?;
         temporary
             .persist(&final_path)
             .map_err(|error| CasError::Io(error.error))?;
         self.pending.lock().expect("cas pending").insert(final_path);
+        Ok((digest, size))
+    }
+
+    fn accept_existing_streamed_object(
+        &self,
+        digest: String,
+        size: u64,
+        final_path: PathBuf,
+        buffer: &mut [u8],
+    ) -> Result<(String, u64), CasError> {
+        let mut existing = fs::File::open(&final_path)?;
+        let (actual, existing_size) =
+            canonical::blob_content_id_reader_with_buffer(&mut existing, buffer)?;
+        if actual != digest || existing_size != size {
+            return Err(CasError::Corrupt { digest });
+        }
+        self.pend_existing_if_needed(final_path);
         Ok((digest, size))
     }
 
@@ -341,7 +414,14 @@ impl Cas {
         Ok(size)
     }
 
-    fn copy_to_and_verify(&self, digest: &str, writer: &mut impl Write) -> Result<u64, CasError> {
+    /// Stream one verified object into a caller-owned sink without retaining candidate-sized
+    /// bytes. The sink may receive a prefix before corruption is detected and must publish only
+    /// after this method succeeds.
+    pub fn copy_to_and_verify(
+        &self,
+        digest: &str,
+        writer: &mut impl Write,
+    ) -> Result<u64, CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
@@ -584,20 +664,41 @@ mod tests {
         let (directory, cas) = cas();
         let bytes = vec![0x5a; 256 * 1024 + 3];
         let mut scratch = vec![0_u8; 4 * 1024];
+        let mut source = std::io::Cursor::new(bytes.as_slice());
         let (digest, size) = cas
-            .put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch)
+            .put_reader_with_buffer(&mut source, &mut scratch)
             .unwrap();
         assert_eq!(size, bytes.len() as u64);
         assert_eq!(cas.get(&digest).unwrap(), bytes);
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                directory.path().join("objects"),
+                fs::Permissions::from_mode(0o555),
+            )
+            .unwrap();
+        }
+        source.rewind().unwrap();
         let repeated = cas
-            .put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch)
+            .put_reader_with_buffer(&mut source, &mut scratch)
             .unwrap();
         assert_eq!(repeated, (digest.clone(), size));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                directory.path().join("objects"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
 
         fs::write(cas.path_for(&digest), b"tampered").unwrap();
+        source.rewind().unwrap();
         assert!(matches!(
-            cas.put_reader_with_buffer(&mut bytes.as_slice(), &mut scratch),
+            cas.put_reader_with_buffer(&mut source, &mut scratch),
             Err(CasError::Corrupt { .. })
         ));
         drop(directory);

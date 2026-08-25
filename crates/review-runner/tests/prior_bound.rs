@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use review_core::ChangeSetV1;
+use review_core::{ChangeSetV1, SubjectV1};
 use review_runner::{ReviewerInputArtifact, ReviewerInputs};
 
 fn inputs_with_change_set(change_set: serde_json::Value) -> Result<ReviewerInputs, String> {
@@ -82,45 +81,35 @@ fn encoded_change_sets_are_fully_validated_before_prompt_rendering() {
 }
 
 #[test]
-fn prevalidated_change_sets_must_match_their_id_and_encoded_length() {
-    let change_set = Arc::new(
-        ChangeSetV1::new(
-            format!("sha256:{}", "a".repeat(64)),
-            format!("sha256:{}", "b".repeat(64)),
-            vec!["src/a.rs".into()],
-            vec![],
-            b"patch",
-            "git version test",
-            "review.kernel/git-tree-diff@test",
-        )
-        .unwrap(),
-    );
-    let value = serde_json::to_value(change_set.as_ref()).unwrap();
+fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path()).unwrap();
+    let base = format!("sha256:{}", "a".repeat(64));
+    let head = format!("sha256:{}", "b".repeat(64));
+    let change_set = ChangeSetV1::new(
+        base.clone(),
+        head.clone(),
+        vec!["src/a.rs".into()],
+        vec![],
+        b"patch",
+        "git version test",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(change_set).unwrap();
+    // This is schema-valid but the Rust serializer deliberately omits the false default. The
+    // verified stored bytes, not a later re-serialization, remain artifact identity authority.
+    value["rename_detection_truncated"] = serde_json::Value::Bool(false);
     let encoded = review_store::canonical::canonicalize(&value).unwrap();
-    let artifact_id = review_store::canonical::blob_content_id(&encoded);
+    let artifact_id = cas.put(&encoded).unwrap();
+    let subject_id = cas
+        .put_json(&serde_json::to_value(SubjectV1::diff(head, base, artifact_id.clone())).unwrap())
+        .unwrap();
+    let resolved = review_store::resolve_subject(&cas, &subject_id).unwrap();
+    let resolved_change_set = resolved.change_set.unwrap();
+    assert_eq!(resolved_change_set.artifact_id(), artifact_id);
+    assert_eq!(resolved_change_set.encoded_bytes(), encoded.len());
 
-    assert!(
-        ReviewerInputArtifact::pre_validated_change_set(
-            artifact_id.clone(),
-            Arc::clone(&change_set),
-            encoded.len(),
-        )
-        .is_ok()
-    );
-    assert!(
-        ReviewerInputArtifact::pre_validated_change_set(
-            format!("sha256:{}", "c".repeat(64)),
-            Arc::clone(&change_set),
-            encoded.len(),
-        )
-        .is_err()
-    );
-    assert!(
-        ReviewerInputArtifact::pre_validated_change_set(
-            artifact_id,
-            change_set,
-            encoded.len() + 1,
-        )
-        .is_err()
-    );
+    let input = ReviewerInputArtifact::from_resolved_change_set(resolved_change_set);
+    assert_eq!(input.artifact_id(), artifact_id);
 }

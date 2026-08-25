@@ -362,11 +362,11 @@ impl<'a> Capture<'a> {
         for attempt in 1..=self.max_attempts {
             let monitor = WorktreeMonitor::start(self.repo.workdir())?;
             let index_before = self.index_fingerprint()?;
-            let first = self.scan_worktree(false)?;
+            let first = self.scan_worktree(false, None)?;
             observer.between_passes(attempt);
             // The second pass publishes as it reads: if the boundary holds these are exactly
             // the snapshot's bytes, and if it does not, unreferenced CAS objects are inert.
-            let second = self.scan_worktree(true)?;
+            let second = self.scan_worktree(true, Some(&first))?;
             let index_after = self.index_fingerprint()?;
             let changed = monitor.changed()?;
 
@@ -417,6 +417,7 @@ impl<'a> Capture<'a> {
     fn scan_worktree(
         &self,
         publish: bool,
+        expected: Option<&BTreeMap<String, WorktreeFingerprint>>,
     ) -> Result<BTreeMap<String, WorktreeFingerprint>, CaptureError> {
         let mut paths: Vec<String> = Vec::new();
         for args in [
@@ -434,7 +435,10 @@ impl<'a> Capture<'a> {
         let scanned = review_parallel::try_map_owned_with(
             paths,
             || vec![0_u8; 64 * 1024],
-            |buffer, path| self.scan_worktree_path(publish, &canonical_workdir, buffer, path),
+            |buffer, path| {
+                let expected = expected.and_then(|fingerprints| fingerprints.get(&path));
+                self.scan_worktree_path(publish, expected, &canonical_workdir, buffer, path)
+            },
         )?;
         let mut out = BTreeMap::new();
         out.extend(scanned.into_iter().flatten());
@@ -444,6 +448,7 @@ impl<'a> Capture<'a> {
     fn scan_worktree_path(
         &self,
         publish: bool,
+        expected: Option<&WorktreeFingerprint>,
         canonical_workdir: &Path,
         buffer: &mut [u8],
         path: String,
@@ -480,9 +485,16 @@ impl<'a> Capture<'a> {
         } else {
             let mut file = std::fs::File::open(&full)?;
             if publish {
-                self.cas
-                    .put_reader_with_buffer(&mut file, buffer)
-                    .map_err(|error| CaptureError::Cas(error.to_string()))?
+                match expected {
+                    Some((expected_kind, expected_digest, _)) if *expected_kind == kind => self
+                        .cas
+                        .put_reader_with_expected(expected_digest, &mut file, buffer)
+                        .map_err(|error| CaptureError::Cas(error.to_string()))?,
+                    _ => self
+                        .cas
+                        .put_reader_with_buffer(&mut file, buffer)
+                        .map_err(|error| CaptureError::Cas(error.to_string()))?,
+                }
             } else {
                 review_store::canonical::blob_content_id_reader_with_buffer(&mut file, buffer)?
             }

@@ -706,7 +706,10 @@ fn capture_round(
                 .as_deref()
                 .ok_or("diff Campaign has no pinned Base Snapshot")?;
             let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
-            let encoded = serde_json::to_vec(&change_set).map_err(|error| error.to_string())?;
+            let value = serde_json::to_value(&change_set).map_err(|error| error.to_string())?;
+            review_core::json::admit(&value).map_err(|error| error.to_string())?;
+            let encoded =
+                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
             if encoded.len() > MAX_CHANGE_SET_BYTES {
                 return Err(format!(
                     "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
@@ -714,10 +717,7 @@ fn capture_round(
                     MAX_CHANGE_SET_BYTES
                 ));
             }
-            Some(
-                cas.put_json(&serde_json::to_value(change_set).map_err(|error| error.to_string())?)
-                    .map_err(|error| error.to_string())?,
-            )
+            Some(cas.put(&encoded).map_err(|error| error.to_string())?)
         }
         None => None,
     };

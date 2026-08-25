@@ -27,4 +27,7 @@ pub use ledger::{
 };
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
 pub use store::{EventStore, NewEvent, StoreError, validate_reviewer_result};
-pub use subject::{ResolvedSubject, resolve_subject, resolve_subject_scope};
+pub use subject::{
+    ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
+    resolve_subject_scope,
+};

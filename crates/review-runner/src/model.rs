@@ -286,9 +286,10 @@ pub struct ReviewerInputs {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ReviewerInputArtifact {
     artifact_id: String,
-    value: Arc<serde_json::Value>,
-    /// Parsed and fully validated once at the Round authority boundary. JSON remains alongside
-    /// it for deterministic command-reviewer serialization without per-attempt reconstruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<Arc<serde_json::Value>>,
+    /// Parsed and fully validated once at the Round authority boundary. Change Sets render from
+    /// this value directly and do not retain a second JSON/base64 representation.
     #[serde(skip)]
     validated_change_set: Option<Arc<review_core::ChangeSetV1>>,
     #[serde(skip)]
@@ -305,55 +306,39 @@ impl ReviewerInputArtifact {
     pub fn from_json(artifact_id: String, value: serde_json::Value, encoded_bytes: usize) -> Self {
         Self {
             artifact_id,
-            value: Arc::new(value),
+            value: Some(Arc::new(value)),
             validated_change_set: None,
             encoded_bytes,
         }
     }
 
     /// Admit encoded Change Set bytes at the runner boundary. This is the cold/test path; the
-    /// production Round authority path uses [`Self::pre_validated_change_set`].
+    /// production Round authority path uses [`Self::from_resolved_change_set`].
     pub fn change_set_from_encoded(artifact_id: String, encoded: &[u8]) -> Result<Self, String> {
         if review_store::canonical::blob_content_id(encoded) != artifact_id {
             return Err("Change Set bytes do not match their artifact ID".into());
         }
-        let value: serde_json::Value =
-            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
         let change_set: review_core::ChangeSetV1 =
-            serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
         change_set.validate()?;
         Ok(Self {
             artifact_id,
-            value: Arc::new(value),
+            value: None,
             validated_change_set: Some(Arc::new(change_set)),
             encoded_bytes: encoded.len(),
         })
     }
 
-    /// Pair already-validated Round authority with its content identity exactly once. Keeping the
-    /// representation private prevents later callers from mixing an ID, JSON value, size, and
-    /// parsed Change Set from different sources.
-    pub fn pre_validated_change_set(
-        artifact_id: String,
-        change_set: Arc<review_core::ChangeSetV1>,
-        encoded_bytes: usize,
-    ) -> Result<Self, String> {
-        let value = serde_json::to_value(change_set.as_ref()).map_err(|error| error.to_string())?;
-        let canonical =
-            review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
-        if canonical.len() != encoded_bytes
-            || review_store::canonical::blob_content_id(&canonical) != artifact_id
-        {
-            return Err(
-                "validated Change Set contradicts its artifact ID or encoded length".into(),
-            );
+    /// Import the exact typed/content binding established by one verified Subject resolution.
+    /// The wrapper's private fields prevent callers from mixing identities and parsed values,
+    /// while avoiding a schema-strengthening byte-exact re-serialization requirement.
+    pub fn from_resolved_change_set(resolved: Arc<review_store::ResolvedChangeSet>) -> Self {
+        Self {
+            artifact_id: resolved.artifact_id().to_string(),
+            value: None,
+            validated_change_set: Some(Arc::clone(resolved.change_set())),
+            encoded_bytes: resolved.encoded_bytes(),
         }
-        Ok(Self {
-            artifact_id,
-            value: Arc::new(value),
-            validated_change_set: Some(change_set),
-            encoded_bytes,
-        })
     }
 }
 

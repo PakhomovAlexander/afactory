@@ -510,14 +510,6 @@ impl Repo {
                         detail: format!("synthetic manifest has invalid path {:?}", entry.path),
                     });
                 }
-                let bytes = cas
-                    .get(&entry.content)
-                    .map_err(|error| GitError::Cas(error.to_string()))?;
-                if bytes.len() as u64 != entry.size {
-                    return Err(GitError::MalformedTreeDiff {
-                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
-                    });
-                }
                 writeln!(
                     input,
                     "M {} inline {}",
@@ -525,8 +517,15 @@ impl Repo {
                     quote_fast_import_path(&path)
                 )
                 .map_err(GitError::Io)?;
-                writeln!(input, "data {}", bytes.len()).map_err(GitError::Io)?;
-                input.write_all(&bytes).map_err(GitError::Io)?;
+                writeln!(input, "data {}", entry.size).map_err(GitError::Io)?;
+                let copied = cas
+                    .copy_to_and_verify(&entry.content, &mut input)
+                    .map_err(|error| GitError::Cas(error.to_string()))?;
+                if copied != entry.size {
+                    return Err(GitError::MalformedTreeDiff {
+                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
+                    });
+                }
                 input.write_all(b"\n").map_err(GitError::Io)?;
             }
             input.write_all(b"done\n").map_err(GitError::Io)?;

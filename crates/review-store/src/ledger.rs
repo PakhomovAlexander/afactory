@@ -234,7 +234,7 @@ struct ActiveScope {
 #[derive(Debug, Clone)]
 enum SubjectScope {
     WholeTree,
-    Diff(Arc<review_core::ChangeSetV1>),
+    Diff(Arc<[String]>),
     Unavailable,
 }
 
@@ -465,10 +465,10 @@ impl Ledger {
 
         // Every report is kept, whatever the projection then decides about it.
         existing.reports.push(attached);
+        let recovered_report_ids = std::mem::take(&mut existing.unreadable_reports);
 
         if existing.authority_diagnostic {
             existing.authority_diagnostic = false;
-            existing.unreadable_reports.clear();
             existing.last_seen_round = round;
             existing.status = Status::Open;
             existing.news_round = round;
@@ -482,11 +482,26 @@ impl Ledger {
                 round,
                 kind: TransitionKind::AuthorityRecovered,
                 note: Some(format!(
-                    "authority recovered: readable Report supplied by {source} in round {round}; \
-                     any prior resolution applied only to the authority placeholder"
+                    "authority recovered for Reports {}: readable Report supplied by {source} in \
+                     round {round}; any prior resolution applied only to the authority placeholder",
+                    recovered_report_ids
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
             });
             return Ok(());
+        }
+
+        if !recovered_report_ids.is_empty() {
+            existing.history.push(Transition {
+                round,
+                kind: TransitionKind::AuthorityRecovered,
+                note: Some(format!(
+                    "authority recovered for Reports {}: readable Report supplied by {source} in round {round}",
+                    recovered_report_ids.into_iter().collect::<Vec<_>>().join(", ")
+                )),
+            });
         }
 
         let previous_scoped_severity = existing.convergence_severity;
@@ -580,11 +595,11 @@ impl Ledger {
                 .and_then(|resolved| match resolved.subject.kind {
                     SubjectKind::WholeTree => Ok(Arc::new(SubjectScope::WholeTree)),
                     SubjectKind::Diff => resolved
-                        .change_set
-                        .map(|change_set| Arc::new(SubjectScope::Diff(change_set)))
+                        .changed_paths
+                        .map(|paths| Arc::new(SubjectScope::Diff(paths)))
                         .ok_or_else(|| {
                             format!(
-                                "diff Subject {} resolved without a Change Set",
+                                "diff Subject {} resolved without changed paths",
                                 started.subject_id
                             )
                         }),
@@ -648,11 +663,10 @@ impl Ledger {
             (SubjectScope::WholeTree, _) | (SubjectScope::Diff(_), ReportLocation::ChangeWide) => {
                 (Some(ReportScope::In), location.first_index())
             }
-            (SubjectScope::Diff(change_set), ReportLocation::Paths(paths)) => {
-                if let Some(index) = paths
-                    .iter()
-                    .position(|location| change_set.contains_report_path(&location.path))
-                {
+            (SubjectScope::Diff(changed_paths), ReportLocation::Paths(paths)) => {
+                if let Some(index) = paths.iter().position(|location| {
+                    review_core::contains_report_path(changed_paths, &location.path)
+                }) {
                     (Some(ReportScope::In), Some(index))
                 } else {
                     (Some(ReportScope::Out), location.first_index())
