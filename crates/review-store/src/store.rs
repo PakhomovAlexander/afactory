@@ -1163,7 +1163,10 @@ fn validate_campaign_transition(
         |row| row.get(0),
     )?;
     let mut opened = campaign_opened > 0;
-    let mut authority_plan = if opened {
+    let needs_authority_plan = events
+        .iter()
+        .any(|event| event_uses_authority_plan(event.event_type));
+    let mut authority_plan = if opened && needs_authority_plan {
         Some(load_authority_plan(tx, cas, run_id)?)
     } else {
         None
@@ -1969,6 +1972,16 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::NodeInvocationV1
                 | EventType::NodeOutputReceiptV1
                 | EventType::ProviderOperationTransitionV1
+        )
+}
+
+fn event_uses_authority_plan(event_type: EventType) -> bool {
+    event_type.is_run_report()
+        || matches!(
+            event_type,
+            EventType::NodeInvocationV1
+                | EventType::AttemptDispatchedV1
+                | EventType::NodeOutputReceiptV1
         )
 }
 

@@ -10,7 +10,9 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.1-M2.6 are implemented; the `m2-rename-scope` dogfood Campaign must converge before M3.1.
+M2.1-M2.6 are implemented; finish the final M2 review corrections and local gate before M3.1.
+New Campaigns use the bounded correctness-review policy in ADR-0027 rather than extending the
+retired two-specialist clean-window Campaign.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
 domain terms. Project-specific pipelines, reviewer packages, campaign state, and private corpora
@@ -39,3 +41,7 @@ budget, or sandbox boundary to make a test or review pass.
   `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
   adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
   ([ADR-0026](docs/adr/0026-share-process-supervision-through-a-leaf-crate.md)).
+- Every milestone receives external `af review`, but the standard dogfood policy uses one
+  high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
+  or performance audits are explicit exceptions
+  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)).

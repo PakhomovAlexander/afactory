@@ -19,12 +19,20 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, 
 
 use crate::{Options, campaign_run_id};
 
+pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
+    configured.unwrap_or(Duration::from_secs(
+        review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
+    ))
+}
+
 pub(super) struct PreparedRun {
     pub loaded: review_config::Loaded,
     pub snapshot: Manifest,
     pub run_id: String,
     pub focus: Option<String>,
     pub timeout: Duration,
+    pub check_timeout: Duration,
+    pub git_timeout: Duration,
     pub authority: RoundAuthority,
     pub ledger_projection: LedgerProjection,
 }
@@ -68,12 +76,22 @@ pub(super) fn prepare(
 
     let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
     let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
+    let check_timeout_seconds = campaign
+        .manifest
+        .check_timeout_seconds
+        .unwrap_or(campaign.loaded.check_timeout_seconds());
+    let git_timeout_seconds = campaign
+        .manifest
+        .git_timeout_seconds
+        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
     Ok(PreparedRun {
         loaded: campaign.loaded,
         snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
+        check_timeout: Duration::from_secs(check_timeout_seconds),
+        git_timeout: Duration::from_secs(git_timeout_seconds),
         authority,
         ledger_projection: round.ledger_projection,
     })
@@ -203,6 +221,8 @@ fn open_new(
             .timeout
             .unwrap_or(Duration::from_secs(1800))
             .as_secs(),
+        check_timeout_seconds: Some(loaded.check_timeout_seconds()),
+        git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
         budgets,
         focus: options.focus.clone(),
         finding_identity_policy: "legacy-path-title@1".to_string(),
@@ -299,6 +319,12 @@ fn resume(
         .is_some_and(|timeout| timeout.as_secs() != manifest.reviewer_timeout_seconds)
     {
         return Err("reviewer timeout differs from the pinned Campaign manifest".into());
+    }
+    let pinned_git_timeout = manifest
+        .git_timeout_seconds
+        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
+    if requested_git_timeout(options.git_timeout).as_secs() != pinned_git_timeout {
+        return Err("Git capture timeout differs from the pinned Campaign manifest".into());
     }
 
     let pipeline = cas
@@ -398,6 +424,15 @@ fn validate_manifest_authority(
     });
     if manifest.budgets != budgets {
         return Err("CampaignManifest budgets differ from captured pipeline authority".into());
+    }
+    if manifest
+        .check_timeout_seconds
+        .unwrap_or(loaded.check_timeout_seconds())
+        != loaded.check_timeout_seconds()
+    {
+        return Err(
+            "CampaignManifest check timeout differs from captured pipeline authority".into(),
+        );
     }
     if manifest.reviewers.len() != loaded.packages().len() {
         return Err("CampaignManifest reviewer bindings are incomplete".into());
@@ -721,6 +756,17 @@ fn capture_round(
     let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
     let change_set_id = match tree_diff {
         Some(diff) => {
+            // Base64 alone expands every three raw bytes to four encoded bytes. Refuse before
+            // building path arrays, base64, serde Values, and canonical JSON when the patch
+            // already cannot fit the authoritative encoded Change Set bound below.
+            let raw_patch_limit = maximum_raw_patch_bytes();
+            if raw_patch_exceeds_change_set_bound(diff.patch().len()) {
+                return Err(format!(
+                    "exact Change Set patch is {} raw bytes; maximum encodable patch is {} raw bytes and partitioning is required",
+                    diff.patch().len(),
+                    raw_patch_limit
+                ));
+            }
             let base_snapshot_id = campaign
                 .manifest
                 .base_snapshot_id
@@ -945,6 +991,14 @@ fn capture_round(
         prior_count,
         ledger_projection,
     })
+}
+
+fn maximum_raw_patch_bytes() -> usize {
+    MAX_CHANGE_SET_BYTES.saturating_mul(3) / 4
+}
+
+fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
+    raw_bytes > maximum_raw_patch_bytes()
 }
 
 fn load_round(
@@ -1215,6 +1269,26 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn omitted_git_timeout_resolves_to_the_capture_default() {
+        assert_eq!(
+            super::requested_git_timeout(None).as_secs(),
+            review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            super::requested_git_timeout(Some(std::time::Duration::from_secs(17))).as_secs(),
+            17
+        );
+    }
+
+    #[test]
+    fn raw_patch_bound_refuses_before_base64_amplification() {
+        let limit = super::maximum_raw_patch_bytes();
+        assert!(!super::raw_patch_exceeds_change_set_bound(limit));
+        assert!(super::raw_patch_exceeds_change_set_bound(limit + 1));
+        assert!(limit * 4 / 3 >= review_core::MAX_CHANGE_SET_BYTES);
+    }
+
     #[test]
     fn prior_findings_never_echo_a_path_live_admission_would_refuse() {
         assert_eq!(

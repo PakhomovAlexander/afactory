@@ -23,4 +23,6 @@ pub use plan::{
     Edge, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
     SnapshotAffinity,
 };
-pub use schedule::{ArtifactMap, Dispatch, NodeOutcome, RunReport, Scheduler, SuppressionReason};
+pub use schedule::{
+    ArtifactMap, Dispatch, NodeFailureClass, NodeOutcome, RunReport, Scheduler, SuppressionReason,
+};

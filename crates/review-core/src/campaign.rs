@@ -55,6 +55,10 @@ pub struct CampaignManifestV1 {
     pub convergence: CampaignConvergenceV1,
     pub reviewer_timeout_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budgets: Option<CampaignBudgetV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
@@ -118,6 +122,13 @@ impl CampaignManifestV1 {
             || self.reviewer_timeout_seconds > 9_007_199_254_740_991
         {
             return Err("CampaignManifest@1 contains an invalid reviewer timeout".into());
+        }
+        if [self.check_timeout_seconds, self.git_timeout_seconds]
+            .into_iter()
+            .flatten()
+            .any(|timeout| timeout == 0 || timeout > 9_007_199_254_740_991)
+        {
+            return Err("CampaignManifest@1 contains an invalid execution timeout".into());
         }
         if self
             .focus

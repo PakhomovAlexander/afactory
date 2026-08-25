@@ -156,8 +156,11 @@ impl<'a> CheckRunner<'a> {
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
-        let output = match self.run_with_deadline(&mut cmd) {
-            RunResult::Completed(output) => output,
+        let (output, stderr_held) = match self.run_with_deadline(&mut cmd) {
+            RunResult::Completed {
+                output,
+                stderr_held,
+            } => (output, stderr_held),
             RunResult::TimedOut => {
                 return CheckResult {
                     reason: Some(format!(
@@ -204,6 +207,17 @@ impl<'a> CheckRunner<'a> {
         }
         let (stdout, stderr) = (stdout.ok(), stderr.ok());
 
+        if let Some(reason) = stderr_held_reason(stderr_held) {
+            return CheckResult {
+                status: CheckStatus::NotRun,
+                exit_code: None,
+                reason: Some(reason.to_string()),
+                stdout,
+                stderr,
+                ..base
+            };
+        }
+
         CheckResult {
             status: if code == Some(0) {
                 CheckStatus::Passed
@@ -238,6 +252,12 @@ impl<'a> CheckRunner<'a> {
     }
 }
 
+fn stderr_held_reason(stderr_held: bool) -> Option<&'static str> {
+    stderr_held.then_some(
+        "stderr evidence was not preserved: a descendant held the pipe past the drain grace",
+    )
+}
+
 /// The `CheckCompleted@1` event for one result. Exposed so a caller that must not hold a lock
 /// across the check process — every check is a build or a test — can run the check first and
 /// append this afterward, under a lock held only for the append.
@@ -254,7 +274,10 @@ pub fn check_event(result: &CheckResult, node_id: &str) -> NewEvent {
 }
 
 enum RunResult {
-    Completed(std::process::Output),
+    Completed {
+        output: std::process::Output,
+        stderr_held: bool,
+    },
     TimedOut,
     CouldNotStart(std::io::Error),
 }
@@ -265,11 +288,14 @@ impl CheckRunner<'_> {
     /// than being allowed to hold evidence pipes open.
     fn run_with_deadline(&self, cmd: &mut std::process::Command) -> RunResult {
         match run_supervised_with_policy(cmd, None, self.timeout, ExitPolicy::KillProcessGroup) {
-            Ok(output) => RunResult::Completed(std::process::Output {
-                status: output.status,
-                stdout: output.stdout,
-                stderr: output.stderr,
-            }),
+            Ok(output) => RunResult::Completed {
+                stderr_held: output.stderr_held,
+                output: std::process::Output {
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                },
+            },
             Err(SupervisedError::TimedOut { .. }) => RunResult::TimedOut,
             Err(SupervisedError::Spawn(error)) => RunResult::CouldNotStart(error),
             Err(error) => RunResult::CouldNotStart(std::io::Error::other(error)),
@@ -279,4 +305,17 @@ impl CheckRunner<'_> {
 
 fn describe(error: &ArgError) -> String {
     format!("refused before execution: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn held_stderr_is_explicitly_unverifiable() {
+        assert!(
+            super::stderr_held_reason(true)
+                .unwrap()
+                .contains("evidence was not preserved")
+        );
+        assert_eq!(super::stderr_held_reason(false), None);
+    }
 }

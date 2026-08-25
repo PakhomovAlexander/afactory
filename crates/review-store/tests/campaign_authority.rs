@@ -60,6 +60,8 @@ runner = { program = "/bin/true" }
                     gate: "major".into(),
                 },
                 reviewer_timeout_seconds: 60,
+                check_timeout_seconds: Some(3600),
+                git_timeout_seconds: Some(300),
                 budgets: None,
                 focus: None,
                 finding_identity_policy: "legacy-path-title@1".into(),
@@ -210,6 +212,53 @@ fn runtime_events_require_an_active_round() {
 
     assert!(error.to_string().contains("requires an active Round"));
     assert!(store.replay("run").unwrap().is_empty());
+}
+
+#[test]
+fn events_that_do_not_use_the_plan_do_not_reparse_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas_root = directory.path().join("cas");
+    let cas = Cas::open(&cas_root).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "plan-cache");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+
+    let hex = ids.manifest.strip_prefix("sha256:").unwrap();
+    std::fs::write(
+        cas_root.join("objects").join(&hex[..2]).join(&hex[2..]),
+        b"corrupt after Campaign opening",
+    )
+    .unwrap();
+
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::GenerationAdvancedV1,
+                serde_json::json!({"round": 1}),
+            )
+            .caused_by(&round.event_id),
+        )
+        .expect("a reducer event does not consume the Campaign plan");
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(NodeInvocationPayloadV1 {
+                    node: "reviewer".into(),
+                    inputs: vec![],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .caused_by(round.event_id),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("CampaignManifest"), "{error}");
 }
 
 #[test]

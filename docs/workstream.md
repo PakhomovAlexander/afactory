@@ -243,8 +243,15 @@ position, and parallelize entries inside wide directories. All five are committe
 Round 3 spent 1,020,400 tokens, retained all twelve fixes, and opened six claims. Their verified
 corrections fast-forward and preserve watermarked projections, bound every Git subprocess, retain
 complete stdout when only stderr is held, reference timeout evidence, and cache Subject validation
-per transition batch. Resolve them and run Round 4; this Campaign then exhausts, so a fresh
-unchanged-policy Campaign must establish the two-Round clean window.
+per transition batch. All six are committed and resolved. Round 4 spent 1,053,936 tokens, retained
+all eighteen fixes, opened seven claims, and exhausted the Campaign. Their corrections pin gate
+and Git deadlines, type run-budget exhaustion, preserve held-stderr check evidence, guard raw
+Change Sets before encoding, unify Ledger projection input, and avoid irrelevant authority-plan
+parsing. The full local gate passes; commit and resolve the seven claims.
+The owner then retired the two-specialist clean-window policy after roughly four million tokens in
+this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
+ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
+Round under the exhausted immutable Campaign.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 
@@ -264,7 +271,7 @@ isolation, and verification prerequisites.
   before pushing. A missing blank line before `---` turns the preceding paragraph into a setext
   heading and fails the build.
 - **Editing a reviewer package requires re-locking**, or the digest check fails at load:
-  `cargo run -p review-config --example lock -- .review/reviewers architecture performance` is
+  `cargo run -p review-config --example lock -- .review/reviewers correctness` is
   the kernel repo's shipped generator. Replace `.review/review.lock` with its stdout atomically.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.

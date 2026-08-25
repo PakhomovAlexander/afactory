@@ -399,8 +399,8 @@ impl From<SeveritySpec> for review_core::Severity {
 /// versioned and reviewed. Absent means uncapped — budgets are a thing a pipeline declares,
 /// not a default it inherits invisibly.
 ///
-/// Owner decision, 2026-08-18: tokens as the unit; heavy defaults 300k/attempt, 2M/run; a run
-/// that exhausts finishes in-flight work and reports incomplete; a fenced attempt charges.
+/// Owner decision, updated 2026-08-25: tokens are the unit; the shipped heavy policy reserves
+/// 300k per attempt and caps a run at 1M. A fenced attempt still charges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetSpec {
@@ -434,6 +434,10 @@ pub struct Definition {
     pub subject: Option<SubjectSpec>,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
+    /// One pinned wall-clock bound for every gate check. The generous default is resolved by
+    /// the authority layer and persisted in CampaignManifest@1.
+    #[serde(default)]
+    pub check_timeout_seconds: Option<u64>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
@@ -449,6 +453,7 @@ pub struct Loaded {
     subject: SubjectSpec,
     plan: Planned,
     checks: Vec<CheckDefinition>,
+    check_timeout_seconds: u64,
     reviewers: BTreeMap<String, Command>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
@@ -473,6 +478,10 @@ impl Loaded {
 
     pub fn checks(&self) -> &[CheckDefinition] {
         &self.checks
+    }
+
+    pub fn check_timeout_seconds(&self) -> u64 {
+        self.check_timeout_seconds
     }
 
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
@@ -689,6 +698,12 @@ impl Definition {
             ));
         }
 
+        let check_timeout_seconds = self.check_timeout_seconds.unwrap_or(3600);
+        if check_timeout_seconds == 0 {
+            return Err(ConfigError::Binding(
+                "check_timeout_seconds must be positive".to_string(),
+            ));
+        }
         let plan = pipeline.plan().map_err(ConfigError::Plan)?;
         let checks = self
             .checks
@@ -708,6 +723,7 @@ impl Definition {
             subject,
             plan,
             checks,
+            check_timeout_seconds,
             reviewers,
             packages,
             budgets: self.budgets,

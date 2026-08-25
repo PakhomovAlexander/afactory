@@ -776,3 +776,22 @@ Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and
 fixture reproduction pass. Commit and resolve all six Reports, then run Round 4. Because Round 3
 was not clean, this Campaign cannot converge; open a fresh unchanged-policy Campaign after it
 exhausts and require two clean Rounds before M3.1.
+
+## 2026-08-25 — M2 Round 4 corrections and bounded review policy
+
+Round 4 spent 1,053,936 tokens, retained all eighteen prior resolutions, opened three major and
+four minor Reports, and exhausted `m2-rename-scope-clean-window`. Gate and Git subprocess
+deadlines are now explicit Campaign authority. Run-budget exhaustion crosses the scheduler as a
+typed failure class and persists `fail{exhausted}` without parsing diagnostic prose. Held stderr
+makes a check explicitly unverifiable, raw patches are refused before base64/JSON amplification,
+Ledger projection uses its reducer as the sole input vocabulary, and store transitions load the
+Campaign plan only for events that consume it. Focused regressions and the full local formatting,
+warnings-denied Clippy, tests, doc tests, and byte-identical fixture gate pass before commit and
+resolution.
+
+The owner explicitly replaced the standard two-specialist policy after this Campaign consumed
+about four million tokens. New Campaign authority uses one Claude Opus correctness reviewer at
+high effort, a 300,000-token attempt reservation, a 1,000,000-token run cap, one required clean
+Round, and a two-Round maximum. Architecture-only and performance-only audits are opt-in. The
+review package remains digest-locked, and ADR-0027 records the accepted coverage/cost tradeoff.
+The exhausted Campaign is immutable and will not receive another old-policy Round.

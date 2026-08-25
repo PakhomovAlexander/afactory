@@ -32,7 +32,7 @@ use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::Repo;
-use review_store::{Cas, EventStore, Ingest, Ledger, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status};
 
 mod authority;
 mod providers;
@@ -49,6 +49,7 @@ struct Options {
     uncommitted: bool,
     restart_round: bool,
     timeout: Option<Duration>,
+    git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
 }
@@ -226,10 +227,10 @@ struct ResolveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: af review run     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH]\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
@@ -266,6 +267,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
         uncommitted: false,
         restart_round: false,
         timeout: None,
+        git_timeout: None,
         provider_bindings: std::collections::BTreeMap::new(),
         provider_resumes: std::collections::BTreeMap::new(),
     };
@@ -282,6 +284,11 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--restart-round" => options.restart_round = true,
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
+                    value().parse().unwrap_or_else(|_| usage()),
+                ))
+            }
+            "--git-timeout-secs" => {
+                options.git_timeout = Some(Duration::from_secs(
                     value().parse().unwrap_or_else(|_| usage()),
                 ))
             }
@@ -472,8 +479,9 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
-        .map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     for finding in ledger.findings() {
         println!(
@@ -544,8 +552,9 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
-        .map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     let finding = ledger
         .get(&options.key)
@@ -630,7 +639,9 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
-    let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &run_id)
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
@@ -864,7 +875,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let home = std::env::var("HOME").map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
-    let repo = Repo::open(&options.repo, &git_home);
+    let repo = Repo::open(&options.repo, &git_home)
+        .with_timeout(authority::requested_git_timeout(options.git_timeout));
 
     let authority::PreparedRun {
         loaded,
@@ -872,10 +884,18 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         run_id,
         focus,
         timeout,
+        check_timeout,
+        git_timeout,
         authority,
         ledger_projection,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
+    println!(
+        "timeouts reviewer {}s, checks {}s, git capture {}s (pinned)",
+        timeout.as_secs(),
+        check_timeout.as_secs(),
+        git_timeout.as_secs()
+    );
 
     for node in options.provider_bindings.keys() {
         if !loaded.reviewers().contains_key(node) {
@@ -966,7 +986,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     );
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
         .with_ledger_projection(ledger_projection)?
-        .with_checks(loaded.checks().to_vec());
+        .with_checks(loaded.checks().to_vec())
+        .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
         println!(
             "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
@@ -1044,7 +1065,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     for (node, outcome) in &report.outcomes {
         match outcome {
             NodeOutcome::Completed { .. } => println!("  done      {node}"),
-            NodeOutcome::Failed { error } => println!("  FAILED    {node}: {error}"),
+            NodeOutcome::Failed { error, .. } => println!("  FAILED    {node}: {error}"),
             NodeOutcome::Suppressed { reason } => {
                 println!("  never-ran {node}: {reason:?}")
             }
@@ -1141,6 +1162,7 @@ mod option_tests {
             uncommitted: false,
             restart_round: false,
             timeout: None,
+            git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
         };

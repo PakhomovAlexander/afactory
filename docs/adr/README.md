@@ -62,3 +62,5 @@ options you rejected and why — that is the part future-you needs.
   2](0025-require-typed-generation-outputs-in-version-2.md)
 - [0026 — Share process supervision through a leaf
   crate](0026-share-process-supervision-through-a-leaf-crate.md)
+- [0027 — Use one correctness reviewer per
+  milestone](0027-use-one-correctness-reviewer-per-milestone.md)

@@ -42,6 +42,17 @@ pub trait Dispatch {
     fn gate_passed(&self, _node_id: &str, _outputs: &ArtifactMap) -> bool {
         true
     }
+
+    /// Typed classification for a failed node. Human-readable errors remain diagnostics;
+    /// policy must not recover a class by parsing them.
+    fn failure_class(&self, _node_id: &str) -> Option<NodeFailureClass> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeFailureClass {
+    RunBudgetExhausted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,9 +65,16 @@ pub enum SuppressionReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeOutcome {
-    Completed { outputs: ArtifactMap },
-    Failed { error: String },
-    Suppressed { reason: SuppressionReason },
+    Completed {
+        outputs: ArtifactMap,
+    },
+    Failed {
+        error: String,
+        class: Option<NodeFailureClass>,
+    },
+    Suppressed {
+        reason: SuppressionReason,
+    },
 }
 
 impl NodeOutcome {
@@ -229,7 +247,13 @@ impl<'a> Scheduler<'a> {
                         if node.kind == NodeKind::Gate {
                             blocked_gates.insert(node_id.clone());
                         }
-                        outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                        outcomes.insert(
+                            node_id.clone(),
+                            NodeOutcome::Failed {
+                                error,
+                                class: dispatch.failure_class(node_id),
+                            },
+                        );
                         progressed = true;
                         continue;
                     }
@@ -278,7 +302,10 @@ impl<'a> Scheduler<'a> {
                                 if node.kind == NodeKind::Gate {
                                     blocked_gates.insert(node_id.clone());
                                 }
-                                outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Failed { error, class: None },
+                                );
                                 continue;
                             }
                             if let Err(error) = dispatch.record_outputs(node, &produced) {
@@ -286,7 +313,10 @@ impl<'a> Scheduler<'a> {
                                 if node.kind == NodeKind::Gate {
                                     blocked_gates.insert(node_id.clone());
                                 }
-                                outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Failed { error, class: None },
+                                );
                                 continue;
                             }
                             for (port, artifacts) in &produced {
@@ -309,7 +339,13 @@ impl<'a> Scheduler<'a> {
                             if node.kind == NodeKind::Gate {
                                 blocked_gates.insert(node_id.clone());
                             }
-                            outcomes.insert(node_id.clone(), NodeOutcome::Failed { error });
+                            outcomes.insert(
+                                node_id.clone(),
+                                NodeOutcome::Failed {
+                                    error,
+                                    class: dispatch.failure_class(node_id),
+                                },
+                            );
                         }
                     }
                 }

@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Nothing below a layer knows about anything above it, and the projection holds no state the
-//! log cannot rebuild. `Ledger::rebuild` is the only constructor for that reason: there is no
+//! log cannot rebuild. `LedgerProjection::rebuild` is the only constructor for that reason: there is no
 //! path by which hand-edited state can enter.
 
 pub mod canonical;

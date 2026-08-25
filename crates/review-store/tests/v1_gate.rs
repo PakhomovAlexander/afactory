@@ -145,7 +145,7 @@ fn a_noncanonical_report_path_is_refused_instead_of_projecting_out() {
 /// raw CAS output and affected nothing.
 #[test]
 fn a_refute_dispute_contests_the_prior_claim() {
-    use review_store::{Ledger, Status};
+    use review_store::{LedgerProjection, Status};
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
@@ -174,6 +174,8 @@ fn a_refute_dispute_contests_the_prior_claim() {
     assert_eq!(summary.contested, 1);
 
     // Rebuilt from the log alone, the claim is contested — the dispute reached the ledger.
-    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
     assert_eq!(ledger.get(&key).unwrap().status, Status::Contested);
 }

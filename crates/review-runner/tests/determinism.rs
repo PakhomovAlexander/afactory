@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use review_core::LegacyStageOutput;
 use review_core::{Arg, Command};
 use review_runner::{CommandRunner, Invocation, Outcome, gather};
-use review_store::{Cas, EventStore, Ingest, Ledger};
+use review_store::{Cas, EventStore, Ingest, LedgerProjection};
 
 /// A reviewer that sleeps, then emits its result. The sleep is how completion order is forced
 /// to differ between runs without the test itself becoming nondeterministic.
@@ -121,8 +121,9 @@ fn ingest(outcomes: &[Outcome]) -> (Vec<String>, Vec<String>) {
         })
         .collect();
 
-    let ledger: Vec<String> = Ledger::rebuild(&store, &cas, "run")
+    let ledger: Vec<String> = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
+        .ledger()
         .findings()
         .into_iter()
         .map(|f| {

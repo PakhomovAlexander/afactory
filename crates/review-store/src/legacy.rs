@@ -495,7 +495,7 @@ pub fn import_ledger_jsonl(
 ) -> Result<usize, StoreError> {
     let mut imported = 0;
     let mut max_round = 1;
-    let mut projected = Ledger::rebuild(store, cas, run_id)?;
+    let mut projected = LedgerProjection::rebuild(store, cas, run_id)?.into_ledger();
     let mut events = Vec::new();
     for line in jsonl.lines() {
         let line = line.trim();

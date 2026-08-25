@@ -158,6 +158,8 @@ fn test_round_authority_with_subject(
                     gate: "major".into(),
                 },
                 reviewer_timeout_seconds: 60,
+                check_timeout_seconds: Some(3600),
+                git_timeout_seconds: Some(300),
                 budgets: None,
                 focus: None,
                 finding_identity_policy: "legacy-path-title@1".into(),

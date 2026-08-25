@@ -15,7 +15,10 @@ use review_check::{Arg, CheckDefinition, Command};
 use review_config::Definition;
 use review_core::NodeInvocationPayloadV1;
 use review_core::event::{AttemptDispatchedPayloadV1, AttemptInputPayloadV1};
-use review_core::{EventType, LegacyStageOutput};
+use review_core::{
+    EventType, LegacyStageOutput, RunFailureReasonV3, RunReportPayloadV3, RunVerdictV3,
+    run_report_closes_round,
+};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
 use review_pipeline::{Kernel, RoundAuthority, RunVerdict, run_verdict};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
@@ -586,7 +589,7 @@ fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
     }
 
     // Gamma never ran, and its outcome says which scope refused.
-    let Some(NodeOutcome::Failed { error }) = report.outcome("r-gamma") else {
+    let Some(NodeOutcome::Failed { error, .. }) = report.outcome("r-gamma") else {
         panic!(
             "r-gamma should have been refused: {:?}",
             report.outcome("r-gamma")
@@ -1003,7 +1006,7 @@ fn invalid_non_finding_metadata_is_refused_before_admission_and_retried() {
 }
 
 /// Exhaustion by repeated hangs: with the run cap equal to two reservations, a reviewer that
-/// never answers consumes both and the run reports incomplete — a hang is not a free retry.
+/// never answers consumes both and the run reports exhausted — a hang is not a free retry.
 #[test]
 fn repeated_timeouts_exhaust_rather_than_loop() {
     struct AlwaysHangs;
@@ -1041,7 +1044,7 @@ fn repeated_timeouts_exhaust_rather_than_loop() {
     // which is only well-defined against a fixed dispatch order.
     let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
 
-    let Some(NodeOutcome::Failed { error }) = report.outcome("r-alpha") else {
+    let Some(NodeOutcome::Failed { error, .. }) = report.outcome("r-alpha") else {
         panic!("alpha should have failed");
     };
     assert!(error.contains("timed out"), "{error}");
@@ -1049,7 +1052,32 @@ fn repeated_timeouts_exhaust_rather_than_loop() {
     assert_eq!(kernel.spent(), Some(200_000));
 
     let convergence = kernel.convergence(ConvergencePolicy::default());
-    assert!(!run_verdict(&report, &convergence).passed());
+    assert_eq!(
+        run_verdict(&report, &convergence),
+        RunVerdict::Fail(review_store::Verdict::Exhausted)
+    );
+    assert_eq!(
+        kernel
+            .publish_report(&report, ConvergencePolicy::default())
+            .unwrap(),
+        RunVerdict::Fail(review_store::Verdict::Exhausted)
+    );
+    drop(kernel);
+    let report_event = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == EventType::RunReportV3)
+        .expect("RunReport@3");
+    let payload: RunReportPayloadV3 = serde_json::from_value(report_event.payload.clone()).unwrap();
+    assert!(matches!(
+        payload.verdict,
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted
+        }
+    ));
+    assert_eq!(run_report_closes_round(&report_event).unwrap(), Some(true));
 }
 
 /// An adapter that never started spends nothing: the reservation is released, and the node

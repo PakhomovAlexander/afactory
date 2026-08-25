@@ -32,7 +32,8 @@ use review_store::Cas;
 
 use crate::manifest::{Manifest, decode_path, encode_path};
 
-const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(300);
+pub const DEFAULT_GIT_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GIT_TIMEOUT_SECONDS);
 
 #[derive(Debug)]
 pub enum GitError {

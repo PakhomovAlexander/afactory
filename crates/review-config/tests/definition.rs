@@ -61,6 +61,26 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     assert_eq!(loaded.convergence().max_rounds, 3);
     assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
     assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+    assert_eq!(loaded.check_timeout_seconds(), 3600);
+}
+
+#[test]
+fn check_timeout_is_validated_and_resolved_from_pipeline_authority() {
+    let configured = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 17");
+    assert_eq!(
+        Definition::from_toml(&configured)
+            .unwrap()
+            .load()
+            .unwrap()
+            .check_timeout_seconds(),
+        17
+    );
+
+    let zero = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 0");
+    assert!(matches!(
+        Definition::from_toml(&zero).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("check_timeout_seconds")
+    ));
 }
 
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.

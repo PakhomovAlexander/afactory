@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
@@ -41,7 +42,9 @@ use review_core::{
     RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3,
     SnapshotAffinity, SourceSnapshot, run_report_closes_round,
 };
-use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
+use review_graph::{
+    ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
+};
 use review_runner::{ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
@@ -614,14 +617,19 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
         .iter()
         .filter_map(|(id, outcome)| match outcome {
             NodeOutcome::Completed { .. } => None,
-            NodeOutcome::Failed { error } => Some((id.clone(), error.clone())),
+            NodeOutcome::Failed { error, .. } => Some((id.clone(), error.clone())),
             NodeOutcome::Suppressed { reason } => Some((id.clone(), format!("{reason:?}"))),
         })
         .collect();
-    if missing
-        .iter()
-        .any(|(_, reason)| reason.contains("run budget exhausted"))
-    {
+    if report.outcomes.iter().any(|(_, outcome)| {
+        matches!(
+            outcome,
+            NodeOutcome::Failed {
+                class: Some(NodeFailureClass::RunBudgetExhausted),
+                ..
+            }
+        )
+    }) {
         return RunVerdict::Fail(Verdict::Exhausted);
     }
     if !missing.is_empty() {
@@ -651,6 +659,7 @@ pub struct Kernel<'a> {
     pipeline_version: u32,
     authority: RoundAuthority,
     checks: Vec<CheckDefinition>,
+    check_timeout: Duration,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
@@ -674,6 +683,7 @@ pub struct Kernel<'a> {
     /// First attempts are reserved, assigned, and durably dispatched by the scheduler thread in
     /// plan order before any external model call starts. The worker removes its prepared entry.
     prepared_attempts: Mutex<BTreeMap<String, PreparedReviewerAttempt>>,
+    failure_classes: Mutex<BTreeMap<String, NodeFailureClass>>,
     /// The snapshot materialized once, cloned per sandbox. Built lazily on the first sandbox
     /// request — the gate's — so a run that never reaches a sandbox never pays for it.
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
@@ -784,6 +794,7 @@ impl<'a> Kernel<'a> {
             pipeline_version,
             authority,
             checks: Vec::new(),
+            check_timeout: Duration::from_secs(3600),
             reviewers: BTreeMap::new(),
             attempts: Mutex::new(attempts),
             budgets: None,
@@ -793,6 +804,7 @@ impl<'a> Kernel<'a> {
             reviewer_events: Mutex::new(Vec::new()),
             reviewer_event_seq: Mutex::new(0),
             prepared_attempts: Mutex::new(BTreeMap::new()),
+            failure_classes: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
             report_published: Mutex::new(false),
             ledger_cache: Mutex::new(None),
@@ -849,6 +861,11 @@ impl<'a> Kernel<'a> {
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
         self.checks = checks;
+        self
+    }
+
+    pub fn with_check_timeout(mut self, timeout: Duration) -> Self {
+        self.check_timeout = timeout;
         self
     }
 
@@ -1048,23 +1065,25 @@ impl<'a> Kernel<'a> {
             })
             .transpose()?;
         let reservation = match &self.budgets {
-            Some(budgets) => Some(
-                budgets
-                    .ledger
-                    .lock()
-                    .expect("budget ledger")
-                    .reserve(
-                        &[Scope::Node(node_id.to_string()), Scope::Run],
-                        budgets.attempt_cap,
-                    )
-                    .map_err(|error| {
-                        if prior_failures.is_empty() {
-                            format!("never dispatched: {error}")
-                        } else {
-                            format!("{}; retry refused: {error}", prior_failures.join("; "))
-                        }
-                    })?,
-            ),
+            Some(budgets) => {
+                let result = budgets.ledger.lock().expect("budget ledger").reserve(
+                    &[Scope::Node(node_id.to_string()), Scope::Run],
+                    budgets.attempt_cap,
+                );
+                Some(result.map_err(|error| {
+                    if error.scope == Scope::Run {
+                        self.failure_classes
+                            .lock()
+                            .expect("failure classes")
+                            .insert(node_id.to_string(), NodeFailureClass::RunBudgetExhausted);
+                    }
+                    if prior_failures.is_empty() {
+                        format!("never dispatched: {error}")
+                    } else {
+                        format!("{}; retry refused: {error}", prior_failures.join("; "))
+                    }
+                })?)
+            }
             None => None,
         };
         let attempt = self
@@ -1278,7 +1297,7 @@ impl<'a> Kernel<'a> {
                     NodeOutcome::Completed { outputs } => RunNodeOutcomeV2::Completed {
                         output_artifacts: artifact_ids(outputs),
                     },
-                    NodeOutcome::Failed { error } => RunNodeOutcomeV2::Failed {
+                    NodeOutcome::Failed { error, .. } => RunNodeOutcomeV2::Failed {
                         error: error.clone(),
                     },
                     NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
@@ -1370,7 +1389,7 @@ impl<'a> Kernel<'a> {
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
-        let runner = CheckRunner::new(self.cas, sandbox.root());
+        let runner = CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
             let result = runner.run(check);
@@ -2122,6 +2141,14 @@ fn validate_generation_outputs(
 }
 
 impl Dispatch for Kernel<'_> {
+    fn failure_class(&self, node_id: &str) -> Option<NodeFailureClass> {
+        self.failure_classes
+            .lock()
+            .expect("failure classes")
+            .get(node_id)
+            .copied()
+    }
+
     fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
         let payload = NodeInvocationPayloadV1 {
             node: node.id.clone(),

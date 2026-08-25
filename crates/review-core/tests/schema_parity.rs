@@ -355,6 +355,8 @@ fn subject_and_campaign_authority_roundtrip() {
             gate: "major".into(),
         },
         reviewer_timeout_seconds: 1800,
+        check_timeout_seconds: Some(3600),
+        git_timeout_seconds: Some(300),
         budgets: None,
         focus: Some("authority bootstrap".into()),
         finding_identity_policy: "legacy-path-title@1".into(),

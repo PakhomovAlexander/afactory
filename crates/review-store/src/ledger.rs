@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cas::Cas;
-use crate::store::EventStore;
 
 pub const EVENT_FINDING_REPORTED: EventType = EventType::FindingReportedV1;
 pub const EVENT_FINDING_RESOLVED: EventType = EventType::FindingResolvedV1;
@@ -300,34 +299,6 @@ pub struct Convergence {
 }
 
 impl Ledger {
-    /// Whether appending this event invalidates a cached Ledger projection. Keep this vocabulary
-    /// beside the reducer match so caches cannot invent a second definition of Ledger input.
-    pub fn event_affects_projection(event_type: EventType) -> bool {
-        matches!(
-            event_type,
-            EventType::RoundStartedV1
-                | EVENT_GENERATION_ADVANCED
-                | EVENT_FINDING_REPORTED
-                | EVENT_FINDING_RESOLVED
-        )
-    }
-
-    /// Rebuild from the event log. The only constructor — there is no way to hand-edit state in.
-    pub fn rebuild(
-        store: &EventStore,
-        cas: &Cas,
-        run_id: &str,
-    ) -> Result<Ledger, crate::store::StoreError> {
-        let mut ledger = Ledger {
-            round: 1,
-            ..Default::default()
-        };
-        for event in store.replay(run_id)? {
-            ledger.apply(event.event_type, &event.payload, &event.artifact_refs, cas)?;
-        }
-        Ok(ledger)
-    }
-
     /// Fold one event in. Public so an ingest can keep a live projection without re-reading the
     /// whole log after every append — the fold is the same code either way.
     pub fn apply_event(
@@ -898,6 +869,10 @@ impl LedgerProjection {
         &self.ledger
     }
 
+    pub fn into_ledger(self) -> Ledger {
+        self.ledger
+    }
+
     pub fn belongs_to(&self, run_id: &str) -> bool {
         self.run_id == run_id
     }
@@ -924,9 +899,7 @@ impl LedgerProjection {
                 self.run_id, self.event_count, event.sequence
             )));
         }
-        if Ledger::event_affects_projection(event.event_type) {
-            self.ledger.apply_event(event, cas)?;
-        }
+        self.ledger.apply_event(event, cas)?;
         self.event_count += 1;
         Ok(())
     }
