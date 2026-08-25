@@ -18,14 +18,22 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use review_core::{ChangeSetV1, PathRenameV1};
+use review_process::{
+    ExitPolicy, SupervisedError, SupervisedStreamError, run_supervised_duplex,
+    run_supervised_streaming, run_supervised_with_policy,
+};
 use review_store::Cas;
 
 use crate::manifest::{Manifest, decode_path, encode_path};
+
+pub const DEFAULT_GIT_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GIT_TIMEOUT_SECONDS);
 
 #[derive(Debug)]
 pub enum GitError {
@@ -46,6 +54,10 @@ pub enum GitError {
         detail: String,
     },
     Cas(String),
+    Supervision {
+        args: Vec<String>,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GitError {
@@ -65,6 +77,9 @@ impl std::fmt::Display for GitError {
                 write!(f, "git produced a malformed tree diff: {detail}")
             }
             GitError::Cas(detail) => write!(f, "reading a synthetic tree artifact: {detail}"),
+            GitError::Supervision { args, detail } => {
+                write!(f, "git {} supervision failed: {detail}", args.join(" "))
+            }
         }
     }
 }
@@ -85,8 +100,9 @@ impl std::error::Error for GitError {}
 pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
 
 /// The kernel-owned policy whose output M2.4 records with each Change Set.
+pub const RENAME_LIMIT: u32 = 1000;
 pub const TREE_DIFF_POLICY_VERSION: &str =
-    "review.kernel/git-tree-diff@1;binary=git-deflate-level-6";
+    "review.kernel/git-tree-diff@2;binary=git-deflate-level-6;rename-limit=1000";
 
 /// A tree object id admitted by [`Repo::resolve_tree`] or the kernel's synthetic-tree builder.
 ///
@@ -129,6 +145,7 @@ pub struct TreeDiff {
     pub changes: Vec<TreeChange>,
     pub git_version: String,
     pub diff_policy: String,
+    pub rename_detection_truncated: bool,
     output: Vec<u8>,
     patch_start: usize,
 }
@@ -143,11 +160,17 @@ impl TreeDiff {
         base_snapshot_id: impl Into<String>,
         head_snapshot_id: impl Into<String>,
     ) -> Result<ChangeSetV1, String> {
-        let mut paths = Vec::new();
+        let mut paths = Vec::with_capacity(self.changes.len() + 1);
         let mut renames = Vec::new();
         for change in &self.changes {
-            paths.extend(change.old_path.as_deref().map(encode_path));
-            paths.extend(change.new_path.as_deref().map(encode_path));
+            if let Some(old_path) = change.old_path.as_deref() {
+                paths.push(encode_path(old_path));
+            }
+            if let Some(new_path) = change.new_path.as_deref()
+                && change.old_path.as_deref() != Some(new_path)
+            {
+                paths.push(encode_path(new_path));
+            }
             if let TreeChangeKind::Renamed { similarity } = &change.kind
                 && let (Some(old_path), Some(new_path)) =
                     (change.old_path.as_deref(), change.new_path.as_deref())
@@ -168,6 +191,9 @@ impl TreeDiff {
             &self.git_version,
             &self.diff_policy,
         )
+        .map(|change_set| {
+            change_set.with_rename_detection_truncated(self.rename_detection_truncated)
+        })
     }
 }
 
@@ -179,11 +205,13 @@ enum DiffHead<'a> {
 /// A repository we may only read.
 pub struct Repo {
     workdir: PathBuf,
+    program: std::ffi::OsString,
     /// A private, empty HOME so a global config cannot be discovered even by accident.
     home: PathBuf,
     /// The root-commit walk is O(history) and its answer never changes for an open `Repo`,
     /// so it is paid once, not once per capture.
     repository_id: std::sync::OnceLock<String>,
+    timeout: Duration,
 }
 
 impl Repo {
@@ -193,9 +221,24 @@ impl Repo {
     pub fn open(workdir: impl AsRef<Path>, home: impl AsRef<Path>) -> Self {
         Self {
             workdir: workdir.as_ref().to_path_buf(),
+            program: "git".into(),
             home: home.as_ref().to_path_buf(),
             repository_id: std::sync::OnceLock::new(),
+            timeout: DEFAULT_GIT_TIMEOUT,
         }
+    }
+
+    /// Override the bounded deadline applied independently to every Git subprocess.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Select the trusted Git executable. Primarily useful for hermetic embedders and deadline
+    /// tests; repository content and configuration never influence this value.
+    pub fn with_git_program(mut self, program: impl Into<std::ffi::OsString>) -> Self {
+        self.program = program.into();
+        self
     }
 
     pub fn workdir(&self) -> &Path {
@@ -219,7 +262,8 @@ impl Repo {
     ];
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(&self.program);
+        let rename_limit_config = format!("diff.renameLimit={RENAME_LIMIT}");
         // Nothing inherited. Not "most things filtered" — nothing.
         cmd.env_clear();
         for (key, value) in self.environment() {
@@ -251,7 +295,7 @@ impl Repo {
             "-c",
             "diff.suppressBlankEmpty=false",
             "-c",
-            "diff.renameLimit=1000",
+            &rename_limit_config,
             // No transport may be attempted; a submodule URL cannot become a fetch.
             "-c",
             "protocol.allow=never",
@@ -277,6 +321,36 @@ impl Repo {
         ]
     }
 
+    fn supervision_error(&self, args: Vec<String>, error: SupervisedError) -> GitError {
+        match error {
+            SupervisedError::Spawn(error) => GitError::Spawn(error),
+            error => GitError::Supervision {
+                args,
+                detail: error.to_string(),
+            },
+        }
+    }
+
+    fn run_command(
+        &self,
+        command: &mut Command,
+        args: Vec<String>,
+        input: Option<Vec<u8>>,
+    ) -> Result<Output, GitError> {
+        let output =
+            run_supervised_with_policy(command, input, self.timeout, ExitPolicy::KillProcessGroup)
+                .map_err(|error| self.supervision_error(args, error))?;
+        let mut stderr = output.stderr;
+        if output.stderr_held {
+            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+        }
+        Ok(Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr,
+        })
+    }
+
     fn run_raw<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Output, GitError> {
         let subcommand = args
             .first()
@@ -287,13 +361,14 @@ impl Repo {
         }
         let mut cmd = self.command();
         cmd.args(args);
-        let output = cmd.output().map_err(GitError::Spawn)?;
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let output = self.run_command(&mut cmd, args.clone(), None)?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args
-                    .iter()
-                    .map(|a| a.as_ref().to_string_lossy().into_owned())
-                    .collect(),
+                args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -313,15 +388,16 @@ impl Repo {
         object_dir: &Path,
         alternate_object_dir: Option<&Path>,
         args: &[S],
-    ) -> Result<(Output, String), GitError> {
+    ) -> Result<(Output, String, bool), GitError> {
         let mut version_cmd = self.command();
         version_cmd
             .current_dir(&self.home)
             .args(["version", "--build-options"]);
-        let version_output = version_cmd.output().map_err(GitError::Spawn)?;
+        let version_args = vec!["version".to_string(), "--build-options".to_string()];
+        let version_output = self.run_command(&mut version_cmd, version_args.clone(), None)?;
         if !version_output.status.success() {
             return Err(GitError::Failed {
-                args: vec!["version".to_string(), "--build-options".to_string()],
+                args: version_args,
                 stderr: String::from_utf8_lossy(&version_output.stderr).into_owned(),
             });
         }
@@ -344,17 +420,19 @@ impl Repo {
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         cmd.args(args);
-        let output = cmd.output().map_err(GitError::Spawn)?;
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let output = self.run_command(&mut cmd, args.clone(), None)?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args
-                    .iter()
-                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
-                    .collect(),
+                args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
-        Ok((output, git_version))
+        let rename_detection_truncated = rename_detection_was_truncated(&output.stderr);
+        Ok((output, git_version, rename_detection_truncated))
     }
 
     fn run_isolated_with_input(
@@ -371,10 +449,7 @@ impl Repo {
             .arg(git_dir)
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .args(args);
         if let Some(alternate) = alternate_object_dir {
             let joined =
                 std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
@@ -382,19 +457,11 @@ impl Repo {
                 })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
-        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitError::MalformedTreeDiff {
-                detail: "isolated Git command has no stdin".to_string(),
-            })?
-            .write_all(input)
-            .map_err(GitError::Io)?;
-        let output = child.wait_with_output().map_err(GitError::Io)?;
+        let display_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let output = self.run_command(&mut cmd, display_args.clone(), Some(input.to_vec()))?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                args: display_args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -461,10 +528,7 @@ impl Repo {
             .arg(git_dir)
             .env("GIT_OBJECT_DIRECTORY", object_dir)
             .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .args(["fast-import", "--quiet", "--force"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .args(["fast-import", "--quiet", "--force"]);
         if let Some(alternate) = alternate_object_dir {
             let joined =
                 std::env::join_paths([alternate]).map_err(|error| GitError::MalformedTreeDiff {
@@ -472,14 +536,13 @@ impl Repo {
                 })?;
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
-        let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        {
-            let mut input = child
-                .stdin
-                .take()
-                .ok_or_else(|| GitError::MalformedTreeDiff {
-                    detail: "isolated fast-import has no stdin".to_string(),
-                })?;
+        let display_args = vec!["fast-import".into(), "--quiet".into(), "--force".into()];
+        let output = run_supervised_streaming(
+            &mut cmd,
+            self.timeout,
+            ExitPolicy::KillProcessGroup,
+            |input| -> Result<(), GitError> {
+            let mut input = BufWriter::with_capacity(256 * 1024, input);
             input
                 .write_all(
                     b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
@@ -497,10 +560,11 @@ impl Repo {
                         detail: format!("synthetic manifest has invalid path {:?}", entry.path),
                     });
                 }
-                let bytes = cas
-                    .get(&entry.content)
+                let mut object = cas
+                    .open_for_verified_read(&entry.content)
                     .map_err(|error| GitError::Cas(error.to_string()))?;
-                if bytes.len() as u64 != entry.size {
+                let stored_len = object.len();
+                if stored_len != entry.size {
                     return Err(GitError::MalformedTreeDiff {
                         detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
                     });
@@ -512,16 +576,31 @@ impl Repo {
                     quote_fast_import_path(&path)
                 )
                 .map_err(GitError::Io)?;
-                writeln!(input, "data {}", bytes.len()).map_err(GitError::Io)?;
-                input.write_all(&bytes).map_err(GitError::Io)?;
+                writeln!(input, "data {stored_len}").map_err(GitError::Io)?;
+                let copied = object
+                    .copy_to_and_verify(&mut input)
+                    .map_err(|error| GitError::Cas(error.to_string()))?;
+                if copied != stored_len {
+                    return Err(GitError::MalformedTreeDiff {
+                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
+                    });
+                }
                 input.write_all(b"\n").map_err(GitError::Io)?;
             }
             input.write_all(b"done\n").map_err(GitError::Io)?;
-        }
-        let output = child.wait_with_output().map_err(GitError::Io)?;
+            input.flush().map_err(GitError::Io)?;
+            Ok(())
+        },
+        )
+        .map_err(|error| match error {
+            SupervisedStreamError::Process(error) => {
+                self.supervision_error(display_args.clone(), error)
+            }
+            SupervisedStreamError::Input(error) => error,
+        })?;
         if !output.status.success() {
             return Err(GitError::Failed {
-                args: vec!["fast-import".into(), "--quiet".into(), "--force".into()],
+                args: display_args,
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             });
         }
@@ -561,7 +640,8 @@ impl Repo {
                 Some(candidate_objects.as_path()),
             ),
         };
-        let (output, git_version) = self.run_tree_diff_unchecked(
+        let rename_limit_arg = format!("-l{RENAME_LIMIT}");
+        let (output, git_version, rename_detection_truncated) = self.run_tree_diff_unchecked(
             &git_dir,
             object_dir,
             alternate,
@@ -586,14 +666,16 @@ impl Repo {
                 "--no-relative",
                 "--submodule=short",
                 "--ignore-submodules=none",
-                "-l1000",
+                &rename_limit_arg,
                 "-O/dev/null",
                 base.as_str(),
                 head.as_str(),
                 "--",
             ],
         )?;
-        Ok((head, parse_tree_diff(output.stdout, git_version)?))
+        let mut diff = parse_tree_diff(output.stdout, git_version)?;
+        diff.rename_detection_truncated = rename_detection_truncated;
+        Ok((head, diff))
     }
 
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
@@ -682,7 +764,18 @@ impl Repo {
     /// does not; it is built from exactly the same cleared environment and `-c` overrides as
     /// every other call ([`Self::command`]), and the subcommand is checked against
     /// [`SAFE_SUBCOMMANDS`] here so the allowlist is not bypassed by taking this door.
-    pub(crate) fn streaming(&self, args: &[&str]) -> Command {
+    pub(crate) fn streaming<I, R, F, G>(
+        &self,
+        args: &[&str],
+        writer: F,
+        reader: G,
+    ) -> Result<review_process::SupervisedDuplexOutput<I, R>, GitError>
+    where
+        I: Send,
+        R: Send,
+        F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
+        G: FnOnce(&mut dyn std::io::Read) -> R + Send,
+    {
         let subcommand = args.first().copied().unwrap_or_default();
         assert!(
             SAFE_SUBCOMMANDS.contains(&subcommand),
@@ -690,7 +783,15 @@ impl Repo {
         );
         let mut cmd = self.command();
         cmd.args(args);
-        cmd
+        let display_args = args.iter().map(|arg| (*arg).to_string()).collect();
+        run_supervised_duplex(
+            &mut cmd,
+            self.timeout,
+            ExitPolicy::KillProcessGroup,
+            writer,
+            reader,
+        )
+        .map_err(|error| self.supervision_error(display_args, error))
     }
 
     /// The repository's own identity, independent of clone path: its sorted root commit set.
@@ -718,6 +819,14 @@ impl Repo {
         let id = roots.join(",");
         Ok(self.repository_id.get_or_init(|| id).clone())
     }
+}
+
+fn rename_detection_was_truncated(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        let warning = line.trim_start();
+        warning.contains("inexact rename detection was skipped")
+            || warning.contains("exhaustive rename detection was skipped")
+    })
 }
 
 fn quote_fast_import_path(path: &[u8]) -> String {
@@ -884,6 +993,7 @@ fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, Git
         changes,
         git_version,
         diff_policy: TREE_DIFF_POLICY_VERSION.to_string(),
+        rename_detection_truncated: false,
         output,
         patch_start,
     })
@@ -995,7 +1105,7 @@ pub fn split_nul(bytes: &[u8]) -> Vec<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_tree_diff;
+    use super::{parse_tree_diff, rename_detection_was_truncated};
 
     const OID: &str = "0123456789012345678901234567890123456789";
 
@@ -1037,5 +1147,24 @@ mod tests {
         raw_only.extend_from_slice(b"diff --git a/file b/file\n");
         let parsed = parse_tree_diff(raw_only, "git version test".to_string()).unwrap();
         assert_eq!(parsed.diff_policy, super::TREE_DIFF_POLICY_VERSION);
+    }
+
+    #[test]
+    fn rename_limit_warnings_are_detected_even_when_git_exits_zero() {
+        assert!(
+            super::TREE_DIFF_POLICY_VERSION
+                .contains(&format!("rename-limit={}", super::RENAME_LIMIT)),
+            "the durable diff-policy identity must record the executable rename limit"
+        );
+        assert!(rename_detection_was_truncated(
+            b"warning: exhaustive rename detection was skipped due to too many files.\n"
+        ));
+        assert!(rename_detection_was_truncated(
+            b"warning: inexact rename detection was skipped due to too many files.\n"
+        ));
+        assert!(!rename_detection_was_truncated(
+            b"warning: an unfamiliar future diff warning\n"
+        ));
+        assert!(!rename_detection_was_truncated(b""));
     }
 }

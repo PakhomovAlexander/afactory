@@ -24,11 +24,18 @@
 //! the container genuinely runs work.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use review_process::{SupervisedError, run_supervised};
 
 use crate::Isolation;
 
 /// Runtimes tried in order. Docker first only because it is the likeliest to be present.
 const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
+
+/// Capability detection runs in every full verification gate. A wedged daemon is unavailable,
+/// not authority to keep the gate open forever.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The default sandbox image, pinned by manifest digest — the same never-`latest` rule as
 /// reviewer packages. The digest names a multi-arch manifest list (amd64 CI, arm64 laptops),
@@ -109,13 +116,14 @@ impl ContainerProvider {
 
     /// The probe itself: ask the runtime to describe itself, and require success.
     fn probe_one(path: &Path) -> Availability {
+        Self::probe_one_with_timeout(path, PROBE_TIMEOUT)
+    }
+
+    fn probe_one_with_timeout(path: &Path, timeout: Duration) -> Availability {
         if !path.exists() {
             return Availability::Absent;
         }
-        let output = std::process::Command::new(path)
-            .arg("info")
-            .stdin(std::process::Stdio::null())
-            .output();
+        let output = run_probe(path, timeout);
         match output {
             Ok(output) if output.status.success() => Availability::Usable {
                 runtime: path.to_path_buf(),
@@ -176,13 +184,15 @@ impl ContainerProvider {
         argv
     }
 
-    /// Run a command in the sandbox. Refuses when the runtime is not usable — never falls back
-    /// to running it on the host, which would be containment silently becoming none.
+    /// Run a command in the sandbox under the caller's policy deadline. Refuses when the runtime
+    /// is not usable — never falls back to running it on the host, which would be containment
+    /// silently becoming none.
     pub fn exec(
         &self,
         sandbox_root: &Path,
         program: &str,
         args: &[String],
+        timeout: Duration,
     ) -> Result<std::process::Output, String> {
         let Availability::Usable { runtime } = &self.availability else {
             return Err(format!(
@@ -190,12 +200,39 @@ impl ContainerProvider {
                 self.availability.reason()
             ));
         };
-        std::process::Command::new(runtime)
-            .args(self.invocation(sandbox_root, program, args))
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| e.to_string())
+        let mut command = std::process::Command::new(runtime);
+        command.args(self.invocation(sandbox_root, program, args));
+        run_bounded(command, timeout, "container command").map_err(|error| error.to_string())
     }
+}
+
+fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std::io::Error> {
+    let mut command = std::process::Command::new(path);
+    command.arg("info");
+    run_bounded(command, timeout, "runtime info probe")
+}
+
+fn run_bounded(
+    mut command: std::process::Command,
+    timeout: Duration,
+    operation: &str,
+) -> Result<std::process::Output, std::io::Error> {
+    run_supervised(&mut command, None, timeout)
+        .map(|output| std::process::Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+        .map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "{operation} did not finish within {}s",
+                    timeout.as_secs_f64()
+                ),
+            ),
+            error => std::io::Error::other(format!("{operation}: {error}")),
+        })
 }
 
 fn which(name: &str) -> Result<PathBuf, ()> {
@@ -212,6 +249,7 @@ fn which(name: &str) -> Result<PathBuf, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     /// The real host, whatever it is. Both outcomes are correct; what matters is that the
     /// provider never claims containment it has not verified.
@@ -258,11 +296,59 @@ mod tests {
 
         // And it refuses to run rather than falling back to the host.
         let err = provider
-            .exec(dir.path(), "/bin/sh", &["-c".into(), "echo pwned".into()])
+            .exec(
+                dir.path(),
+                "/bin/sh",
+                &["-c".into(), "echo pwned".into()],
+                Duration::from_secs(1),
+            )
             .unwrap_err();
         assert!(
             err.starts_with("refusing to run outside a container"),
             "{err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wedged_runtime_is_bounded_and_unusable() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("wedged-runtime");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 60\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        let availability =
+            ContainerProvider::probe_one_with_timeout(&fake, Duration::from_millis(100));
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(matches!(availability, Availability::Unusable { .. }));
+        assert!(availability.reason().contains("did not finish"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wedged_container_execution_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("runtime");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nsleep 60\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let provider = ContainerProvider::with_runtime(&fake);
+
+        let started = Instant::now();
+        let error = provider
+            .exec(dir.path(), "/bin/true", &[], Duration::from_millis(100))
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.contains("container command did not finish"),
+            "{error}"
         );
     }
 

@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use review_core::LegacyStageOutput;
-use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
 fn stage(json: &str) -> LegacyStageOutput {
     serde_json::from_str(json).unwrap()
@@ -74,7 +74,11 @@ fn the_projection_survives_process_death() {
 
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let rebuilt = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
+    let rebuilt = snapshot(
+        &LedgerProjection::rebuild(&store, &cas, "run")
+            .unwrap()
+            .into_ledger(),
+    );
     assert_eq!(live, rebuilt, "rebuild must reproduce the committed state");
 
     // And the reopen-after-fix path really was exercised, so this is not a trivial equality.
@@ -90,8 +94,16 @@ fn rebuilding_twice_is_the_same_rebuild() {
     build_run(dir.path());
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let first = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
-    let second = snapshot(&Ledger::rebuild(&store, &cas, "run").unwrap());
+    let first = snapshot(
+        &LedgerProjection::rebuild(&store, &cas, "run")
+            .unwrap()
+            .into_ledger(),
+    );
+    let second = snapshot(
+        &LedgerProjection::rebuild(&store, &cas, "run")
+            .unwrap()
+            .into_ledger(),
+    );
     assert_eq!(first, second);
 }
 
@@ -137,7 +149,9 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
         )
         .unwrap();
 
-    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
     let finding = ledger.get("claim").unwrap();
     assert_eq!(finding.title, "Canonical title");
     assert_eq!(finding.body, "canonical body");
@@ -166,7 +180,9 @@ fn a_crash_after_publish_but_before_append_leaves_only_garbage() {
     ingest
         .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
         .unwrap();
-    let ledger = Ledger::rebuild(&store, &cas, "run").unwrap();
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
     assert_eq!(ledger.len(), 1);
 
     let referenced: Vec<String> = store
@@ -240,8 +256,12 @@ fn runs_are_isolated_in_one_store() {
             .unwrap();
     }
 
-    let a = Ledger::rebuild(&store, &cas, "run-a").unwrap();
-    let b = Ledger::rebuild(&store, &cas, "run-b").unwrap();
+    let a = LedgerProjection::rebuild(&store, &cas, "run-a")
+        .unwrap()
+        .into_ledger();
+    let b = LedgerProjection::rebuild(&store, &cas, "run-b")
+        .unwrap()
+        .into_ledger();
     assert_eq!(a.len(), 1);
     assert_eq!(b.len(), 1);
     assert_eq!(a.findings()[0].title, "only in a");

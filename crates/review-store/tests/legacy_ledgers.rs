@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use review_store::{
-    Cas, EventStore, Ledger, LegacyRow, Status, import_ledger_jsonl, legacy_fingerprint,
+    Cas, EventStore, LedgerProjection, LegacyRow, Status, import_ledger_jsonl, legacy_fingerprint,
 };
 
 fn legacy_dir() -> PathBuf {
@@ -96,7 +96,9 @@ fn round_trips(name: &str, jsonl: &str) -> usize {
     let imported = import_ledger_jsonl(&mut store, &cas, name, jsonl).unwrap();
     assert_eq!(imported, expected.len(), "{name}: import count");
 
-    let ledger = Ledger::rebuild(&store, &cas, name).unwrap();
+    let ledger = LedgerProjection::rebuild(&store, &cas, name)
+        .unwrap()
+        .into_ledger();
     assert_eq!(ledger.len(), expected.len(), "{name}: projected count");
 
     for row in &expected {
@@ -189,7 +191,9 @@ fn importing_twice_yields_the_same_projection() {
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         import_ledger_jsonl(&mut store, &cas, &name, &jsonl).unwrap();
-        let ledger = Ledger::rebuild(&store, &cas, &name).unwrap();
+        let ledger = LedgerProjection::rebuild(&store, &cas, &name)
+            .unwrap()
+            .into_ledger();
         projections.push(
             ledger
                 .findings()

@@ -1,4 +1,7 @@
-use review_core::event::{AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1};
+use review_core::event::{
+    AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFeedbackPayloadV1,
+    AttemptInputPayloadV1,
+};
 use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
     NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
@@ -57,6 +60,8 @@ runner = { program = "/bin/true" }
                     gate: "major".into(),
                 },
                 reviewer_timeout_seconds: 60,
+                check_timeout_seconds: Some(3600),
+                git_timeout_seconds: Some(300),
                 budgets: None,
                 focus: None,
                 finding_identity_policy: "legacy-path-title@1".into(),
@@ -207,6 +212,166 @@ fn runtime_events_require_an_active_round() {
 
     assert!(error.to_string().contains("requires an active Round"));
     assert!(store.replay("run").unwrap().is_empty());
+}
+
+#[test]
+fn events_that_do_not_use_the_plan_do_not_reparse_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas_root = directory.path().join("cas");
+    let cas = Cas::open(&cas_root).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "plan-cache");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+
+    let hex = ids.manifest.strip_prefix("sha256:").unwrap();
+    std::fs::write(
+        cas_root.join("objects").join(&hex[..2]).join(&hex[2..]),
+        b"corrupt after Campaign opening",
+    )
+    .unwrap();
+
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::GenerationAdvancedV1,
+                serde_json::json!({"round": 1}),
+            )
+            .caused_by(&round.event_id),
+        )
+        .expect("a reducer event does not consume the Campaign plan");
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(NodeInvocationPayloadV1 {
+                    node: "reviewer".into(),
+                    inputs: vec![],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .caused_by(round.event_id),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("CampaignManifest"), "{error}");
+}
+
+#[test]
+fn retry_input_and_its_dispatch_are_one_atomic_transition() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "retry-input");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let refusal_history = cas
+        .put_json(&serde_json::json!(["first answer was inadmissible"]))
+        .unwrap();
+    let attempt = "a".repeat(26);
+    let input = || {
+        NewEvent::new(
+            EventType::AttemptInputV1,
+            serde_json::to_value(AttemptInputPayloadV1 {
+                refusal_history_id: refusal_history.clone(),
+            })
+            .unwrap(),
+        )
+        .node("reviewer")
+        .attempt(&attempt)
+        .caused_by(&round.event_id)
+        .referencing(vec![refusal_history.clone()])
+    };
+
+    let error = store.append("run", &cas, input()).unwrap_err();
+    assert!(error.to_string().contains("atomically"), "{error}");
+
+    store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                input(),
+                NewEvent::new(
+                    EventType::AttemptDispatchedV1,
+                    serde_json::to_value(AttemptDispatchedPayloadV1 {
+                        reserved: None,
+                        prior_findings: None,
+                    })
+                    .unwrap(),
+                )
+                .node("reviewer")
+                .attempt(attempt)
+                .caused_by(round.event_id),
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn retry_feedback_and_its_terminal_attempt_are_one_atomic_transition() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "retry-feedback");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let attempt = "d".repeat(26);
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(AttemptDispatchedPayloadV1 {
+                    reserved: None,
+                    prior_findings: None,
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    let history = cas
+        .put_json(&serde_json::json!(["the answer violated the contract"]))
+        .unwrap();
+    let feedback = || {
+        NewEvent::new(
+            EventType::AttemptFeedbackV1,
+            serde_json::to_value(AttemptFeedbackPayloadV1 {
+                refusal_history_id: history.clone(),
+            })
+            .unwrap(),
+        )
+        .node("reviewer")
+        .attempt(&attempt)
+        .caused_by(&round.event_id)
+        .referencing(vec![history.clone()])
+    };
+
+    let error = store.append("run", &cas, feedback()).unwrap_err();
+    assert!(error.to_string().contains("atomically"), "{error}");
+
+    store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                NewEvent::new(
+                    EventType::AttemptFailedV1,
+                    serde_json::json!({"error": "invalid result", "charged": 5}),
+                )
+                .node("reviewer")
+                .attempt(&attempt)
+                .caused_by(&round.event_id),
+                feedback(),
+            ],
+        )
+        .unwrap();
 }
 
 #[test]
@@ -431,7 +596,7 @@ fn a_campaign_cannot_append_a_legacy_run_report() {
 }
 
 #[test]
-fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
+fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -439,7 +604,21 @@ fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
     let round = opened_round(&mut store, &cas, "run", &ids);
     let attempt = "b".repeat(26);
     let malformed_result = cas
-        .put_json(&serde_json::json!({"verdict": "approve", "reports": []}))
+        .put_json(&serde_json::json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [{
+                "severity": "major",
+                "file": "./src/main.rs",
+                "line": 1,
+                "title": "bad path",
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }],
+            "benchmark_demands": [],
+            "disputes": []
+        }))
         .unwrap();
     let provenance = cas.put(b"test provenance").unwrap();
 
@@ -523,5 +702,5 @@ fn a_receipt_rejects_an_artifact_that_violates_its_pinned_type() {
         )
         .unwrap_err();
 
-    assert!(error.to_string().contains("ReviewerResult@1"), "{error}");
+    assert!(error.to_string().contains("canonical"), "{error}");
 }

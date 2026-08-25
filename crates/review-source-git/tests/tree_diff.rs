@@ -3,7 +3,7 @@
 mod common;
 
 use common::{Fixture, cas_of, repo_of};
-use review_source_git::{Capture, TreeChangeKind};
+use review_source_git::{Capture, Entry, EntryKind, Manifest, TreeChangeKind};
 
 fn object_store_state(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
     fn walk(
@@ -47,6 +47,7 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
     fixture.git(&["mv", "old-name.txt", "new-name.txt"]);
     fixture.write("modified.txt", b"after\n");
     fixture.write("odd\t\"name.txt", b"after\n");
+    fixture.write(" notes.md", b"leading whitespace is legal in Git\n");
     let head_revision = fixture.commit_all("head");
 
     let repo = repo_of(&fixture);
@@ -80,6 +81,26 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
         diff.diff_policy,
         review_source_git::git::TREE_DIFF_POLICY_VERSION
     );
+
+    let change_set = diff
+        .change_set(
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        )
+        .unwrap();
+    assert_eq!(
+        change_set.changed_paths,
+        [
+            "%20notes.md",
+            "modified.txt",
+            "new-name.txt",
+            "odd\t\"name.txt",
+            "old-name.txt"
+        ]
+    );
+    assert_eq!(change_set.renames.len(), 1);
+    assert_eq!(change_set.renames[0].old_path, "old-name.txt");
+    assert_eq!(change_set.renames[0].new_path, "new-name.txt");
 }
 
 #[cfg(unix)]
@@ -116,6 +137,46 @@ fn revision_like_options_cannot_become_tree_operands() {
 }
 
 #[test]
+fn an_over_limit_rename_search_records_truncation_without_losing_scope_paths() {
+    let fixture = Fixture::new();
+    for index in 0..=1000 {
+        fixture.write(
+            &format!("old/{index:04}.txt"),
+            format!("old content {index:04}\n").as_bytes(),
+        );
+    }
+    let base_revision = fixture.commit_all("base");
+
+    for index in 0..=1000 {
+        std::fs::remove_file(fixture.repo_path().join(format!("old/{index:04}.txt"))).unwrap();
+        fixture.write(
+            &format!("new/{index:04}.txt"),
+            format!("unrelated new content {index:04}\n").as_bytes(),
+        );
+    }
+    let head_revision = fixture.commit_all("head");
+
+    let repo = repo_of(&fixture);
+    let diff = repo
+        .tree_diff(
+            &repo.resolve_tree(&base_revision).unwrap(),
+            &repo.resolve_tree(&head_revision).unwrap(),
+        )
+        .unwrap();
+    assert!(diff.rename_detection_truncated);
+    let change_set = diff
+        .change_set(
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        )
+        .unwrap();
+    assert!(change_set.rename_detection_truncated);
+    assert_eq!(change_set.changed_paths.len(), 2_002);
+    assert!(change_set.contains_report_path("old/0000.txt"));
+    assert!(change_set.contains_report_path("new/1000.txt"));
+}
+
+#[test]
 fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     let fixture = Fixture::new();
     fixture.write("src/main.rs", b"fn old() {}\n");
@@ -147,4 +208,22 @@ fn a_revalidated_worktree_is_diffed_as_an_isolated_synthetic_tree() {
     assert_eq!(object_store_state(&objects), before_objects);
     repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
     assert_eq!(object_store_state(&objects), before_objects);
+}
+
+#[test]
+fn a_synthetic_tree_refuses_an_unverified_manifest_size_before_framing() {
+    let fixture = Fixture::new();
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let content = cas.put(b"blob\ndone\n").unwrap();
+    let manifest = Manifest::new(vec![Entry {
+        path: "payload".into(),
+        kind: EntryKind::File,
+        content,
+        size: 4,
+    }])
+    .unwrap();
+
+    let error = repo.synthetic_tree(&manifest, &cas).unwrap_err();
+    assert!(error.to_string().contains("manifest size disagrees"));
 }

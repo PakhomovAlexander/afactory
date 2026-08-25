@@ -9,12 +9,15 @@ license.workspace = true
 
 [dependencies]
 review-core = { path = "../review-core" }
+review-parallel = { path = "../review-parallel" }
+review-process = { path = "../review-process" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.10.9"
 tempfile = "3.27.0"
 notify = "8.2.0"
+reflink-copy = "0.1.19"
 
 [dev-dependencies]
 jsonschema = { version = "0.26.1", default-features = false }

@@ -71,6 +71,10 @@ Attached deterministically to each Report claim from its exact Round Subject, ne
 the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
 be touched by a later Round. A Report with no derivable exact Round Subject is presented as
 `unknown`; that is fail-closed compatibility metadata, not a third Report Scope.
+An unavailable Subject or Report authority is counted in the active clean window and is persisted
+as `authority_unavailable` in new `RunReport@3` conclusions only when no real Finding or failed
+Gate is already the cause; terminal output alone is never the only explanation for a failed
+convergence decision.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,
 recorded, and triageable — it simply does not block this Subject's convergence.
 
@@ -280,6 +284,11 @@ the result incomplete.
   gate, closure, and budget state; it never queries ambient latest projections.
 - A **Subject** is always anchored to one head **Snapshot**; a `diff` Subject additionally
   names a **Base** Snapshot and derives a **Change Set** from the pair.
+- Snapshot materialization atomically publishes CAS bytes only after fixed-buffer verification,
+  then clones duplicate regular files in a separate bounded phase; candidate-controlled object
+  size never becomes resident allocation or a reason to park the shared infrastructure executor.
+  See
+  [ADR-0020](docs/adr/0020-stream-cas-materialization-and-clone-duplicates.md).
 - A **Proposal** applies only to its **Proposal Base**, which is the Subject's head Snapshot for
   that Attempt and is not the diff Subject's Base.
 - A **Review Selector** resolves the Authority Snapshot and optional Base once per Campaign, then

@@ -20,6 +20,7 @@ pub mod finding;
 pub mod json;
 pub mod legacy;
 pub mod patch;
+pub mod path;
 pub mod snapshot;
 pub mod subject;
 
@@ -33,17 +34,28 @@ pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
     PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, RunEvent, RunFailureReasonV2, RunNodeOutcomeV2,
-    RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity,
-    UnknownEventType, is_artifact_type, run_report_closes_round,
+    ProviderOperationTransitionPayloadV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, UnknownEventType,
+    is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use json::{NumericDomainError, admit};
-pub use legacy::{LegacyImportError, LegacyStageOutput};
+pub use legacy::{
+    LegacyImportError, LegacyStageOutput, ReviewerResultRejection, validate_reviewer_result,
+    validate_reviewer_result_classified,
+};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
+pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};
+
+/// Maximum encoded size of the exact prior Finding Set delivered to any reviewer.
+pub const MAX_PRIOR_FINDINGS_BYTES: usize = 64 * 1024;
+
+/// Maximum encoded size of one exact Change Set delivered to a reviewer.
+pub const MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) fn is_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
@@ -64,6 +76,7 @@ pub mod contract {
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
     pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
+    pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";

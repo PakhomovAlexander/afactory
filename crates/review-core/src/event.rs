@@ -17,6 +17,10 @@ pub enum EventType {
     AttemptFailedV1,
     #[serde(rename = "AttemptFenced@1")]
     AttemptFencedV1,
+    #[serde(rename = "AttemptFeedback@1")]
+    AttemptFeedbackV1,
+    #[serde(rename = "AttemptInput@1")]
+    AttemptInputV1,
     #[serde(rename = "AttemptReleased@1")]
     AttemptReleasedV1,
     #[serde(rename = "CheckCompleted@1")]
@@ -41,6 +45,8 @@ pub enum EventType {
     RunReportV1,
     #[serde(rename = "RunReport@2")]
     RunReportV2,
+    #[serde(rename = "RunReport@3")]
+    RunReportV3,
     #[serde(rename = "RoundInputSuperseded@1")]
     RoundInputSupersededV1,
     #[serde(rename = "RoundStarted@1")]
@@ -50,11 +56,13 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 22] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
         Self::AttemptFencedV1,
+        Self::AttemptFeedbackV1,
+        Self::AttemptInputV1,
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
@@ -67,6 +75,7 @@ impl EventType {
         Self::ProviderOperationTransitionV1,
         Self::RunReportV1,
         Self::RunReportV2,
+        Self::RunReportV3,
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
         Self::SourceCapturedV1,
@@ -78,6 +87,8 @@ impl EventType {
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
             Self::AttemptFailedV1 => "AttemptFailed@1",
             Self::AttemptFencedV1 => "AttemptFenced@1",
+            Self::AttemptFeedbackV1 => "AttemptFeedback@1",
+            Self::AttemptInputV1 => "AttemptInput@1",
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
@@ -90,10 +101,24 @@ impl EventType {
             Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
+            Self::RunReportV3 => "RunReport@3",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
         }
+    }
+
+    /// Whether this event is any readable generation of the durable run conclusion.
+    pub const fn is_run_report(self) -> bool {
+        matches!(
+            self,
+            Self::RunReportV1 | Self::RunReportV2 | Self::RunReportV3
+        )
+    }
+
+    /// Whether this run-report generation carries plan and receipt authority.
+    pub const fn run_report_requires_receipts(self) -> bool {
+        matches!(self, Self::RunReportV2 | Self::RunReportV3)
     }
 
     pub const fn typed(self) -> (&'static str, u32) {
@@ -102,6 +127,8 @@ impl EventType {
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
             Self::AttemptFailedV1 => ("AttemptFailed", 1),
             Self::AttemptFencedV1 => ("AttemptFenced", 1),
+            Self::AttemptFeedbackV1 => ("AttemptFeedback", 1),
+            Self::AttemptInputV1 => ("AttemptInput", 1),
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -114,6 +141,7 @@ impl EventType {
             Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
+            Self::RunReportV3 => ("RunReport", 3),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
@@ -159,6 +187,8 @@ impl std::str::FromStr for EventType {
             "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
             "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
             "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
+            "AttemptFeedback@1" => Ok(Self::AttemptFeedbackV1),
+            "AttemptInput@1" => Ok(Self::AttemptInputV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
@@ -171,6 +201,7 @@ impl std::str::FromStr for EventType {
             "ProviderOperationTransition@1" => Ok(Self::ProviderOperationTransitionV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
+            "RunReport@3" => Ok(Self::RunReportV3),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
@@ -226,6 +257,15 @@ pub enum RunFailureReasonV2 {
     Exhausted,
 }
 
+/// Stable reasons a completed RunReport@3 can fail its convergence gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunFailureReasonV3 {
+    NotConverged,
+    AuthorityUnavailable,
+    Exhausted,
+}
+
 /// Stable reasons the scheduler can suppress a node without dispatching it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,6 +310,24 @@ pub struct RunReportPayloadV2 {
     pub outcomes: Vec<RunNodeReportV2>,
     pub blocked_gates: Vec<String>,
     pub verdict: RunVerdictV2,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RunVerdictV3 {
+    Pass,
+    Fail { reason: RunFailureReasonV3 },
+    Incomplete { missing_nodes: Vec<MissingNodeV2> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunReportPayloadV3 {
+    pub outcomes: Vec<RunNodeReportV2>,
+    pub blocked_gates: Vec<String>,
+    pub verdict: RunVerdictV3,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spent_tokens: Option<u64>,
 }
@@ -627,6 +685,34 @@ impl RunReportPayloadV2 {
     }
 }
 
+impl RunReportPayloadV3 {
+    pub fn validate(&self) -> Result<(), String> {
+        // RunReport@3 changes only the durable failure-reason vocabulary. Reuse the frozen
+        // structural rules from @2 so the two readers cannot drift on node or receipt shape.
+        let verdict = match &self.verdict {
+            RunVerdictV3::Pass => RunVerdictV2::Pass,
+            RunVerdictV3::Fail {
+                reason: RunFailureReasonV3::Exhausted,
+            } => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::Exhausted,
+            },
+            RunVerdictV3::Fail { .. } => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::NotConverged,
+            },
+            RunVerdictV3::Incomplete { missing_nodes } => RunVerdictV2::Incomplete {
+                missing_nodes: missing_nodes.clone(),
+            },
+        };
+        RunReportPayloadV2 {
+            outcomes: self.outcomes.clone(),
+            blocked_gates: self.blocked_gates.clone(),
+            verdict,
+            spent_tokens: self.spent_tokens,
+        }
+        .validate()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyRunReportV1 {
@@ -729,6 +815,20 @@ pub struct AttemptDispatchedPayloadV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AttemptInputPayloadV1 {
+    pub refusal_history_id: String,
+}
+
+/// Exact feedback produced by one retryable terminal attempt. Unlike the terminal diagnostic,
+/// this artifact is prompt-input authority and may be carried into a later `AttemptInput@1`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFeedbackPayloadV1 {
+    pub refusal_history_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttemptAdmittedPayloadV1 {
     pub selection: String,
     pub cost_tokens: u64,
@@ -821,6 +921,22 @@ pub fn validate_event_payload(
                 .is_some_and(|artifact| !crate::is_digest(artifact))
             {
                 return Err("AttemptDispatched@1 has an invalid prior Finding Set ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptInputV1 => {
+            let value: AttemptInputPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptInput@1: {error}"))?;
+            if !crate::is_digest(&value.refusal_history_id) {
+                return Err("AttemptInput@1 has an invalid refusal history ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFeedbackV1 => {
+            let value: AttemptFeedbackPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFeedback@1: {error}"))?;
+            if !crate::is_digest(&value.refusal_history_id) {
+                return Err("AttemptFeedback@1 has an invalid refusal history ID".into());
             }
             Ok(())
         }
@@ -961,6 +1077,13 @@ pub fn validate_event_payload(
             report
                 .validate()
                 .map_err(|error| format!("RunReport@2: {error}"))
+        }
+        EventType::RunReportV3 => {
+            let report = serde_json::from_value::<RunReportPayloadV3>(payload.clone())
+                .map_err(|error| format!("RunReport@3: {error}"))?;
+            report
+                .validate()
+                .map_err(|error| format!("RunReport@3: {error}"))
         }
         EventType::SourceCapturedV1 => Ok(()),
     }
@@ -1212,6 +1335,16 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
             Ok(Some(!matches!(
                 report.verdict,
                 RunVerdictV2::Incomplete { .. }
+            )))
+        }
+        EventType::RunReportV3 => {
+            let report: RunReportPayloadV3 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            Ok(Some(!matches!(
+                report.verdict,
+                RunVerdictV3::Incomplete { .. }
             )))
         }
         _ => Ok(None),

@@ -61,6 +61,26 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     assert_eq!(loaded.convergence().max_rounds, 3);
     assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
     assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+    assert_eq!(loaded.check_timeout_seconds(), 3600);
+}
+
+#[test]
+fn check_timeout_is_validated_and_resolved_from_pipeline_authority() {
+    let configured = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 17");
+    assert_eq!(
+        Definition::from_toml(&configured)
+            .unwrap()
+            .load()
+            .unwrap()
+            .check_timeout_seconds(),
+        17
+    );
+
+    let zero = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 0");
+    assert!(matches!(
+        Definition::from_toml(&zero).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("check_timeout_seconds")
+    ));
 }
 
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.
@@ -176,6 +196,30 @@ fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
         .replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
     let loaded = Definition::from_toml(&legacy).unwrap().load().unwrap();
     assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+}
+
+#[test]
+fn a_version_one_generation_keeps_its_name_keyed_output() {
+    let legacy = r#"
+version = 1
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = ["findings"]
+runner = { program = "/bin/true" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "findings" }
+"#;
+
+    Definition::from_toml(legacy).unwrap().load().unwrap();
 }
 
 #[test]
@@ -524,8 +568,8 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
 
 #[test]
 fn a_generation_node_parses_and_wires_prior_findings() {
-    // A generation node emits `findings`; the reviewer declares a `prior_findings` input wired
-    // from it. This is the shipped heavy.toml's shape for delivering prior findings by port.
+    // Generation and reviewer ports declare the built-in contract explicitly. The labels remain
+    // project-owned; the artifact type selects the executor behavior.
     let text = MINIMAL
         .replace(
             r#"[[nodes]]
@@ -533,7 +577,7 @@ id = "gate""#,
             r#"[[nodes]]
 id = "generation"
 kind = "generation"
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "gate""#,
@@ -541,7 +585,7 @@ id = "gate""#,
         .replace(
             r#"inputs = ["gate"]
 outputs = ["result"]"#,
-            r#"inputs = ["gate", "prior_findings"]
+            r#"inputs = ["gate", { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["result"]"#,
         )
         .replace(
@@ -575,5 +619,57 @@ to = { node = "architecture", port = "gate" }"#,
                 .position(|n| n == "architecture")
                 .unwrap(),
         "generation runs before the reviewer that consumes it"
+    );
+}
+
+#[test]
+fn an_untyped_generation_output_is_refused_before_execution() {
+    let text = MINIMAL.replace(
+        r#"[[nodes]]
+id = "gate""#,
+        r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+
+[[nodes]]
+id = "gate""#,
+    );
+
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("unsupported type"), "{error}");
+    assert!(error.to_string().contains("pipeline version 2"), "{error}");
+    assert!(error.to_string().contains("PriorFindings@1"), "{error}");
+}
+
+#[test]
+fn a_whole_tree_generation_cannot_declare_a_change_set() {
+    let text = MINIMAL.replace(
+        r#"[[nodes]]
+id = "gate""#,
+        r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[nodes]]
+id = "gate""#,
+    );
+
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("only a `diff` Subject"),
+        "{error}"
     );
 }

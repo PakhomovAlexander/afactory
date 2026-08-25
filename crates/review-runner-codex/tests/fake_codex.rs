@@ -149,7 +149,7 @@ fn a_prose_answer_is_malformed_not_empty() {
         adapter
             .invoke(&cas, &sandbox, &Default::default())
             .unwrap_err(),
-        RunnerError::MalformedOutput(_)
+        RunnerError::MalformedOutput { .. }
     ));
 }
 
@@ -176,10 +176,11 @@ fn a_success_with_no_final_message_is_malformed() {
     let error = adapter
         .invoke(&cas, &sandbox, &Default::default())
         .unwrap_err();
-    let RunnerError::MalformedOutput(message) = &error else {
+    let RunnerError::MalformedOutput { raw_artifact, why } = &error else {
         panic!("expected MalformedOutput, got {error:?}");
     };
-    assert!(message.contains("no final message"), "{message}");
+    assert!(raw_artifact.starts_with("sha256:"), "{raw_artifact}");
+    assert!(why.contains("no final message"), "{why}");
 }
 
 /// The adapter refuses a package that names anything but codex — a lockfile full of verified

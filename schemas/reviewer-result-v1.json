@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:reviewer-result:1",
   "title": "ReviewerResult@1 payload",
-  "description": "What one reviewer attempt returned. Its reports are FindingReport@1 payloads carried inside the result — the kernel assigns them identity when it admits them, which is why a reviewer cannot name a Finding it has not been given.",
+  "description": "What one reviewer attempt returned. Reports use the flat reviewer shape emitted by every live adapter; the kernel converts each admitted report to FindingReport@1 and assigns identity, which is why a reviewer cannot name a Finding it has not been given.",
   "type": "object",
   "additionalProperties": false,
   "required": ["verdict", "summary", "reports", "benchmark_demands", "disputes"],
@@ -17,7 +17,7 @@
     "reports": {
       "description": "Immutable claims, in the order the reviewer made them. An empty list is a real answer — a reviewer that found nothing is not a reviewer that failed.",
       "type": "array",
-      "items": { "type": "object" }
+      "items": { "$ref": "#/$defs/legacyReport" }
     },
     "benchmark_demands": {
       "description": "Proof this reviewer wants before a performance claim is believed. A demand, not a finding: it asserts nothing except that nothing has been measured.",
@@ -44,6 +44,47 @@
           "claim_id": { "type": "string", "minLength": 1 },
           "position": { "enum": ["confirm", "refute"] },
           "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "legacyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "file", "title", "body", "fix"],
+      "allOf": [
+        {
+          "if": { "properties": { "file": { "enum": ["", "(change-wide)"] } } },
+          "then": { "properties": { "line": { "type": "null" } } }
+        }
+      ],
+      "properties": {
+        "severity": { "enum": ["blocker", "major", "minor"] },
+        "file": {
+          "type": "string",
+          "anyOf": [
+            { "enum": ["", "(change-wide)"] },
+            {
+              "allOf": [
+                { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+                { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+              ]
+            }
+          ]
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "body": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "fix": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
         }
       }
     }

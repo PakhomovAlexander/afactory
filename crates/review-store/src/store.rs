@@ -10,6 +10,7 @@
 //! turns a class of crash-corruption into an immediate error.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -63,6 +64,19 @@ impl From<serde_json::Error> for StoreError {
     fn from(e: serde_json::Error) -> Self {
         StoreError::Json(e)
     }
+}
+
+struct StoredEventRow {
+    event_id: String,
+    sequence: i64,
+    event_type: String,
+    occurred_at: String,
+    node_id: Option<String>,
+    attempt_id: Option<String>,
+    causation_id: Option<String>,
+    correlation_id: Option<String>,
+    artifact_refs: String,
+    payload: String,
 }
 
 /// What an appender supplies. `event_id` and `sequence` are the store's to assign — a caller
@@ -135,6 +149,28 @@ impl NewEvent {
 
 pub struct EventStore {
     conn: Connection,
+    /// Parsed Change Sets keyed by their content digest. A cache hit is accepted only after the
+    /// current on-disk object is streamed and verified again; this removes repeated JSON/base64
+    /// allocations without turning process history into integrity authority.
+    validated_change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+}
+
+#[derive(Default)]
+struct PreparedArtifacts {
+    verified: std::collections::BTreeSet<String>,
+    json: std::collections::BTreeMap<String, Value>,
+    /// Every Change Set parsed for this exact append batch. This is validation authority for the
+    /// transaction; the EventStore cache is only a bounded cross-batch parse memo.
+    change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+}
+
+fn remember_validated_change_set(
+    cache: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    artifact_id: String,
+    change_set: Arc<review_core::ChangeSetV1>,
+) {
+    cache.clear();
+    cache.insert(artifact_id, change_set);
 }
 
 impl EventStore {
@@ -175,7 +211,10 @@ impl EventStore {
              CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
                  ON events (run_id, causation_id, type, sequence);",
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
     }
 
     /// Append one event, assigning it the next sequence for its run.
@@ -223,28 +262,69 @@ impl EventStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let mut has_artifacts = false;
         for event in events {
             review_core::json::admit(&event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
             review_core::event::validate_event_payload(event.event_type, &event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
+        }
+        let typed_artifacts = typed_json_artifacts(events)?;
+        let mut prepared = PreparedArtifacts::default();
+        for event in events {
             for digest in &event.artifact_refs {
-                has_artifacts = true;
-                cas.prepare_for_publication(digest)
-                    .map_err(|error| match error {
-                        CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
-                            StoreError::DanglingArtifact {
-                                digest: digest.clone(),
-                            }
+                if !prepared.verified.insert(digest.clone()) {
+                    continue;
+                }
+                let prepare_error = |error| match error {
+                    CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
+                        StoreError::DanglingArtifact {
+                            digest: digest.clone(),
                         }
-                        other => StoreError::Artifact(format!(
-                            "referenced artifact {digest} failed verification: {other}"
-                        )),
-                    })?;
+                    }
+                    other => StoreError::Artifact(format!(
+                        "referenced artifact {digest} failed verification: {other}"
+                    )),
+                };
+                match typed_artifacts.get(digest).map(String::as_str) {
+                    Some(review_core::contract::CHANGE_SET_V1)
+                        if self.validated_change_sets.contains_key(digest) =>
+                    {
+                        cas.prepare_for_publication(digest).map_err(prepare_error)?;
+                        prepared.change_sets.insert(
+                            digest.clone(),
+                            Arc::clone(&self.validated_change_sets[digest]),
+                        );
+                    }
+                    Some(artifact_type) if artifact_type != review_core::contract::OPAQUE_V1 => {
+                        let value = cas
+                            .get_json_for_publication(digest)
+                            .map_err(prepare_error)?;
+                        if artifact_type == review_core::contract::CHANGE_SET_V1 {
+                            let change_set: review_core::ChangeSetV1 =
+                                serde_json::from_value(value)
+                                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            change_set.validate().map_err(StoreError::Conflict)?;
+                            let change_set = Arc::new(change_set);
+                            prepared
+                                .change_sets
+                                .insert(digest.clone(), Arc::clone(&change_set));
+                            // One Campaign Round has one Change Set authority. Keep only the
+                            // newest parsed value so storage memory cannot grow with Round count;
+                            // current-byte integrity is still re-established on every reference.
+                            remember_validated_change_set(
+                                &mut self.validated_change_sets,
+                                digest.clone(),
+                                change_set,
+                            );
+                        } else {
+                            prepared.json.insert(digest.clone(), value);
+                        }
+                    }
+                    _ => cas.prepare_for_publication(digest).map_err(prepare_error)?,
+                }
             }
         }
-        if has_artifacts {
+        if !prepared.verified.is_empty() {
             cas.flush()
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
@@ -263,7 +343,7 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-        validate_campaign_transition(&tx, cas, run_id, events, first)?;
+        validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)
@@ -417,12 +497,25 @@ impl EventStore {
 
     /// Every event of a run, in sequence order. This is the only read replay needs.
     pub fn replay(&self, run_id: &str) -> Result<Vec<RunEvent>, StoreError> {
+        self.replay_from(run_id, 0)
+    }
+
+    /// The ordered suffix beginning at `first_sequence`, for advancing a watermarked projection
+    /// without parsing and validating the prefix it already covers.
+    pub fn replay_from(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
+            StoreError::Conflict("event replay sequence exceeds SQLite range".into())
+        })?;
         let mut stmt = self.conn.prepare(
             "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
                     causation_id, correlation_id, artifact_refs, payload
-             FROM events WHERE run_id = ?1 ORDER BY sequence",
+             FROM events WHERE run_id = ?1 AND sequence >= ?2 ORDER BY sequence",
         )?;
-        let rows = stmt.query_map(params![run_id], |row| {
+        let rows = stmt.query_map(params![run_id, first_sequence_sql], |row| {
             let refs: String = row.get(8)?;
             let payload: String = row.get(9)?;
             let sequence: i64 = row.get(1)?;
@@ -455,7 +548,7 @@ impl EventStore {
             ))
         })?;
         let mut out = Vec::new();
-        for (expected_sequence, row) in (0u64..).zip(rows) {
+        for (expected_sequence, row) in (first_sequence..).zip(rows) {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
@@ -484,6 +577,52 @@ impl EventStore {
             out.push(event);
         }
         Ok(out)
+    }
+
+    /// The immutable Campaign opening event, read through the type/sequence index.
+    pub fn campaign_opened(&self, run_id: &str) -> Result<Option<RunEvent>, StoreError> {
+        self.indexed_event(run_id, EventType::CampaignOpenedV1, false)
+    }
+
+    /// The active Round epoch, read through the type/sequence index.
+    pub fn latest_round_started(&self, run_id: &str) -> Result<Option<RunEvent>, StoreError> {
+        self.indexed_event(run_id, EventType::RoundStartedV1, true)
+    }
+
+    fn indexed_event(
+        &self,
+        run_id: &str,
+        event_type: EventType,
+        latest: bool,
+    ) -> Result<Option<RunEvent>, StoreError> {
+        let sql = if latest {
+            "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE run_id = ?1 AND type = ?2 ORDER BY sequence DESC LIMIT 1"
+        } else {
+            "SELECT event_id, sequence, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events WHERE run_id = ?1 AND type = ?2 ORDER BY sequence LIMIT 1"
+        };
+        let event_type = event_type.to_string();
+        let row = self
+            .conn
+            .query_row(sql, params![run_id, event_type], |row| {
+                Ok(StoredEventRow {
+                    event_id: row.get(0)?,
+                    sequence: row.get(1)?,
+                    event_type: row.get(2)?,
+                    occurred_at: row.get(3)?,
+                    node_id: row.get(4)?,
+                    attempt_id: row.get(5)?,
+                    causation_id: row.get(6)?,
+                    correlation_id: row.get(7)?,
+                    artifact_refs: row.get(8)?,
+                    payload: row.get(9)?,
+                })
+            })
+            .optional()?;
+        row.map(|row| decode_stored_event(run_id, row)).transpose()
     }
 
     pub fn len(&self, run_id: &str) -> Result<u64, StoreError> {
@@ -566,7 +705,7 @@ impl AuthorityPort {
 
     fn artifact_type(&self) -> &str {
         match self {
-            Self::Name(_) => "review.kernel/Opaque@1",
+            Self::Name(_) => review_core::contract::OPAQUE_V1,
             Self::Detailed(port) => &port.artifact_type,
         }
     }
@@ -664,8 +803,72 @@ fn load_authority_plan_id(
     Ok(AuthorityPlan { nodes, budgeted })
 }
 
+fn typed_json_artifacts(
+    events: &[NewEvent],
+) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+    let mut artifacts = std::collections::BTreeMap::new();
+    for event in events {
+        let ports = match event.event_type {
+            EventType::NodeInvocationV1 => {
+                serde_json::from_value::<review_core::NodeInvocationPayloadV1>(
+                    event.payload.clone(),
+                )?
+                .inputs
+            }
+            EventType::NodeOutputReceiptV1 => {
+                serde_json::from_value::<review_core::NodeOutputReceiptPayloadV1>(
+                    event.payload.clone(),
+                )?
+                .outputs
+            }
+            EventType::AttemptInputV1 => {
+                let payload: review_core::event::AttemptInputPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.refusal_history_id,
+                    review_core::contract::REFUSAL_HISTORY_V1.into(),
+                )?;
+                continue;
+            }
+            EventType::AttemptFeedbackV1 => {
+                let payload: review_core::event::AttemptFeedbackPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.refusal_history_id,
+                    review_core::contract::REFUSAL_HISTORY_V1.into(),
+                )?;
+                continue;
+            }
+            _ => continue,
+        };
+        for port in ports {
+            for artifact_id in port.artifact_ids {
+                insert_artifact_type(&mut artifacts, artifact_id, port.artifact_type.clone())?;
+            }
+        }
+    }
+    Ok(artifacts)
+}
+
+fn insert_artifact_type(
+    artifacts: &mut std::collections::BTreeMap<String, String>,
+    artifact_id: String,
+    artifact_type: String,
+) -> Result<(), StoreError> {
+    if let Some(previous) = artifacts.insert(artifact_id.clone(), artifact_type.clone())
+        && previous != artifact_type
+    {
+        return Err(StoreError::Conflict(format!(
+            "artifact {artifact_id} is assigned conflicting types"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_plan_ports(
-    cas: &Cas,
+    prepared: &PreparedArtifacts,
     expected: &[AuthorityPort],
     actual: &[review_core::PortArtifactsV1],
     subject_snapshot_id: &str,
@@ -715,8 +918,13 @@ fn validate_plan_ports(
                 expected.name()
             )));
         }
+        let mut validated_change_set = None;
         for artifact in &port.artifact_ids {
-            validate_artifact_payload(cas, &port.artifact_type, artifact)?;
+            if let Some(change_set) =
+                validate_artifact_payload(prepared, &port.artifact_type, artifact)?
+            {
+                validated_change_set = Some(change_set);
+            }
         }
         if port.artifact_type == review_core::contract::CHANGE_SET_V1 {
             let expected = subject_change_set_id.ok_or_else(|| {
@@ -729,10 +937,8 @@ fn validate_plan_ports(
                     "ChangeSet@1 port does not carry the Subject's exact Change Set".into(),
                 ));
             }
-            let change_set: review_core::ChangeSetV1 = serde_json::from_value(
-                cas.get_json(expected)
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
-            )?;
+            let change_set = validated_change_set
+                .ok_or_else(|| StoreError::Conflict("ChangeSet@1 port was not validated".into()))?;
             if change_set.head_snapshot_id != subject_snapshot_id
                 || Some(change_set.base_snapshot_id.as_str()) != subject_base_snapshot_id
             {
@@ -746,28 +952,40 @@ fn validate_plan_ports(
 }
 
 fn validate_artifact_payload(
-    cas: &Cas,
+    prepared: &PreparedArtifacts,
     artifact_type: &str,
     artifact_id: &str,
-) -> Result<(), StoreError> {
-    if artifact_type == "review.kernel/Opaque@1" {
-        cas.get(artifact_id)
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        return Ok(());
+) -> Result<Option<Arc<review_core::ChangeSetV1>>, StoreError> {
+    if !prepared.verified.contains(artifact_id) {
+        return Err(StoreError::Conflict(format!(
+            "typed artifact {artifact_id} is absent from the event's verified references"
+        )));
     }
-    let value = cas
-        .get_json(artifact_id)
-        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    if artifact_type == review_core::contract::OPAQUE_V1 {
+        return Ok(None);
+    }
+    if artifact_type == review_core::contract::CHANGE_SET_V1
+        && let Some(change_set) = prepared.change_sets.get(artifact_id)
+    {
+        // Publication preparation re-established current CAS integrity for this exact reference
+        // and made every Change Set in the batch independently available to validation.
+        return Ok(Some(Arc::clone(change_set)));
+    }
+    let value = prepared.json.get(artifact_id).ok_or_else(|| {
+        StoreError::Conflict(format!(
+            "typed artifact {artifact_id} has no value from publication preparation"
+        ))
+    })?;
     let object = value.as_object().ok_or_else(|| {
         StoreError::Conflict(format!("{artifact_type} artifact is not a JSON object"))
     })?;
     match artifact_type {
         review_core::contract::CHANGE_SET_V1 => {
-            let change_set: review_core::ChangeSetV1 = serde_json::from_value(value)
-                .map_err(|error| StoreError::Conflict(error.to_string()))?;
-            change_set.validate().map_err(StoreError::Conflict)?;
+            return Err(StoreError::Conflict(format!(
+                "ChangeSet@1 artifact {artifact_id} was not prepared for validation"
+            )));
         }
-        "review.kernel/GateDecision@1" => {
+        review_core::contract::GATE_DECISION_V1 => {
             exact_keys(
                 object,
                 &["outcome", "blocking", "reasons", "executed", "required"],
@@ -784,7 +1002,7 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/PriorFindings@1" => {
+        review_core::contract::PRIOR_FINDINGS_V1 => {
             exact_keys(
                 object,
                 &["subject_id", "round", "prior_findings"],
@@ -799,8 +1017,8 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/ReviewerResult@1" => validate_reviewer_result(&value)?,
-        "review.kernel/ReportSet@1" => {
+        review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
+        review_core::contract::REPORT_SET_V1 => {
             if object.is_empty()
                 || object.values().any(|ids| {
                     ids.as_array().is_none_or(|ids| {
@@ -816,7 +1034,7 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        "review.kernel/FindingSet@1" => {
+        review_core::contract::FINDING_SET_V1 => {
             exact_keys(object, &["round", "sources", "findings"], artifact_type)?;
             if value["round"].as_u64().is_none()
                 || !string_array(&value["sources"])
@@ -833,78 +1051,37 @@ fn validate_artifact_payload(
             )));
         }
     }
+    Ok(None)
+}
+
+fn validate_prepared_refusal_history(
+    prepared: &PreparedArtifacts,
+    artifact_id: &str,
+    event_type: &str,
+) -> Result<(), StoreError> {
+    let history = prepared
+        .json
+        .get(artifact_id)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "{event_type} refusal history is not a verified JSON array"
+            ))
+        })?;
+    if history.is_empty()
+        || history
+            .iter()
+            .any(|entry| entry.as_str().is_none_or(|entry| entry.trim().is_empty()))
+    {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} has empty refusal history"
+        )));
+    }
     Ok(())
 }
 
-fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| StoreError::Conflict("ReviewerResult@1 is not an object".into()))?;
-    let allowed = [
-        "verdict",
-        "summary",
-        "reports",
-        "benchmark_demands",
-        "disputes",
-    ];
-    exact_keys(object, &allowed, "ReviewerResult@1")?;
-    if !matches!(
-        value["verdict"].as_str(),
-        Some("approve" | "request-changes" | "block")
-    ) || value["reports"]
-        .as_array()
-        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
-        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
-        || value["benchmark_demands"].as_array().is_none()
-        || value["disputes"].as_array().is_none()
-    {
-        return Err(StoreError::Conflict(
-            "ReviewerResult@1 violates its top-level payload contract".into(),
-        ));
-    }
-    for demand in value
-        .get("benchmark_demands")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let demand = demand.as_object().ok_or_else(|| {
-            StoreError::Conflict("ReviewerResult@1 has a malformed benchmark demand".into())
-        })?;
-        exact_keys(
-            demand,
-            &["claim", "why", "suggested_method"],
-            "benchmark demand",
-        )?;
-        if demand
-            .values()
-            .any(|field| field.as_str().is_none_or(str::is_empty))
-        {
-            return Err(StoreError::Conflict(
-                "ReviewerResult@1 has an empty benchmark demand".into(),
-            ));
-        }
-    }
-    for dispute in value
-        .get("disputes")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let dispute = dispute.as_object().ok_or_else(|| {
-            StoreError::Conflict("ReviewerResult@1 has a malformed dispute".into())
-        })?;
-        exact_keys(dispute, &["claim_id", "position", "reason"], "dispute")?;
-        if dispute["claim_id"].as_str().is_none_or(str::is_empty)
-            || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
-            || dispute["reason"].as_str().is_none_or(str::is_empty)
-        {
-            return Err(StoreError::Conflict(
-                "ReviewerResult@1 has an invalid dispute".into(),
-            ));
-        }
-    }
-    Ok(())
+pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
+    review_core::validate_reviewer_result(value).map_err(StoreError::Conflict)
 }
 
 fn exact_keys(
@@ -933,19 +1110,41 @@ fn is_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-fn validate_report_plan(plan: &AuthorityPlan, payload: &Value) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+fn report_outcomes(
+    event_type: EventType,
+    payload: &Value,
+) -> Result<Vec<review_core::RunNodeReportV2>, StoreError> {
+    match event_type {
+        EventType::RunReportV2 => Ok(serde_json::from_value::<review_core::RunReportPayloadV2>(
+            payload.clone(),
+        )?
+        .outcomes),
+        EventType::RunReportV3 => Ok(serde_json::from_value::<review_core::RunReportPayloadV3>(
+            payload.clone(),
+        )?
+        .outcomes),
+        _ => Err(StoreError::Conflict(format!(
+            "{event_type} has no structural run-report outcomes"
+        ))),
+    }
+}
+
+fn validate_report_plan(
+    plan: &AuthorityPlan,
+    event_type: EventType,
+    payload: &Value,
+) -> Result<(), StoreError> {
+    let outcomes = report_outcomes(event_type, payload)?;
     let expected: std::collections::BTreeSet<&str> =
         plan.nodes.keys().map(String::as_str).collect();
-    let actual: std::collections::BTreeSet<&str> = report
-        .outcomes
+    let actual: std::collections::BTreeSet<&str> = outcomes
         .iter()
         .map(|outcome| outcome.node.as_str())
         .collect();
-    if expected != actual || actual.len() != report.outcomes.len() {
-        return Err(StoreError::Conflict(
-            "RunReport@2 does not cover exactly the pinned Campaign plan".into(),
-        ));
+    if expected != actual || actual.len() != outcomes.len() {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} does not cover exactly the pinned Campaign plan"
+        )));
     }
     Ok(())
 }
@@ -956,6 +1155,7 @@ fn validate_campaign_transition(
     run_id: &str,
     events: &[NewEvent],
     first_sequence: i64,
+    prepared: &PreparedArtifacts,
 ) -> Result<(), StoreError> {
     let campaign_opened: i64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1'",
@@ -963,12 +1163,16 @@ fn validate_campaign_transition(
         |row| row.get(0),
     )?;
     let mut opened = campaign_opened > 0;
-    let mut authority_plan = if opened {
+    let needs_authority_plan = events
+        .iter()
+        .any(|event| event_uses_authority_plan(event.event_type));
+    let mut authority_plan = if opened && needs_authority_plan {
         Some(load_authority_plan(tx, cas, run_id)?)
     } else {
         None
     };
     let mut active = latest_round(tx, run_id)?;
+    let mut active_subject: Option<(String, review_core::SubjectV1)> = None;
     let mut terminal = match &active {
         Some((event_id, _)) => round_has_terminal_report(tx, run_id, event_id)?,
         None => false,
@@ -977,8 +1181,11 @@ fn validate_campaign_transition(
     let mut pending_fences = std::collections::BTreeSet::new();
     let mut batch_dispatches = std::collections::BTreeMap::new();
     let mut batch_latest_dispatch = std::collections::BTreeMap::new();
+    let mut batch_attempt_inputs = std::collections::BTreeMap::new();
+    let mut batch_attempt_feedback = std::collections::BTreeMap::new();
     let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
         std::collections::BTreeMap::new();
+    let mut batch_terminal_nodes = std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
@@ -1115,6 +1322,7 @@ fn validate_campaign_transition(
                     ));
                 }
                 active = Some((event_id, payload));
+                active_subject = None;
                 terminal = false;
             }
             event_type if round_runtime_event(event_type) => {
@@ -1148,13 +1356,20 @@ fn validate_campaign_transition(
                 }
                 if let Some((active_id, active_payload)) = &active {
                     let plan = authority_plan.as_ref();
-                    let subject: review_core::SubjectV1 = serde_json::from_value(
-                        cas.get_json(&active_payload.subject_id)
-                            .map_err(|error| StoreError::Conflict(error.to_string()))?,
-                    )?;
-                    let subject_snapshot_id = subject.head_snapshot_id;
-                    let subject_base_snapshot_id = subject.base_snapshot_id;
-                    let subject_change_set_id = subject.change_set_id;
+                    if active_subject
+                        .as_ref()
+                        .is_none_or(|(id, _)| id != &active_payload.subject_id)
+                    {
+                        let subject: review_core::SubjectV1 = serde_json::from_value(
+                            cas.get_json(&active_payload.subject_id)
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                        )?;
+                        active_subject = Some((active_payload.subject_id.clone(), subject));
+                    }
+                    let subject = &active_subject.as_ref().expect("active Subject cached").1;
+                    let subject_snapshot_id = &subject.head_snapshot_id;
+                    let subject_base_snapshot_id = &subject.base_snapshot_id;
+                    let subject_change_set_id = &subject.change_set_id;
                     if terminal {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} cannot publish after the active Round concluded"
@@ -1228,10 +1443,10 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    cas,
+                                    prepared,
                                     &expected.inputs,
                                     &invocation.inputs,
-                                    &subject_snapshot_id,
+                                    subject_snapshot_id,
                                     subject_base_snapshot_id.as_deref(),
                                     subject_change_set_id.as_deref(),
                                 )?;
@@ -1362,6 +1577,7 @@ fn validate_campaign_transition(
                             }
                             if !quarantined {
                                 batch_terminals.insert(attempt.to_string(), event_type);
+                                batch_terminal_nodes.insert(attempt.to_string(), node.to_string());
                             }
                             if plan.is_some_and(|plan| plan.budgeted) {
                                 let settled = match event_type {
@@ -1447,6 +1663,79 @@ fn validate_campaign_transition(
                                 }
                             }
                         }
+                        EventType::AttemptInputV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptInput@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptInput@1 has no attempt ID".into())
+                            })?;
+                            let input: review_core::event::AttemptInputPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if !event.artifact_refs.contains(&input.refusal_history_id) {
+                                return Err(StoreError::Conflict(
+                                    "AttemptInput@1 does not reference its refusal history".into(),
+                                ));
+                            }
+                            validate_prepared_refusal_history(
+                                prepared,
+                                &input.refusal_history_id,
+                                "AttemptInput@1",
+                            )?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'AttemptInput@1' AND node_id = ?3 AND attempt_id = ?4",
+                                params![run_id, active_id, node, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0
+                                || batch_attempt_inputs
+                                    .insert(attempt.to_string(), node.to_string())
+                                    .is_some()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "attempt has duplicate durable input events".into(),
+                                ));
+                            }
+                        }
+                        EventType::AttemptFeedbackV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptFeedback@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("AttemptFeedback@1 has no attempt ID".into())
+                            })?;
+                            let feedback: review_core::event::AttemptFeedbackPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if !event.artifact_refs.contains(&feedback.refusal_history_id) {
+                                return Err(StoreError::Conflict(
+                                    "AttemptFeedback@1 does not reference its refusal history"
+                                        .into(),
+                                ));
+                            }
+                            validate_prepared_refusal_history(
+                                prepared,
+                                &feedback.refusal_history_id,
+                                "AttemptFeedback@1",
+                            )?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'AttemptFeedback@1' AND attempt_id = ?3",
+                                params![run_id, active_id, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0
+                                || batch_attempt_feedback
+                                    .insert(attempt.to_string(), node.to_string())
+                                    .is_some()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "attempt has duplicate durable feedback events".into(),
+                                ));
+                            }
+                        }
                         EventType::NodeOutputReceiptV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into())
@@ -1466,10 +1755,10 @@ fn validate_campaign_transition(
                                     ))
                                 })?;
                                 validate_plan_ports(
-                                    cas,
+                                    prepared,
                                     &expected.outputs,
                                     &receipt.outputs,
-                                    &subject_snapshot_id,
+                                    subject_snapshot_id,
                                     subject_base_snapshot_id.as_deref(),
                                     subject_change_set_id.as_deref(),
                                 )?;
@@ -1582,19 +1871,23 @@ fn validate_campaign_transition(
                         }
                         _ => {}
                     }
-                    if matches!(event_type, EventType::RunReportV1 | EventType::RunReportV2)
-                        && report_closes(event_type, &event.payload)?
-                    {
+                    if event_type.is_run_report() && report_closes(event_type, &event.payload)? {
                         if terminal {
                             return Err(StoreError::Conflict(
                                 "the active Round epoch already has a terminal conclusion".into(),
                             ));
                         }
-                        if event_type == EventType::RunReportV2 {
+                        if event_type.run_report_requires_receipts() {
                             if let Some(plan) = plan {
-                                validate_report_plan(plan, &event.payload)?;
+                                validate_report_plan(plan, event_type, &event.payload)?;
                             }
-                            validate_report_receipts(tx, run_id, active_id, &event.payload)?;
+                            validate_report_receipts(
+                                tx,
+                                run_id,
+                                active_id,
+                                event_type,
+                                &event.payload,
+                            )?;
                         }
                         terminal = true;
                     }
@@ -1638,27 +1931,58 @@ fn validate_campaign_transition(
                 .into(),
         ));
     }
+    for (attempt, node) in batch_attempt_inputs {
+        if batch_dispatches.get(&attempt) != Some(&node) {
+            return Err(StoreError::Conflict(
+                "AttemptInput@1 must append atomically with its matching dispatch".into(),
+            ));
+        }
+    }
+    for (attempt, node) in batch_attempt_feedback {
+        if batch_terminal_nodes.get(&attempt) != Some(&node)
+            || !matches!(
+                batch_terminals.get(&attempt),
+                Some(EventType::AttemptFailedV1 | EventType::AttemptFencedV1)
+            )
+        {
+            return Err(StoreError::Conflict(
+                "AttemptFeedback@1 must append atomically with its matching failed or fenced attempt"
+                    .into(),
+            ));
+        }
+    }
     Ok(())
 }
 
 fn round_runtime_event(event_type: EventType) -> bool {
-    matches!(
-        event_type,
-        EventType::AttemptAdmittedV1
-            | EventType::AttemptDispatchedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1
-            | EventType::CheckCompletedV1
-            | EventType::FindingReportedV1
-            | EventType::GateDecisionV1
-            | EventType::GenerationAdvancedV1
-            | EventType::NodeInvocationV1
-            | EventType::NodeOutputReceiptV1
-            | EventType::ProviderOperationTransitionV1
-            | EventType::RunReportV1
-            | EventType::RunReportV2
-    )
+    event_type.is_run_report()
+        || matches!(
+            event_type,
+            EventType::AttemptAdmittedV1
+                | EventType::AttemptDispatchedV1
+                | EventType::AttemptFeedbackV1
+                | EventType::AttemptInputV1
+                | EventType::AttemptFailedV1
+                | EventType::AttemptFencedV1
+                | EventType::AttemptReleasedV1
+                | EventType::CheckCompletedV1
+                | EventType::FindingReportedV1
+                | EventType::GateDecisionV1
+                | EventType::GenerationAdvancedV1
+                | EventType::NodeInvocationV1
+                | EventType::NodeOutputReceiptV1
+                | EventType::ProviderOperationTransitionV1
+        )
+}
+
+fn event_uses_authority_plan(event_type: EventType) -> bool {
+    event_type.is_run_report()
+        || matches!(
+            event_type,
+            EventType::NodeInvocationV1
+                | EventType::AttemptDispatchedV1
+                | EventType::NodeOutputReceiptV1
+        )
 }
 
 fn latest_round(
@@ -1678,16 +2002,17 @@ fn latest_round(
         .transpose()
 }
 
+const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
+     WHERE run_id = ?1 AND causation_id = ?2
+       AND type >= 'RunReport@' AND type < 'RunReportA'
+     ORDER BY sequence";
+
 fn round_has_terminal_report(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
 ) -> Result<bool, StoreError> {
-    let mut statement = tx.prepare(
-        "SELECT type, payload FROM events
-         WHERE run_id = ?1 AND causation_id = ?2 AND type IN ('RunReport@1', 'RunReport@2')
-         ORDER BY sequence",
-    )?;
+    let mut statement = tx.prepare(ROUND_TERMINAL_REPORT_SQL)?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -1696,7 +2021,9 @@ fn round_has_terminal_report(
         let event_type = event_type
             .parse::<EventType>()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if report_closes(event_type, &serde_json::from_str(&payload)?)? {
+        if event_type.is_run_report()
+            && report_closes(event_type, &serde_json::from_str(&payload)?)?
+        {
             return Ok(true);
         }
     }
@@ -1707,9 +2034,10 @@ fn validate_report_receipts(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
+    event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV2 = serde_json::from_value(payload.clone())?;
+    let outcomes = report_outcomes(event_type, payload)?;
     let mut receipts = std::collections::BTreeMap::new();
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
@@ -1725,12 +2053,12 @@ fn validate_report_receipts(
         let node =
             node.ok_or_else(|| StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into()))?;
         if node != receipt.node || receipts.insert(node, receipt).is_some() {
-            return Err(StoreError::Conflict(
-                "RunReport@2 has ambiguous durable output receipts".into(),
-            ));
+            return Err(StoreError::Conflict(format!(
+                "{event_type} has ambiguous durable output receipts"
+            )));
         }
     }
-    for outcome in report.outcomes {
+    for outcome in outcomes {
         if let review_core::RunNodeOutcomeV2::Completed {
             mut output_artifacts,
         } = outcome.outcome
@@ -1738,8 +2066,8 @@ fn validate_report_receipts(
             output_artifacts.sort();
             let receipt = receipts.remove(&outcome.node).ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "RunReport@2 completed node '{}' without a durable receipt",
-                    outcome.node
+                    "{event_type} completed node '{}' without a durable receipt",
+                    outcome.node,
                 ))
             })?;
             let mut durable: Vec<String> = receipt
@@ -1750,21 +2078,21 @@ fn validate_report_receipts(
             durable.sort();
             if durable != output_artifacts {
                 return Err(StoreError::Conflict(format!(
-                    "RunReport@2 contradicts the receipt for node '{}'",
-                    outcome.node
+                    "{event_type} contradicts the receipt for node '{}'",
+                    outcome.node,
                 )));
             }
         } else if receipts.contains_key(&outcome.node) {
             return Err(StoreError::Conflict(format!(
-                "RunReport@2 suppresses or fails node '{}' after it published a receipt",
-                outcome.node
+                "{event_type} suppresses or fails node '{}' after it published a receipt",
+                outcome.node,
             )));
         }
     }
     if !receipts.is_empty() {
-        return Err(StoreError::Conflict(
-            "RunReport@2 omits nodes with durable output receipts".into(),
-        ));
+        return Err(StoreError::Conflict(format!(
+            "{event_type} omits nodes with durable output receipts"
+        )));
     }
     Ok(())
 }
@@ -1790,6 +2118,44 @@ fn report_closes(event_type: EventType, payload: &Value) -> Result<bool, StoreEr
 
 /// Event IDs are derived, not random: a replay of the same run must reproduce them, and a
 /// random ID would make two otherwise identical runs incomparable.
+fn decode_stored_event(run_id: &str, row: StoredEventRow) -> Result<RunEvent, StoreError> {
+    let sequence = u64::try_from(row.sequence).map_err(|_| {
+        StoreError::Conflict(format!(
+            "negative sequence {} in run {run_id}",
+            row.sequence
+        ))
+    })?;
+    let expected_id = derive_event_id(run_id, row.sequence);
+    if row.event_id != expected_id {
+        return Err(StoreError::Conflict(format!(
+            "event {} has invalid derived id; expected {expected_id}",
+            row.event_id
+        )));
+    }
+    let event_type = row
+        .event_type
+        .parse::<EventType>()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let artifact_refs = serde_json::from_str(&row.artifact_refs)?;
+    let payload = serde_json::from_str(&row.payload)?;
+    review_core::event::validate_event_payload(event_type, &payload).map_err(|error| {
+        StoreError::Conflict(format!("invalid replayed event payload: {error}"))
+    })?;
+    Ok(RunEvent {
+        event_id: row.event_id,
+        run_id: run_id.to_string(),
+        sequence,
+        event_type,
+        occurred_at: row.occurred_at,
+        node_id: row.node_id,
+        attempt_id: row.attempt_id,
+        causation_id: row.causation_id,
+        correlation_id: row.correlation_id,
+        artifact_refs,
+        payload,
+    })
+}
+
 fn derive_event_id(run_id: &str, sequence: i64) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1810,6 +2176,26 @@ mod tests {
         let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         (dir, store, cas)
+    }
+
+    #[test]
+    fn terminal_report_lookup_uses_the_full_type_index_prefix() {
+        let (_dir, store, _cas) = fixture();
+        let mut statement = store
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {ROUND_TERMINAL_REPORT_SQL}"))
+            .unwrap();
+        let details: Vec<String> = statement
+            .query_map(params!["run", "round"], |row| row.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("type>? AND type<?")),
+            "query plan did not seek the report type range: {details:?}"
+        );
     }
 
     #[test]
@@ -1878,6 +2264,192 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn reviewer_result_admission_accepts_only_the_live_flat_shape() {
+        let result = |report| {
+            json!({
+                "verdict": "request-changes",
+                "summary": null,
+                "reports": [report],
+                "benchmark_demands": [],
+                "disputes": [],
+            })
+        };
+        let legacy = json!({
+            "severity": "major",
+            "file": "src/a.rs",
+            "line": 1,
+            "title": "legacy",
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9,
+        });
+        let typed = json!({
+            "title": "typed",
+            "severity": "major",
+            "locations": [{"path": "src/a.rs", "line": 1}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9,
+        });
+
+        assert!(validate_reviewer_result(&result(legacy)).is_ok());
+        assert!(validate_reviewer_result(&result(typed)).is_err());
+    }
+
+    #[test]
+    fn reviewer_result_legacy_conformance_corpus_matches_durable_reader() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas/reviewer-result-v1-conformance.json");
+        let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for case in corpus["valid"].as_array().unwrap() {
+            assert!(
+                validate_reviewer_result(&case["payload"]).is_ok(),
+                "{}",
+                case["name"]
+            );
+        }
+        for case in corpus["invalid"].as_array().unwrap() {
+            assert!(
+                validate_reviewer_result(&case["payload"]).is_err(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn cached_change_set_validation_still_detects_later_cas_corruption() {
+        let (directory, _store, cas) = fixture();
+        let change_set = review_core::ChangeSetV1::new(
+            crate::canonical::blob_content_id(b"base"),
+            crate::canonical::blob_content_id(b"head"),
+            vec!["src/lib.rs".into()],
+            vec![],
+            b"diff --git a/src/lib.rs b/src/lib.rs\n",
+            "git version test",
+            "test-policy@1",
+        )
+        .unwrap();
+        let artifact_id = cas
+            .put_json(&serde_json::to_value(change_set).unwrap())
+            .unwrap();
+        let value = cas.get_json_for_publication(&artifact_id).unwrap();
+        let change_set: review_core::ChangeSetV1 = serde_json::from_value(value).unwrap();
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([artifact_id.clone()]),
+            json: std::collections::BTreeMap::new(),
+            change_sets: std::collections::BTreeMap::from([(
+                artifact_id.clone(),
+                Arc::new(change_set),
+            )]),
+        };
+
+        assert!(
+            validate_artifact_payload(
+                &prepared,
+                review_core::contract::CHANGE_SET_V1,
+                &artifact_id,
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        let hex = artifact_id.strip_prefix("sha256:").unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+            b"tampered after validation",
+        )
+        .unwrap();
+        let error = cas.prepare_for_publication(&artifact_id).unwrap_err();
+        assert!(
+            error.to_string().contains("does not match its digest"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_unprepared_change_set_is_a_conflict_not_a_panic() {
+        let artifact_id = crate::canonical::blob_content_id(b"change set");
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([artifact_id.clone()]),
+            json: std::collections::BTreeMap::from([(artifact_id.clone(), json!({}))]),
+            change_sets: std::collections::BTreeMap::new(),
+        };
+        let error = validate_artifact_payload(
+            &prepared,
+            review_core::contract::CHANGE_SET_V1,
+            &artifact_id,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("was not prepared"), "{error}");
+    }
+
+    #[test]
+    fn every_change_set_in_one_batch_remains_available_to_validation() {
+        let change_set = |base: &[u8], head: &[u8]| {
+            Arc::new(
+                review_core::ChangeSetV1::new(
+                    crate::canonical::blob_content_id(base),
+                    crate::canonical::blob_content_id(head),
+                    vec!["src/lib.rs".into()],
+                    vec![],
+                    b"patch",
+                    "git version test",
+                    "test-policy@1",
+                )
+                .unwrap(),
+            )
+        };
+        let first_id = crate::canonical::blob_content_id(b"first change set");
+        let second_id = crate::canonical::blob_content_id(b"second change set");
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([first_id.clone(), second_id.clone()]),
+            json: std::collections::BTreeMap::new(),
+            change_sets: std::collections::BTreeMap::from([
+                (first_id.clone(), change_set(b"base-1", b"head-1")),
+                (second_id.clone(), change_set(b"base-2", b"head-2")),
+            ]),
+        };
+
+        for artifact_id in [&first_id, &second_id] {
+            assert!(
+                validate_artifact_payload(
+                    &prepared,
+                    review_core::contract::CHANGE_SET_V1,
+                    artifact_id,
+                )
+                .unwrap()
+                .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn parsed_change_set_cache_retains_only_the_latest_authority() {
+        let change_set = Arc::new(
+            review_core::ChangeSetV1::new(
+                crate::canonical::blob_content_id(b"base"),
+                crate::canonical::blob_content_id(b"head"),
+                vec!["src/lib.rs".into()],
+                vec![],
+                b"patch",
+                "git version test",
+                "test-policy@1",
+            )
+            .unwrap(),
+        );
+        let mut cache = std::collections::BTreeMap::new();
+        remember_validated_change_set(&mut cache, "first".into(), Arc::clone(&change_set));
+        remember_validated_change_set(&mut cache, "second".into(), change_set);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("second"));
     }
 
     #[test]

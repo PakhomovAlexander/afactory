@@ -199,6 +199,18 @@ impl CaptureObserver for MutateOnce<'_> {
     }
 }
 
+struct CreateUntrackedOnce<'a> {
+    fixture: &'a Fixture,
+}
+
+impl CaptureObserver for CreateUntrackedOnce<'_> {
+    fn between_passes(&self, attempt: u32) {
+        if attempt == 1 {
+            self.fixture.write("new.txt", b"stable after creation\n");
+        }
+    }
+}
+
 /// One edit is a retry, not a failure — and the snapshot records how many passes it took.
 #[test]
 fn a_settled_worktree_is_admitted_on_retry() {
@@ -217,6 +229,28 @@ fn a_settled_worktree_is_admitted_on_retry() {
         snapshot.manifest.get("src/main.rs").unwrap().content,
         review_source_git::digest_bytes(b"fn main() { /* one edit */ }\n"),
         "the admitted content is the settled content"
+    );
+}
+
+#[test]
+fn an_untracked_file_created_between_passes_retries_without_a_cas_error() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas)
+        .dirty_observed(&CreateUntrackedOnce { fixture: &fixture })
+        .unwrap();
+
+    assert_eq!(snapshot.attempts, 2);
+    assert!(
+        snapshot
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path == "new.txt")
     );
 }
 
@@ -429,11 +463,12 @@ fn an_object_git_cannot_produce_is_refused_not_zeroed() {
 }
 
 #[test]
-fn a_percent_in_a_filename_survives_capture_and_materialize() {
+fn encoded_filenames_survive_capture_and_materialize() {
     let fixture = Fixture::new();
     // The reviewer's example: a literal '%' in the name. encode_path escapes it to %25 in the
     // manifest key; without a decoder, materialize would create `docs/50%25-off.md`.
     fixture.write("docs/50%-off.md", b"half price\n");
+    fixture.write(" notes.md", b"leading whitespace\n");
     fixture.write("src/main.rs", b"fn main() {}\n");
     fixture.commit_all("initial");
     let repo = repo_of(&fixture);
@@ -452,5 +487,45 @@ fn a_percent_in_a_filename_survives_capture_and_materialize() {
     assert!(
         !out.path().join("docs/50%25-off.md").exists(),
         "the encoded name must not leak to the filesystem"
+    );
+    assert!(snapshot.manifest.get("%20notes.md").is_some());
+    assert_eq!(
+        std::fs::read(out.path().join(" notes.md")).unwrap(),
+        b"leading whitespace\n"
+    );
+}
+
+#[test]
+#[ignore = "release measurement; run with --release -- --ignored --nocapture"]
+fn dirty_capture_large_tree_measurement() {
+    let fixture = Fixture::new();
+    fixture.write("seed.txt", b"tracked seed\n");
+    fixture.commit_all("seed");
+
+    let count = 5_000_u32;
+    let mut bytes = vec![0x42_u8; 40 * 1024];
+    for index in 0..count {
+        bytes[..4].copy_from_slice(&index.to_le_bytes());
+        fixture.write(&format!("large/{index:05}.bin"), &bytes);
+    }
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let start = std::time::Instant::now();
+    let snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    let cold_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    let warm_snapshot = Capture::new(&repo, &cas).dirty().unwrap();
+    let warm_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    let synthetic_tree = repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
+    let synthetic_tree_elapsed = start.elapsed();
+
+    assert_eq!(snapshot.manifest.len(), count as usize + 1);
+    assert_eq!(warm_snapshot.manifest, snapshot.manifest);
+    assert!(!synthetic_tree.as_str().is_empty());
+    eprintln!(
+        "dirty capture: {count} x 40KiB ({:.1} MiB) cold {cold_elapsed:?}, warm {warm_elapsed:?}, synthetic tree {synthetic_tree_elapsed:?}",
+        f64::from(count) * 40.0 / 1024.0
     );
 }

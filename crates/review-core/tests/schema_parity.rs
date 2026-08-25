@@ -12,14 +12,15 @@ use review_core::{
     Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
     PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
     ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 16] = [
+const SCHEMAS: [&str; 18] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -30,10 +31,12 @@ const SCHEMAS: [&str; 16] = [
     "patch-proposal-v1.json",
     "provider-operation-transition-v1.json",
     "reviewer-package-v1.json",
+    "reviewer-result-v1.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
     "run-report-v2.json",
+    "run-report-v3.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -47,7 +50,12 @@ fn schema(name: &str) -> Value {
 }
 
 fn validator(name: &str) -> jsonschema::Validator {
-    jsonschema::validator_for(&schema(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+    let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
+        .expect("FindingReport@1 is a schema resource");
+    jsonschema::options()
+        .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
+        .build(&schema(name))
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 fn assert_valid(name: &str, instance: &Value) {
@@ -75,6 +83,70 @@ fn assert_invalid(name: &str, instance: &Value, why: &str) {
 fn every_schema_is_a_valid_json_schema() {
     for name in SCHEMAS {
         let _ = validator(name);
+    }
+}
+
+#[test]
+fn reviewer_result_schema_names_the_live_flat_report_shape() {
+    let result = |report| {
+        json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [report],
+            "benchmark_demands": [],
+            "disputes": [],
+        })
+    };
+    assert_valid(
+        "reviewer-result-v1.json",
+        &result(json!({
+            "severity": "major",
+            "file": "src/a.rs",
+            "line": 1,
+            "title": "legacy",
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        })),
+    );
+    assert_invalid(
+        "reviewer-result-v1.json",
+        &result(json!({
+            "title": "typed",
+            "severity": "major",
+            "locations": [{"path": "src/a.rs"}],
+            "body": "body",
+            "fix": "fix",
+            "confidence": 0.9
+        })),
+        "typed FindingReport artifacts are produced only after ingestion",
+    );
+    assert_invalid(
+        "reviewer-result-v1.json",
+        &result(json!({"title": "no shape discriminator"})),
+        "a report must use the live flat shape",
+    );
+    assert_invalid(
+        "reviewer-result-v1.json",
+        &result(json!({"file": "src/a.rs", "locations": []})),
+        "a report cannot mix wire and durable shapes",
+    );
+}
+
+#[test]
+fn reviewer_result_legacy_conformance_corpus_matches_schema() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/reviewer-result-v1-conformance.json");
+    let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        assert_valid("reviewer-result-v1.json", &case["payload"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        assert_invalid(
+            "reviewer-result-v1.json",
+            &case["payload"],
+            case["name"].as_str().unwrap(),
+        );
     }
 }
 
@@ -142,6 +214,28 @@ fn finding_report_rejects_what_the_design_forbids() {
         &bad_confidence,
         "confidence is 0..=1",
     );
+}
+
+#[test]
+fn finding_report_semantic_conformance_corpus_matches_schema_and_reader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/finding-report-v1-conformance.json");
+    let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        assert_valid("finding-report-v1.json", &case["payload"]);
+        let report: FindingReport = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(report.validate().is_ok(), "{}", case["name"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        assert_invalid(
+            "finding-report-v1.json",
+            &case["payload"],
+            case["name"].as_str().unwrap(),
+        );
+        let refused = serde_json::from_value::<FindingReport>(case["payload"].clone())
+            .map_or(true, |report| report.validate().is_err());
+        assert!(refused, "{}", case["name"]);
+    }
 }
 
 #[test]
@@ -261,6 +355,8 @@ fn subject_and_campaign_authority_roundtrip() {
             gate: "major".into(),
         },
         reviewer_timeout_seconds: 1800,
+        check_timeout_seconds: Some(3600),
+        git_timeout_seconds: Some(300),
         budgets: None,
         focus: Some("authority bootstrap".into()),
         finding_identity_policy: "legacy-path-title@1".into(),
@@ -295,6 +391,8 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
     )
     .unwrap();
     change_set.validate().unwrap();
+    assert!(change_set.contains_report_path("src/old.rs"));
+    assert!(!change_set.contains_report_path("src/untouched.rs"));
     assert_eq!(
         change_set.canonical_patch().unwrap(),
         b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"
@@ -537,7 +635,7 @@ fn provider_operation_continuation_is_exact_and_secret_free() {
 }
 
 #[test]
-fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
+fn run_reports_are_structural_and_every_report_version_remains_readable() {
     let report = RunReportPayloadV2 {
         outcomes: vec![
             RunNodeReportV2 {
@@ -622,6 +720,32 @@ fn run_report_v2_is_structural_and_both_report_versions_remain_readable() {
         spent_tokens: None,
     })
     .unwrap();
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let report_v3 = RunReportPayloadV3 {
+        outcomes: vec![RunNodeReportV2 {
+            node: "review".into(),
+            outcome: RunNodeOutcomeV2::Completed {
+                output_artifacts: vec![],
+            },
+        }],
+        blocked_gates: vec![],
+        verdict: RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::AuthorityUnavailable,
+        },
+        spent_tokens: Some(43),
+    };
+    let value = serde_json::to_value(&report_v3).unwrap();
+    assert_valid("run-report-v3.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV3>(value.clone()).unwrap(),
+        report_v3
+    );
+    event.event_type = EventType::RunReportV3;
+    event.payload = value;
     assert_eq!(
         review_core::run_report_closes_round(&event).unwrap(),
         Some(true)

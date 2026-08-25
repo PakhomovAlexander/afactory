@@ -9,7 +9,7 @@
 //!   history — and the import is honest about it: it produces one report and at most one
 //!   resolution per row, and claims nothing about what happened in between.
 
-use review_core::{LegacyStageOutput, RunEvent, Severity};
+use review_core::{FindingReport, LegacyStageOutput, RunEvent, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 
 use crate::cas::Cas;
 use crate::ledger::{
-    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_GENERATION_ADVANCED, Ledger, Status,
-    TransitionKind,
+    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_GENERATION_ADVANCED, Ledger,
+    LedgerProjection, Status, TransitionKind,
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
@@ -68,6 +68,18 @@ pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     format!("{:x}", hasher.finalize())[..12].to_string()
 }
 
+/// Stable bridge identity until M3 replaces path-based fingerprints. A report's location order
+/// is model output and therefore not identity; sorting is unnecessary when only the minimum is
+/// needed, and the existing one-location legacy shape retains its exact key.
+fn report_identity_path(report: &review_core::FindingReport) -> &str {
+    report
+        .locations
+        .iter()
+        .map(|location| location.path.as_str())
+        .min()
+        .unwrap_or("")
+}
+
 /// What `ledger.sh add` prints. Compared against the frozen transcripts verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AddSummary {
@@ -97,8 +109,15 @@ pub struct Ingest<'a> {
     store: &'a mut EventStore,
     cas: &'a Cas,
     run_id: String,
+    event_count: u64,
     ledger: Ledger,
     round_event_id: Option<String>,
+}
+
+struct PreparedStage {
+    source: String,
+    reports: Vec<FindingReport>,
+    disputes: Vec<review_core::legacy::LegacyDispute>,
 }
 
 impl<'a> Ingest<'a> {
@@ -108,14 +127,47 @@ impl<'a> Ingest<'a> {
         run_id: impl Into<String>,
     ) -> Result<Self, StoreError> {
         let run_id = run_id.into();
-        let ledger = Ledger::rebuild(store, cas, &run_id)?;
+        let projection = LedgerProjection::rebuild(store, cas, &run_id)?;
+        let (_, event_count, ledger) = projection.into_parts();
         Ok(Self {
             store,
             cas,
             run_id,
+            event_count,
             ledger,
             round_event_id: None,
         })
+    }
+
+    /// Continue from a projection already rebuilt from this exact run's log. Callers that append
+    /// the current Round input can fold that event once and avoid replaying the same history
+    /// again before ingest.
+    pub fn from_projection(
+        store: &'a mut EventStore,
+        cas: &'a Cas,
+        run_id: impl Into<String>,
+        mut projection: LedgerProjection,
+    ) -> Result<Self, StoreError> {
+        let run_id = run_id.into();
+        if !projection.belongs_to(&run_id) {
+            return Err(StoreError::Conflict(format!(
+                "Ledger projection cannot ingest run `{run_id}` because it belongs to a different run"
+            )));
+        }
+        projection.fast_forward(store, cas)?;
+        let (_, event_count, ledger) = projection.into_parts();
+        Ok(Self {
+            store,
+            cas,
+            run_id,
+            event_count,
+            ledger,
+            round_event_id: None,
+        })
+    }
+
+    pub fn into_projection(self) -> LedgerProjection {
+        LedgerProjection::from_parts(self.run_id, self.event_count, self.ledger)
     }
 
     /// Bind reducer and generation events to the active durable Round epoch.
@@ -150,7 +202,9 @@ impl<'a> Ingest<'a> {
                 json!({ "round": round }),
             )),
         )?;
+        self.validate_watermark(&event)?;
         self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
         Ok(round)
     }
 
@@ -205,71 +259,83 @@ impl<'a> Ingest<'a> {
         stages: &[(&str, &LegacyStageOutput)],
         strict: bool,
     ) -> Result<AddSummary, StoreError> {
-        let round = self.ledger.round;
-        let mut summary = AddSummary::default();
-        let mut projected = self.ledger.clone();
-        let mut events = Vec::new();
-        let mut existing_reports: BTreeSet<(String, String, u32, String)> = self
-            .ledger
-            .findings()
-            .into_iter()
-            .flat_map(|finding| {
-                finding.reports.iter().map(|report| {
-                    (
-                        finding.key.clone(),
-                        report.source.clone(),
-                        report.round,
-                        report.report_id.clone(),
-                    )
-                })
-            })
-            .collect();
-
+        let mut prepared = Vec::with_capacity(stages.len());
         for (source, stage) in stages {
+            let mut reports = Vec::with_capacity(stage.findings.len());
             for (index, finding) in stage.findings.iter().enumerate() {
-                let report = match finding.clone().into_report(index) {
-                    Ok(report) => report,
+                // The frozen shell bridge trimmed titles before admission. Preserve that
+                // historical projection here, while the live LegacyFinding reader follows
+                // reviewer-result-v1 literally (where any non-empty string is content).
+                if !strict && finding.title.trim().is_empty() {
+                    eprintln!("add: skipping {source} finding (finding {index}: empty title)");
+                    continue;
+                }
+                match finding.clone().into_report(index) {
+                    Ok(report) => reports.push(report),
                     Err(reason) if !strict => {
                         eprintln!("add: skipping {source} finding ({reason})");
-                        continue;
                     }
                     Err(reason) => {
                         return Err(StoreError::Conflict(format!(
                             "{source} finding {index} violates FindingReport@1: {reason}"
                         )));
                     }
-                };
-                let location = report.locations.first();
-                let file = location
-                    .map(|location| location.path.as_str())
-                    .unwrap_or("");
-                let line = location.and_then(|location| location.line).map(i64::from);
+                }
+            }
+            prepared.push(PreparedStage {
+                source: (*source).to_string(),
+                reports,
+                disputes: stage.disputes.clone(),
+            });
+        }
+        self.add_prepared_outputs(&prepared)
+    }
+
+    fn add_prepared_outputs(&mut self, stages: &[PreparedStage]) -> Result<AddSummary, StoreError> {
+        let round = self.ledger.round;
+        let mut summary = AddSummary::default();
+        let mut projected = self.ledger.clone();
+        let mut events = Vec::new();
+        let existing_reports: BTreeSet<(&str, &str, u32, &str)> = self
+            .ledger
+            .findings()
+            .into_iter()
+            .flat_map(|finding| {
+                finding.reports.iter().map(|report| {
+                    (
+                        finding.key.as_str(),
+                        report.source.as_str(),
+                        report.round,
+                        report.report_id.as_str(),
+                    )
+                })
+            })
+            .collect();
+        let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
+
+        for stage in stages {
+            let source = stage.source.as_str();
+            for report in &stage.reports {
+                let file = report_identity_path(report);
                 let key = legacy_fingerprint(file, &report.title);
 
                 // The report is an immutable artifact; the event references it. Even a duplicate
                 // gets stored — that is the whole difference from the shell ledger, which counted
                 // it and threw it away.
-                let report_artifact = json!({
-                    "title": report.title,
-                    "severity": severity_str(report.severity),
-                    "file": file,
-                    "line": line,
-                    "body": report.body,
-                    "fix": report.fix,
-                    "confidence": report.confidence,
-                });
+                let report_artifact = serde_json::to_value(report)?;
                 let report_id = self
                     .cas
                     .put_json(&report_artifact)
                     .map_err(|e| StoreError::Conflict(e.to_string()))?;
-                let report_identity =
-                    (key.clone(), (*source).to_string(), round, report_id.clone());
+                let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
 
-                if existing_reports.contains(&report_identity) {
+                if existing_reports.contains(&(key.as_str(), source, round, report_id.as_str()))
+                    || pending_reports.contains(&report_identity)
+                {
                     summary.dup += 1;
                     continue;
                 }
-                existing_reports.insert(report_identity);
+                pending_reports.insert(report_identity);
 
                 let payload = json!({
                     "key": key,
@@ -293,9 +359,11 @@ impl<'a> Ingest<'a> {
                     Some(TransitionKind::Escalated) => summary.escalated += 1,
                     // `AdoptedWhileDeclined` counts as a duplicate in the harness's tally, even
                     // though it adopts the higher severity — the entry did not become actionable.
-                    Some(TransitionKind::Duplicate | TransitionKind::AdoptedWhileDeclined) => {
-                        summary.dup += 1
-                    }
+                    Some(
+                        TransitionKind::Duplicate
+                        | TransitionKind::AdoptedWhileDeclined
+                        | TransitionKind::AuthorityRecovered,
+                    ) => summary.dup += 1,
                     _ => {}
                 }
             }
@@ -340,7 +408,10 @@ impl<'a> Ingest<'a> {
             .into_iter()
             .map(|event| self.bind_round(event))
             .collect();
-        self.store.append_batch(&self.run_id, self.cas, &events)?;
+        let appended = self.store.append_batch(&self.run_id, self.cas, &events)?;
+        for event in &appended {
+            self.advance_watermark(event)?;
+        }
         self.ledger = projected;
         Ok(summary)
     }
@@ -370,7 +441,25 @@ impl<'a> Ingest<'a> {
             event
         };
         let event = self.store.append(&self.run_id, self.cas, event)?;
+        self.validate_watermark(&event)?;
         self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
+        Ok(())
+    }
+
+    fn advance_watermark(&mut self, event: &RunEvent) -> Result<(), StoreError> {
+        self.validate_watermark(event)?;
+        self.event_count += 1;
+        Ok(())
+    }
+
+    fn validate_watermark(&self, event: &RunEvent) -> Result<(), StoreError> {
+        if event.run_id != self.run_id || event.sequence != self.event_count {
+            return Err(StoreError::Conflict(format!(
+                "Ledger ingest for `{}` expected sequence {}, got {} for `{}`",
+                self.run_id, self.event_count, event.sequence, event.run_id
+            )));
+        }
         Ok(())
     }
 }
@@ -406,7 +495,7 @@ pub fn import_ledger_jsonl(
 ) -> Result<usize, StoreError> {
     let mut imported = 0;
     let mut max_round = 1;
-    let mut projected = Ledger::rebuild(store, cas, run_id)?;
+    let mut projected = LedgerProjection::rebuild(store, cas, run_id)?.into_ledger();
     let mut events = Vec::new();
     for line in jsonl.lines() {
         let line = line.trim();
@@ -586,6 +675,118 @@ mod tests {
         assert_eq!(
             legacy_fingerprint("", "x"),
             legacy_fingerprint(CHANGE_WIDE, "x")
+        );
+    }
+
+    #[test]
+    fn a_projection_cannot_be_reused_for_another_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let projection = LedgerProjection::rebuild(&store, &cas, "run-a").unwrap();
+
+        let error = match Ingest::from_projection(&mut store, &cas, "run-b", projection) {
+            Ok(_) => panic!("cross-run projection was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cannot ingest run `run-b`"));
+    }
+
+    #[test]
+    fn a_projection_fast_forwards_after_its_run_log_advances() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
+        store
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+
+        let ingest = Ingest::from_projection(&mut store, &cas, "run", projection).unwrap();
+        assert_eq!(ingest.event_count, 1);
+        assert_eq!(ingest.ledger().round, 2);
+    }
+
+    #[test]
+    fn a_projection_ahead_of_the_run_log_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut source = EventStore::open(directory.path().join("source.sqlite")).unwrap();
+        source
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+        let projection = LedgerProjection::rebuild(&source, &cas, "run").unwrap();
+        let mut empty = EventStore::open(directory.path().join("empty.sqlite")).unwrap();
+
+        let error = match Ingest::from_projection(&mut empty, &cas, "run", projection) {
+            Ok(_) => panic!("projection ahead of the log was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("covers 1 events"), "{error}");
+        assert!(error.to_string().contains("log contains 0"), "{error}");
+    }
+
+    #[test]
+    fn a_projection_rejects_a_repeated_or_gapped_event_sequence() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let mut projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
+        let event = store
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+        projection.apply_event(&event, &cas).unwrap();
+
+        let repeated = projection.apply_event(&event, &cas).unwrap_err();
+        assert!(
+            repeated.to_string().contains("expected sequence 1, got 0"),
+            "{repeated}"
+        );
+        let mut gapped = event;
+        gapped.sequence = 2;
+        let gapped = LedgerProjection::from_events("run", &[gapped], &cas).unwrap_err();
+        assert!(
+            gapped.to_string().contains("expected sequence 0, got 2"),
+            "{gapped}"
+        );
+    }
+
+    #[test]
+    fn multi_location_bridge_identity_is_independent_of_model_order() {
+        let report = review_core::FindingReport {
+            title: "same claim".into(),
+            severity: Severity::Major,
+            locations: vec![
+                review_core::Location::file("src/z.rs"),
+                review_core::Location::file("src/a.rs"),
+            ],
+            body: "body".into(),
+            fix: "fix".into(),
+            confidence: 0.9,
+            failure_trace: None,
+            rule_id: None,
+            occurrence_key: None,
+            relations: Vec::new(),
+        };
+        let mut reversed = report.clone();
+        reversed.locations.reverse();
+
+        assert_eq!(report_identity_path(&report), "src/a.rs");
+        assert_eq!(
+            legacy_fingerprint(report_identity_path(&report), &report.title),
+            legacy_fingerprint(report_identity_path(&reversed), &reversed.title)
         );
     }
 }

@@ -228,6 +228,11 @@ identity transition. Existing legacy campaigns keep their frozen fingerprint key
 handled by recorded Grouping after M3 or by starting a new Campaign, never by rewriting old
 events.
 
+Snapshot materialization remains part of the trusted Subject boundary: CAS objects stream through
+fixed verification buffers and repeated regular-file content is cloned from one verified
+occurrence, never admitted as candidate-sized resident buffers or behind blocking executor
+permits. See [ADR-0020](adr/0020-stream-cas-materialization-and-clone-duplicates.md).
+
 ---
 
 ## M3 · Canonical claims and explicit dispositions
@@ -410,7 +415,7 @@ The original host-passthrough decision in ADR-0003 is superseded by
 Route every Gate check through its resolved Execution Binding and admit the Sandbox Provider
 against the pipeline's required isolation before execution. A safe pipeline requires the
 container provider; `trusted_local` remains available only when policy explicitly accepts
-`Isolation::None`, and that fact is visible in `RunReport@2`.
+`Isolation::None`, and that fact is visible in the current structural `RunReport` contract.
 
 Within the admitted provider, the Gate uses `Mode::EphemeralWrite`. Each sandbox is an independent
 COW clone of the template, so a writable Gate cannot leak mutations into reviewer copies. This
@@ -436,7 +441,8 @@ fail with a diagnostic rather than degrading into an unbounded multi-gigabyte co
 inside the sandbox and disappear at teardown.
 
 Use offline package-manager mode so a cache miss fails loudly. Every Cache Snapshot kind, source
-digest, size, and materialization method is recorded in `RunReport@2`. A direct host passthrough
+digest, size, and materialization method is recorded in the current structural `RunReport`
+contract. A direct host passthrough
 is permitted only by an explicitly unsafe `trusted_local` execution policy and cannot satisfy a
 pipeline requiring container isolation.
 

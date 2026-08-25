@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Nothing below a layer knows about anything above it, and the projection holds no state the
-//! log cannot rebuild. `Ledger::rebuild` is the only constructor for that reason: there is no
+//! log cannot rebuild. `LedgerProjection::rebuild` is the only constructor for that reason: there is no
 //! path by which hand-edited state can enter.
 
 pub mod canonical;
@@ -20,11 +20,14 @@ pub mod store;
 pub mod subject;
 
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
-pub use cas::{Cas, CasError};
+pub use cas::{Cas, CasError, OpenedCasObject};
 pub use ledger::{
-    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, ReportScope,
-    ScopeAuthorityFailure, Status, Verdict,
+    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
+    ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
-pub use store::{EventStore, NewEvent, StoreError};
-pub use subject::{ResolvedSubject, resolve_subject, resolve_subject_scope};
+pub use store::{EventStore, NewEvent, StoreError, validate_reviewer_result};
+pub use subject::{
+    ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
+    resolve_subject_scope,
+};

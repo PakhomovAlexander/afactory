@@ -23,6 +23,8 @@
         "AttemptDispatched@1",
         "AttemptFailed@1",
         "AttemptFenced@1",
+        "AttemptFeedback@1",
+        "AttemptInput@1",
         "AttemptReleased@1",
         "CheckCompleted@1",
         "CampaignOpened@1",
@@ -35,6 +37,7 @@
         "ProviderOperationTransition@1",
         "RunReport@1",
         "RunReport@2",
+        "RunReport@3",
         "RoundInputSuperseded@1",
         "RoundStarted@1",
         "SourceCaptured@1"

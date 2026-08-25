@@ -139,15 +139,17 @@ impl ReviewerAdapter for ClaudeAdapter {
     ) -> Result<ReviewerReturn, RunnerError> {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
-        let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        let prompt = format!("{}{}", self.prompt, inputs);
+        let mut prompt = self.prompt.clone();
+        inputs
+            .render_into(&mut prompt)
+            .map_err(RunnerError::Refused)?;
         let command = claude_command(&self.program, &self.model_flags);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.as_bytes())?;
+        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
 
         let envelope = Envelope::parse(&capture.stdout);
         let cost = envelope.cost_tokens;
@@ -155,18 +157,13 @@ impl ReviewerAdapter for ClaudeAdapter {
             let text = envelope
                 .result
                 .filter(|t| !t.trim().is_empty())
-                .ok_or_else(|| {
-                    RunnerError::MalformedOutput(format!(
-                        "claude -p succeeded but returned no result text; the raw envelope \
-                         is stored as {}",
-                        capture.raw_artifact
-                    ))
+                .ok_or_else(|| RunnerError::MalformedOutput {
+                    raw_artifact: capture.raw_artifact.clone(),
+                    why: "claude -p succeeded but returned no result text".into(),
                 })?;
-            let output = parse_stage_output(&text).map_err(|e| {
-                RunnerError::MalformedOutput(format!(
-                    "{e}; the raw envelope is stored as {}",
-                    capture.raw_artifact
-                ))
+            let output = parse_stage_output(&text).map_err(|e| RunnerError::MalformedOutput {
+                raw_artifact: capture.raw_artifact.clone(),
+                why: e.to_string(),
             })?;
             return Ok(ReviewerReturn {
                 output,

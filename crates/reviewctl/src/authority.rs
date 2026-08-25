@@ -15,9 +15,15 @@ use review_core::{
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
-use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
 use crate::{Options, campaign_run_id};
+
+pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
+    configured.unwrap_or(Duration::from_secs(
+        review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
+    ))
+}
 
 pub(super) struct PreparedRun {
     pub loaded: review_config::Loaded,
@@ -25,7 +31,10 @@ pub(super) struct PreparedRun {
     pub run_id: String,
     pub focus: Option<String>,
     pub timeout: Duration,
+    pub check_timeout: Duration,
+    pub git_timeout: Duration,
     pub authority: RoundAuthority,
+    pub ledger_projection: LedgerProjection,
 }
 
 struct OpenCampaign {
@@ -40,6 +49,7 @@ struct RoundInput {
     event_id: String,
     snapshot: Manifest,
     prior_count: usize,
+    ledger_projection: LedgerProjection,
 }
 
 pub(super) fn prepare(
@@ -55,21 +65,35 @@ pub(super) fn prepare(
         .unwrap_or_else(|| campaign_run_id("local"));
     let pipeline_path = authority_path(&options.repo, &options.pipeline)?;
     let events = store.replay(&run_id).map_err(|error| error.to_string())?;
-    let campaign = if events.is_empty() {
-        open_new(options, cas, store, repo, &run_id, &pipeline_path)?
+    let (campaign, events) = if events.is_empty() {
+        let campaign = open_new(options, cas, store, repo, &run_id, &pipeline_path)?;
+        let events = store.replay(&run_id).map_err(|error| error.to_string())?;
+        (campaign, events)
     } else {
-        resume(options, cas, &events, &pipeline_path)?
+        let campaign = resume(options, cas, &events, &pipeline_path)?;
+        (campaign, events)
     };
 
-    let round = prepare_round(options, cas, store, repo, &run_id, &campaign)?;
+    let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
     let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
+    let check_timeout_seconds = campaign
+        .manifest
+        .check_timeout_seconds
+        .unwrap_or(campaign.loaded.check_timeout_seconds());
+    let git_timeout_seconds = campaign
+        .manifest
+        .git_timeout_seconds
+        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
     Ok(PreparedRun {
         loaded: campaign.loaded,
         snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
+        check_timeout: Duration::from_secs(check_timeout_seconds),
+        git_timeout: Duration::from_secs(git_timeout_seconds),
         authority,
+        ledger_projection: round.ledger_projection,
     })
 }
 
@@ -197,6 +221,8 @@ fn open_new(
             .timeout
             .unwrap_or(Duration::from_secs(1800))
             .as_secs(),
+        check_timeout_seconds: Some(loaded.check_timeout_seconds()),
+        git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
         budgets,
         focus: options.focus.clone(),
         finding_identity_policy: "legacy-path-title@1".to_string(),
@@ -293,6 +319,12 @@ fn resume(
         .is_some_and(|timeout| timeout.as_secs() != manifest.reviewer_timeout_seconds)
     {
         return Err("reviewer timeout differs from the pinned Campaign manifest".into());
+    }
+    let pinned_git_timeout = manifest
+        .git_timeout_seconds
+        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
+    if requested_git_timeout(options.git_timeout).as_secs() != pinned_git_timeout {
+        return Err("Git capture timeout differs from the pinned Campaign manifest".into());
     }
 
     let pipeline = cas
@@ -393,6 +425,15 @@ fn validate_manifest_authority(
     if manifest.budgets != budgets {
         return Err("CampaignManifest budgets differ from captured pipeline authority".into());
     }
+    if manifest
+        .check_timeout_seconds
+        .unwrap_or(loaded.check_timeout_seconds())
+        != loaded.check_timeout_seconds()
+    {
+        return Err(
+            "CampaignManifest check timeout differs from captured pipeline authority".into(),
+        );
+    }
     if manifest.reviewers.len() != loaded.packages().len() {
         return Err("CampaignManifest reviewer bindings are incomplete".into());
     }
@@ -488,6 +529,7 @@ fn prepare_round(
     repo: &Repo,
     run_id: &str,
     campaign: &OpenCampaign,
+    events: &[review_core::RunEvent],
 ) -> Result<RoundInput, String> {
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
@@ -495,9 +537,10 @@ fn prepare_round(
     )
     .map_err(|error| error.to_string())?;
     let repository_id = authority_snapshot.repository_id.clone();
-    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let ledger_projection =
+        LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
-    for event in &events {
+    for event in events {
         if run_report_closes_round(event)
             .map_err(|error| format!("decoding {}: {error}", event.event_type))?
             .unwrap_or(false)
@@ -520,9 +563,13 @@ fn prepare_round(
     let existing = starts.last().cloned();
 
     let round = match (existing, options.restart_round) {
-        (Some((event, payload)), false) => {
-            load_round(cas, event.event_id.clone(), payload, &repository_id)?
-        }
+        (Some((event, payload)), false) => load_round(
+            cas,
+            event.event_id.clone(),
+            payload,
+            &repository_id,
+            ledger_projection,
+        )?,
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
@@ -536,17 +583,21 @@ fn prepare_round(
             RoundCaptureRequest {
                 round: target_round,
                 superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+                ledger_projection,
             },
         )?,
     };
 
+    let mut round = round;
     {
-        let mut ingest = Ingest::new(store, cas, run_id.to_string())
-            .map_err(|error| error.to_string())?
-            .under_round(&round.event_id);
+        let mut ingest =
+            Ingest::from_projection(store, cas, run_id.to_string(), round.ledger_projection)
+                .map_err(|error| error.to_string())?
+                .under_round(&round.event_id);
         while ingest.ledger().round < target_round {
             ingest.advance().map_err(|error| error.to_string())?;
         }
+        round.ledger_projection = ingest.into_projection();
     }
     println!(
         "round    {} (epoch {})",
@@ -561,6 +612,7 @@ fn prepare_round(
 struct RoundCaptureRequest<'a> {
     round: u32,
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
+    ledger_projection: LedgerProjection,
 }
 
 fn capture_round(
@@ -572,7 +624,11 @@ fn capture_round(
     campaign: &OpenCampaign,
     request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
-    let RoundCaptureRequest { round, superseded } = request;
+    let RoundCaptureRequest {
+        round,
+        superseded,
+        mut ledger_projection,
+    } = request;
     let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
         superseded
     {
@@ -700,13 +756,27 @@ fn capture_round(
     let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
     let change_set_id = match tree_diff {
         Some(diff) => {
+            // Base64 alone expands every three raw bytes to four encoded bytes. Refuse before
+            // building path arrays, base64, serde Values, and canonical JSON when the patch
+            // already cannot fit the authoritative encoded Change Set bound below.
+            let raw_patch_limit = maximum_raw_patch_bytes();
+            if raw_patch_exceeds_change_set_bound(diff.patch().len()) {
+                return Err(format!(
+                    "exact Change Set patch is {} raw bytes; maximum encodable patch is {} raw bytes and partitioning is required",
+                    diff.patch().len(),
+                    raw_patch_limit
+                ));
+            }
             let base_snapshot_id = campaign
                 .manifest
                 .base_snapshot_id
                 .as_deref()
                 .ok_or("diff Campaign has no pinned Base Snapshot")?;
             let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
-            let encoded = serde_json::to_vec(&change_set).map_err(|error| error.to_string())?;
+            let value = serde_json::to_value(&change_set).map_err(|error| error.to_string())?;
+            review_core::json::admit(&value).map_err(|error| error.to_string())?;
+            let encoded =
+                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
             if encoded.len() > MAX_CHANGE_SET_BYTES {
                 return Err(format!(
                     "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
@@ -714,10 +784,7 @@ fn capture_round(
                     MAX_CHANGE_SET_BYTES
                 ));
             }
-            Some(
-                cas.put_json(&serde_json::to_value(change_set).map_err(|error| error.to_string())?)
-                    .map_err(|error| error.to_string())?,
-            )
+            Some(cas.put(&encoded).map_err(|error| error.to_string())?)
         }
         None => None,
     };
@@ -728,7 +795,7 @@ fn capture_round(
         manifest_id.clone(),
     ];
     source_refs.extend(change_set_id.clone());
-    store
+    let source_captured = store
         .append(
             run_id,
             cas,
@@ -742,6 +809,9 @@ fn capture_round(
             .correlating(head_snapshot_id.clone())
             .referencing(source_refs),
         )
+        .map_err(|error| error.to_string())?;
+    ledger_projection
+        .apply_event(&source_captured, cas)
         .map_err(|error| error.to_string())?;
     let subject = match campaign.loaded.subject_kind() {
         SubjectKind::WholeTree => SubjectV1::whole_tree(&head_snapshot_id),
@@ -763,7 +833,7 @@ fn capture_round(
         .map_err(|error| error.to_string())?;
 
     let (prior_findings, demands) = if let Some((_, old)) = superseded {
-        let findings = serde_json::Value::Array(prior_rows(store, cas, run_id)?);
+        let findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
         let demands = cas
             .get_json(&old.prior_demand_set_id)
             .map_err(|error| error.to_string())?["demands"]
@@ -771,7 +841,7 @@ fn capture_round(
         (findings, demands)
     } else {
         (
-            serde_json::Value::Array(prior_rows(store, cas, run_id)?),
+            serde_json::Value::Array(prior_rows(ledger_projection.ledger())),
             serde_json::Value::Array(Vec::new()),
         )
     };
@@ -872,10 +942,17 @@ fn capture_round(
             .correlating(subject_id.clone())
             .referencing(round_refs),
         );
-        store
+        let appended = store
             .append_batch(run_id, cas, &batch)
-            .map_err(|error| error.to_string())?
-            .pop()
+            .map_err(|error| error.to_string())?;
+        for event in &appended {
+            ledger_projection
+                .apply_event(event, cas)
+                .map_err(|error| error.to_string())?;
+        }
+        appended
+            .last()
+            .cloned()
             .ok_or("supersession batch did not publish its replacement Round")?
     } else {
         let mut round_refs = vec![
@@ -888,7 +965,7 @@ fn capture_round(
         ];
         round_refs.extend(subject.base_snapshot_id.clone());
         round_refs.extend(subject.change_set_id.clone());
-        store
+        let started = store
             .append(
                 run_id,
                 cas,
@@ -900,7 +977,11 @@ fn capture_round(
                 .correlating(subject_id)
                 .referencing(round_refs),
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        ledger_projection
+            .apply_event(&started, cas)
+            .map_err(|error| error.to_string())?;
+        started
     };
     println!("snapshot {}", snapshot.content_digest);
     Ok(RoundInput {
@@ -908,7 +989,16 @@ fn capture_round(
         event_id: started.event_id,
         snapshot: snapshot.manifest,
         prior_count,
+        ledger_projection,
     })
+}
+
+fn maximum_raw_patch_bytes() -> usize {
+    MAX_CHANGE_SET_BYTES.saturating_mul(3) / 4
+}
+
+fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
+    raw_bytes > maximum_raw_patch_bytes()
 }
 
 fn load_round(
@@ -916,6 +1006,7 @@ fn load_round(
     event_id: String,
     payload: RoundStartedPayloadV1,
     repository_id: &str,
+    ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
     payload.validate()?;
     let subject: SubjectV1 = serde_json::from_value(
@@ -981,6 +1072,7 @@ fn load_round(
         event_id,
         snapshot: manifest,
         prior_count,
+        ledger_projection,
     })
 }
 
@@ -1013,16 +1105,14 @@ fn validate_round_set(
         .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
 }
 
-fn prior_rows(
-    store: &EventStore,
-    cas: &Cas,
-    run_id: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let ledger = Ledger::rebuild(store, cas, run_id).map_err(|error| error.to_string())?;
-    Ok(ledger
+fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
+    ledger
         .findings()
         .iter()
-        .filter(|finding| !matches!(finding.status, Status::Rejected | Status::Wontfix))
+        .filter(|finding| {
+            !finding.authority_diagnostic
+                && !matches!(finding.status, Status::Rejected | Status::Wontfix)
+        })
         .map(|finding| {
             let severity = format!("{:?}", finding.severity).to_lowercase();
             let effective_severity = finding
@@ -1033,14 +1123,20 @@ fn prior_rows(
                 "key": finding.key,
                 "severity": severity,
                 "status": finding.status.as_str(),
-                "file": finding.file,
-                "line": finding.line,
+                "line": finding.identity_line,
                 "title": finding.title,
                 "body": finding.body,
                 "source": finding.source,
                 "last_seen_round": finding.last_seen_round,
             });
             let object = row.as_object_mut().expect("prior row is an object");
+            let (file, line, location_unrecorded) =
+                prior_location(&finding.identity_file, finding.identity_line);
+            object.insert("file".into(), file);
+            object.insert("line".into(), line);
+            if location_unrecorded {
+                object.insert("location_unrecorded".into(), serde_json::Value::Bool(true));
+            }
             if scope != "in" {
                 object.insert("scope".into(), serde_json::Value::String(scope.into()));
             }
@@ -1052,7 +1148,22 @@ fn prior_rows(
             }
             row
         })
-        .collect())
+        .collect()
+}
+
+fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {
+    if file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+        return (serde_json::Value::Null, serde_json::Value::Null, false);
+    }
+    if review_core::is_valid_repo_path(file) {
+        (
+            serde_json::Value::String(file.to_string()),
+            line.map_or(serde_json::Value::Null, |line| line.into()),
+            false,
+        )
+    } else {
+        (serde_json::Value::Null, serde_json::Value::Null, true)
+    }
 }
 
 fn publish_snapshot(snapshot: &Snapshot, cas: &Cas) -> Result<(String, String), String> {
@@ -1154,4 +1265,47 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
         return Err("the pipeline path is empty".into());
     }
     Ok(components.join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn omitted_git_timeout_resolves_to_the_capture_default() {
+        assert_eq!(
+            super::requested_git_timeout(None).as_secs(),
+            review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            super::requested_git_timeout(Some(std::time::Duration::from_secs(17))).as_secs(),
+            17
+        );
+    }
+
+    #[test]
+    fn raw_patch_bound_refuses_before_base64_amplification() {
+        let limit = super::maximum_raw_patch_bytes();
+        assert!(!super::raw_patch_exceeds_change_set_bound(limit));
+        assert!(super::raw_patch_exceeds_change_set_bound(limit + 1));
+        assert!(limit * 4 / 3 >= review_core::MAX_CHANGE_SET_BYTES);
+    }
+
+    #[test]
+    fn prior_findings_never_echo_a_path_live_admission_would_refuse() {
+        assert_eq!(
+            super::prior_location("src/main.rs", Some(7)),
+            (
+                serde_json::Value::String("src/main.rs".into()),
+                serde_json::json!(7),
+                false
+            )
+        );
+        assert_eq!(
+            super::prior_location("./src/main.rs", Some(7)),
+            (serde_json::Value::Null, serde_json::Value::Null, true)
+        );
+        assert_eq!(
+            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
+            (serde_json::Value::Null, serde_json::Value::Null, false)
+        );
+    }
 }

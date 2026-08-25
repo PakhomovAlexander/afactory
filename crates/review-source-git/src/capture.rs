@@ -15,9 +15,8 @@
 //! reviewed snapshot X, and no such X was ever on disk.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -28,13 +27,17 @@ use review_store::Cas;
 use sha2::{Digest, Sha256};
 
 use crate::git::{GitError, Repo, TreeId, split_nul};
-use crate::manifest::{Entry, EntryKind, Manifest, digest_bytes, encode_path};
+use crate::manifest::{Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path};
+
+type WorktreeFingerprint = (EntryKind, String, u64);
+type ScannedWorktreeEntry = (String, WorktreeFingerprint);
 
 #[derive(Debug)]
 pub enum CaptureError {
     Git(GitError),
     Io(std::io::Error),
     Cas(String),
+    Manifest(ManifestError),
     /// The worktree kept changing while it was being read.
     Unstable {
         attempts: u32,
@@ -74,6 +77,7 @@ impl std::fmt::Display for CaptureError {
             CaptureError::Git(e) => write!(f, "{e}"),
             CaptureError::Io(e) => write!(f, "capture io: {e}"),
             CaptureError::Cas(e) => write!(f, "capture cas: {e}"),
+            CaptureError::Manifest(e) => write!(f, "capture manifest: {e}"),
             CaptureError::Unstable { attempts } => write!(
                 f,
                 "worktree changed during capture ({attempts} attempts); refusing to admit a torn tree"
@@ -121,6 +125,12 @@ impl From<GitError> for CaptureError {
 impl From<std::io::Error> for CaptureError {
     fn from(e: std::io::Error) -> Self {
         CaptureError::Io(e)
+    }
+}
+
+impl From<ManifestError> for CaptureError {
+    fn from(error: ManifestError) -> Self {
+        CaptureError::Manifest(error)
     }
 }
 
@@ -197,7 +207,7 @@ pub struct NoObserver;
 impl CaptureObserver for NoObserver {}
 
 /// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives.
-type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + 'a;
+type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send + 'a;
 
 pub struct Capture<'a> {
     repo: &'a Repo,
@@ -288,7 +298,7 @@ impl<'a> Capture<'a> {
             });
         }
 
-        let manifest = Manifest::new(entries);
+        let manifest = Manifest::new(entries)?;
         Ok(Snapshot {
             content_digest: manifest.content_digest(),
             manifest,
@@ -351,11 +361,11 @@ impl<'a> Capture<'a> {
         for attempt in 1..=self.max_attempts {
             let monitor = WorktreeMonitor::start(self.repo.workdir())?;
             let index_before = self.index_fingerprint()?;
-            let first = self.scan_worktree(false)?;
+            let first = self.scan_worktree(false, None)?;
             observer.between_passes(attempt);
             // The second pass publishes as it reads: if the boundary holds these are exactly
             // the snapshot's bytes, and if it does not, unreferenced CAS objects are inert.
-            let second = self.scan_worktree(true)?;
+            let second = self.scan_worktree(true, Some(&first))?;
             let index_after = self.index_fingerprint()?;
             let changed = monitor.changed()?;
 
@@ -369,7 +379,7 @@ impl<'a> Capture<'a> {
                         size,
                     });
                 }
-                let manifest = Manifest::new(entries);
+                let manifest = Manifest::new(entries)?;
                 return Ok(Snapshot {
                     content_digest: manifest.content_digest(),
                     manifest,
@@ -406,7 +416,8 @@ impl<'a> Capture<'a> {
     fn scan_worktree(
         &self,
         publish: bool,
-    ) -> Result<BTreeMap<String, (EntryKind, String, u64)>, CaptureError> {
+        expected: Option<&BTreeMap<String, WorktreeFingerprint>>,
+    ) -> Result<BTreeMap<String, WorktreeFingerprint>, CaptureError> {
         let mut paths: Vec<String> = Vec::new();
         for args in [
             vec!["ls-files", "-z", "--cached"],
@@ -418,46 +429,82 @@ impl<'a> Capture<'a> {
         }
         paths.sort();
         paths.dedup();
+        let canonical_workdir = std::fs::canonicalize(self.repo.workdir())?;
 
+        let scanned = review_parallel::try_map_owned_with(
+            paths,
+            || vec![0_u8; 64 * 1024],
+            |buffer, path| {
+                let expected = expected.and_then(|fingerprints| fingerprints.get(&path));
+                self.scan_worktree_path(publish, expected, &canonical_workdir, buffer, path)
+            },
+        )?;
         let mut out = BTreeMap::new();
-        for path in paths {
-            // `path` is the encoded manifest key; the filesystem read needs the raw bytes.
-            let relative = crate::manifest::fs_path(&path);
-            let Some(full) = checked_worktree_path(self.repo.workdir(), &relative, &path)? else {
-                continue;
-            };
-            let Ok(meta) = std::fs::symlink_metadata(&full) else {
-                // Tracked but deleted from the worktree: it is not part of what is there.
-                continue;
-            };
-            let (kind, bytes) = if meta.file_type().is_symlink() {
-                (EntryKind::Symlink, read_link_bytes(&full)?)
-            } else if meta.is_file() {
-                let bytes = std::fs::read(&full)?;
-                (
-                    if is_executable(&meta) {
-                        EntryKind::Executable
-                    } else {
-                        EntryKind::File
-                    },
-                    bytes,
-                )
+        out.extend(scanned.into_iter().flatten());
+        Ok(out)
+    }
+
+    fn scan_worktree_path(
+        &self,
+        publish: bool,
+        expected: Option<&WorktreeFingerprint>,
+        canonical_workdir: &Path,
+        buffer: &mut [u8],
+        path: String,
+    ) -> Result<Option<ScannedWorktreeEntry>, CaptureError> {
+        // `path` is the encoded manifest key; the filesystem read needs the raw bytes.
+        let relative = crate::manifest::fs_path(&path);
+        let Some(full) = checked_worktree_path(canonical_workdir, &relative, &path)? else {
+            return Ok(None);
+        };
+        let Ok(metadata) = std::fs::symlink_metadata(&full) else {
+            // Tracked but deleted from the worktree: it is not part of what is there.
+            return Ok(None);
+        };
+        let kind = if metadata.file_type().is_symlink() {
+            EntryKind::Symlink
+        } else if metadata.is_file() {
+            if is_executable(&metadata) {
+                EntryKind::Executable
             } else {
-                continue;
-            };
-            if checked_worktree_path(self.repo.workdir(), &relative, &path)?.as_deref()
-                != Some(full.as_path())
-            {
-                return Err(CaptureError::UnsafePath { path });
+                EntryKind::File
             }
+        } else {
+            return Ok(None);
+        };
+
+        let fingerprint = if kind == EntryKind::Symlink {
+            let bytes = read_link_bytes(&full)?;
             let digest = if publish {
                 self.store(&bytes)?
             } else {
                 digest_bytes(&bytes)
             };
-            out.insert(path, (kind, digest, bytes.len() as u64));
+            (digest, bytes.len() as u64)
+        } else {
+            let mut file = std::fs::File::open(&full)?;
+            if publish {
+                match expected {
+                    Some((expected_kind, expected_digest, _)) if *expected_kind == kind => self
+                        .cas
+                        .put_reader_with_expected(expected_digest, &mut file, buffer)
+                        .map_err(|error| CaptureError::Cas(error.to_string()))?,
+                    _ => self
+                        .cas
+                        .put_reader_with_buffer(&mut file, buffer)
+                        .map_err(|error| CaptureError::Cas(error.to_string()))?,
+                }
+            } else {
+                review_store::canonical::blob_content_id_reader_with_buffer(&mut file, buffer)?
+            }
+        };
+        if checked_worktree_path(canonical_workdir, &relative, &path)?.as_deref()
+            != Some(full.as_path())
+        {
+            return Err(CaptureError::UnsafePath { path });
         }
-        Ok(out)
+        let (digest, size) = fingerprint;
+        Ok(Some((path, (kind, digest, size))))
     }
 
     /// Publish the bytes and return the digest they are filed under — the same value the
@@ -485,43 +532,28 @@ impl<'a> Capture<'a> {
         if oids.is_empty() {
             return Ok(());
         }
-        let mut child = self
-            .repo
-            .streaming(&["cat-file", "--batch"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| CaptureError::Git(GitError::Spawn(e)))?;
-
-        // Feed the request on its own thread: with the whole tree's oids, writing them all
-        // before reading any output is the deadlock the two threads exist to prevent.
-        let mut stdin = child.stdin.take().expect("stdin piped");
         let requested: Vec<String> = oids.to_vec();
-        let writer = std::thread::spawn(move || {
-            for oid in &requested {
-                if writeln!(stdin, "{oid}").is_err() {
-                    break; // git went away (killed on our early exit); nothing left to ask.
-                }
-            }
-        });
-        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-        let stderr_thread = std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let _ = stderr_pipe.read_to_end(&mut buffer);
-            buffer
-        });
-
-        let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
-        let streamed = parse_batch_stream(&mut stdout, sink);
-        if streamed.is_err() {
-            // Stop reading before we finish asking: kill git so the writer's next `writeln`
-            // fails rather than blocking on a pipe nobody is draining.
-            let _ = child.kill();
-        }
-        let _ = writer.join();
-        let stderr = stderr_thread.join().unwrap_or_default();
-        let status = child.wait()?;
+        let supervised = self
+            .repo
+            .streaming(
+                &["cat-file", "--batch"],
+                move |stdin| {
+                    for oid in &requested {
+                        if writeln!(stdin, "{oid}").is_err() {
+                            break; // git went away; nothing remains safe or useful to request.
+                        }
+                    }
+                    Ok::<_, std::convert::Infallible>(())
+                },
+                |stdout| {
+                    let mut stdout = BufReader::new(stdout);
+                    parse_batch_stream(&mut stdout, sink)
+                },
+            )
+            .map_err(CaptureError::Git)?;
+        let streamed = supervised.output;
+        let stderr = supervised.stderr;
+        let status = supervised.status;
 
         let git_failed = || {
             CaptureError::Git(GitError::Failed {
@@ -666,12 +698,11 @@ impl WorktreeMonitor {
 }
 
 fn checked_worktree_path(
-    root: &Path,
+    canonical_root: &Path,
     relative: &Path,
     encoded: &str,
 ) -> Result<Option<PathBuf>, CaptureError> {
-    let root = std::fs::canonicalize(root)?;
-    let mut current = root;
+    let mut current = canonical_root.to_path_buf();
     let Some(file_name) = relative.file_name() else {
         return Err(CaptureError::UnsafePath {
             path: encoded.to_string(),

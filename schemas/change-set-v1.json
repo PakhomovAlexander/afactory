@@ -7,7 +7,8 @@
     "changed_paths are strictly sorted and unique",
     "renames are strictly sorted and unique",
     "both rename endpoints occur in changed_paths and are distinct",
-    "canonical_patch_base64 uses canonical RFC 4648 base64"
+    "canonical_patch_base64 uses canonical RFC 4648 base64",
+    "rename_detection_truncated means changed_paths and patch are complete while renames may be incomplete"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -33,6 +34,10 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/rename" }
     },
+    "rename_detection_truncated": {
+      "description": "True when Git preserved the complete add/delete path set but skipped exhaustive rename linkage at the recorded policy limit.",
+      "type": "boolean"
+    },
     "canonical_patch_base64": {
       "type": "string",
       "contentEncoding": "base64"
@@ -45,7 +50,10 @@
     "path": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$"
+      "allOf": [
+        { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+        { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+      ]
     },
     "rename": {
       "type": "object",

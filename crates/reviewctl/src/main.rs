@@ -24,12 +24,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use review_attempt::{Budget, BudgetLedger, Scope};
-use review_core::{EventType, RunFailureReasonV2, RunReportPayloadV2, RunVerdictV2, Severity};
+use review_core::{
+    EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
+    RunVerdictV2, RunVerdictV3, Severity,
+};
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::Repo;
-use review_store::{Cas, EventStore, Ingest, Ledger, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status};
 
 mod authority;
 mod providers;
@@ -46,6 +49,7 @@ struct Options {
     uncommitted: bool,
     restart_round: bool,
     timeout: Option<Duration>,
+    git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
 }
@@ -223,10 +227,10 @@ struct ResolveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: af review run     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH]\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
@@ -263,6 +267,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
         uncommitted: false,
         restart_round: false,
         timeout: None,
+        git_timeout: None,
         provider_bindings: std::collections::BTreeMap::new(),
         provider_resumes: std::collections::BTreeMap::new(),
     };
@@ -279,6 +284,11 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--restart-round" => options.restart_round = true,
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
+                    value().parse().unwrap_or_else(|_| usage()),
+                ))
+            }
+            "--git-timeout-secs" => {
+                options.git_timeout = Some(Duration::from_secs(
                     value().parse().unwrap_or_else(|_| usage()),
                 ))
             }
@@ -427,18 +437,32 @@ fn main() {
         usage();
     }
     let result = match args.next().as_deref() {
-        Some("run") => run(&parse_run(args)).map(exit_for_verdict),
+        Some("run") => {
+            init_review_workers();
+            run(&parse_run(args)).map(exit_for_verdict)
+        }
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
-        Some("tui") => tui::launch(parse_run(args)),
+        Some("tui") => {
+            init_review_workers();
+            tui::launch(parse_run(args))
+        }
         _ => usage(),
     };
     if let Err(error) = result {
         eprintln!("af review: {error}");
         std::process::exit(1);
     }
+}
+
+fn init_review_workers() {
+    let worker_limit = std::thread::available_parallelism()
+        .map(|workers| workers.get())
+        .unwrap_or(1);
+    review_parallel::init_worker_limit(worker_limit)
+        .expect("review worker executor is initialized once before execution");
 }
 
 fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
@@ -455,8 +479,9 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
-        .map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     for finding in ledger.findings() {
         println!(
@@ -489,10 +514,12 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                     .iter()
                     .map(|report| {
                         format!(
-                            "{} round {}={}",
+                            "{} round {}={} at {}:{}",
                             report.source,
                             report.round,
-                            report.scope_label()
+                            report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string())
                         )
                     })
                     .collect::<Vec<_>>()
@@ -525,8 +552,9 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
-        .map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     let finding = ledger
         .get(&options.key)
@@ -549,12 +577,16 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     );
     for (index, attached) in finding.reports.iter().enumerate() {
         println!(
-            "\nreport {}: reviewer={} round={} severity={} scope={} id={}",
+            "\nreport {}: reviewer={} round={} severity={} scope={} location={}:{} id={}",
             index + 1,
             attached.source,
             attached.round,
             format!("{:?}", attached.severity).to_lowercase(),
             attached.scope_label(),
+            attached.file,
+            attached
+                .line
+                .map_or("-".to_string(), |line| line.to_string()),
             if attached.report_id.is_empty() {
                 "(unavailable: legacy import)"
             } else {
@@ -607,17 +639,14 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
-    let ledger = Ledger::rebuild(&store, &cas, &run_id).map_err(|e| e.to_string())?;
+    let ledger = LedgerProjection::rebuild(&store, &cas, &run_id)
+        .map_err(|e| e.to_string())?
+        .into_ledger();
     print_scope_authority_warnings(&ledger);
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
         .iter()
-        .filter(|event| {
-            matches!(
-                event.event_type,
-                EventType::RunReportV1 | EventType::RunReportV2
-            )
-        })
+        .filter(|event| event.event_type.is_run_report())
         .collect();
 
     println!("# Review campaign `{}`", options.campaign);
@@ -706,17 +735,21 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 .map(|report| {
                     if report.report_id.is_empty() {
                         format!(
-                            "{} round {} scope={} (legacy import)",
-                            report.source,
-                            report.round,
-                            report.scope_label()
-                        )
-                    } else {
-                        format!(
-                            "{} round {} scope={} `{}`",
+                            "{} round {} scope={} at {}:{} (legacy import)",
                             report.source,
                             report.round,
                             report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string())
+                        )
+                    } else {
+                        format!(
+                            "{} round {} scope={} at {}:{} `{}`",
+                            report.source,
+                            report.round,
+                            report.scope_label(),
+                            report.file,
+                            report.line.map_or("-".to_string(), |line| line.to_string()),
                             report.report_id
                         )
                     }
@@ -759,6 +792,25 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
                 }
             })
         }
+        EventType::RunReportV3 => {
+            let report: RunReportPayloadV3 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(match report.verdict {
+                RunVerdictV3::Pass => "pass".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::NotConverged,
+                } => "fail (not_converged)".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::AuthorityUnavailable,
+                } => "fail (authority_unavailable)".to_string(),
+                RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                } => "fail (exhausted)".to_string(),
+                RunVerdictV3::Incomplete { missing_nodes } => {
+                    format!("incomplete ({} missing nodes)", missing_nodes.len())
+                }
+            })
+        }
         _ => Err(format!("{} is not a run report", event.event_type)),
     }
 }
@@ -777,10 +829,16 @@ fn title_case(value: &str) -> String {
 
 fn print_scope_authority_warnings(ledger: &Ledger) {
     for failure in ledger.scope_authority_failures() {
-        eprintln!(
-            "warning: round {} Report Scope is unknown: Subject {} is unavailable: {}",
-            failure.round, failure.subject_id, failure.reason
-        );
+        match failure.authority {
+            review_store::ScopeAuthorityKind::RoundBinding => eprintln!(
+                "warning: round {} Report Scope is unknown: round binding disagrees for Subject {}: {}",
+                failure.round, failure.authority_id, failure.reason
+            ),
+            authority => eprintln!(
+                "warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}",
+                failure.round, authority, failure.authority_id, failure.reason
+            ),
+        }
     }
 }
 
@@ -817,7 +875,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let home = std::env::var("HOME").map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
-    let repo = Repo::open(&options.repo, &git_home);
+    let repo = Repo::open(&options.repo, &git_home)
+        .with_timeout(authority::requested_git_timeout(options.git_timeout));
 
     let authority::PreparedRun {
         loaded,
@@ -825,9 +884,18 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         run_id,
         focus,
         timeout,
+        check_timeout,
+        git_timeout,
         authority,
+        ledger_projection,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
+    println!(
+        "timeouts reviewer {}s, checks {}s, git capture {}s (pinned)",
+        timeout.as_secs(),
+        check_timeout.as_secs(),
+        git_timeout.as_secs()
+    );
 
     for node in options.provider_bindings.keys() {
         if !loaded.reviewers().contains_key(node) {
@@ -917,7 +985,9 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         home.clone(),
     );
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
-        .with_checks(loaded.checks().to_vec());
+        .with_ledger_projection(ledger_projection)?
+        .with_checks(loaded.checks().to_vec())
+        .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
         println!(
             "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
@@ -981,7 +1051,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                     }
                 }
             }
-            None => Box::new(command.clone()),
+            None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
         };
         bound.insert(node.clone(), command.program.clone());
         kernel = kernel.with_adapter(node.clone(), adapter);
@@ -995,7 +1065,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     for (node, outcome) in &report.outcomes {
         match outcome {
             NodeOutcome::Completed { .. } => println!("  done      {node}"),
-            NodeOutcome::Failed { error } => println!("  FAILED    {node}: {error}"),
+            NodeOutcome::Failed { error, .. } => println!("  FAILED    {node}: {error}"),
             NodeOutcome::Suppressed { reason } => {
                 println!("  never-ran {node}: {reason:?}")
             }
@@ -1003,6 +1073,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     }
 
     let ledger = kernel.ledger();
+    print_scope_authority_warnings(&ledger);
     println!();
     println!("findings {}", ledger.len());
     for finding in ledger.findings() {
@@ -1091,6 +1162,7 @@ mod option_tests {
             uncommitted: false,
             restart_round: false,
             timeout: None,
+            git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
         };

@@ -9,7 +9,7 @@ fn a_receipt_without_an_admitted_reviewer_attempt_cannot_skip_execution() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let manifest = Manifest::new(vec![]);
+    let manifest = Manifest::new(vec![]).unwrap();
     let definition = r#"
 version = 2
 [subject]

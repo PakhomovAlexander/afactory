@@ -17,6 +17,12 @@ kind = "reviewer"
 runner = { program = "/bin/true" }
 "#;
 
+#[derive(Clone, Copy)]
+enum TestSubject<'a> {
+    WholeTree,
+    Diff(&'a [u8]),
+}
+
 #[allow(dead_code)]
 pub fn test_round_authority(
     cas: &Cas,
@@ -24,7 +30,7 @@ pub fn test_round_authority(
     run_id: &str,
     snapshot: &Manifest,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(cas, store, run_id, snapshot, None, TEST_PIPELINE)
+    test_round_authority_with_prior(cas, store, run_id, snapshot, None, TEST_PIPELINE).unwrap()
 }
 
 #[allow(dead_code)]
@@ -35,7 +41,7 @@ pub fn test_round_authority_for_pipeline(
     snapshot: &Manifest,
     pipeline: &str,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(cas, store, run_id, snapshot, None, pipeline)
+    test_round_authority_with_prior(cas, store, run_id, snapshot, None, pipeline).unwrap()
 }
 
 #[allow(dead_code)]
@@ -53,7 +59,28 @@ pub fn test_diff_round_authority(
         snapshot,
         None,
         pipeline,
-        SubjectKind::Diff,
+        TestSubject::Diff(b""),
+    )
+    .unwrap()
+}
+
+#[allow(dead_code)]
+pub fn test_diff_round_authority_with_patch(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+    pipeline: &str,
+    patch: &[u8],
+) -> Result<RoundAuthority, String> {
+    test_round_authority_with_subject(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        pipeline,
+        TestSubject::Diff(patch),
     )
 }
 
@@ -64,7 +91,7 @@ fn test_round_authority_with_prior(
     snapshot: &Manifest,
     prior_finding_set_id: Option<String>,
     pipeline: &str,
-) -> RoundAuthority {
+) -> Result<RoundAuthority, String> {
     test_round_authority_with_subject(
         cas,
         store,
@@ -72,7 +99,7 @@ fn test_round_authority_with_prior(
         snapshot,
         prior_finding_set_id,
         pipeline,
-        SubjectKind::WholeTree,
+        TestSubject::WholeTree,
     )
 }
 
@@ -83,9 +110,13 @@ fn test_round_authority_with_subject(
     snapshot: &Manifest,
     prior_finding_set_id: Option<String>,
     pipeline: &str,
-    subject_kind: SubjectKind,
-) -> RoundAuthority {
-    let authority_manifest = Manifest::new(vec![]);
+    test_subject: TestSubject<'_>,
+) -> Result<RoundAuthority, String> {
+    let subject_kind = match test_subject {
+        TestSubject::WholeTree => SubjectKind::WholeTree,
+        TestSubject::Diff(_) => SubjectKind::Diff,
+    };
+    let authority_manifest = Manifest::new(vec![]).unwrap();
     let authority_manifest_id = cas
         .put_json(&serde_json::to_value(&authority_manifest).unwrap())
         .unwrap();
@@ -127,6 +158,8 @@ fn test_round_authority_with_subject(
                     gate: "major".into(),
                 },
                 reviewer_timeout_seconds: 60,
+                check_timeout_seconds: Some(3600),
+                git_timeout_seconds: Some(300),
                 budgets: None,
                 focus: None,
                 finding_identity_policy: "legacy-path-title@1".into(),
@@ -152,7 +185,7 @@ fn test_round_authority_with_subject(
             "artifact_manifest": head_manifest_id,
         }))
         .unwrap();
-    let subject = if subject_kind == SubjectKind::Diff {
+    let subject = if let TestSubject::Diff(change_set_patch) = test_subject {
         let change_set = ChangeSetV1::new(
             &authority_snapshot_id,
             &head_snapshot_id,
@@ -162,7 +195,7 @@ fn test_round_authority_with_subject(
                 .map(|entry| entry.path.clone())
                 .collect(),
             vec![],
-            b"",
+            change_set_patch,
             "git version test",
             "review.kernel/git-tree-diff@test",
         )
@@ -234,7 +267,7 @@ fn test_round_authority_with_subject(
             .referencing(round_refs),
         )
         .unwrap();
-    RoundAuthority::load(store, cas, run_id, &round.event_id).unwrap()
+    RoundAuthority::load(store, cas, run_id, &round.event_id)
 }
 
 /// Test composition follows the same validated Subject path as production.
@@ -283,6 +316,7 @@ pub fn whole_tree_kernel_for_pipeline<'a>(
         &snapshot,
         prior_finding_set_id,
         pipeline,
-    );
+    )
+    .unwrap();
     Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
 }

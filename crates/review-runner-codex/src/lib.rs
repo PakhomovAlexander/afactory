@@ -155,8 +155,10 @@ impl ReviewerAdapter for CodexAdapter {
 
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
-        let inputs = inputs.render().map_err(RunnerError::Refused)?;
-        let prompt = format!("{}{}", self.prompt, inputs);
+        let mut prompt = self.prompt.clone();
+        inputs
+            .render_into(&mut prompt)
+            .map_err(RunnerError::Refused)?;
         let command = codex_command(
             &self.program,
             &self.model_flags,
@@ -169,7 +171,7 @@ impl ReviewerAdapter for CodexAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.as_bytes())?;
+        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
 
         let events = Events::parse(&capture.stdout);
         if !capture.status.success() {
@@ -199,17 +201,14 @@ impl ReviewerAdapter for CodexAdapter {
             .ok()
             .filter(|text| !text.trim().is_empty())
             .or(events.final_message)
-            .ok_or_else(|| {
-                RunnerError::MalformedOutput(
-                    "codex exec succeeded but produced no final message".to_string(),
-                )
+            .ok_or_else(|| RunnerError::MalformedOutput {
+                raw_artifact: capture.raw_artifact.clone(),
+                why: "codex exec succeeded but produced no final message".into(),
             })?;
 
-        let output = parse_stage_output(&answer).map_err(|e| {
-            RunnerError::MalformedOutput(format!(
-                "{e}; the raw stream is stored as {}",
-                capture.raw_artifact
-            ))
+        let output = parse_stage_output(&answer).map_err(|e| RunnerError::MalformedOutput {
+            raw_artifact: capture.raw_artifact.clone(),
+            why: e.to_string(),
         })?;
         Ok(ReviewerReturn {
             output,

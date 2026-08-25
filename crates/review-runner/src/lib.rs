@@ -23,9 +23,14 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    Grant, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ModelRunner, RESULT_CONTRACT,
-    RawCapture, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, ReviewerReturn,
-    extract_result, parse_stage_output, unfence,
+    CommandAdapter, Grant, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter,
+    ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, extract_result, parse_stage_output,
+    unfence,
+};
+pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
+pub use review_process::{
+    ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,
+    run_supervised, run_supervised_duplex, run_supervised_streaming, run_supervised_with_policy,
 };
 
 use std::collections::BTreeMap;

@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_pipeline::Kernel;
-use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
+use review_runner::{
+    MAX_CHANGE_SET_BYTES, ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError,
+};
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore};
 
@@ -21,16 +23,16 @@ id = "generation"
 kind = "generation"
 outputs = [
   { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
-inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [{ name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[edges]]
-from = { node = "generation", port = "change_set" }
-to = { node = "reviewer", port = "change_set" }
+from = { node = "generation", port = "diff" }
+to = { node = "reviewer", port = "diff" }
 "#;
 
 struct Recorder {
@@ -46,9 +48,9 @@ impl ReviewerAdapter for Recorder {
     ) -> Result<ReviewerReturn, RunnerError> {
         *self.seen.lock().unwrap() = inputs
             .artifacts
-            .get("change_set")
+            .get("diff")
             .and_then(|artifacts| artifacts.first())
-            .map(|artifact| artifact.artifact_id.clone());
+            .map(|artifact| artifact.artifact_id().to_string());
         Ok(ReviewerReturn {
             output: serde_json::from_str(
                 r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#,
@@ -84,7 +86,7 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
         .load_with(&lockfile, &registry)
         .unwrap();
 
-    let manifest = Manifest::new(vec![]);
+    let manifest = Manifest::new(vec![]).unwrap();
     let authority =
         support::test_diff_round_authority(&cas, &mut store, "run", &manifest, DIFF_PIPELINE);
     let seen = Arc::new(Mutex::new(None));
@@ -109,4 +111,29 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
     let change_set: review_core::ChangeSetV1 =
         serde_json::from_value(cas.get_json(&delivered).unwrap()).unwrap();
     change_set.validate().unwrap();
+}
+
+#[test]
+fn oversized_change_set_is_refused_before_round_authority_allocates_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let manifest = Manifest::new(vec![]).unwrap();
+    let patch = vec![b'x'; MAX_CHANGE_SET_BYTES + 1];
+    let error = support::test_diff_round_authority_with_patch(
+        &cas,
+        &mut store,
+        "run",
+        &manifest,
+        DIFF_PIPELINE,
+        &patch,
+    )
+    .unwrap_err();
+    assert!(error.contains("limit is 4194304"), "{error}");
+    assert!(store.replay("run").unwrap().iter().all(|event| {
+        !matches!(
+            event.event_type,
+            review_core::EventType::AttemptDispatchedV1 | review_core::EventType::AttemptReleasedV1
+        )
+    }));
 }

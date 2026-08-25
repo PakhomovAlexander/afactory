@@ -8,12 +8,19 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+review-parallel = { path = "../review-parallel" }
+review-process = { path = "../review-process" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 # Copy-on-write clone (clonefile on macOS, FICLONE on Linux) with a plain-copy fallback, so a
 # snapshot is materialized once per run and each sandbox is a cheap COW clone of it.
 reflink-copy = "0.1.19"
 tempfile = "3.27.0"
+
+# A runtime capability probe is bounded and kills the probe's whole process group on timeout.
+# An installed Docker client with a wedged daemon must not hang the review gate forever.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30.1", default-features = false, features = ["fs"] }
 
 [dev-dependencies]
 review-check = { path = "../review-check" }

@@ -9,8 +9,9 @@ mod support;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use review_config::Definition;
 use review_core::LegacyStageOutput;
-use review_graph::{Node, NodeKind, Pipeline, Port, Scheduler};
+use review_graph::{Node, NodeKind, Pipeline, Port, PortContract, Scheduler};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, EventStore};
@@ -19,6 +20,39 @@ const PRIOR_PIPELINE: &str = r#"
 version = 2
 [subject]
 kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = [{ name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = ["result"]
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["reviewer"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "gather", port = "reviewer" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
+const LEGACY_PRIOR_PIPELINE: &str = r#"
+version = 1
 [[nodes]]
 id = "generation"
 kind = "generation"
@@ -112,10 +146,17 @@ impl ReviewerAdapter for Recorder {
 /// generation → reviewer(prior_findings) → gather → ledger.
 fn pipeline() -> Pipeline {
     Pipeline::default()
-        .node(Node::new("generation", NodeKind::Generation).emitting(&["findings"]))
+        .node(
+            Node::new("generation", NodeKind::Generation).emitting_contracts(vec![
+                PortContract::new("findings", review_core::contract::PRIOR_FINDINGS_V1),
+            ]),
+        )
         .node(
             Node::new("reviewer", NodeKind::Reviewer)
-                .accepting(&["prior_findings"])
+                .accepting_contracts(vec![PortContract::new(
+                    "prior_findings",
+                    review_core::contract::PRIOR_FINDINGS_V1,
+                )])
                 .emitting(&["result"]),
         )
         .node(
@@ -169,7 +210,7 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
 
 #[test]
 fn prior_findings_arrive_through_the_port() {
-    let doc = r#"{"round":1,"prior_findings":[{"key":"ab12","title":"T","file":"src/a.rs"}]}"#;
+    let doc = r#"{"subject_id":"test-subject","round":1,"prior_findings":[{"key":"ab12","title":"T","file":"src/a.rs"}]}"#;
     let seen = run(Some(doc)).expect("the reviewer ran");
     let delivered = seen.expect("prior findings were delivered");
     assert_eq!(delivered["prior_findings"][0]["key"], "ab12");
@@ -184,4 +225,53 @@ fn round_one_delivers_an_empty_set_as_no_prior_findings() {
         seen, None,
         "an empty generation set delivers no prior findings"
     );
+}
+
+#[test]
+fn version_one_generation_delivers_name_keyed_prior_findings() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let prior = cas
+        .put_json(&serde_json::json!({
+            "subject_id": "test-subject",
+            "round": 1,
+            "prior_findings": [{"key": "legacy", "title": "T", "file": "src/a.rs"}],
+        }))
+        .unwrap();
+    let seen = Arc::new(Mutex::new(None));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        Some(prior.clone()),
+        LEGACY_PRIOR_PIPELINE,
+    )
+    .with_adapter("reviewer", Box::new(Recorder { seen: seen.clone() }));
+    let loaded = Definition::from_toml(LEGACY_PRIOR_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
+    let delivered = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("reviewer ran")
+        .expect("legacy prior findings were delivered");
+    assert_eq!(delivered["prior_findings"][0]["key"], "legacy");
+    let dispatch = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::AttemptDispatchedV1)
+        .expect("attempt dispatch");
+    assert_eq!(dispatch.payload["prior_findings"], prior);
 }

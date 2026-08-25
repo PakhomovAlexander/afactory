@@ -34,6 +34,7 @@ pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use review_source_git::{Manifest, materialize};
 use review_store::Cas;
@@ -127,7 +128,7 @@ pub struct Sandbox {
     isolation: Isolation,
     /// The manifest as materialized. Sealing diffs against this, so "what did the reviewer
     /// change" is computed rather than reported by the reviewer.
-    baseline: Manifest,
+    baseline: Arc<Manifest>,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
     /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
     _dir: Option<tempfile::TempDir>,
@@ -148,54 +149,234 @@ impl Drop for Sandbox {
 /// TempDir cleanup that follows will do no worse than before.
 #[cfg(unix)]
 fn restore_writable_dirs(root: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if entry
-                .file_type()
-                .map(|t| t.is_dir() && !t.is_symlink())
-                .unwrap_or(false)
-            {
-                stack.push(entry.path());
-            }
-        }
+    let mut level = vec![root.to_path_buf()];
+    while !level.is_empty() {
+        let children = review_parallel::try_map_owned(level, |dir| {
+            let _ = ensure_directory_mode(&dir, 0o700);
+            let paths = std::fs::read_dir(&dir)
+                .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+                .unwrap_or_default();
+            review_parallel::try_map_owned(paths, |path| {
+                let is_directory = std::fs::symlink_metadata(&path)
+                    .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+                    .unwrap_or(false);
+                Ok::<_, ()>(is_directory.then_some(path))
+            })
+            .map(|children| children.into_iter().flatten().collect::<Vec<_>>())
+        })
+        .expect("best-effort writable-directory walk is infallible");
+        level = children.into_iter().flatten().collect();
     }
 }
 
 #[cfg(not(unix))]
 fn restore_writable_dirs(_root: &Path) {}
 
+#[cfg(unix)]
+pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Result<()> {
+    use nix::fcntl::AT_FDCWD;
+    use nix::sys::stat::{FchmodatFlags, Mode as NixMode, fchmodat};
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.permissions().mode() & required != required {
+        // `AT_SYMLINK_NOFOLLOW` closes the lstat/chmod race: if a reviewer replaces this
+        // directory with a symlink, the replacement's target is never modified.
+        let _ = fchmodat(
+            AT_FDCWD,
+            path,
+            NixMode::from_bits_truncate(((metadata.permissions().mode() & 0o7777) | required) as _),
+            FchmodatFlags::NoFollowSymlink,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn ensure_directory_mode(_path: &Path, _required: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod directory_mode_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn directory_mode_repair_never_follows_a_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        ensure_directory_mode(&link, 0o1000).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn directory_mode_repair_adds_only_the_requested_bits() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        ensure_directory_mode(&target, 0o500).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+    }
+}
+
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
 /// recreated (a clone is a fresh writable tree), symlinks are recreated as symlinks (they must
 /// not be dereferenced), and regular files are reflinked — sharing blocks until one side
-/// writes — with a plain copy where the filesystem does not support reflinks. Both preserve
-/// the source permissions, so the exec bit survives.
-fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// writes — with a plain copy where the filesystem does not support reflinks. Writable clones
+/// preserve source permissions. Read-only clones strip write permission in the same file batch
+/// and return the already-discovered directories for a child-before-parent chmod pass.
+fn clone_tree(src: &Path, dst: &Path, mode: Mode) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dst)?;
-    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
-    while let Some((from_dir, to_dir)) = stack.pop() {
-        for entry in std::fs::read_dir(&from_dir)? {
-            let entry = entry?;
-            let from = entry.path();
-            let to = to_dir.join(entry.file_name());
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                std::fs::create_dir(&to)?;
-                stack.push((from, to));
-            } else if file_type.is_symlink() {
-                symlink_raw(&std::fs::read_link(&from)?, &to)?;
-            } else {
-                // COW clone, or a plain copy where reflinks are unavailable — either way the
-                // content and permissions are those of the template.
-                reflink_copy::reflink_or_copy(&from, &to)?;
+    let mut level = vec![(src.to_path_buf(), dst.to_path_buf())];
+    let mut directories = vec![dst.to_path_buf()];
+    let mut pending_files = Vec::new();
+    while !level.is_empty() {
+        let (scanned, ()) = review_parallel::try_join(
+            || review_parallel::try_map_owned(level, |pair| scan_clone_directory(pair, mode)),
+            || clone_file_batch(pending_files),
+        )?;
+        let mut next_level = Vec::new();
+        let mut next_files = Vec::new();
+        for scan in scanned {
+            for child in &scan.directories {
+                directories.push(child.1.clone());
             }
+            next_level.extend(scan.directories);
+            next_files.extend(scan.files);
+        }
+        level = next_level;
+        pending_files = next_files;
+    }
+    clone_file_batch(pending_files)?;
+    Ok(directories)
+}
+
+type CloneFile = (PathBuf, PathBuf, bool, Option<u32>);
+
+struct CloneScan {
+    directories: Vec<(PathBuf, PathBuf)>,
+    files: Vec<CloneFile>,
+}
+
+fn scan_clone_directory(
+    (from_dir, to_dir): (PathBuf, PathBuf),
+    mode: Mode,
+) -> std::io::Result<CloneScan> {
+    let paths = std::fs::read_dir(&from_dir)?
+        .map(|entry| {
+            entry.map(|entry| {
+                let from = entry.path();
+                let to = to_dir.join(entry.file_name());
+                (from, to)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let classified =
+        review_parallel::try_map_owned(paths, |(from, to)| classify_clone_entry(from, to, mode))?;
+    let mut scan = CloneScan {
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    for entry in classified {
+        match entry {
+            CloneEntry::Directory(from, to) => {
+                std::fs::create_dir(&to)?;
+                scan.directories.push((from, to));
+            }
+            CloneEntry::File(file) => scan.files.push(file),
         }
     }
+    Ok(scan)
+}
+
+enum CloneEntry {
+    Directory(PathBuf, PathBuf),
+    File(CloneFile),
+}
+
+fn classify_clone_entry(from: PathBuf, to: PathBuf, mode: Mode) -> std::io::Result<CloneEntry> {
+    let metadata = std::fs::symlink_metadata(&from)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        return Ok(CloneEntry::Directory(from, to));
+    }
+    let is_symlink = metadata.file_type().is_symlink();
+    let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
+        Some(read_only_mode_for(&metadata))
+    } else {
+        None
+    };
+    Ok(CloneEntry::File((from, to, is_symlink, read_only_mode)))
+}
+
+fn clone_file_batch(files: Vec<CloneFile>) -> std::io::Result<()> {
+    review_parallel::try_for_each_owned(files, |(from, to, is_symlink, read_only_mode)| {
+        if is_symlink {
+            symlink_raw(&std::fs::read_link(&from)?, &to)?;
+        } else {
+            reflink_copy::reflink_or_copy(&from, &to)?;
+            apply_one_file_permission(&to, read_only_mode)?;
+        }
+        Ok::<_, std::io::Error>(())
+    })
+}
+
+#[cfg(unix)]
+fn apply_one_file_permission(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match mode {
+        Some(mode) => std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_one_file_permission(_path: &Path, _mode: Option<u32>) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_only_mode_for(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 != 0 {
+        0o555
+    } else {
+        0o444
+    }
+}
+
+#[cfg(not(unix))]
+fn read_only_mode_for(_metadata: &std::fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn apply_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    for directory in directories.into_iter().rev() {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o555))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_directories_read_only(_directories: Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -211,13 +392,12 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 
 /// A snapshot materialized once, to be cloned per sandbox.
 ///
-/// Materializing walks the manifest and, per entry, does a CAS read (open + full SHA-256
-/// verification) + write + chmod — syscall-bound, and paid once for the gate and once per
-/// reviewer attempt when each sandbox re-materialized from scratch. A template materializes
-/// exactly once; every sandbox is then a copy-on-write clone of it, which shares blocks
-/// instead of re-reading and re-writing the tree, with writes still fully isolated per clone.
+/// Materialization prepares paths serially, then verifies each distinct CAS object once and
+/// writes independent content groups through the process-wide executor. A template is built
+/// exactly once; every sandbox is then a bounded-parallel copy-on-write clone of it, which shares
+/// blocks instead of re-reading and re-writing the tree while keeping writes isolated.
 pub struct SandboxTemplate {
-    manifest: Manifest,
+    manifest: Arc<Manifest>,
     root: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -228,7 +408,7 @@ impl SandboxTemplate {
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
-            manifest: manifest.clone(),
+            manifest: Arc::new(manifest.clone()),
             root,
             _dir: dir,
         })
@@ -254,7 +434,7 @@ impl Sandbox {
             root,
             mode,
             isolation: Isolation::None,
-            baseline: manifest.clone(),
+            baseline: Arc::new(manifest.clone()),
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
@@ -271,17 +451,17 @@ impl Sandbox {
     ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
-        clone_tree(&template.root, &root)?;
+        let cloned_directories = clone_tree(&template.root, &root, mode)?;
 
         let sandbox = Sandbox {
             root,
             mode,
             isolation: Isolation::None,
-            baseline: template.manifest.clone(),
+            baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
         };
         if mode == Mode::ReadOnly {
-            sandbox.apply_read_only()?;
+            apply_directories_read_only(cloned_directories)?;
         }
         Ok(sandbox)
     }
@@ -300,7 +480,7 @@ impl Sandbox {
     }
 
     pub fn baseline(&self) -> &Manifest {
-        &self.baseline
+        self.baseline.as_ref()
     }
 
     /// The environment a node runs with: rebuilt from an allowlist, never inherited.
@@ -319,33 +499,27 @@ impl Sandbox {
 
     #[cfg(unix)]
     fn apply_read_only(&self) -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
-        let mut dirs = vec![self.root.clone()];
-        let mut seen_dirs = Vec::new();
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
-                let meta = std::fs::symlink_metadata(&path)?;
-                if meta.is_dir() {
-                    dirs.push(path);
-                } else if !meta.file_type().is_symlink() {
-                    // Strip write, keep execute. Flattening to 0o444 was a real bug the hub's
-                    // own tree caught on the first live run: every script lost its exec bit,
-                    // so seal reported the whole executable population as mutated and the
-                    // gate's verify check saw a tree full of non-executable hooks.
-                    use std::os::unix::fs::PermissionsExt;
-                    let executable = meta.permissions().mode() & 0o111 != 0;
-                    let mode = if executable { 0o555 } else { 0o444 };
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
-                }
+        let mut level = vec![self.root.clone()];
+        let mut seen_dirs = vec![self.root.clone()];
+        let mut pending_files = Vec::new();
+        while !level.is_empty() {
+            let (scanned, ()) = review_parallel::try_join(
+                || review_parallel::try_map_owned(level, scan_permission_directory),
+                || apply_file_permissions(pending_files),
+            )?;
+            let mut next_level = Vec::new();
+            let mut next_files = Vec::new();
+            for scan in scanned {
+                seen_dirs.extend(scan.directories.iter().cloned());
+                next_level.extend(scan.directories);
+                next_files.extend(scan.files);
             }
-            seen_dirs.push(dir);
+            level = next_level;
+            pending_files = next_files;
         }
-        for dir in seen_dirs.into_iter().rev() {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))?;
-        }
-        Ok(())
+        apply_file_permissions(pending_files)?;
+        apply_directories_read_only(seen_dirs)
     }
 
     #[cfg(not(unix))]
@@ -363,14 +537,51 @@ impl Sandbox {
         seal::seal(self)
     }
 
-    pub(crate) fn into_parts(mut self) -> (PathBuf, Manifest, Mode, tempfile::TempDir) {
-        // Restore writability here, while the real root is still known: the TempDir moves to the
-        // SealedSandbox, so its later cleanup must find directories it can empty. The residual
-        // `self` (emptied below) then drops as a no-op.
-        restore_writable_dirs(&self.root);
+    pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, Mode, tempfile::TempDir) {
+        // Seal restores traversal permissions as it scans. The residual `self` (emptied below)
+        // then drops as a no-op.
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);
         (root, baseline, self.mode, dir)
     }
+}
+
+struct PermissionScan {
+    directories: Vec<PathBuf>,
+    files: Vec<(PathBuf, u32)>,
+}
+
+fn scan_permission_directory(directory: PathBuf) -> std::io::Result<PermissionScan> {
+    let paths = std::fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let classified = review_parallel::try_map_owned(paths, |path| {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            Ok::<_, std::io::Error>((Some(path), None))
+        } else if !metadata.file_type().is_symlink() {
+            let mode = read_only_mode_for(&metadata);
+            Ok((None, Some((path, mode))))
+        } else {
+            Ok((None, None))
+        }
+    })?;
+    let mut scan = PermissionScan {
+        directories: Vec::new(),
+        files: Vec::new(),
+    };
+    for (directory, file) in classified {
+        scan.directories.extend(directory);
+        scan.files.extend(file);
+    }
+    Ok(scan)
+}
+
+#[cfg(unix)]
+fn apply_file_permissions(files: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    review_parallel::try_for_each_owned(files, |(path, mode)| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    })
 }

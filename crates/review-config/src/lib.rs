@@ -175,57 +175,60 @@ fn validate_diff_change_set_wiring(
     nodes: &[NodeSpec],
     edges: &[EdgeSpec],
 ) -> Result<(), ConfigError> {
-    let exact = |port: &PortContractSpec| {
-        let port = port.build();
-        port.name == "change_set"
-            && port.artifact_type == review_core::contract::CHANGE_SET_V1
+    let exact = |port: &PortContract| {
+        port.artifact_type == review_core::contract::CHANGE_SET_V1
             && port.cardinality == review_core::PortCardinality::One
             && !port.optional
             && port.snapshot_affinity == review_core::SnapshotAffinity::SameSubject
     };
-    let mut producers = nodes
+    let producers: Vec<_> = nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Generation)
-        .filter(|node| {
+        .flat_map(|node| {
             node.outputs
                 .iter()
-                .any(|port| port.build().name == "change_set")
-        });
-    let producer = producers.next().ok_or_else(|| {
-        ConfigError::Binding(
-            "a `diff` pipeline requires generation to emit one exact ChangeSet@1 on `change_set`"
-                .into(),
-        )
-    })?;
-    if producers.next().is_some()
-        || !producer
-            .outputs
-            .iter()
-            .find(|port| port.build().name == "change_set")
-            .is_some_and(exact)
-    {
+                .map(PortContractSpec::build)
+                .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
+                .map(move |port| (node, port))
+        })
+        .collect();
+    let [(producer, producer_port)] = producers.as_slice() else {
         return Err(ConfigError::Binding(
             "a `diff` pipeline must have exactly one typed ChangeSet@1 producer".into(),
+        ));
+    };
+    if !exact(producer_port) {
+        return Err(ConfigError::Binding(
+            "a `diff` pipeline's ChangeSet@1 producer must be required, singular, and bound to the subject snapshot"
+                .into(),
         ));
     }
     for reviewer in nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Reviewer)
     {
-        if !reviewer
+        let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .find(|port| port.build().name == "change_set")
-            .is_some_and(exact)
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
+            .collect();
+        let [reviewer_port] = inputs.as_slice() else {
+            return Err(ConfigError::Binding(format!(
+                "diff reviewer `{}` must declare exactly one ChangeSet@1 input",
+                reviewer.id
+            )));
+        };
+        if !exact(reviewer_port)
             || !edges.iter().any(|edge| {
                 edge.from.node == producer.id
-                    && edge.from.port == "change_set"
+                    && edge.from.port == producer_port.name
                     && edge.to.node == reviewer.id
-                    && edge.to.port == "change_set"
+                    && edge.to.port == reviewer_port.name
             })
         {
             return Err(ConfigError::Binding(format!(
-                "diff reviewer `{}` must receive generation's exact ChangeSet@1 through `change_set`",
+                "diff reviewer `{}` must receive generation's exact ChangeSet@1 through its typed input",
                 reviewer.id
             )));
         }
@@ -233,8 +236,65 @@ fn validate_diff_change_set_wiring(
     Ok(())
 }
 
+fn validate_generation_output_contracts(
+    nodes: &[NodeSpec],
+    subject: review_core::SubjectKind,
+    version: u32,
+) -> Result<(), ConfigError> {
+    if version == 1 {
+        return Ok(());
+    }
+    let mut change_sets = 0_usize;
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Generation)
+    {
+        let mut prior_findings = 0_usize;
+        for port in node.outputs.iter().map(PortContractSpec::build) {
+            match port.artifact_type.as_str() {
+                review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
+                review_core::contract::CHANGE_SET_V1 => {
+                    if subject != review_core::SubjectKind::Diff {
+                        return Err(ConfigError::Binding(format!(
+                            "generation node `{}` output `{}` declares `{}`, which only a `diff` Subject can supply",
+                            node.id,
+                            port.name,
+                            review_core::contract::CHANGE_SET_V1,
+                        )));
+                    }
+                    change_sets += 1;
+                }
+                artifact_type => {
+                    return Err(ConfigError::Binding(format!(
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}` or `{}`",
+                        node.id,
+                        port.name,
+                        review_core::contract::PRIOR_FINDINGS_V1,
+                        review_core::contract::CHANGE_SET_V1,
+                    )));
+                }
+            }
+        }
+        if prior_findings == 0 {
+            return Err(ConfigError::Binding(format!(
+                "generation node `{}` must emit at least one explicit `{}` output",
+                node.id,
+                review_core::contract::PRIOR_FINDINGS_V1,
+            )));
+        }
+    }
+    if subject == review_core::SubjectKind::Diff && change_sets != 1 {
+        return Err(ConfigError::Binding(format!(
+            "a `diff` pipeline must declare exactly one generation `{}` output",
+            review_core::contract::CHANGE_SET_V1,
+        )));
+    }
+    Ok(())
+}
+
 /// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
-/// explicit opaque/one/required/any contract; new and shipped definitions use the typed arm.
+/// explicit opaque/one/required/any contract. It remains valid for non-Generation nodes;
+/// built-in Generation outputs require the typed arm because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PortContractSpec {
@@ -339,8 +399,8 @@ impl From<SeveritySpec> for review_core::Severity {
 /// versioned and reviewed. Absent means uncapped — budgets are a thing a pipeline declares,
 /// not a default it inherits invisibly.
 ///
-/// Owner decision, 2026-08-18: tokens as the unit; heavy defaults 300k/attempt, 2M/run; a run
-/// that exhausts finishes in-flight work and reports incomplete; a fenced attempt charges.
+/// Owner decision, updated 2026-08-25: tokens are the unit; the shipped heavy policy reserves
+/// 300k per attempt and caps a run at 1M. A fenced attempt still charges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetSpec {
@@ -374,6 +434,10 @@ pub struct Definition {
     pub subject: Option<SubjectSpec>,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
+    /// One pinned wall-clock bound for every gate check. The generous default is resolved by
+    /// the authority layer and persisted in CampaignManifest@1.
+    #[serde(default)]
+    pub check_timeout_seconds: Option<u64>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
@@ -385,9 +449,11 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
+    version: u32,
     subject: SubjectSpec,
     plan: Planned,
     checks: Vec<CheckDefinition>,
+    check_timeout_seconds: u64,
     reviewers: BTreeMap<String, Command>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
@@ -402,12 +468,20 @@ pub trait SubjectDispatch: Dispatch + Sync {
 }
 
 impl Loaded {
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     pub fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject.kind
     }
 
     pub fn checks(&self) -> &[CheckDefinition] {
         &self.checks
+    }
+
+    pub fn check_timeout_seconds(&self) -> u64 {
+        self.check_timeout_seconds
     }
 
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
@@ -501,6 +575,7 @@ impl Definition {
             }
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }
@@ -623,6 +698,12 @@ impl Definition {
             ));
         }
 
+        let check_timeout_seconds = self.check_timeout_seconds.unwrap_or(3600);
+        if check_timeout_seconds == 0 {
+            return Err(ConfigError::Binding(
+                "check_timeout_seconds must be positive".to_string(),
+            ));
+        }
         let plan = pipeline.plan().map_err(ConfigError::Plan)?;
         let checks = self
             .checks
@@ -638,9 +719,11 @@ impl Definition {
             .collect();
 
         Ok(Loaded {
+            version: self.version,
             subject,
             plan,
             checks,
+            check_timeout_seconds,
             reviewers,
             packages,
             budgets: self.budgets,
