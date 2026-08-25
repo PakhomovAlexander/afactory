@@ -1,21 +1,23 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0-M2 are complete and fully verified. Capability work is paused at the M2 boundary
-for the intermediate `v0.2.0` release; resume with M3.1 canonical Finding identity.
+**Status:** M0–M2 and private release `v0.2.0` are complete and fully verified. The A0 candidate
+architecture dogfood gate is next; finish the complete-v1 foundation through that loop before
+resuming M3.1 canonical Finding identity.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
-can be read, triaged, and closed only through explicit evidence-bearing policy.
+can be read, triaged, and closed only through explicit evidence-bearing policy; the candidate `af`
+starts reviewing its own development at the first useful architecture slice.
 **Log:** [`workstream/log.md`](workstream/log.md)
 
 ## Summary
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and nineteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0-M2 are complete; M2's first Campaign exhausted
+current contracts. The corrected roadmap has M0–M9 and an indexed ADR history; ADR-0003 and
+ADR-0004 are superseded. M0–M2 are complete; M2's first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
-complete. M2 converged under the recorded correctness-only review policy; work resumes at M3.1
-after the intermediate release.
+complete. M2 converged under the recorded correctness-only review policy; A0 now establishes
+candidate dogfood and the complete-v1 foundation before M3.1.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -27,8 +29,8 @@ Everything decided is written down. **Do not re-derive it; read it.**
 
 ## Background / current state
 
-The kernel is ~15.3k lines of Rust across 13 crates, with zero TODOs and unusually disciplined
-tests. The backlog is **not** a cleanup list — it is capability the design implies that the code
+The kernel is a multi-crate Rust workspace with unusually disciplined tests. The backlog is
+**not** a cleanup list — it is capability the design implies that the code
 does not yet deliver, plus a few places where checked-in docs describe behaviour that does not
 exist.
 
@@ -71,6 +73,12 @@ corrections from the second audit are:
 - Proposals are base-bound and exported by Proposal ID; ADR-0010 supersedes ADR-0004.
 - Dynamic scatter/semantic closure and internal derived-Snapshot Integration are restored as M8
   and M9 rather than silently omitted.
+- Wise token use and minimum Worker context are the first two design values; Inputs carry a
+  measured context manifest and context expands only through bounded recorded retrieval
+  ([ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
+- Candidate `make dogfood` precedes v1 completeness and M3.1, using the existing `.review/`
+  contracts unchanged behind temporary adapters
+  ([ADR-0029](adr/0029-dogfood-the-candidate-af-before-v1-is-complete.md)).
 
 ## Scope
 
@@ -79,11 +87,15 @@ contracts. Out: project-specific `.review/` pipelines, reviewer packages, campai
 private corpora. The retired shell harness under `compat/legacy-harness/` remains only as the
 executable specification that regenerates the synthetic fixture corpus.
 
+A0 is inside scope because it changes the kernel's own development gate. It reuses the checked-in
+`.review/` policy but does not change its frozen declarations or persisted contracts.
+
 **Sequencing is deliberate.** M0 freezes append-only contracts; M1 makes current evidence usable;
-M2 adds the trusted Subject; M3 establishes canonical claim identity and explicit dispositions;
-M4 builds snapshot-scoped Evidence and resolution on it. M5–M7 add operator, gate, and Proposal
-capabilities. M8 and M9 then add dynamic execution and internal Integration only after their
-identity, authority, isolation, and verification prerequisites exist.
+M2 adds the trusted Subject; A0 establishes candidate dogfood and the complete-v1 foundation;
+M3 establishes canonical claim identity and explicit dispositions; M4 builds snapshot-scoped
+Evidence and resolution on it. M5–M7 add operator, gate, and Proposal capabilities. M8 and M9 then
+add dynamic execution and internal Integration only after their identity, authority, isolation,
+and verification prerequisites exist.
 
 ## Acceptance criteria
 
@@ -97,6 +109,9 @@ identity, authority, isolation, and verification prerequisites exist.
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses
       `diff`; both rename endpoints govern Report Scope and replay never rewrites existing legacy
       keys. Canonical path-independent Finding identity remains M3.1.
+- [ ] A0 — `make dogfood` builds candidate `af`, reviews one real kernel change through the
+      existing policy, records minimum Input/context and token evidence, and produces a typed
+      outcome beside a green `make check`; candidate failure falls back to pinned last-green.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
@@ -113,7 +128,8 @@ identity, authority, isolation, and verification prerequisites exist.
       semantic-output closure prevent omitted shard output from passing.
 - [ ] M9 — automatic Integration is opt-in, advances only an internal derived Snapshot at one
       transactional boundary, and leaves claims pending until a later verified Round.
-- [ ] `make review-kernel` and `make review-kernel-fixtures` stay green throughout.
+- [ ] `make check` stays green throughout; after A0, every material slice also runs
+      `make dogfood` or records candidate failure plus last-green review evidence.
 
 ## Open work (resume here)
 
@@ -245,8 +261,9 @@ all eighteen fixes, opened seven claims, and exhausted the Campaign. Their corre
 and Git deadlines, type run-budget exhaustion, preserve held-stderr check evidence, guard raw
 Change Sets before encoding, unify Ledger projection input, and avoid irrelevant authority-plan
 parsing. Commit `d8f0812` passes the full local gate, and all seven claims are resolved; the
-Campaign has 25 fixed findings and zero open. M2 is complete; release `v0.2.0`, then resume at
-M3.1.
+Campaign has 25 fixed findings and zero open. M2 and release `v0.2.0` are complete. Implement A0
+next: context manifest and token receipt, then real candidate `make dogfood`, then ratchet it over
+the complete-v1 foundation. Resume M3.1 only after that foundation is in place.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
@@ -274,3 +291,6 @@ isolation, and verification prerequisites.
   the kernel repo's shipped generator. Replace `.review/review.lock` with its stdout atomically.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.
+- **Candidate dogfood cannot be its own only safety story.** `make check` remains independent; the
+  first A0 change uses pinned `v0.2.0`, and a candidate that cannot run falls back to last-green
+  review rather than silently skipping the gate.

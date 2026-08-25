@@ -10,13 +10,15 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.1-M2.6 are implemented and verified; M3.1 is next. New Campaigns use the bounded
-correctness-review policy in ADR-0027 rather than extending the retired two-specialist
-clean-window Campaign.
+M2.1-M2.6 are implemented and verified. The architecture dogfood gate in `docs/backlog.md` is
+next: establish candidate `make dogfood`, then complete the v1 foundation before M3.1. New
+Campaigns use the bounded correctness-review policy in ADR-0027 rather than extending the retired
+two-specialist clean-window Campaign.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
-domain terms. Project-specific pipelines, reviewer packages, campaign state, and private corpora
-belong in consuming repositories, not here.
+domain terms until a separate accepted migration ADR supersedes this rule. The dogfood walking
+skeleton deliberately reuses `.review/` unchanged through adapters. Project-specific pipelines,
+reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
 
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
 budget, or sandbox boundary to make a test or review pass.
@@ -41,6 +43,15 @@ budget, or sandbox boundary to make a test or review pass.
   `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
   adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
   ([ADR-0026](docs/adr/0026-share-process-supervision-through-a-leaf-crate.md)).
+- Wise token use and minimum Worker context are the first two design values. Every model call has
+  a bounded reservation and named informational purpose; every Attempt carries an exact context
+  manifest. Parent transcripts, whole Ledgers, repository dumps, unrelated documents, and other
+  Workers' private reasoning are absent by default; bounded Tool retrieval is recorded
+  ([ADR-0028](docs/adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
+- Candidate dogfood precedes v1 completeness and M3.1. `make dogfood` uses the in-tree `af` over
+  the existing `.review/` policy, records token/context evidence, and remains separate from
+  `make check`; the pinned last-green release bootstraps a candidate that cannot run
+  ([ADR-0029](docs/adr/0029-dogfood-the-candidate-af-before-v1-is-complete.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

@@ -1,15 +1,17 @@
 # Afactory Review Kernel - backlog
 
-Work queued for `af review`, in the order it should be done. Repository migration and private
-release parity precede M2.5; they must not alter the persisted Review Kernel contracts below.
+Work queued for `af review`, in the order it should be done. Repository migration, private
+release parity, and M0–M2 are complete. The candidate architecture dogfood gate below precedes
+M3.1 and must not alter the frozen persisted Review Kernel contracts it temporarily adapts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
 
 Sequencing rationale: M0 freezes append-only contracts before new events are introduced. This
 repository then reviews itself with the kernel it ships, so M1's triage visibility is on the
-critical path. M2 establishes the trusted diff Subject, and M3 makes typed reviewer claims
-authoritative before later evidence, patch, and scatter work.
+critical path. M2 establishes the trusted diff Subject. The architecture gate makes the candidate
+`af` useful for its own development before the complete v1 migration; M3 then makes typed reviewer
+claims authoritative before later evidence, patch, and scatter work.
 
 ---
 
@@ -232,6 +234,57 @@ Snapshot materialization remains part of the trusted Subject boundary: CAS objec
 fixed verification buffers and repeated regular-file content is cloned from one verified
 occurrence, never admitted as candidate-sized resident buffers or behind blocking executor
 permits. See [ADR-0020](adr/0020-stream-cas-materialization-and-clone-duplicates.md).
+
+---
+
+## A0 · Candidate architecture dogfood gate
+
+This is an implementation gate between completed M2 and M3, not a replacement capability
+milestone. Released `v0.2.0` already reviews every milestone; A0 makes the in-tree candidate run
+that useful loop early enough to shape the architecture that follows. Decisions are
+[ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md) and
+[ADR-0029](adr/0029-dogfood-the-candidate-af-before-v1-is-complete.md).
+
+### A0.1 — Measure tokens and minimize Worker context
+
+Every selected Attempt records a context manifest: each artifact rendered into the model prompt,
+the typed port or rule that requires it, its byte size, and an estimated token size. Provider usage
+receipts preserve reported input, output, cache, and reasoning tokens; the final report aggregates
+what is available against the reserved budget.
+
+The default review Worker receives the exact Subject and Change Set, required instructions, active
+prior claims, Gate decision, package/policy identities, reservation, and epoch. It does not receive
+the parent session, whole Ledger, unrelated docs, a repository dump, or another Worker's private
+reasoning. The Snapshot remains materialized and inspectable through allowed Tools; bounded
+retrieval is an event, not permanent prompt growth. Fixtures vary an unrelated file and parent
+transcript while proving the rendered Input is byte-identical, then exercise one explicit bounded
+retrieval.
+
+### A0.2 — Add the real `make dogfood` walking skeleton
+
+`make dogfood` builds the candidate binary and invokes its non-interactive `af review` path over an
+exact diff or uncommitted Subject in a dedicated worktree. It prints or records the candidate
+binary/source identity, authority and Subject IDs, context sizes, token usage, Findings, spend, and
+typed clean/fail/incomplete outcome. `make check` runs separately and remains mandatory.
+
+The first A0 change is reviewed by pinned last-green `v0.2.0`. A0 exits only after one real kernel
+change completes candidate build, `make check`, candidate review, Finding disposition, and final
+structured outcome; a synthetic fixture demo alone is insufficient. If a later candidate cannot
+start, the last-green binary reviews the change and the candidate failure is retained.
+
+A0 deliberately uses the existing `.review/` policy and proven Store, pipeline, Provider, and
+prompt/JSON contracts through narrow adapters. It adds no `.review/` key and no
+`review.kernel/*` persisted type. Those contracts stay frozen until a separate accepted migration
+ADR replaces them.
+
+### A0.3 — Ratchet dogfood over the v1 foundation
+
+After A0, every material architecture slice runs `make dogfood` with the candidate and reports its
+token/context delta. Temporary adapters stay behind the target interfaces, acquire explicit
+removal work, and are gone before the v1 release. Open the complete-v1 implementation issue from
+the accepted architecture, record its breaking name/Store/state-machine decisions as kernel ADRs,
+and finish that foundation before M3.1. Store and worker-protocol redesigns, TUI, `implement`,
+dynamic fan-out, and delivery are not prerequisites for A0 itself.
 
 ---
 
