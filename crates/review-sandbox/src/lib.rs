@@ -191,7 +191,7 @@ pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Resu
         let _ = fchmodat(
             AT_FDCWD,
             path,
-            NixMode::from_bits_truncate(0o755),
+            NixMode::from_bits_truncate(((metadata.permissions().mode() & 0o7777) | required) as _),
             FchmodatFlags::NoFollowSymlink,
         );
     }
@@ -221,6 +221,20 @@ mod directory_mode_tests {
         assert_eq!(
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o700
+        );
+    }
+
+    #[test]
+    fn directory_mode_repair_adds_only_the_requested_bits() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        ensure_directory_mode(&target, 0o500).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o500
         );
     }
 }

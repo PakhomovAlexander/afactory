@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -26,6 +26,35 @@ use review_core::{ChangeSetV1, PathRenameV1};
 use review_store::Cas;
 
 use crate::manifest::{Manifest, decode_path, encode_path};
+
+type DrainThread = std::thread::JoinHandle<std::io::Result<Vec<u8>>>;
+
+fn drain_pipe(mut pipe: impl Read + Send + 'static) -> DrainThread {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn finish_child_output(
+    mut child: std::process::Child,
+    stdout: DrainThread,
+    stderr: DrainThread,
+) -> Result<Output, GitError> {
+    let status = child.wait().map_err(GitError::Io)?;
+    let join = |thread: DrainThread| {
+        thread
+            .join()
+            .map_err(|_| GitError::Io(std::io::Error::other("Git output drainer panicked")))?
+            .map_err(GitError::Io)
+    };
+    Ok(Output {
+        status,
+        stdout: join(stdout)?,
+        stderr: join(stderr)?,
+    })
+}
 
 #[derive(Debug)]
 pub enum GitError {
@@ -396,15 +425,37 @@ impl Repo {
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        child
+        let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| GitError::MalformedTreeDiff {
                 detail: "isolated Git command has no stdin".to_string(),
-            })?
-            .write_all(input)
-            .map_err(GitError::Io)?;
-        let output = child.wait_with_output().map_err(GitError::Io)?;
+            })?;
+        let stdout =
+            drain_pipe(
+                child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| GitError::MalformedTreeDiff {
+                        detail: "isolated Git command has no stdout".to_string(),
+                    })?,
+            );
+        let stderr =
+            drain_pipe(
+                child
+                    .stderr
+                    .take()
+                    .ok_or_else(|| GitError::MalformedTreeDiff {
+                        detail: "isolated Git command has no stderr".to_string(),
+                    })?,
+            );
+        let write_result = stdin.write_all(input).map_err(GitError::Io);
+        drop(stdin);
+        if write_result.is_err() {
+            let _ = child.kill();
+        }
+        let output = finish_child_output(child, stdout, stderr)?;
+        write_result?;
         if !output.status.success() {
             return Err(GitError::Failed {
                 args: args.iter().map(|arg| (*arg).to_string()).collect(),
@@ -486,14 +537,32 @@ impl Repo {
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         let mut child = cmd.spawn().map_err(GitError::Spawn)?;
-        {
-            let input = child
-                .stdin
-                .take()
-                .ok_or_else(|| GitError::MalformedTreeDiff {
-                    detail: "isolated fast-import has no stdin".to_string(),
-                })?;
-            let mut input = BufWriter::with_capacity(256 * 1024, input);
+        let input = child
+            .stdin
+            .take()
+            .ok_or_else(|| GitError::MalformedTreeDiff {
+                detail: "isolated fast-import has no stdin".to_string(),
+            })?;
+        let stdout =
+            drain_pipe(
+                child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| GitError::MalformedTreeDiff {
+                        detail: "isolated fast-import has no stdout".to_string(),
+                    })?,
+            );
+        let stderr =
+            drain_pipe(
+                child
+                    .stderr
+                    .take()
+                    .ok_or_else(|| GitError::MalformedTreeDiff {
+                        detail: "isolated fast-import has no stderr".to_string(),
+                    })?,
+            );
+        let mut input = BufWriter::with_capacity(256 * 1024, input);
+        let write_result = (|| -> Result<(), GitError> {
             input
                 .write_all(
                     b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
@@ -531,8 +600,14 @@ impl Repo {
             }
             input.write_all(b"done\n").map_err(GitError::Io)?;
             input.flush().map_err(GitError::Io)?;
+            Ok(())
+        })();
+        drop(input);
+        if write_result.is_err() {
+            let _ = child.kill();
         }
-        let output = child.wait_with_output().map_err(GitError::Io)?;
+        let output = finish_child_output(child, stdout, stderr)?;
+        write_result?;
         if !output.status.success() {
             return Err(GitError::Failed {
                 args: vec!["fast-import".into(), "--quiet".into(), "--force".into()],

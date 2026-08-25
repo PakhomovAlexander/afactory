@@ -788,15 +788,15 @@ impl Ledger {
             .iter()
             .filter(|failure| i64::from(failure.round) > since)
             .collect();
+        let recent_authority_ids: BTreeSet<&str> = recent_authority_failures
+            .iter()
+            .map(|failure| failure.authority_id.as_str())
+            .collect();
         let unresolved_unrecent_reports: BTreeSet<&str> = self
             .findings
             .values()
             .flat_map(|finding| finding.unreadable_reports.iter().map(String::as_str))
-            .filter(|report_id| {
-                !recent_authority_failures
-                    .iter()
-                    .any(|failure| failure.authority_id == **report_id)
-            })
+            .filter(|report_id| !recent_authority_ids.contains(*report_id))
             .collect();
         let authority_failures_recent =
             recent_authority_failures.len() + unresolved_unrecent_reports.len();

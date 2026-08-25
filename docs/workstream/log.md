@@ -530,3 +530,33 @@ Focused core, runner, store, pipeline, schema-parity, campaign-transition, repla
 pass with all-target Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests,
 and byte-identical fixture reproduction pass before commit. Resolve all four Reports against this
 commit, then run Rounds 3 and 4; both must be clean for convergence before M3.1.
+
+## 2026-08-25 — M2 verified Campaign Round 3 corrections
+
+Round 3 spent 990,029 tokens, retained all eleven Round 1-2 resolutions, and opened six Reports.
+The definition loader now rejects every Generation output outside the two built-in artifact types
+and requires an explicit `PriorFindings@1` output before any Campaign, capture, or gate work. Typed
+configuration regressions replace the last accepted opaque Generation fixture. Durable Generation
+receipt replay also refuses unknown output types instead of skipping Round-authority validation.
+
+`is_valid_repo_path` now owns the complete semantic rule shared by Change Sets and live Report
+locations, including leading/trailing whitespace. Change Set, Finding Report, and Reviewer Result
+schemas and conformance corpora agree with both permanent Rust readers. A repository path that
+cannot be reported with its exact spelling therefore fails closed during Change Set construction,
+before paid review, rather than deterministically refusing a correct reviewer answer.
+
+No-follow directory recovery preserves existing permission bits and adds exactly the requested
+mode floor; sealing an unreadable directory restores owner read/traverse without granting write.
+Command reviewers write stdin and drain stdout/stderr concurrently, run in their own process group,
+and use the exact timeout captured in the Campaign Manifest. Regressions force simultaneous 1 MiB
+stdin/stderr pressure and kill a hung command at a 100 ms deadline. Both isolated Git input sites
+drain stdout/stderr while writing, including the buffered synthetic-tree stream. The release
+5,000-file / 195.3 MiB fixture recorded 1.513 s cold capture, 0.545 s warm capture, and 0.861 s
+synthetic-tree construction.
+
+Convergence indexes recent Scope-authority failure IDs once in a sorted set instead of scanning
+the complete recent-failure list for every unreadable Report. Focused config, core, pipeline,
+runner, sandbox, source, store, and CLI suites pass with all-target Clippy warnings denied. Full
+workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass before
+commit. Resolve all six Reports against this commit and run Round 4 to retain them. Because Round 3
+was not clean, open a fresh unchanged-policy Campaign afterward for the two-Round clean window.

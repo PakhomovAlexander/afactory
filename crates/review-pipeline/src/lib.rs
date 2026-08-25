@@ -1932,7 +1932,12 @@ fn validate_generation_outputs(
         let expected = match port.artifact_type.as_str() {
             review_core::contract::PRIOR_FINDINGS_V1 => Some(&authority.prior_finding_set_id),
             review_core::contract::CHANGE_SET_V1 => authority.change_set_id.as_ref(),
-            _ => continue,
+            artifact_type => {
+                return Err(format!(
+                    "generation receipt port `{}` has unsupported artifact type `{artifact_type}`",
+                    port.name
+                ));
+            }
         };
         if outputs.get(&port.name).and_then(|ids| ids.first()) != expected
             || outputs.get(&port.name).is_some_and(|ids| ids.len() != 1)

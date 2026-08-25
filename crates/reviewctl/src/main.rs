@@ -1028,7 +1028,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                     }
                 }
             }
-            None => Box::new(command.clone()),
+            None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
         };
         bound.insert(node.clone(), command.program.clone());
         kernel = kernel.with_adapter(node.clone(), adapter);

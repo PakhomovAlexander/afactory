@@ -51,6 +51,7 @@ pub fn decode_path(encoded: &str) -> Vec<u8> {
 /// a spelling error into an `out` Scope and could make a real blocker stop blocking.
 pub fn is_valid_repo_path(path: &str) -> bool {
     !path.is_empty()
+        && path == path.trim()
         && !path.starts_with('/')
         && !path.contains('\0')
         && path
@@ -104,7 +105,15 @@ mod tests {
         for valid in ["src/a.rs", "docs/50%-off.md", "a\\b", ".../x"] {
             assert!(is_valid_repo_path(valid), "{valid:?}");
         }
-        for invalid in ["", "/src/a.rs", "./src/a.rs", "src//a.rs", "src/../a.rs"] {
+        for invalid in [
+            "",
+            "/src/a.rs",
+            "./src/a.rs",
+            "src//a.rs",
+            "src/../a.rs",
+            " src/a.rs",
+            "src/a.rs ",
+        ] {
             assert!(!is_valid_repo_path(invalid), "{invalid:?}");
         }
     }

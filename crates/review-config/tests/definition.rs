@@ -524,8 +524,8 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
 
 #[test]
 fn a_generation_node_parses_and_wires_prior_findings() {
-    // A generation node emits `findings`; the reviewer declares a `prior_findings` input wired
-    // from it. This is the shipped heavy.toml's shape for delivering prior findings by port.
+    // Generation and reviewer ports declare the built-in contract explicitly. The labels remain
+    // project-owned; the artifact type selects the executor behavior.
     let text = MINIMAL
         .replace(
             r#"[[nodes]]
@@ -533,7 +533,7 @@ id = "gate""#,
             r#"[[nodes]]
 id = "generation"
 kind = "generation"
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "gate""#,
@@ -541,7 +541,7 @@ id = "gate""#,
         .replace(
             r#"inputs = ["gate"]
 outputs = ["result"]"#,
-            r#"inputs = ["gate", "prior_findings"]
+            r#"inputs = ["gate", { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["result"]"#,
         )
         .replace(
@@ -576,4 +576,27 @@ to = { node = "architecture", port = "gate" }"#,
                 .unwrap(),
         "generation runs before the reviewer that consumes it"
     );
+}
+
+#[test]
+fn an_untyped_generation_output_is_refused_before_execution() {
+    let text = MINIMAL.replace(
+        r#"[[nodes]]
+id = "gate""#,
+        r#"[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+
+[[nodes]]
+id = "gate""#,
+    );
+
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("unsupported type"), "{error}");
+    assert!(error.to_string().contains("PriorFindings@1"), "{error}");
 }

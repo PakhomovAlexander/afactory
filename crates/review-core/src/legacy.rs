@@ -238,7 +238,7 @@ impl LegacyFinding {
             if line.is_some() {
                 return Err(err(ImportReason::InvalidLine));
             }
-        } else if path != path.trim() || !crate::is_valid_repo_path(path) {
+        } else if !crate::is_valid_repo_path(path) {
             return Err(err(ImportReason::InvalidPath));
         }
         Ok(())

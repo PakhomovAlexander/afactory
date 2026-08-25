@@ -540,7 +540,56 @@ pub trait ReviewerAdapter: Send + Sync {
 }
 
 /// The `command` adapter behind the same contract: deterministic, credential-free, cost zero.
-/// It takes no inputs — a scripted reviewer answers from the sandbox alone.
+#[derive(Debug, Clone)]
+pub struct CommandAdapter {
+    command: Command,
+    timeout: Duration,
+}
+
+impl CommandAdapter {
+    pub fn new(command: Command, timeout: Duration) -> Self {
+        Self { command, timeout }
+    }
+}
+
+fn invoke_command(
+    command: &Command,
+    runner: crate::CommandRunner<'_>,
+    inputs: &ReviewerInputs,
+) -> Result<ReviewerReturn, RunnerError> {
+    // The serialized document itself decides whether stdin exists. Adding a future input field
+    // cannot silently create durable AttemptInput authority that this adapter drops.
+    let encoded =
+        serde_json::to_vec(inputs).map_err(|error| RunnerError::Refused(error.to_string()))?;
+    let (output, raw_artifact) = if encoded == b"{}" {
+        runner.invoke_raw(command)?
+    } else {
+        runner.invoke_raw_with_input(command, &encoded)?
+    };
+    Ok(ReviewerReturn {
+        output,
+        cost_tokens: 0,
+        raw_artifact,
+    })
+}
+
+impl ReviewerAdapter for CommandAdapter {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        sandbox_root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        invoke_command(
+            &self.command,
+            crate::CommandRunner::new(cas, sandbox_root).with_timeout(self.timeout),
+            inputs,
+        )
+    }
+}
+
+/// Programmatic callers retain the bounded default; reviewctl binds [`CommandAdapter`] with the
+/// exact timeout captured in the Campaign Manifest.
 impl ReviewerAdapter for Command {
     fn invoke(
         &self,
@@ -548,21 +597,7 @@ impl ReviewerAdapter for Command {
         sandbox_root: &Path,
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
-        let runner = crate::CommandRunner::new(cas, sandbox_root);
-        // The serialized document itself decides whether stdin exists. Adding a future input
-        // field cannot silently create durable AttemptInput authority that this adapter drops.
-        let encoded =
-            serde_json::to_vec(inputs).map_err(|error| RunnerError::Refused(error.to_string()))?;
-        let (output, raw_artifact) = if encoded == b"{}" {
-            runner.invoke_raw(self)?
-        } else {
-            runner.invoke_raw_with_input(self, &encoded)?
-        };
-        Ok(ReviewerReturn {
-            output,
-            cost_tokens: 0,
-            raw_artifact,
-        })
+        invoke_command(self, crate::CommandRunner::new(cas, sandbox_root), inputs)
     }
 }
 

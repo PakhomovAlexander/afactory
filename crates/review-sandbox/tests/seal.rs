@@ -91,7 +91,11 @@ fn an_unreadable_directory_does_not_prevent_sealing() {
         .unwrap()
         .permissions()
         .mode();
-    assert_eq!(restored & 0o700, 0o700);
+    assert_eq!(
+        restored & 0o700,
+        0o500,
+        "sealing restores traversal without widening the directory to writable"
+    );
 }
 
 /// A diagnostic mutation left behind is visible, which is what makes the auto-apply rule

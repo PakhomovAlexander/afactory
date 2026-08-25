@@ -236,6 +236,38 @@ fn validate_diff_change_set_wiring(
     Ok(())
 }
 
+fn validate_generation_output_contracts(nodes: &[NodeSpec]) -> Result<(), ConfigError> {
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Generation)
+    {
+        let mut prior_findings = 0_usize;
+        for port in node.outputs.iter().map(PortContractSpec::build) {
+            match port.artifact_type.as_str() {
+                review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
+                review_core::contract::CHANGE_SET_V1 => {}
+                artifact_type => {
+                    return Err(ConfigError::Binding(format!(
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; declare `{}` or `{}` explicitly",
+                        node.id,
+                        port.name,
+                        review_core::contract::PRIOR_FINDINGS_V1,
+                        review_core::contract::CHANGE_SET_V1,
+                    )));
+                }
+            }
+        }
+        if prior_findings == 0 {
+            return Err(ConfigError::Binding(format!(
+                "generation node `{}` must emit at least one explicit `{}` output",
+                node.id,
+                review_core::contract::PRIOR_FINDINGS_V1,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
 /// explicit opaque/one/required/any contract; new and shipped definitions use the typed arm.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,6 +536,7 @@ impl Definition {
             }
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        validate_generation_output_contracts(&self.nodes)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }

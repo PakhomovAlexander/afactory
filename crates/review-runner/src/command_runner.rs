@@ -8,8 +8,11 @@
 use review_core::Command;
 use review_core::LegacyStageOutput;
 use review_store::Cas;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(1_800);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerError {
@@ -56,6 +59,7 @@ impl std::error::Error for RunnerError {}
 pub struct CommandRunner<'a> {
     cas: &'a Cas,
     workdir: std::path::PathBuf,
+    timeout: Duration,
 }
 
 impl<'a> CommandRunner<'a> {
@@ -63,7 +67,14 @@ impl<'a> CommandRunner<'a> {
         CommandRunner {
             cas,
             workdir: workdir.as_ref().to_path_buf(),
+            timeout: DEFAULT_COMMAND_TIMEOUT,
         }
+    }
+
+    /// Override the default bounded command-reviewer deadline.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Invoke a reviewer. Deterministic by construction: the same program over the same inputs
@@ -114,38 +125,93 @@ impl<'a> CommandRunner<'a> {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = if let Some(input) = input {
-            let mut child = cmd
-                .spawn()
-                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
-            if let Some(mut stdin) = child.stdin.take() {
-                match stdin.write_all(input) {
-                    Ok(()) => {}
-                    // Command reviewers may deliberately ignore wired inputs. If such a
-                    // reviewer exits before the pipe is full, its real exit status and output
-                    // remain authoritative; EPIPE is not provider unavailability.
-                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
-                    Err(error) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(RunnerError::Unavailable(format!(
-                            "delivering reviewer inputs: {error}"
-                        )));
-                    }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
+        let stdin_writer = input.map(|input| {
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            let input = input.to_vec();
+            std::thread::spawn(move || match stdin.write_all(&input) {
+                Ok(()) => Ok(()),
+                // A command may intentionally ignore wired inputs. Its actual exit status and
+                // answer remain authoritative when closing stdin races the writer.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                Err(error) => Err(error.to_string()),
+            })
+        });
+
+        // Drain both output pipes while stdin is written. Otherwise a child that reports before
+        // reading a large ReviewerInputs document can deadlock against its own parent.
+        let stdout_pipe = child.stdout.take().expect("stdout was piped");
+        let stderr_pipe = child.stderr.take().expect("stderr was piped");
+        let (stdout_send, stdout_recv) = std::sync::mpsc::channel();
+        let (stderr_send, stderr_recv) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = stdout_send.send(drain(stdout_pipe));
+        });
+        std::thread::spawn(move || {
+            let _ = stderr_send.send(drain(stderr_pipe));
+        });
+
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    kill_process_group(child.id());
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                Err(error) => {
+                    kill_process_group(child.id());
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(RunnerError::Unavailable(error.to_string()));
                 }
             }
-            child
-                .wait_with_output()
-                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?
-        } else {
-            cmd.output()
-                .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?
+        };
+        if let Some(writer) = stdin_writer {
+            writer
+                .join()
+                .map_err(|_| RunnerError::Unavailable("reviewer input writer panicked".into()))?
+                .map_err(|error| {
+                    RunnerError::Unavailable(format!("delivering reviewer inputs: {error}"))
+                })?;
+        }
+
+        let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| {
+                    RunnerError::Unavailable(format!("collecting reviewer output: {error}"))
+                })?
+                .map_err(|error| {
+                    RunnerError::Unavailable(format!("reading reviewer output: {error}"))
+                })
+        };
+        let stdout = collect(stdout_recv)?;
+        let stderr = collect(stderr_recv)?;
+
+        let Some(status) = status else {
+            return Err(RunnerError::TimedOut {
+                after_ms: self.timeout.as_millis() as u64,
+            });
         };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr);
             return Err(RunnerError::Failed {
-                exit_code: output.status.code().unwrap_or(-1),
+                exit_code: status.code().unwrap_or(-1),
                 stderr_excerpt: stderr.lines().last().unwrap_or_default().to_string(),
             });
         }
@@ -155,10 +221,10 @@ impl<'a> CommandRunner<'a> {
         // unfalsifiable claim.
         let raw_artifact = self
             .cas
-            .put(&output.stdout)
+            .put(&stdout)
             .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
 
-        match serde_json::from_slice::<LegacyStageOutput>(&output.stdout) {
+        match serde_json::from_slice::<LegacyStageOutput>(&stdout) {
             Ok(parsed) => Ok((parsed, raw_artifact)),
             Err(error) => Err(RunnerError::MalformedOutput {
                 raw_artifact,
@@ -167,6 +233,23 @@ impl<'a> CommandRunner<'a> {
         }
     }
 }
+
+fn drain(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {
@@ -211,6 +294,40 @@ mod tests {
             .invoke_raw_with_input(&emitting(EMPTY_RESULT), &input)
             .unwrap();
         assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn large_stdin_and_stderr_are_drained_concurrently() {
+        let (dir, cas) = runner_dir();
+        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_secs(5));
+        let command = Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(format!(
+                    "head -c 1048576 /dev/zero >&2; cat >/dev/null; cat <<'EOF'\n{EMPTY_RESULT}\nEOF"
+                )),
+            ],
+        );
+        let input = vec![b'x'; 1024 * 1024];
+        let (result, _) = runner.invoke_raw_with_input(&command, &input).unwrap();
+        assert!(result.findings.is_empty());
+    }
+
+    #[test]
+    fn a_hung_command_reviewer_is_killed_at_its_deadline() {
+        let (dir, cas) = runner_dir();
+        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_millis(100));
+        let command = Command::new(
+            "/bin/sh",
+            vec![Arg::literal("-c"), Arg::literal("sleep 60")],
+        );
+        let started = Instant::now();
+        assert!(matches!(
+            runner.invoke_raw(&command),
+            Err(RunnerError::TimedOut { .. })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
