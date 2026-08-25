@@ -1,9 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0 and M1 are complete. Five M2 dogfood Campaigns exhausted with all 179 Findings
-fixed. Fresh unchanged-policy Campaign `m2-rename-scope-verified` retained every correction across
-four Rounds but opened 21 further Findings; Round 4's final four corrections are fully verified.
-A fresh unchanged-policy Campaign must establish two clean Rounds before M3.1.
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-final-verified` Round 1 opened nine further
+Findings; their corrections are fully verified. They must be resolved and retained before a new
+two-Round clean window can establish M2 convergence and allow M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -203,6 +203,13 @@ policy, and index recent authority failures for convergence. The 5,000-file / 19
 fixture records 0.861 s synthetic-tree construction with concurrent draining. The full kernel gate
 passes; the claims are committed and resolved. Run Round 4 to retain them, then start a fresh
 unchanged-policy Campaign because this one can no longer establish two clean Rounds.
+Fresh Campaign `m2-rename-scope-final-verified` pins the same authority and manifest. Round 1 spent
+826,568 tokens and opened nine claims. Their corrections version Manifest path encoding while
+preserving raw-tree identity, make command deadlines safe after parent exit, enforce Change Set
+bounds before adapters, keep runner presentation out of Round authority, document typed
+Generation compatibility, avoid allocating discarded patches, carry one run-bound Ledger
+projection, and transfer command input without copying it. ADR-0024 and ADR-0025 record the two
+compatibility decisions. The full kernel gate passes; resolve these claims and run the next Round.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

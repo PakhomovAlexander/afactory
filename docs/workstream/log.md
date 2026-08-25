@@ -584,3 +584,34 @@ Focused config, core, runner, source, and store tests pass with all-target Clipp
 Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture reproduction pass
 before commit. Resolve all four Reports against this commit, then open a fresh unchanged-policy
 Campaign and require two clean Rounds before M3.1.
+
+## 2026-08-25 — M2 final-verified Campaign Round 1 corrections
+
+Fresh unchanged-policy Campaign `m2-rename-scope-final-verified` reproduced the exact authority
+and Campaign Manifest digests from the preceding Campaign. Round 1 spent 826,568 tokens and opened
+nine Reports: three major and six minor.
+
+Command attempts now decide a known timeout before pipe collection, never signal a process-group
+number after `try_wait` has reaped its leader, and bound lingering-descendant input delivery by the
+captured deadline. The already-owned serialized command document moves directly into its writer
+thread. Change Set size admission occurs inside both runner-owned constructors, including the
+store-resolved Round-authority path, and `RoundAuthority` retains only the store's verified Change
+Set capability rather than a runner presentation value.
+
+Manifest path spelling now has an explicit compatibility generation. Missing generation means
+the permanent legacy alphabet; new captures emit `percent_v2` only when required. Both forms
+materialize, validation remains allocation-free, and identity normalization preserves the same
+raw-tree digest across generations and their differing sort order. ADR-0024 records the decision.
+ADR-0025 records the intentional version-2 rule that built-in Generation outputs must use typed
+artifact contracts because opaque outputs cannot be dispatched.
+
+Scope replay borrows and discards the inline Change Set patch instead of allocating it. Round
+preparation builds one run-bound Ledger projection and carries that private capability through
+prior-row generation, Generation advancement, gather ingest, CLI presentation, and convergence;
+projection-affecting events alone invalidate it, and a cross-run projection is refused.
+
+Focused config, runner, source, store, pipeline, and CLI suites pass with all-target Clippy
+warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical fixture
+reproduction pass before commit. Resolve all nine Reports against this commit and run Round 2 to
+retain them; because Round 1 was not clean, a later fresh unchanged-policy Campaign must still
+establish two clean Rounds before M3.1.

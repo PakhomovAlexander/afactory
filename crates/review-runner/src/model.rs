@@ -347,6 +347,11 @@ impl ReviewerInputArtifact {
     /// Admit encoded Change Set bytes at the runner boundary. This is the cold/test path; the
     /// production Round authority path uses [`Self::from_resolved_change_set`].
     pub fn change_set_from_encoded(artifact_id: String, encoded: &[u8]) -> Result<Self, String> {
+        if encoded.len() > MAX_CHANGE_SET_BYTES {
+            return Err(format!(
+                "Change Set artifact {artifact_id} exceeds {MAX_CHANGE_SET_BYTES} bytes"
+            ));
+        }
         if review_store::canonical::blob_content_id(encoded) != artifact_id {
             return Err("Change Set bytes do not match their artifact ID".into());
         }
@@ -365,14 +370,22 @@ impl ReviewerInputArtifact {
     /// Import the exact typed/content binding established by one verified Subject resolution.
     /// The wrapper's private fields prevent callers from mixing identities and parsed values,
     /// while avoiding a schema-strengthening byte-exact re-serialization requirement.
-    pub fn from_resolved_change_set(resolved: Arc<review_store::ResolvedChangeSet>) -> Self {
-        Self {
+    pub fn from_resolved_change_set(
+        resolved: Arc<review_store::ResolvedChangeSet>,
+    ) -> Result<Self, String> {
+        if resolved.encoded_bytes() > MAX_CHANGE_SET_BYTES {
+            return Err(format!(
+                "Change Set artifact {} exceeds {MAX_CHANGE_SET_BYTES} bytes",
+                resolved.artifact_id()
+            ));
+        }
+        Ok(Self {
             artifact_id: resolved.artifact_id().to_string(),
             artifact_type: review_core::contract::CHANGE_SET_V1.into(),
             value: None,
             validated_change_set: Some(Arc::clone(resolved.change_set())),
             encoded_bytes: resolved.encoded_bytes(),
-        }
+        })
     }
 }
 
@@ -564,7 +577,7 @@ fn invoke_command(
     let (output, raw_artifact) = if encoded == b"{}" {
         runner.invoke_raw(command)?
     } else {
-        runner.invoke_raw_with_input(command, &encoded)?
+        runner.invoke_raw_with_input(command, encoded)?
     };
     Ok(ReviewerReturn {
         output,

@@ -873,6 +873,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         focus,
         timeout,
         authority,
+        ledger_projection,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
     println!("run      {run_id}");
 
@@ -964,6 +965,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         home.clone(),
     );
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
+        .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec());
     if let Some(budgets) = loaded.budgets() {
         println!(

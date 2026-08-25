@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use review_core::{ChangeSetV1, SubjectV1};
-use review_runner::{ReviewerInputArtifact, ReviewerInputs};
+use review_runner::{MAX_CHANGE_SET_BYTES, ReviewerInputArtifact, ReviewerInputs};
 
 fn inputs_with_change_set(change_set: serde_json::Value) -> Result<ReviewerInputs, String> {
     let encoded = review_store::canonical::canonicalize(&change_set).unwrap();
@@ -110,7 +110,7 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
     assert_eq!(resolved_change_set.artifact_id(), artifact_id);
     assert_eq!(resolved_change_set.encoded_bytes(), encoded.len());
 
-    let input = ReviewerInputArtifact::from_resolved_change_set(resolved_change_set);
+    let input = ReviewerInputArtifact::from_resolved_change_set(resolved_change_set).unwrap();
     assert_eq!(input.artifact_id(), artifact_id);
     let inputs = ReviewerInputs {
         artifacts: BTreeMap::from([("renamed_diff".into(), vec![input])]),
@@ -124,4 +124,36 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
     );
     assert_eq!(delivered["value"]["changed_paths"][0], "src/a.rs");
     assert!(delivered["value"]["canonical_patch_base64"].is_string());
+}
+
+#[test]
+fn oversized_resolved_change_sets_are_refused_before_any_adapter() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path()).unwrap();
+    let base = format!("sha256:{}", "a".repeat(64));
+    let head = format!("sha256:{}", "b".repeat(64));
+    let patch = vec![b'x'; MAX_CHANGE_SET_BYTES * 3 / 4 + 1024];
+    let change_set = ChangeSetV1::new(
+        base.clone(),
+        head.clone(),
+        vec!["src/a.rs".into()],
+        vec![],
+        &patch,
+        "git version test",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    let encoded = serde_json::to_vec(&change_set).unwrap();
+    assert!(encoded.len() > MAX_CHANGE_SET_BYTES);
+    let artifact_id = cas.put(&encoded).unwrap();
+    let subject_id = cas
+        .put_json(&serde_json::to_value(SubjectV1::diff(head, base, artifact_id)).unwrap())
+        .unwrap();
+    let resolved = review_store::resolve_subject(&cas, &subject_id)
+        .unwrap()
+        .change_set
+        .unwrap();
+
+    let error = ReviewerInputArtifact::from_resolved_change_set(resolved).unwrap_err();
+    assert!(error.contains("exceeds"), "{error}");
 }

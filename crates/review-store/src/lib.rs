@@ -22,7 +22,7 @@ pub mod subject;
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
 pub use cas::{Cas, CasError};
 pub use ledger::{
-    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, ReportScope,
+    AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};

@@ -56,3 +56,7 @@ options you rejected and why — that is the part future-you needs.
   input](0022-persist-retry-feedback-as-attempt-input.md)
 - [0023 — Separate retry feedback from terminal
   diagnostics](0023-separate-retry-feedback-from-terminal-diagnostics.md)
+- [0024 — Version manifest path encoding without changing Snapshot content
+  identity](0024-version-manifest-path-encoding.md)
+- [0025 — Require typed Generation outputs in pipeline version
+  2](0025-require-typed-generation-outputs-in-version-2.md)

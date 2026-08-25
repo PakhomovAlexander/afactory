@@ -262,7 +262,7 @@ fn validate_generation_output_contracts(
                 }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
-                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; declare `{}` or `{}` explicitly",
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}` or `{}`",
                         node.id,
                         port.name,
                         review_core::contract::PRIOR_FINDINGS_V1,
@@ -289,7 +289,8 @@ fn validate_generation_output_contracts(
 }
 
 /// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
-/// explicit opaque/one/required/any contract; new and shipped definitions use the typed arm.
+/// explicit opaque/one/required/any contract. It remains valid for non-Generation nodes;
+/// built-in Generation outputs require the typed arm because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PortContractSpec {

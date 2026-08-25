@@ -15,7 +15,7 @@ use review_core::{
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
-use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
 use crate::{Options, campaign_run_id};
 
@@ -26,6 +26,7 @@ pub(super) struct PreparedRun {
     pub focus: Option<String>,
     pub timeout: Duration,
     pub authority: RoundAuthority,
+    pub ledger_projection: LedgerProjection,
 }
 
 struct OpenCampaign {
@@ -40,6 +41,7 @@ struct RoundInput {
     event_id: String,
     snapshot: Manifest,
     prior_count: usize,
+    ledger_projection: LedgerProjection,
 }
 
 pub(super) fn prepare(
@@ -70,6 +72,7 @@ pub(super) fn prepare(
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
         authority,
+        ledger_projection: round.ledger_projection,
     })
 }
 
@@ -496,6 +499,8 @@ fn prepare_round(
     .map_err(|error| error.to_string())?;
     let repository_id = authority_snapshot.repository_id.clone();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let ledger_projection =
+        LedgerProjection::rebuild(store, cas, run_id).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
     for event in &events {
         if run_report_closes_round(event)
@@ -520,9 +525,13 @@ fn prepare_round(
     let existing = starts.last().cloned();
 
     let round = match (existing, options.restart_round) {
-        (Some((event, payload)), false) => {
-            load_round(cas, event.event_id.clone(), payload, &repository_id)?
-        }
+        (Some((event, payload)), false) => load_round(
+            cas,
+            event.event_id.clone(),
+            payload,
+            &repository_id,
+            ledger_projection,
+        )?,
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
@@ -536,17 +545,21 @@ fn prepare_round(
             RoundCaptureRequest {
                 round: target_round,
                 superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+                ledger_projection,
             },
         )?,
     };
 
+    let mut round = round;
     {
-        let mut ingest = Ingest::new(store, cas, run_id.to_string())
-            .map_err(|error| error.to_string())?
-            .under_round(&round.event_id);
+        let mut ingest =
+            Ingest::from_projection(store, cas, run_id.to_string(), round.ledger_projection)
+                .map_err(|error| error.to_string())?
+                .under_round(&round.event_id);
         while ingest.ledger().round < target_round {
             ingest.advance().map_err(|error| error.to_string())?;
         }
+        round.ledger_projection = ingest.projection();
     }
     println!(
         "round    {} (epoch {})",
@@ -561,6 +574,7 @@ fn prepare_round(
 struct RoundCaptureRequest<'a> {
     round: u32,
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
+    ledger_projection: LedgerProjection,
 }
 
 fn capture_round(
@@ -572,7 +586,11 @@ fn capture_round(
     campaign: &OpenCampaign,
     request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
-    let RoundCaptureRequest { round, superseded } = request;
+    let RoundCaptureRequest {
+        round,
+        superseded,
+        mut ledger_projection,
+    } = request;
     let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
         superseded
     {
@@ -763,7 +781,7 @@ fn capture_round(
         .map_err(|error| error.to_string())?;
 
     let (prior_findings, demands) = if let Some((_, old)) = superseded {
-        let findings = serde_json::Value::Array(prior_rows(store, cas, run_id)?);
+        let findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
         let demands = cas
             .get_json(&old.prior_demand_set_id)
             .map_err(|error| error.to_string())?["demands"]
@@ -771,7 +789,7 @@ fn capture_round(
         (findings, demands)
     } else {
         (
-            serde_json::Value::Array(prior_rows(store, cas, run_id)?),
+            serde_json::Value::Array(prior_rows(ledger_projection.ledger())),
             serde_json::Value::Array(Vec::new()),
         )
     };
@@ -902,12 +920,16 @@ fn capture_round(
             )
             .map_err(|error| error.to_string())?
     };
+    ledger_projection
+        .apply_event(&started, cas)
+        .map_err(|error| error.to_string())?;
     println!("snapshot {}", snapshot.content_digest);
     Ok(RoundInput {
         payload,
         event_id: started.event_id,
         snapshot: snapshot.manifest,
         prior_count,
+        ledger_projection,
     })
 }
 
@@ -916,6 +938,7 @@ fn load_round(
     event_id: String,
     payload: RoundStartedPayloadV1,
     repository_id: &str,
+    ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
     payload.validate()?;
     let subject: SubjectV1 = serde_json::from_value(
@@ -981,6 +1004,7 @@ fn load_round(
         event_id,
         snapshot: manifest,
         prior_count,
+        ledger_projection,
     })
 }
 
@@ -1013,13 +1037,8 @@ fn validate_round_set(
         .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
 }
 
-fn prior_rows(
-    store: &EventStore,
-    cas: &Cas,
-    run_id: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let ledger = Ledger::rebuild(store, cas, run_id).map_err(|error| error.to_string())?;
-    Ok(ledger
+fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
+    ledger
         .findings()
         .iter()
         .filter(|finding| {
@@ -1061,7 +1080,7 @@ fn prior_rows(
             }
             row
         })
-        .collect())
+        .collect()
 }
 
 fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {

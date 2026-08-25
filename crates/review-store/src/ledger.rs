@@ -224,6 +224,15 @@ pub struct Ledger {
     pub round: u32,
 }
 
+/// A Ledger projection bound to the exact run log it was rebuilt from. The private binding lets
+/// trusted callers carry one replay across layers without making an arbitrary hand-built Ledger
+/// admissible as convergence authority.
+#[derive(Debug, Clone)]
+pub struct LedgerProjection {
+    run_id: String,
+    ledger: Ledger,
+}
+
 #[derive(Debug, Clone)]
 struct ActiveScope {
     round: u32,
@@ -284,6 +293,18 @@ pub struct Convergence {
 }
 
 impl Ledger {
+    /// Whether appending this event invalidates a cached Ledger projection. Keep this vocabulary
+    /// beside the reducer match so caches cannot invent a second definition of Ledger input.
+    pub fn event_affects_projection(event_type: EventType) -> bool {
+        matches!(
+            event_type,
+            EventType::RoundStartedV1
+                | EVENT_GENERATION_ADVANCED
+                | EVENT_FINDING_REPORTED
+                | EVENT_FINDING_RESOLVED
+        )
+    }
+
     /// Rebuild from the event log. The only constructor — there is no way to hand-edit state in.
     pub fn rebuild(
         store: &EventStore,
@@ -818,6 +839,49 @@ impl Ledger {
             authority_failures_recent,
             verdict,
         }
+    }
+}
+
+impl LedgerProjection {
+    pub fn rebuild(
+        store: &crate::EventStore,
+        cas: &Cas,
+        run_id: &str,
+    ) -> Result<Self, crate::store::StoreError> {
+        Ok(Self {
+            run_id: run_id.to_string(),
+            ledger: Ledger::rebuild(store, cas, run_id)?,
+        })
+    }
+
+    pub fn ledger(&self) -> &Ledger {
+        &self.ledger
+    }
+
+    pub fn belongs_to(&self, run_id: &str) -> bool {
+        self.run_id == run_id
+    }
+
+    pub fn apply_event(
+        &mut self,
+        event: &review_core::RunEvent,
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        if event.run_id != self.run_id {
+            return Err(crate::store::StoreError::Conflict(format!(
+                "Ledger projection for `{}` cannot apply event from `{}`",
+                self.run_id, event.run_id
+            )));
+        }
+        self.ledger.apply_event(event, cas)
+    }
+
+    pub(crate) fn from_parts(run_id: String, ledger: Ledger) -> Self {
+        Self { run_id, ledger }
+    }
+
+    pub(crate) fn into_parts(self) -> (String, Ledger) {
+        (self.run_id, self.ledger)
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use review_core::{ChangeSetV1, SubjectKind, SubjectV1};
+use review_core::{ChangeSetV1, PathRenameV1, SubjectKind, SubjectV1};
 
 use crate::{Cas, StoreError};
 
@@ -15,7 +15,7 @@ pub struct ResolvedSubject {
 /// A Change Set whose typed value, content identity, and encoded length were established from one
 /// verified CAS read. Consumers can share this capability without re-serializing the typed value
 /// and accidentally imposing a stronger canonical form than the published schema.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedChangeSet {
     artifact_id: String,
     change_set: Arc<ChangeSetV1>,
@@ -40,6 +40,48 @@ impl ResolvedChangeSet {
 pub struct ResolvedSubjectScope {
     pub subject: SubjectV1,
     pub changed_paths: Option<Arc<[String]>>,
+}
+
+/// Scope-only Change Set reader. The patch remains a borrowed JSON string, so replay validates
+/// its wire type and scans its bytes without allocating the large base64 payload it will discard.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopeChangeSetV1<'a> {
+    base_snapshot_id: String,
+    head_snapshot_id: String,
+    changed_paths: Vec<String>,
+    renames: Vec<PathRenameV1>,
+    #[serde(default)]
+    rename_detection_truncated: bool,
+    #[serde(rename = "canonical_patch_base64", borrow)]
+    _canonical_patch_base64: &'a str,
+    git_version: String,
+    diff_policy_version: String,
+}
+
+impl ScopeChangeSetV1<'_> {
+    fn into_validation_value(self) -> ChangeSetV1 {
+        let Self {
+            base_snapshot_id,
+            head_snapshot_id,
+            changed_paths,
+            renames,
+            rename_detection_truncated,
+            _canonical_patch_base64: _,
+            git_version,
+            diff_policy_version,
+        } = self;
+        ChangeSetV1 {
+            base_snapshot_id,
+            head_snapshot_id,
+            changed_paths,
+            renames,
+            rename_detection_truncated,
+            canonical_patch_base64: String::new(),
+            git_version,
+            diff_policy_version,
+        }
+    }
 }
 
 pub fn resolve_subject(cas: &Cas, subject_id: &str) -> Result<ResolvedSubject, StoreError> {
@@ -94,8 +136,9 @@ pub fn resolve_subject_scope(
                     "Subject {subject_id} references unreadable Change Set {change_set_id}: {error}"
                 ))
             })?;
-            let change_set: ChangeSetV1 =
-                serde_json::from_slice(&change_set_bytes).map_err(|error| {
+            let change_set = serde_json::from_slice::<ScopeChangeSetV1<'_>>(&change_set_bytes)
+                .map(ScopeChangeSetV1::into_validation_value)
+                .map_err(|error| {
                     StoreError::Artifact(format!(
                         "Change Set {change_set_id} is malformed: {error}"
                     ))

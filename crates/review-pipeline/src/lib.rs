@@ -23,7 +23,7 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
@@ -42,13 +42,13 @@ use review_core::{
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{
-    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact,
-    ReviewerInputs, RunnerError,
+    MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError,
 };
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
-    Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, NewEvent, Verdict,
+    Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, LedgerProjection, NewEvent,
+    Verdict,
 };
 
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
@@ -137,7 +137,7 @@ pub struct RoundAuthority {
     prior_finding_set_id: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
-    change_set_input: Option<ReviewerInputArtifact>,
+    change_set: Option<Arc<review_store::ResolvedChangeSet>>,
 }
 
 impl RoundAuthority {
@@ -171,9 +171,9 @@ impl RoundAuthority {
             .map_err(|error| error.to_string())?;
         let subject = resolved.subject;
         let change_set_id = subject.change_set_id.clone();
-        let change_set_input = match (&change_set_id, resolved.change_set) {
+        let change_set = match (&change_set_id, resolved.change_set) {
             (Some(artifact_id), Some(change_set)) if change_set.artifact_id() == artifact_id => {
-                Some(ReviewerInputArtifact::from_resolved_change_set(change_set))
+                Some(change_set)
             }
             (None, None) => None,
             _ => return Err("resolved Subject has incomplete Change Set authority".into()),
@@ -226,7 +226,7 @@ impl RoundAuthority {
             prior_finding_set_id: payload.prior_finding_set_id,
             subject_kind: subject.kind,
             change_set_id,
-            change_set_input,
+            change_set,
         })
     }
 
@@ -651,6 +651,9 @@ pub struct Kernel<'a> {
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
+    /// Latest projection of this generation's durable log. Projection-affecting appends
+    /// invalidate it; gather installs the run-bound projection it updated during ingest.
+    ledger_cache: Mutex<Option<LedgerProjection>>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
@@ -761,6 +764,7 @@ impl<'a> Kernel<'a> {
             prepared_attempts: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
             report_published: Mutex::new(false),
+            ledger_cache: Mutex::new(None),
             replayed_invocations: replayed.invocations,
             replayed_outputs: replayed.outputs,
             replayed_refusal_histories: replayed.refusal_histories,
@@ -837,6 +841,16 @@ impl<'a> Kernel<'a> {
         self
     }
 
+    /// Seed the generation-local projection with the exact Ledger already rebuilt while its
+    /// Round input was prepared. Subsequent projection-affecting appends invalidate this cache.
+    pub fn with_ledger_projection(self, projection: LedgerProjection) -> Result<Self, String> {
+        if !projection.belongs_to(&self.run_id) {
+            return Err("Ledger projection belongs to a different Campaign run".into());
+        }
+        *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
+        Ok(self)
+    }
+
     /// Tokens committed so far, across every attempt including fenced ones. `None` when the
     /// run is uncapped.
     pub fn spent(&self) -> Option<u64> {
@@ -858,14 +872,25 @@ impl<'a> Kernel<'a> {
         self.gates.lock().expect("gates").get(node_id).cloned()
     }
 
-    /// The ledger as it stands, rebuilt from the log rather than accumulated in memory.
+    /// The ledger as it stands, derived from the log and cached only through a run-bound
+    /// projection capability.
     pub fn ledger(&self) -> Ledger {
-        Ledger::rebuild(
+        self.ledger_projection().ledger().clone()
+    }
+
+    fn ledger_projection(&self) -> LedgerProjection {
+        let mut cached = self.ledger_cache.lock().expect("ledger cache");
+        if let Some(projection) = cached.as_ref() {
+            return projection.clone();
+        }
+        let projection = LedgerProjection::rebuild(
             *self.store.lock().expect("event store"),
             self.cas,
             &self.run_id,
         )
-        .expect("replay")
+        .expect("replay");
+        *cached = Some(projection.clone());
+        projection
     }
 
     pub fn convergence(&self, policy: ConvergencePolicy) -> Convergence {
@@ -892,26 +917,43 @@ impl<'a> Kernel<'a> {
 
     fn append(&self, event: NewEvent) -> Result<(), String> {
         let event = self.bind_authority(event);
-        self.store
-            .lock()
-            .expect("event store")
-            .append(&self.run_id, self.cas, event)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let invalidates_ledger = Ledger::event_affects_projection(event.event_type);
+        {
+            self.store
+                .lock()
+                .expect("event store")
+                .append(&self.run_id, self.cas, event)
+                .map_err(|e| e.to_string())?;
+        }
+        if invalidates_ledger {
+            *self.ledger_cache.lock().expect("ledger cache") = None;
+        }
+        Ok(())
     }
 
     fn append_batch(&self, events: &[NewEvent]) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
         let events: Vec<NewEvent> = events
             .iter()
             .cloned()
             .map(|event| self.bind_authority(event))
             .collect();
-        self.store
-            .lock()
-            .expect("event store")
-            .append_batch(&self.run_id, self.cas, &events)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let invalidates_ledger = events
+            .iter()
+            .any(|event| Ledger::event_affects_projection(event.event_type));
+        {
+            self.store
+                .lock()
+                .expect("event store")
+                .append_batch(&self.run_id, self.cas, &events)
+                .map_err(|e| e.to_string())?;
+        }
+        if invalidates_ledger {
+            *self.ledger_cache.lock().expect("ledger cache") = None;
+        }
+        Ok(())
     }
 
     fn prepare_reviewer_attempt(
@@ -1332,24 +1374,19 @@ impl<'a> Kernel<'a> {
                 if is_change_set
                     && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
                 {
-                    resolved.push(
+                    resolved.push(ReviewerInputArtifact::from_resolved_change_set(
                         self.authority
-                            .change_set_input
+                            .change_set
                             .as_ref()
                             .ok_or("Round authority has no validated Change Set input")?
                             .clone(),
-                    );
+                    )?);
                     continue;
                 }
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                let limit = if is_change_set {
-                    MAX_CHANGE_SET_BYTES
-                } else {
-                    MAX_PRIOR_FINDINGS_BYTES
-                };
-                if encoded.len() > limit {
+                if !is_change_set && encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
                     return Err(format!(
-                        "reviewer input port '{port}' artifact {artifact} exceeds {limit} bytes"
+                        "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
                     ));
                 }
                 if is_change_set {
@@ -1814,11 +1851,13 @@ impl<'a> Kernel<'a> {
         // Canonical gather order: node id — not completion order, not artifact digest order.
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let (round, finding_count) = {
+        let projection = self.ledger_projection();
+        let (round, finding_count, projection) = {
             let mut store = self.store.lock().expect("event store");
-            let mut ingest = Ingest::new(*store, self.cas, self.run_id.clone())
-                .map_err(|e| e.to_string())?
-                .under_round(&self.authority.round_event_id);
+            let mut ingest =
+                Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
+                    .map_err(|e| e.to_string())?
+                    .under_round(&self.authority.round_event_id);
             let stages: Vec<_> = results
                 .iter()
                 .map(|(node, stage)| (node.as_str(), stage))
@@ -1826,8 +1865,13 @@ impl<'a> Kernel<'a> {
             ingest
                 .add_live_stage_outputs(&stages)
                 .map_err(|e| e.to_string())?;
-            (ingest.ledger().round, ingest.ledger().len())
+            (
+                ingest.ledger().round,
+                ingest.ledger().len(),
+                ingest.projection(),
+            )
         };
+        *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.

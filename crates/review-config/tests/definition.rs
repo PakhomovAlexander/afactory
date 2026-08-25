@@ -598,6 +598,7 @@ id = "gate""#,
         .map(|_| ())
         .unwrap_err();
     assert!(error.to_string().contains("unsupported type"), "{error}");
+    assert!(error.to_string().contains("pipeline version 2"), "{error}");
     assert!(error.to_string().contains("PriorFindings@1"), "{error}");
 }
 

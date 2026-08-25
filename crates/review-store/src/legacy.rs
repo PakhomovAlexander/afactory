@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 
 use crate::cas::Cas;
 use crate::ledger::{
-    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_GENERATION_ADVANCED, Ledger, Status,
-    TransitionKind,
+    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_GENERATION_ADVANCED, Ledger,
+    LedgerProjection, Status, TransitionKind,
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
@@ -134,6 +134,35 @@ impl<'a> Ingest<'a> {
             ledger,
             round_event_id: None,
         })
+    }
+
+    /// Continue from a projection already rebuilt from this exact run's log. Callers that append
+    /// the current Round input can fold that event once and avoid replaying the same history
+    /// again before ingest.
+    pub fn from_projection(
+        store: &'a mut EventStore,
+        cas: &'a Cas,
+        run_id: impl Into<String>,
+        projection: LedgerProjection,
+    ) -> Result<Self, StoreError> {
+        let run_id = run_id.into();
+        let (projection_run_id, ledger) = projection.into_parts();
+        if projection_run_id != run_id {
+            return Err(StoreError::Conflict(format!(
+                "Ledger projection for `{projection_run_id}` cannot ingest run `{run_id}`"
+            )));
+        }
+        Ok(Self {
+            store,
+            cas,
+            run_id,
+            ledger,
+            round_event_id: None,
+        })
+    }
+
+    pub fn projection(&self) -> LedgerProjection {
+        LedgerProjection::from_parts(self.run_id.clone(), self.ledger.clone())
     }
 
     /// Bind reducer and generation events to the active durable Round epoch.
@@ -619,6 +648,20 @@ mod tests {
             legacy_fingerprint("", "x"),
             legacy_fingerprint(CHANGE_WIDE, "x")
         );
+    }
+
+    #[test]
+    fn a_projection_cannot_be_reused_for_another_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let projection = LedgerProjection::rebuild(&store, &cas, "run-a").unwrap();
+
+        let error = match Ingest::from_projection(&mut store, &cas, "run-b", projection) {
+            Ok(_) => panic!("cross-run projection was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cannot ingest run `run-b`"));
     }
 
     #[test]

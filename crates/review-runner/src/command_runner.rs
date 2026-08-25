@@ -97,7 +97,7 @@ impl<'a> CommandRunner<'a> {
     pub fn invoke_raw_with_input(
         &self,
         command: &Command,
-        input: &[u8],
+        input: Vec<u8>,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
         self.invoke_raw_inner(command, Some(input))
     }
@@ -105,7 +105,7 @@ impl<'a> CommandRunner<'a> {
     fn invoke_raw_inner(
         &self,
         command: &Command,
-        input: Option<&[u8]>,
+        input: Option<Vec<u8>>,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
         let argv = command
             .resolve()
@@ -136,7 +136,6 @@ impl<'a> CommandRunner<'a> {
             .map_err(|e| RunnerError::Unavailable(format!("{}: {e}", command.program)))?;
         let stdin_result = input.map(|input| {
             let mut stdin = child.stdin.take().expect("stdin was piped");
-            let input = input.to_vec();
             let (send, receive) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let result = match stdin.write_all(&input) {
@@ -167,12 +166,9 @@ impl<'a> CommandRunner<'a> {
         let deadline = Instant::now() + self.timeout;
         let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => {
-                    // The parent exited, but helpers may still hold stdin/stdout/stderr. They are
-                    // part of this reviewer attempt and must not outlive its captured deadline.
-                    kill_process_group(child.id());
-                    break Some(status);
-                }
+                // `try_wait` reaps the leader. Never signal its numeric PID after this point: it
+                // may already have been reused by an unrelated process group.
+                Ok(Some(status)) => break Some(status),
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -189,6 +185,11 @@ impl<'a> CommandRunner<'a> {
                     return Err(RunnerError::Unavailable(error.to_string()));
                 }
             }
+        };
+        let Some(status) = status else {
+            return Err(RunnerError::TimedOut {
+                after_ms: self.timeout.as_millis() as u64,
+            });
         };
         if let Some(receiver) = stdin_result {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -212,24 +213,22 @@ impl<'a> CommandRunner<'a> {
             }
         }
 
+        // A helper that escaped the reviewer's process group may retain a pipe. It is no longer
+        // reviewer authority and is not owed an unbounded join; preserve completed bytes when
+        // available and let malformed/failed-output handling classify an empty capture.
         let collect = |receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>| {
+            let grace = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(5));
             receiver
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| {
-                    RunnerError::Unavailable(format!("collecting reviewer output: {error}"))
-                })?
+                .recv_timeout(grace)
+                .unwrap_or(Ok(Vec::new()))
                 .map_err(|error| {
                     RunnerError::Unavailable(format!("reading reviewer output: {error}"))
                 })
         };
         let stdout = collect(stdout_recv)?;
         let stderr = collect(stderr_recv)?;
-
-        let Some(status) = status else {
-            return Err(RunnerError::TimedOut {
-                after_ms: self.timeout.as_millis() as u64,
-            });
-        };
 
         if !status.success() {
             let stderr = String::from_utf8_lossy(&stderr);
@@ -314,7 +313,7 @@ mod tests {
         // parent is still writing. Its valid answer must win over that expected EPIPE.
         let input = vec![b'x'; 1024 * 1024];
         let (result, _) = runner
-            .invoke_raw_with_input(&emitting(EMPTY_RESULT), &input)
+            .invoke_raw_with_input(&emitting(EMPTY_RESULT), input)
             .unwrap();
         assert!(result.findings.is_empty());
     }
@@ -333,7 +332,7 @@ mod tests {
             ],
         );
         let input = vec![b'x'; 1024 * 1024];
-        let (result, _) = runner.invoke_raw_with_input(&command, &input).unwrap();
+        let (result, _) = runner.invoke_raw_with_input(&command, input).unwrap();
         assert!(result.findings.is_empty());
     }
 
@@ -354,22 +353,22 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_exit_reaps_a_descendant_that_kept_stdin_open() {
+    fn a_parent_exit_with_a_lingering_descendant_obeys_the_deadline() {
         let (dir, cas) = runner_dir();
-        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_secs(1));
+        let runner = CommandRunner::new(&cas, dir.path()).with_timeout(Duration::from_millis(100));
         let command = Command::new(
             "/bin/sh",
             vec![
                 Arg::literal("-c"),
-                Arg::literal(format!(
-                    "/bin/sh -c 'cat >/dev/null' <&0 & cat <<'EOF'\n{EMPTY_RESULT}\nEOF"
-                )),
+                Arg::literal(format!("sleep 2 <&0 & cat <<'EOF'\n{EMPTY_RESULT}\nEOF")),
             ],
         );
         let started = Instant::now();
         let input = vec![b'x'; 1024 * 1024];
-        let (result, _) = runner.invoke_raw_with_input(&command, &input).unwrap();
-        assert!(result.findings.is_empty());
+        assert!(matches!(
+            runner.invoke_raw_with_input(&command, input),
+            Err(RunnerError::TimedOut { .. })
+        ));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
