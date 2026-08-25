@@ -28,7 +28,7 @@ use review_core::{Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FI
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
-use crate::process::{SupervisedError, run_supervised};
+use review_process::{SupervisedError, run_supervised};
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -747,7 +747,13 @@ impl ModelRunner {
                         after_ms: self.timeout.as_millis() as u64,
                     }
                 }
-                error => RunnerError::Unavailable(format!("{}: {error}", command.program)),
+                SupervisedError::Spawn(error) => {
+                    RunnerError::Unavailable(format!("{}: {error}", command.program))
+                }
+                error => RunnerError::Failed {
+                    exit_code: -1,
+                    stderr_excerpt: error.to_string(),
+                },
             })?;
         let stdout = redact(output.stdout, &self.grants);
         let stderr = redact(output.stderr, &self.grants);

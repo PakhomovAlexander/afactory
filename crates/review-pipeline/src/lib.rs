@@ -679,8 +679,9 @@ pub struct Kernel<'a> {
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
-    /// Latest projection of this generation's durable log. Projection-affecting appends
-    /// invalidate it; gather installs the run-bound projection it updated during ingest.
+    /// Latest projection of this generation's durable log. Every append invalidates it because
+    /// the projection capability includes a log-position watermark even when the event leaves
+    /// the visible Ledger unchanged. Gather installs the exact projection it updated in ingest.
     ledger_cache: Mutex<Option<LedgerProjection>>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
@@ -882,10 +883,22 @@ impl<'a> Kernel<'a> {
     }
 
     /// Seed the generation-local projection with the exact Ledger already rebuilt while its
-    /// Round input was prepared. Subsequent projection-affecting appends invalidate this cache.
+    /// Round input was prepared. Every subsequent append invalidates this watermarked cache.
     pub fn with_ledger_projection(self, projection: LedgerProjection) -> Result<Self, String> {
         if !projection.belongs_to(&self.run_id) {
             return Err("Ledger projection belongs to a different Campaign run".into());
+        }
+        let durable_count = self
+            .store
+            .lock()
+            .expect("event store")
+            .len(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        if projection.event_count() != durable_count {
+            return Err(format!(
+                "Ledger projection covers {} events, but Campaign log contains {durable_count}",
+                projection.event_count()
+            ));
         }
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
         Ok(self)
@@ -974,7 +987,6 @@ impl<'a> Kernel<'a> {
 
     fn append(&self, event: NewEvent) -> Result<(), String> {
         let event = self.bind_authority(event);
-        let invalidates_ledger = Ledger::event_affects_projection(event.event_type);
         {
             self.store
                 .lock()
@@ -982,9 +994,7 @@ impl<'a> Kernel<'a> {
                 .append(&self.run_id, self.cas, event)
                 .map_err(|e| e.to_string())?;
         }
-        if invalidates_ledger {
-            *self.ledger_cache.lock().expect("ledger cache") = None;
-        }
+        *self.ledger_cache.lock().expect("ledger cache") = None;
         Ok(())
     }
 
@@ -997,9 +1007,6 @@ impl<'a> Kernel<'a> {
             .cloned()
             .map(|event| self.bind_authority(event))
             .collect();
-        let invalidates_ledger = events
-            .iter()
-            .any(|event| Ledger::event_affects_projection(event.event_type));
         {
             self.store
                 .lock()
@@ -1007,9 +1014,7 @@ impl<'a> Kernel<'a> {
                 .append_batch(&self.run_id, self.cas, &events)
                 .map_err(|e| e.to_string())?;
         }
-        if invalidates_ledger {
-            *self.ledger_cache.lock().expect("ledger cache") = None;
-        }
+        *self.ledger_cache.lock().expect("ledger cache") = None;
         Ok(())
     }
 

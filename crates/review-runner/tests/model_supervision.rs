@@ -83,7 +83,7 @@ fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
 }
 
 #[test]
-fn a_model_descendant_holding_output_is_unavailable_not_empty_evidence() {
+fn a_model_descendant_holding_output_is_charged_not_empty_evidence() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
     let error = runner
@@ -91,7 +91,7 @@ fn a_model_descendant_holding_output_is_unavailable_not_empty_evidence() {
         .unwrap_err();
 
     assert!(
-        matches!(error, RunnerError::Unavailable(ref detail) if detail.contains("stdout pipe was still held")),
+        matches!(error, RunnerError::Failed { ref stderr_excerpt, .. } if stderr_excerpt.contains("stdout pipe was still held")),
         "{error:?}"
     );
 }

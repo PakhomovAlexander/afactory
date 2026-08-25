@@ -9,7 +9,7 @@ license.workspace = true
 
 [dependencies]
 review-parallel = { path = "../review-parallel" }
-review-runner = { path = "../review-runner" }
+review-process = { path = "../review-process" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 # Copy-on-write clone (clonefile on macOS, FICLONE on Linux) with a plain-copy fallback, so a

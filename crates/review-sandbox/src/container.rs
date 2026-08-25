@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_runner::{SupervisedError, run_supervised};
+use review_process::{SupervisedError, run_supervised};
 
 use crate::Isolation;
 

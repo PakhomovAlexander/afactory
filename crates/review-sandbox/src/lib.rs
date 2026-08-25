@@ -153,19 +153,16 @@ fn restore_writable_dirs(root: &Path) {
     while !level.is_empty() {
         let children = review_parallel::try_map_owned(level, |dir| {
             let _ = ensure_directory_mode(&dir, 0o700);
-            let mut children = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    if entry
-                        .file_type()
-                        .map(|kind| kind.is_dir() && !kind.is_symlink())
-                        .unwrap_or(false)
-                    {
-                        children.push(entry.path());
-                    }
-                }
-            }
-            Ok::<_, ()>(children)
+            let paths = std::fs::read_dir(&dir)
+                .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+                .unwrap_or_default();
+            review_parallel::try_map_owned(paths, |path| {
+                let is_directory = std::fs::symlink_metadata(&path)
+                    .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+                    .unwrap_or(false);
+                Ok::<_, ()>(is_directory.then_some(path))
+            })
+            .map(|children| children.into_iter().flatten().collect::<Vec<_>>())
         })
         .expect("best-effort writable-directory walk is infallible");
         level = children.into_iter().flatten().collect();
@@ -282,29 +279,50 @@ fn scan_clone_directory(
     (from_dir, to_dir): (PathBuf, PathBuf),
     mode: Mode,
 ) -> std::io::Result<CloneScan> {
+    let paths = std::fs::read_dir(&from_dir)?
+        .map(|entry| {
+            entry.map(|entry| {
+                let from = entry.path();
+                let to = to_dir.join(entry.file_name());
+                (from, to)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let classified =
+        review_parallel::try_map_owned(paths, |(from, to)| classify_clone_entry(from, to, mode))?;
     let mut scan = CloneScan {
         directories: Vec::new(),
         files: Vec::new(),
     };
-    for entry in std::fs::read_dir(&from_dir)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = to_dir.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            std::fs::create_dir(&to)?;
-            scan.directories.push((from, to));
-        } else {
-            let is_symlink = file_type.is_symlink();
-            let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
-                Some(read_only_mode_for(&entry.metadata()?))
-            } else {
-                None
-            };
-            scan.files.push((from, to, is_symlink, read_only_mode));
+    for entry in classified {
+        match entry {
+            CloneEntry::Directory(from, to) => {
+                std::fs::create_dir(&to)?;
+                scan.directories.push((from, to));
+            }
+            CloneEntry::File(file) => scan.files.push(file),
         }
     }
     Ok(scan)
+}
+
+enum CloneEntry {
+    Directory(PathBuf, PathBuf),
+    File(CloneFile),
+}
+
+fn classify_clone_entry(from: PathBuf, to: PathBuf, mode: Mode) -> std::io::Result<CloneEntry> {
+    let metadata = std::fs::symlink_metadata(&from)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        return Ok(CloneEntry::Directory(from, to));
+    }
+    let is_symlink = metadata.file_type().is_symlink();
+    let read_only_mode = if mode == Mode::ReadOnly && !is_symlink {
+        Some(read_only_mode_for(&metadata))
+    } else {
+        None
+    };
+    Ok(CloneEntry::File((from, to, is_symlink, read_only_mode)))
 }
 
 fn clone_file_batch(files: Vec<CloneFile>) -> std::io::Result<()> {
@@ -535,18 +553,27 @@ struct PermissionScan {
 }
 
 fn scan_permission_directory(directory: PathBuf) -> std::io::Result<PermissionScan> {
+    let paths = std::fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let classified = review_parallel::try_map_owned(paths, |path| {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            Ok::<_, std::io::Error>((Some(path), None))
+        } else if !metadata.file_type().is_symlink() {
+            let mode = read_only_mode_for(&metadata);
+            Ok((None, Some((path, mode))))
+        } else {
+            Ok((None, None))
+        }
+    })?;
     let mut scan = PermissionScan {
         directories: Vec::new(),
         files: Vec::new(),
     };
-    for entry in std::fs::read_dir(directory)? {
-        let path = entry?.path();
-        let metadata = std::fs::symlink_metadata(&path)?;
-        if metadata.is_dir() && !metadata.file_type().is_symlink() {
-            scan.directories.push(path);
-        } else if !metadata.file_type().is_symlink() {
-            scan.files.push((path, read_only_mode_for(&metadata)));
-        }
+    for (directory, file) in classified {
+        scan.directories.extend(directory);
+        scan.files.extend(file);
     }
     Ok(scan)
 }

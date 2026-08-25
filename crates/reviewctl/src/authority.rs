@@ -749,7 +749,7 @@ fn capture_round(
         manifest_id.clone(),
     ];
     source_refs.extend(change_set_id.clone());
-    store
+    let source_captured = store
         .append(
             run_id,
             cas,
@@ -763,6 +763,9 @@ fn capture_round(
             .correlating(head_snapshot_id.clone())
             .referencing(source_refs),
         )
+        .map_err(|error| error.to_string())?;
+    ledger_projection
+        .apply_event(&source_captured, cas)
         .map_err(|error| error.to_string())?;
     let subject = match campaign.loaded.subject_kind() {
         SubjectKind::WholeTree => SubjectV1::whole_tree(&head_snapshot_id),
@@ -893,10 +896,17 @@ fn capture_round(
             .correlating(subject_id.clone())
             .referencing(round_refs),
         );
-        store
+        let appended = store
             .append_batch(run_id, cas, &batch)
-            .map_err(|error| error.to_string())?
-            .pop()
+            .map_err(|error| error.to_string())?;
+        for event in &appended {
+            ledger_projection
+                .apply_event(event, cas)
+                .map_err(|error| error.to_string())?;
+        }
+        appended
+            .last()
+            .cloned()
             .ok_or("supersession batch did not publish its replacement Round")?
     } else {
         let mut round_refs = vec![
@@ -909,7 +919,7 @@ fn capture_round(
         ];
         round_refs.extend(subject.base_snapshot_id.clone());
         round_refs.extend(subject.change_set_id.clone());
-        store
+        let started = store
             .append(
                 run_id,
                 cas,
@@ -921,11 +931,12 @@ fn capture_round(
                 .correlating(subject_id)
                 .referencing(round_refs),
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        ledger_projection
+            .apply_event(&started, cas)
+            .map_err(|error| error.to_string())?;
+        started
     };
-    ledger_projection
-        .apply_event(&started, cas)
-        .map_err(|error| error.to_string())?;
     println!("snapshot {}", snapshot.content_digest);
     Ok(RoundInput {
         payload,

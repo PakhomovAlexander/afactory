@@ -177,61 +177,79 @@ fn scan_directory<'a>(
     directory: PathBuf,
 ) -> Result<DirectoryScan<'a>, std::io::Error> {
     ensure_directory_mode(&directory, 0o500)?;
+    let paths = std::fs::read_dir(&directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let classified = review_parallel::try_map_owned(paths, |path| {
+        classify_directory_entry(root, baseline, path)
+    })?;
     let mut scan = DirectoryScan {
         directories: Vec::new(),
         added_entries: Vec::new(),
         added_paths: Vec::new(),
         baseline_candidates: Vec::new(),
     };
-    for entry in std::fs::read_dir(&directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        // Seal is a containment boundary: never follow a path that could have become a symlink
-        // between directory enumeration and metadata lookup. The level walk parallelizes this
-        // non-following lstat rather than trading it for a racy stat.
-        let meta = std::fs::symlink_metadata(&path)?;
-        if meta.is_dir() && !meta.file_type().is_symlink() {
-            scan.directories.push(path);
-            continue;
-        }
-        // The manifest key must be capture's *encoding* of the raw path bytes, not
-        // `to_string_lossy`, which collapses two distinct non-UTF-8 names to one key.
-        let relative_path = path.strip_prefix(root).expect("walked path is under root");
-        let relative = baseline.encode_key(path_bytes(relative_path));
-        let kind = if meta.file_type().is_symlink() {
-            EntryKind::Symlink
-        } else if is_executable(&meta) {
-            EntryKind::Executable
-        } else {
-            EntryKind::File
-        };
-        match baseline
-            .entries
-            .binary_search_by(|entry| entry.path.as_str().cmp(&relative))
-        {
-            Err(_) => {
-                // Added: presence is the whole fact. Record it with its size from the stat we
-                // already have, and no content hash — the bytes are never read.
-                scan.added_paths.push(relative.clone());
-                scan.added_entries.push(Entry {
-                    path: relative,
-                    kind,
-                    content: String::new(),
-                    size: meta.len(),
-                });
+    for entry in classified {
+        match entry {
+            ClassifiedEntry::Directory(path) => scan.directories.push(path),
+            ClassifiedEntry::Added(entry) => {
+                scan.added_paths.push(entry.path.clone());
+                scan.added_entries.push(entry);
             }
-            Ok(position) => scan.baseline_candidates.push((
-                position,
-                BaselineCandidate {
-                    path,
-                    relative,
-                    kind,
-                    previous: &baseline.entries[position],
-                },
-            )),
+            ClassifiedEntry::Baseline(position, candidate) => {
+                scan.baseline_candidates.push((position, candidate))
+            }
         }
     }
     Ok(scan)
+}
+
+enum ClassifiedEntry<'a> {
+    Directory(PathBuf),
+    Added(Entry),
+    Baseline(usize, BaselineCandidate<'a>),
+}
+
+fn classify_directory_entry<'a>(
+    root: &Path,
+    baseline: &'a Manifest,
+    path: PathBuf,
+) -> Result<ClassifiedEntry<'a>, std::io::Error> {
+    // Seal is a containment boundary: never follow a path that could have become a symlink
+    // between directory enumeration and metadata lookup.
+    let meta = std::fs::symlink_metadata(&path)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        return Ok(ClassifiedEntry::Directory(path));
+    }
+    let relative_path = path.strip_prefix(root).expect("walked path is under root");
+    let relative = baseline.encode_key(path_bytes(relative_path));
+    let kind = if meta.file_type().is_symlink() {
+        EntryKind::Symlink
+    } else if is_executable(&meta) {
+        EntryKind::Executable
+    } else {
+        EntryKind::File
+    };
+    match baseline
+        .entries
+        .binary_search_by(|entry| entry.path.as_str().cmp(&relative))
+    {
+        Err(_) => Ok(ClassifiedEntry::Added(Entry {
+            path: relative,
+            kind,
+            content: String::new(),
+            size: meta.len(),
+        })),
+        Ok(position) => Ok(ClassifiedEntry::Baseline(
+            position,
+            BaselineCandidate {
+                path,
+                relative,
+                kind,
+                previous: &baseline.entries[position],
+            },
+        )),
+    }
 }
 
 fn append_hashed_candidates(
@@ -288,16 +306,19 @@ fn scan_removal_directory(directory: PathBuf) -> Result<RemovalScan, ()> {
         files: Vec::new(),
     };
     if let Ok(entries) = std::fs::read_dir(&directory) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry
-                .file_type()
-                .map(|kind| kind.is_dir() && !kind.is_symlink())
-                .unwrap_or(false)
-            {
-                scan.directories.push(path);
-            } else {
-                scan.files.push(path);
+        let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        if let Ok(classified) = review_parallel::try_map_owned(paths, |path| {
+            let is_directory = std::fs::symlink_metadata(&path)
+                .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+                .unwrap_or(false);
+            Ok::<_, ()>((path, is_directory))
+        }) {
+            for (path, is_directory) in classified {
+                if is_directory {
+                    scan.directories.push(path);
+                } else {
+                    scan.files.push(path);
+                }
             }
         }
     }

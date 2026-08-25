@@ -220,7 +220,7 @@ pub struct Ledger {
     active_scope: Option<ActiveScope>,
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
-    subject_scope_cache: BTreeMap<String, Arc<SubjectScope>>,
+    subject_scope_cache: BTreeMap<String, CachedSubjectScope>,
     pub round: u32,
 }
 
@@ -230,6 +230,7 @@ pub struct Ledger {
 #[derive(Debug, Clone)]
 pub struct LedgerProjection {
     run_id: String,
+    event_count: u64,
     ledger: Ledger,
 }
 
@@ -238,6 +239,12 @@ struct ActiveScope {
     round: u32,
     subject_id: String,
     subject: Arc<SubjectScope>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSubjectScope {
+    scope: Arc<SubjectScope>,
+    change_set_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -603,33 +610,48 @@ impl Ledger {
         // every Round. Otherwise a warm live projection and a cold replay can disagree after CAS
         // loss or corruption.
         let verified = cas
-            .get(&started.subject_id)
+            .verify(&started.subject_id)
             .map(|_| ())
             .map_err(|error| error.to_string());
         let resolved_scope = if let Err(error) = verified {
             Err(error)
         } else if let Some(cached) = self.subject_scope_cache.get(&started.subject_id) {
-            Ok(cached.clone())
+            cached
+                .change_set_id
+                .as_deref()
+                .map_or(Ok(()), |change_set_id| {
+                    cas.verify(change_set_id)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+                .map(|()| cached.scope.clone())
         } else {
             let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
                 .map_err(|error| error.to_string())
-                .and_then(|resolved| match resolved.subject.kind {
-                    SubjectKind::WholeTree => Ok(Arc::new(SubjectScope::WholeTree)),
-                    SubjectKind::Diff => resolved
-                        .changed_paths
-                        .map(|paths| Arc::new(SubjectScope::Diff(paths)))
-                        .ok_or_else(|| {
-                            format!(
-                                "diff Subject {} resolved without changed paths",
-                                started.subject_id
-                            )
-                        }),
+                .and_then(|resolved| {
+                    let change_set_id = resolved.subject.change_set_id.clone();
+                    let scope = match resolved.subject.kind {
+                        SubjectKind::WholeTree => Arc::new(SubjectScope::WholeTree),
+                        SubjectKind::Diff => resolved
+                            .changed_paths
+                            .map(|paths| Arc::new(SubjectScope::Diff(paths)))
+                            .ok_or_else(|| {
+                                format!(
+                                    "diff Subject {} resolved without changed paths",
+                                    started.subject_id
+                                )
+                            })?,
+                    };
+                    Ok(CachedSubjectScope {
+                        scope,
+                        change_set_id,
+                    })
                 });
-            if let Ok(scope) = &resolved {
+            if let Ok(cached) = &resolved {
                 self.subject_scope_cache
-                    .insert(started.subject_id.clone(), scope.clone());
+                    .insert(started.subject_id.clone(), cached.clone());
             }
-            resolved
+            resolved.map(|cached| cached.scope)
         };
         let subject_scope = match resolved_scope {
             Ok(scope) => scope,
@@ -851,6 +873,7 @@ impl LedgerProjection {
     ) -> Result<Self, crate::store::StoreError> {
         let mut projection = Self {
             run_id: run_id.to_string(),
+            event_count: 0,
             ledger: Ledger {
                 round: 1,
                 ..Default::default()
@@ -879,6 +902,11 @@ impl LedgerProjection {
         self.run_id == run_id
     }
 
+    /// Number of durable events folded into this projection; also the next required sequence.
+    pub fn event_count(&self) -> u64 {
+        self.event_count
+    }
+
     pub fn apply_event(
         &mut self,
         event: &review_core::RunEvent,
@@ -890,15 +918,27 @@ impl LedgerProjection {
                 self.run_id, event.run_id
             )));
         }
-        self.ledger.apply_event(event, cas)
+        if event.sequence != self.event_count {
+            return Err(crate::store::StoreError::Conflict(format!(
+                "Ledger projection for `{}` expected sequence {}, got {}",
+                self.run_id, self.event_count, event.sequence
+            )));
+        }
+        self.ledger.apply_event(event, cas)?;
+        self.event_count += 1;
+        Ok(())
     }
 
-    pub(crate) fn from_parts(run_id: String, ledger: Ledger) -> Self {
-        Self { run_id, ledger }
+    pub(crate) fn from_parts(run_id: String, event_count: u64, ledger: Ledger) -> Self {
+        Self {
+            run_id,
+            event_count,
+            ledger,
+        }
     }
 
-    pub(crate) fn into_parts(self) -> (String, Ledger) {
-        (self.run_id, self.ledger)
+    pub(crate) fn into_parts(self) -> (String, u64, Ledger) {
+        (self.run_id, self.event_count, self.ledger)
     }
 }
 

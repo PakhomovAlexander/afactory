@@ -20,7 +20,6 @@
 
 pub mod command_runner;
 pub mod model;
-pub mod process;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
@@ -28,10 +27,10 @@ pub use model::{
     ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, extract_result, parse_stage_output,
     unfence,
 };
-pub use process::{
+pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
+pub use review_process::{
     ExitPolicy, SupervisedError, SupervisedOutput, run_supervised, run_supervised_with_policy,
 };
-pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -60,3 +60,5 @@ options you rejected and why — that is the part future-you needs.
   identity](0024-version-manifest-path-encoding.md)
 - [0025 — Require typed Generation outputs in pipeline version
   2](0025-require-typed-generation-outputs-in-version-2.md)
+- [0026 — Share process supervision through a leaf
+  crate](0026-share-process-supervision-through-a-leaf-crate.md)

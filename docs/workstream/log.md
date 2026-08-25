@@ -729,3 +729,27 @@ Focused core, store, source, runner, check, sandbox, pipeline, and CLI suites pa
 Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and byte-identical
 fixture reproduction pass. Commit and resolve all seven Reports, then run Round 2; two clean Rounds
 are still required before M3.1.
+
+## 2026-08-25 — M2 clean-window Campaign Round 2 corrections
+
+Round 2 spent 973,217 tokens, retained all seven Round 1 resolutions, and opened two major and
+three minor Reports. Model and command adapters now distinguish pre-spawn unavailability from
+post-spawn lifecycle failure so only work that never executed releases its reservation.
+
+Bounded subprocess lifecycle moved from the reviewer layer into dependency-neutral leaf crate
+`review-process`; runner, gate, and sandbox consumers depend on it directly while preserving their
+own result semantics. Proposed ADR-0026 records the dependency boundary and rejected alternatives.
+Warm Subject Scope caches reverify both the Subject and its referenced Change Set before reuse.
+
+Ledger projections now carry the exact event-log position they cover. Reuse rejects a different
+run or stale watermark, every appended event invalidates the kernel cache, and Round capture folds
+all newly appended events in sequence. Regression coverage catches stale reuse after a log append,
+gapped projection input, and the full campaign handoff. Sandbox seal, clone, permission, and
+writable-directory walks parallelize entries inside one wide directory as well as directory tasks.
+The 14-worker release measurement seals 5,000 baseline entries plus 10,000 files in one directory
+in 0.154 s; unchanged 199 MiB sandboxes seal in 0.135/0.131 s.
+
+Focused process, runner, check, sandbox, store, pipeline, and campaign-loop suites pass with
+all-target Clippy warnings denied. Full workspace formatting, Clippy, tests, doc tests, and
+byte-identical fixture reproduction pass. Commit and resolve all five Reports, then run Round 3;
+Rounds 3 and 4 must both be clean for this Campaign to converge before M3.1.

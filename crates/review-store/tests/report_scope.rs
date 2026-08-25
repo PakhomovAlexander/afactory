@@ -157,6 +157,51 @@ fn report_scope_accepts_raw_percent_paths_and_encoded_non_utf8_paths() {
 }
 
 #[test]
+fn cached_scope_reverifies_its_change_set_on_the_next_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    let base = digest('a');
+    let head = digest('b');
+    let change_set = ChangeSetV1::new(
+        &base,
+        &head,
+        vec!["src/in.rs".into()],
+        vec![],
+        b"",
+        "git version test",
+        "test-policy-v1",
+    )
+    .unwrap();
+    let change_set_id = cas
+        .put_json(&serde_json::to_value(change_set).unwrap())
+        .unwrap();
+    let subject_id = cas
+        .put_json(
+            &serde_json::to_value(SubjectV1::diff(head, base, change_set_id.clone())).unwrap(),
+        )
+        .unwrap();
+
+    apply_round(&mut ledger, &cas, 1, subject_id.clone());
+    let hex = change_set_id.strip_prefix("sha256:").unwrap();
+    std::fs::write(
+        dir.path().join("objects").join(&hex[..2]).join(&hex[2..]),
+        b"corrupt",
+    )
+    .unwrap();
+    apply_round(&mut ledger, &cas, 2, subject_id);
+    apply_report(&mut ledger, &cas, "claim", 2, Severity::Major, "src/in.rs");
+
+    assert_eq!(ledger.get("claim").unwrap().reports[0].scope, None);
+    assert!(
+        ledger
+            .scope_authority_failures()
+            .iter()
+            .any(|failure| failure.round == 2 && failure.authority == ScopeAuthorityKind::Subject)
+    );
+}
+
+#[test]
 fn any_matching_location_makes_a_typed_report_in_scope() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();

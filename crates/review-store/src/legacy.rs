@@ -109,6 +109,7 @@ pub struct Ingest<'a> {
     store: &'a mut EventStore,
     cas: &'a Cas,
     run_id: String,
+    event_count: u64,
     ledger: Ledger,
     round_event_id: Option<String>,
 }
@@ -126,11 +127,13 @@ impl<'a> Ingest<'a> {
         run_id: impl Into<String>,
     ) -> Result<Self, StoreError> {
         let run_id = run_id.into();
-        let ledger = Ledger::rebuild(store, cas, &run_id)?;
+        let projection = LedgerProjection::rebuild(store, cas, &run_id)?;
+        let (_, event_count, ledger) = projection.into_parts();
         Ok(Self {
             store,
             cas,
             run_id,
+            event_count,
             ledger,
             round_event_id: None,
         })
@@ -146,23 +149,30 @@ impl<'a> Ingest<'a> {
         projection: LedgerProjection,
     ) -> Result<Self, StoreError> {
         let run_id = run_id.into();
-        let (projection_run_id, ledger) = projection.into_parts();
+        let (projection_run_id, event_count, ledger) = projection.into_parts();
         if projection_run_id != run_id {
             return Err(StoreError::Conflict(format!(
                 "Ledger projection for `{projection_run_id}` cannot ingest run `{run_id}`"
+            )));
+        }
+        let durable_count = store.len(&run_id)?;
+        if event_count != durable_count {
+            return Err(StoreError::Conflict(format!(
+                "Ledger projection for `{run_id}` covers {event_count} events, but the log contains {durable_count}"
             )));
         }
         Ok(Self {
             store,
             cas,
             run_id,
+            event_count,
             ledger,
             round_event_id: None,
         })
     }
 
     pub fn into_projection(self) -> LedgerProjection {
-        LedgerProjection::from_parts(self.run_id, self.ledger)
+        LedgerProjection::from_parts(self.run_id, self.event_count, self.ledger)
     }
 
     /// Bind reducer and generation events to the active durable Round epoch.
@@ -197,7 +207,9 @@ impl<'a> Ingest<'a> {
                 json!({ "round": round }),
             )),
         )?;
+        self.validate_watermark(&event)?;
         self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
         Ok(round)
     }
 
@@ -401,7 +413,10 @@ impl<'a> Ingest<'a> {
             .into_iter()
             .map(|event| self.bind_round(event))
             .collect();
-        self.store.append_batch(&self.run_id, self.cas, &events)?;
+        let appended = self.store.append_batch(&self.run_id, self.cas, &events)?;
+        for event in &appended {
+            self.advance_watermark(event)?;
+        }
         self.ledger = projected;
         Ok(summary)
     }
@@ -431,7 +446,25 @@ impl<'a> Ingest<'a> {
             event
         };
         let event = self.store.append(&self.run_id, self.cas, event)?;
+        self.validate_watermark(&event)?;
         self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
+        Ok(())
+    }
+
+    fn advance_watermark(&mut self, event: &RunEvent) -> Result<(), StoreError> {
+        self.validate_watermark(event)?;
+        self.event_count += 1;
+        Ok(())
+    }
+
+    fn validate_watermark(&self, event: &RunEvent) -> Result<(), StoreError> {
+        if event.run_id != self.run_id || event.sequence != self.event_count {
+            return Err(StoreError::Conflict(format!(
+                "Ledger ingest for `{}` expected sequence {}, got {} for `{}`",
+                self.run_id, self.event_count, event.sequence, event.run_id
+            )));
+        }
         Ok(())
     }
 }
@@ -662,6 +695,57 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("cannot ingest run `run-b`"));
+    }
+
+    #[test]
+    fn a_projection_cannot_be_reused_after_its_run_log_advances() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
+        store
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+
+        let error = match Ingest::from_projection(&mut store, &cas, "run", projection) {
+            Ok(_) => panic!("stale projection was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("covers 0 events"), "{error}");
+        assert!(error.to_string().contains("log contains 1"), "{error}");
+    }
+
+    #[test]
+    fn a_projection_rejects_a_repeated_or_gapped_event_sequence() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let mut projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
+        let event = store
+            .append_legacy(
+                "run",
+                &cas,
+                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
+            )
+            .unwrap();
+        projection.apply_event(&event, &cas).unwrap();
+
+        let repeated = projection.apply_event(&event, &cas).unwrap_err();
+        assert!(
+            repeated.to_string().contains("expected sequence 1, got 0"),
+            "{repeated}"
+        );
+        let mut gapped = event;
+        gapped.sequence = 2;
+        let gapped = LedgerProjection::from_events("run", &[gapped], &cas).unwrap_err();
+        assert!(
+            gapped.to_string().contains("expected sequence 0, got 2"),
+            "{gapped}"
+        );
     }
 
     #[test]

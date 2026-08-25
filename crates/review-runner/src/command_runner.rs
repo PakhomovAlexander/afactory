@@ -10,7 +10,7 @@ use review_core::LegacyStageOutput;
 use review_store::Cas;
 use std::time::Duration;
 
-use crate::process::{SupervisedError, run_supervised};
+use review_process::{SupervisedError, run_supervised};
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(1_800);
 
@@ -122,7 +122,13 @@ impl<'a> CommandRunner<'a> {
                 SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                     after_ms: self.timeout.as_millis() as u64,
                 },
-                error => RunnerError::Unavailable(format!("{}: {error}", command.program)),
+                SupervisedError::Spawn(error) => {
+                    RunnerError::Unavailable(format!("{}: {error}", command.program))
+                }
+                error => RunnerError::Failed {
+                    exit_code: -1,
+                    stderr_excerpt: error.to_string(),
+                },
             })?;
         let status = output.status;
         let stdout = output.stdout;

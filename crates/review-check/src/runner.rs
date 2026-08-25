@@ -1,6 +1,6 @@
 //! Executing a check and recording what happened.
 
-use review_runner::{ExitPolicy, SupervisedError, run_supervised_with_policy};
+use review_process::{ExitPolicy, SupervisedError, run_supervised_with_policy};
 use review_store::{Cas, EventStore, NewEvent, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

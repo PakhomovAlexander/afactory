@@ -9,14 +9,10 @@ license.workspace = true
 
 [dependencies]
 review-core = { path = "../review-core" }
+review-process = { path = "../review-process" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-
-# killpg without unsafe in this crate: nix wraps the libc call behind a safe API. Unix-only,
-# like the process-group supervision it serves.
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.26.1", default-features = false }

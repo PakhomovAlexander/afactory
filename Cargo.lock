@@ -1005,7 +1005,7 @@ version = "0.1.0"
 dependencies = [
  "jsonschema",
  "review-core",
- "review-runner",
+ "review-process",
  "review-store",
  "serde",
  "serde_json",
@@ -1070,12 +1070,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-process"
+version = "0.1.0"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "review-runner"
 version = "0.1.0"
 dependencies = [
  "jsonschema",
- "nix",
  "review-core",
+ "review-process",
  "review-store",
  "serde",
  "serde_json",
@@ -1116,7 +1123,7 @@ dependencies = [
  "reflink-copy",
  "review-check",
  "review-parallel",
- "review-runner",
+ "review-process",
  "review-source-git",
  "review-store",
  "tempfile",
