@@ -1,9 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0 and M1 are complete. Four M2 dogfood Campaigns exhausted with all 158 Findings
-fixed. Campaign `m2-rename-scope-clean` retained all 24 prior fixes in
-Round 4 and opened eight further Findings; their corrections pass the full kernel gate. A fresh
-unchanged-policy Campaign must establish two clean Rounds before M3.1.
+fixed. Fresh unchanged-policy Campaign `m2-rename-scope-verified` Round 1 opened seven further
+Findings; their corrections are committed, resolved, and fully verified. Rounds 2 and 3 must both
+be clean before M3.1.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
 **Log:** [`workstream/log.md`](workstream/log.md)
@@ -174,16 +174,23 @@ the runner boundary, separate durable retry feedback from terminal diagnostics, 
 files into CAS, canonicalize the repository root once per scan, prepare typed artifacts in one
 verified read, reuse per-worker CAS verification scratch, and avoid duplicate changed-path
 ownership. ADR-0023 records the additive `AttemptFeedback@1` boundary. The full kernel gate and
-release measurement pass. Commit and resolve these eight claims, then run Round 4 to retain them.
-Because Round 3 was not clean, this Campaign cannot converge; start a fresh unchanged-policy
-Campaign and require two clean Rounds before M3.1. Round 4 spent 828,444 tokens, retained all 24
+release measurement pass; those eight claims were committed and resolved. Because Round 3 was not
+clean, this Campaign could not converge. Round 4 spent 828,444 tokens and retained all 24
 prior resolutions, opened eight claims, and exhausted `m2-rename-scope-clean`. Their corrections
 make malformed answers inspectable durable retry feedback, give unreadable Report attachments a
 readable recovery transition, bind renderer authority through an exact store-owned Change Set
 capability, retain only changed paths in Ledger Scope, make warm streaming CAS publication
 write-free, stream synthetic-tree blobs into Git, and serialize each published Change Set once.
 The 195.3 MiB capture fixture records 1.496 s cold and 0.526 s warm. The full kernel gate passes;
-commit and resolve these eight claims, then open the fresh convergence Campaign.
+the eight claims are committed and resolved. Fresh unchanged-policy Campaign
+`m2-rename-scope-verified` pins the same policy and opened seven claims in Round 1 after spending
+777,705 tokens. Their corrections deliver complete typed Change Set content to command reviewers,
+make artifact types rather than port labels authoritative throughout configuration and execution,
+replace an unreachable Change Set panic with a conflict, bound the parsed Change Set cache, repair
+directory modes without following a raced symlink, buffer synthetic-tree `fast-import`, and
+validate frozen Finding claims without deep clones. The full kernel gate passes; the claims are
+committed and resolved. The 5,000-file / 195.3 MiB release fixture records 0.861 s for synthetic
+tree construction. Run Round 2, then Round 3; both must be clean before M3.1.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 

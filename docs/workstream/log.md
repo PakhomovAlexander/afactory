@@ -480,3 +480,28 @@ canonical byte buffer, bounds that exact representation, and stores those bytes 
 Focused source, store, runner, adapter, pipeline, and CLI suites pass. Full workspace formatting,
 all-target clippy, tests, doc tests, and byte-identical fixture reproduction pass before commit. A
 fresh unchanged-policy Campaign must establish two clean Rounds before M3.1.
+
+## 2026-08-25 — M2 verified Campaign Round 1 corrections
+
+Fresh unchanged-policy Campaign `m2-rename-scope-verified` pins the same authority and manifest as
+the exhausted clean Campaign. Round 1 spent 777,705 tokens and opened seven Reports. Command
+reviewer serialization now carries every typed artifact's ID, contract type, and complete value;
+validated Change Sets serialize from their single parsed authority rather than disappearing from
+the command document or retaining a second JSON tree. Configuration validation, generation,
+reviewer dispatch, invocation receipts, and prompt rendering all discriminate Change Sets and
+Prior Findings by artifact type. Renamed-port regressions prove neither contract is load-bearing
+on `change_set` or `prior_findings` labels.
+
+An impossible missing prepared Change Set is now a durable store conflict instead of a panic. The
+parsed Change Set cache retains only the current Round authority, while every reference still
+reverifies current CAS bytes. Directory permission recovery uses atomic no-follow `fchmodat`, so a
+reviewer cannot race the earlier metadata check into chmodding a symlink target; unreadable real
+directories still recover and seal. Synthetic-tree `fast-import` uses a fixed 256 KiB buffered
+writer. Frozen Ledger projection validates Finding claim fields by borrow and checks positive line
+bounds separately, eliminating the prior deep clone without weakening historical path handling.
+The release 5,000-file / 195.3 MiB fixture recorded 1.463 s cold capture, 0.519 s warm capture, and
+0.861 s synthetic-tree construction.
+
+Focused regressions pass. Full workspace formatting, all-target clippy, tests, doc tests, and
+byte-identical fixture reproduction pass before commit. Resolve all seven Reports against this
+commit, then run Rounds 2 and 3; both must be clean for the Campaign to converge before M3.1.

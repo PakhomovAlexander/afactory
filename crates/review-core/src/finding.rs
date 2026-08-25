@@ -118,13 +118,7 @@ impl FindingReport {
 
     /// Enforce the language-neutral `FindingReport@1` semantic contract.
     pub fn validate(&self) -> Result<(), String> {
-        if self.title.trim().is_empty() || self.body.trim().is_empty() || self.fix.trim().is_empty()
-        {
-            return Err("FindingReport@1 title, body, and fix must be non-empty".into());
-        }
-        if !(0.0..=1.0).contains(&self.confidence) {
-            return Err("FindingReport@1 confidence must be within 0.0..=1.0".into());
-        }
+        self.validate_claim_fields()?;
         if self.locations.iter().any(|location| {
             !crate::is_valid_repo_path(&location.path)
                 || location.line == Some(0)
@@ -134,6 +128,20 @@ impl FindingReport {
                 "FindingReport@1 locations must use canonical repository-relative paths and positive lines"
                     .into(),
             );
+        }
+        Ok(())
+    }
+
+    /// Validate every claim field except location authority. Frozen projections use this before
+    /// handling noncanonical historical paths as readable claims with unknown Scope; live
+    /// admission must continue to call [`Self::validate`].
+    pub fn validate_claim_fields(&self) -> Result<(), String> {
+        if self.title.trim().is_empty() || self.body.trim().is_empty() || self.fix.trim().is_empty()
+        {
+            return Err("FindingReport@1 title, body, and fix must be non-empty".into());
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err("FindingReport@1 confidence must be within 0.0..=1.0".into());
         }
         if self
             .rule_id

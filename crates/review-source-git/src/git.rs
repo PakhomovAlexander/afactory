@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -487,12 +487,13 @@ impl Repo {
         }
         let mut child = cmd.spawn().map_err(GitError::Spawn)?;
         {
-            let mut input = child
+            let input = child
                 .stdin
                 .take()
                 .ok_or_else(|| GitError::MalformedTreeDiff {
                     detail: "isolated fast-import has no stdin".to_string(),
                 })?;
+            let mut input = BufWriter::with_capacity(256 * 1024, input);
             input
                 .write_all(
                     b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
@@ -529,6 +530,7 @@ impl Repo {
                 input.write_all(b"\n").map_err(GitError::Io)?;
             }
             input.write_all(b"done\n").map_err(GitError::Io)?;
+            input.flush().map_err(GitError::Io)?;
         }
         let output = child.wait_with_output().map_err(GitError::Io)?;
         if !output.status.success() {

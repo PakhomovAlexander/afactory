@@ -148,6 +148,15 @@ struct PreparedArtifacts {
     json: std::collections::BTreeMap<String, Value>,
 }
 
+fn remember_validated_change_set(
+    cache: &mut std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    artifact_id: String,
+    change_set: Arc<review_core::ChangeSetV1>,
+) {
+    cache.clear();
+    cache.insert(artifact_id, change_set);
+}
+
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
@@ -275,8 +284,14 @@ impl EventStore {
                                 serde_json::from_value(value)
                                     .map_err(|error| StoreError::Conflict(error.to_string()))?;
                             change_set.validate().map_err(StoreError::Conflict)?;
-                            self.validated_change_sets
-                                .insert(digest.clone(), Arc::new(change_set));
+                            // One Campaign Round has one Change Set authority. Keep only the
+                            // newest parsed value so storage memory cannot grow with Round count;
+                            // current-byte integrity is still re-established on every reference.
+                            remember_validated_change_set(
+                                &mut self.validated_change_sets,
+                                digest.clone(),
+                                Arc::new(change_set),
+                            );
                         } else {
                             prepared.json.insert(digest.clone(), value);
                         }
@@ -895,7 +910,11 @@ fn validate_artifact_payload(
         StoreError::Conflict(format!("{artifact_type} artifact is not a JSON object"))
     })?;
     match artifact_type {
-        review_core::contract::CHANGE_SET_V1 => unreachable!("prepared Change Set is cached"),
+        review_core::contract::CHANGE_SET_V1 => {
+            return Err(StoreError::Conflict(format!(
+                "ChangeSet@1 artifact {artifact_id} was not prepared for validation"
+            )));
+        }
         "review.kernel/GateDecision@1" => {
             exact_keys(
                 object,
@@ -2225,6 +2244,45 @@ mod tests {
             error.to_string().contains("does not match its digest"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn an_unprepared_change_set_is_a_conflict_not_a_panic() {
+        let artifact_id = crate::canonical::blob_content_id(b"change set");
+        let mut cache = std::collections::BTreeMap::new();
+        let prepared = PreparedArtifacts {
+            verified: std::collections::BTreeSet::from([artifact_id.clone()]),
+            json: std::collections::BTreeMap::from([(artifact_id.clone(), json!({}))]),
+        };
+        let error = validate_artifact_payload(
+            &mut cache,
+            &prepared,
+            review_core::contract::CHANGE_SET_V1,
+            &artifact_id,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("was not prepared"), "{error}");
+    }
+
+    #[test]
+    fn parsed_change_set_cache_retains_only_the_latest_authority() {
+        let change_set = Arc::new(
+            review_core::ChangeSetV1::new(
+                crate::canonical::blob_content_id(b"base"),
+                crate::canonical::blob_content_id(b"head"),
+                vec!["src/lib.rs".into()],
+                vec![],
+                b"patch",
+                "git version test",
+                "test-policy@1",
+            )
+            .unwrap(),
+        );
+        let mut cache = std::collections::BTreeMap::new();
+        remember_validated_change_set(&mut cache, "first".into(), Arc::clone(&change_set));
+        remember_validated_change_set(&mut cache, "second".into(), change_set);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("second"));
     }
 
     #[test]

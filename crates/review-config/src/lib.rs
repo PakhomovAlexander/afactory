@@ -175,57 +175,60 @@ fn validate_diff_change_set_wiring(
     nodes: &[NodeSpec],
     edges: &[EdgeSpec],
 ) -> Result<(), ConfigError> {
-    let exact = |port: &PortContractSpec| {
-        let port = port.build();
-        port.name == "change_set"
-            && port.artifact_type == review_core::contract::CHANGE_SET_V1
+    let exact = |port: &PortContract| {
+        port.artifact_type == review_core::contract::CHANGE_SET_V1
             && port.cardinality == review_core::PortCardinality::One
             && !port.optional
             && port.snapshot_affinity == review_core::SnapshotAffinity::SameSubject
     };
-    let mut producers = nodes
+    let producers: Vec<_> = nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Generation)
-        .filter(|node| {
+        .flat_map(|node| {
             node.outputs
                 .iter()
-                .any(|port| port.build().name == "change_set")
-        });
-    let producer = producers.next().ok_or_else(|| {
-        ConfigError::Binding(
-            "a `diff` pipeline requires generation to emit one exact ChangeSet@1 on `change_set`"
-                .into(),
-        )
-    })?;
-    if producers.next().is_some()
-        || !producer
-            .outputs
-            .iter()
-            .find(|port| port.build().name == "change_set")
-            .is_some_and(exact)
-    {
+                .map(PortContractSpec::build)
+                .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
+                .map(move |port| (node, port))
+        })
+        .collect();
+    let [(producer, producer_port)] = producers.as_slice() else {
         return Err(ConfigError::Binding(
             "a `diff` pipeline must have exactly one typed ChangeSet@1 producer".into(),
+        ));
+    };
+    if !exact(producer_port) {
+        return Err(ConfigError::Binding(
+            "a `diff` pipeline's ChangeSet@1 producer must be required, singular, and bound to the subject snapshot"
+                .into(),
         ));
     }
     for reviewer in nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Reviewer)
     {
-        if !reviewer
+        let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .find(|port| port.build().name == "change_set")
-            .is_some_and(exact)
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
+            .collect();
+        let [reviewer_port] = inputs.as_slice() else {
+            return Err(ConfigError::Binding(format!(
+                "diff reviewer `{}` must declare exactly one ChangeSet@1 input",
+                reviewer.id
+            )));
+        };
+        if !exact(reviewer_port)
             || !edges.iter().any(|edge| {
                 edge.from.node == producer.id
-                    && edge.from.port == "change_set"
+                    && edge.from.port == producer_port.name
                     && edge.to.node == reviewer.id
-                    && edge.to.port == "change_set"
+                    && edge.to.port == reviewer_port.name
             })
         {
             return Err(ConfigError::Binding(format!(
-                "diff reviewer `{}` must receive generation's exact ChangeSet@1 through `change_set`",
+                "diff reviewer `{}` must receive generation's exact ChangeSet@1 through its typed input",
                 reviewer.id
             )));
         }

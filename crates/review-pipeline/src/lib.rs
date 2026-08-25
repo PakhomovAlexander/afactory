@@ -51,9 +51,6 @@ use review_store::{
     Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, NewEvent, Verdict,
 };
 
-/// The input port a reviewer receives the campaign's prior findings on.
-const PRIOR_FINDINGS_PORT: &str = "prior_findings";
-
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
 /// (gather, ledger) that consume artifacts regardless of which port delivered them.
 fn artifact_ids(inputs: &ArtifactMap) -> Vec<String> {
@@ -1223,22 +1220,21 @@ impl<'a> Kernel<'a> {
     /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
     /// nothing about delivery depends on ambient kernel state.
     fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
-        let artifact = self
-            .prior_findings
-            .clone()
-            .ok_or("campaign execution has no exact prior Finding Set from RoundStarted@1")?;
         let mut outputs = ArtifactMap::new();
         for port in &node.outputs {
-            let value = match port.name.as_str() {
-                "findings" => artifact.clone(),
-                "change_set" => self
+            let value = match port.artifact_type.as_str() {
+                review_core::contract::PRIOR_FINDINGS_V1 => self.prior_findings.clone().ok_or(
+                    "campaign execution has no exact prior Finding Set from RoundStarted@1",
+                )?,
+                review_core::contract::CHANGE_SET_V1 => self
                     .authority
                     .change_set_id
                     .clone()
-                    .ok_or("generation declares `change_set` for a whole-tree Subject")?,
-                other => {
+                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
+                artifact_type => {
                     return Err(format!(
-                        "generation has unsupported built-in output port `{other}`"
+                        "generation output `{}` has unsupported artifact type `{artifact_type}`",
+                        port.name
                     ));
                 }
             };
@@ -1296,11 +1292,8 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_reviewer(
-        &self,
-        node_id: &str,
-        node_inputs: &ArtifactMap,
-    ) -> Result<Vec<String>, String> {
+    fn run_reviewer(&self, node: &Node, node_inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+        let node_id = node.id.as_str();
         let adapter = self
             .reviewers
             .get(node_id)
@@ -1314,18 +1307,29 @@ impl<'a> Kernel<'a> {
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
         // reviewer that declares no such input receives none; the plan is the delivery.
-        let prior_findings_artifact = node_inputs
-            .get(PRIOR_FINDINGS_PORT)
+        let prior_findings_port = node
+            .inputs
+            .iter()
+            .find(|port| port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1)
+            .map(|port| port.name.as_str());
+        let prior_findings_artifact = prior_findings_port
+            .and_then(|port| node_inputs.get(port))
             .and_then(|artifacts| artifacts.first())
             .cloned();
         let mut inputs = ReviewerInputs::default();
         for (port, artifacts) in node_inputs {
-            if port == PRIOR_FINDINGS_PORT {
+            let contract = node
+                .inputs
+                .iter()
+                .find(|contract| contract.name == *port)
+                .ok_or_else(|| format!("reviewer input port '{port}' has no declared contract"))?;
+            if contract.artifact_type == review_core::contract::PRIOR_FINDINGS_V1 {
                 continue;
             }
+            let is_change_set = contract.artifact_type == review_core::contract::CHANGE_SET_V1;
             let mut resolved = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
-                if port == "change_set"
+                if is_change_set
                     && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
                 {
                     resolved.push(
@@ -1338,7 +1342,7 @@ impl<'a> Kernel<'a> {
                     continue;
                 }
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                let limit = if port == "change_set" {
+                let limit = if is_change_set {
                     MAX_CHANGE_SET_BYTES
                 } else {
                     MAX_PRIOR_FINDINGS_BYTES
@@ -1348,7 +1352,7 @@ impl<'a> Kernel<'a> {
                         "reviewer input port '{port}' artifact {artifact} exceeds {limit} bytes"
                     ));
                 }
-                if port == "change_set" {
+                if is_change_set {
                     resolved.push(ReviewerInputArtifact::change_set_from_encoded(
                         artifact.clone(),
                         &encoded,
@@ -1358,6 +1362,7 @@ impl<'a> Kernel<'a> {
                         serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
                     resolved.push(ReviewerInputArtifact::from_json(
                         artifact.clone(),
+                        contract.artifact_type.clone(),
                         value,
                         encoded.len(),
                     ));
@@ -1923,15 +1928,20 @@ fn validate_generation_outputs(
     if node.kind != NodeKind::Generation {
         return Ok(());
     }
-    let expected_findings = vec![authority.prior_finding_set_id.clone()];
-    let expected_change_set = authority.change_set_id.as_ref().map(|id| vec![id.clone()]);
-    if outputs.get("findings") != Some(&expected_findings)
-        || outputs.get("change_set") != expected_change_set.as_ref()
-    {
-        return Err(format!(
-            "generation receipt contradicts Round {}'s pinned inputs or Change Set",
-            authority.round
-        ));
+    for port in &node.outputs {
+        let expected = match port.artifact_type.as_str() {
+            review_core::contract::PRIOR_FINDINGS_V1 => Some(&authority.prior_finding_set_id),
+            review_core::contract::CHANGE_SET_V1 => authority.change_set_id.as_ref(),
+            _ => continue,
+        };
+        if outputs.get(&port.name).and_then(|ids| ids.first()) != expected
+            || outputs.get(&port.name).is_some_and(|ids| ids.len() != 1)
+        {
+            return Err(format!(
+                "generation receipt port `{}` contradicts Round {} authority",
+                port.name, authority.round
+            ));
+        }
     }
     Ok(())
 }
@@ -1963,8 +1973,11 @@ impl Dispatch for Kernel<'_> {
             if !self.reviewers.contains_key(&node.id) {
                 return Err(format!("no reviewer bound to node {}", node.id));
             }
-            let prior_findings = inputs
-                .get(PRIOR_FINDINGS_PORT)
+            let prior_findings = node
+                .inputs
+                .iter()
+                .find(|port| port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1)
+                .and_then(|port| inputs.get(&port.name))
                 .and_then(|artifacts| artifacts.first());
             let replayed_failures = self
                 .replayed_refusal_histories
@@ -2039,7 +2052,7 @@ impl Dispatch for Kernel<'_> {
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.run_gather(inputs),
             NodeKind::Ledger => self.run_ledger(inputs),
-            NodeKind::Reviewer => self.run_reviewer(&node.id, inputs),
+            NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
     }

@@ -875,10 +875,8 @@ impl ReportProjection {
                     ))
                 })?;
             // Frozen typed artifacts with noncanonical paths remain readable but have unknown
-            // Scope: location authority is handled below. Validate every other semantic field,
-            // and canonical locations in full, by excluding only the unusable paths from this
-            // contract check. Positive line bounds on usable paths remain mandatory.
-            let mut contract_report = report.clone();
+            // Scope: location authority is handled below. Validate every other semantic field
+            // by borrow, and keep positive line bounds mandatory for every location.
             if report
                 .locations
                 .iter()
@@ -888,10 +886,7 @@ impl ReportProjection {
                     "report {report_id} is not FindingReport@1: location lines must be positive"
                 )));
             }
-            contract_report
-                .locations
-                .retain(|location| review_core::is_valid_repo_path(&location.path));
-            contract_report.validate().map_err(|error| {
+            report.validate_claim_fields().map_err(|error| {
                 crate::store::StoreError::Artifact(format!(
                     "report {report_id} is not FindingReport@1: {error}"
                 ))

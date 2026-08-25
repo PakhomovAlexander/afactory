@@ -112,4 +112,16 @@ fn resolved_change_sets_bind_verified_bytes_without_requiring_reserialization_id
 
     let input = ReviewerInputArtifact::from_resolved_change_set(resolved_change_set);
     assert_eq!(input.artifact_id(), artifact_id);
+    let inputs = ReviewerInputs {
+        artifacts: BTreeMap::from([("renamed_diff".into(), vec![input])]),
+        ..ReviewerInputs::default()
+    };
+    let command_document = serde_json::to_value(&inputs).unwrap();
+    let delivered = &command_document["artifacts"]["renamed_diff"][0];
+    assert_eq!(
+        delivered["artifact_type"],
+        review_core::contract::CHANGE_SET_V1
+    );
+    assert_eq!(delivered["value"]["changed_paths"][0], "src/a.rs");
+    assert!(delivered["value"]["canonical_patch_base64"].is_string());
 }

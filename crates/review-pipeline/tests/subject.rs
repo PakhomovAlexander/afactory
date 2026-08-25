@@ -21,16 +21,16 @@ id = "generation"
 kind = "generation"
 outputs = [
   { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
-inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [{ name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[edges]]
-from = { node = "generation", port = "change_set" }
-to = { node = "reviewer", port = "change_set" }
+from = { node = "generation", port = "diff" }
+to = { node = "reviewer", port = "diff" }
 "#;
 
 struct Recorder {
@@ -46,7 +46,7 @@ impl ReviewerAdapter for Recorder {
     ) -> Result<ReviewerReturn, RunnerError> {
         *self.seen.lock().unwrap() = inputs
             .artifacts
-            .get("change_set")
+            .get("diff")
             .and_then(|artifacts| artifacts.first())
             .map(|artifact| artifact.artifact_id().to_string());
         Ok(ReviewerReturn {

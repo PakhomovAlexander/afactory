@@ -177,10 +177,23 @@ fn restore_writable_dirs(_root: &Path) {}
 
 #[cfg(unix)]
 pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Result<()> {
+    use nix::fcntl::AT_FDCWD;
+    use nix::sys::stat::{FchmodatFlags, Mode as NixMode, fchmodat};
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::symlink_metadata(path)?.permissions().mode();
-    if mode & required != required {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.permissions().mode() & required != required {
+        // `AT_SYMLINK_NOFOLLOW` closes the lstat/chmod race: if a reviewer replaces this
+        // directory with a symlink, the replacement's target is never modified.
+        let _ = fchmodat(
+            AT_FDCWD,
+            path,
+            NixMode::from_bits_truncate(0o755),
+            FchmodatFlags::NoFollowSymlink,
+        );
     }
     Ok(())
 }
@@ -188,6 +201,28 @@ pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Resu
 #[cfg(not(unix))]
 pub(crate) fn ensure_directory_mode(_path: &Path, _required: u32) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod directory_mode_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn directory_mode_repair_never_follows_a_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        ensure_directory_mode(&link, 0o1000).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
 }
 
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are

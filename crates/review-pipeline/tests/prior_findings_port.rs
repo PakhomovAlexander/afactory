@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use review_core::LegacyStageOutput;
-use review_graph::{Node, NodeKind, Pipeline, Port, Scheduler};
+use review_graph::{Node, NodeKind, Pipeline, Port, PortContract, Scheduler};
 use review_runner::{ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError};
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, EventStore};
@@ -22,11 +22,11 @@ kind = "whole-tree"
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-inputs = ["prior_findings"]
+inputs = [{ name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["result"]
 runner = { program = "/bin/true" }
 [[nodes]]
@@ -112,10 +112,17 @@ impl ReviewerAdapter for Recorder {
 /// generation → reviewer(prior_findings) → gather → ledger.
 fn pipeline() -> Pipeline {
     Pipeline::default()
-        .node(Node::new("generation", NodeKind::Generation).emitting(&["findings"]))
+        .node(
+            Node::new("generation", NodeKind::Generation).emitting_contracts(vec![
+                PortContract::new("findings", review_core::contract::PRIOR_FINDINGS_V1),
+            ]),
+        )
         .node(
             Node::new("reviewer", NodeKind::Reviewer)
-                .accepting(&["prior_findings"])
+                .accepting_contracts(vec![PortContract::new(
+                    "prior_findings",
+                    review_core::contract::PRIOR_FINDINGS_V1,
+                )])
                 .emitting(&["result"]),
         )
         .node(
@@ -169,7 +176,7 @@ fn run(prior: Option<&str>) -> Option<Option<serde_json::Value>> {
 
 #[test]
 fn prior_findings_arrive_through_the_port() {
-    let doc = r#"{"round":1,"prior_findings":[{"key":"ab12","title":"T","file":"src/a.rs"}]}"#;
+    let doc = r#"{"subject_id":"test-subject","round":1,"prior_findings":[{"key":"ab12","title":"T","file":"src/a.rs"}]}"#;
     let seen = run(Some(doc)).expect("the reviewer ran");
     let delivered = seen.expect("prior findings were delivered");
     assert_eq!(delivered["prior_findings"][0]["key"], "ab12");
