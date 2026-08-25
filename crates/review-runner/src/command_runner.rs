@@ -259,7 +259,12 @@ mod tests {
             "/bin/sh",
             vec![
                 Arg::literal("-c"),
-                Arg::literal(format!("sleep 2 <&0 & cat <<'EOF'\n{EMPTY_RESULT}\nEOF")),
+                // A non-interactive POSIX shell may redirect an asynchronous command's fd 0 to
+                // /dev/null before applying `<&0`. Preserve the original input pipe on fd 3 in
+                // the parent first, so the descendant definitely keeps the writer blocked.
+                Arg::literal(format!(
+                    "exec 3<&0; sleep 2 <&3 & cat <<'EOF'\n{EMPTY_RESULT}\nEOF"
+                )),
             ],
         );
         let started = Instant::now();
