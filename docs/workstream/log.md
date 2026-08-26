@@ -900,3 +900,22 @@ and zero open, and the full formatting, warnings-denied Clippy, workspace tests,
 byte-identical fixture reproduction pass. The Campaign verdict remains honestly `Exhausted`
 because its two-Round ceiling was reached; it did not converge. M3.1 therefore requires a fresh
 pinned Campaign before the milestone can close.
+
+## 2026-08-26 — M3.1 v5 review corrections locally verified
+
+Fresh pinned Campaign `m3-1-canonical-identity-v5` reviewed the corrected candidate against Base
+`e792399` with release `v0.2.0` and the same one-reviewer correctness policy. Round 1 spent 577,185
+chargeable tokens and opened three Findings. Commit `3a97c50` binds FindingSet round numbers to
+Round authority, scopes identical result provenance to the ledger's graph closure, and serializes
+absent effective severity as explicit `null`.
+
+Round 2 confirmed all three fixes, spent 291,272 chargeable tokens, and opened two Findings.
+Commit `ea10d3e` makes unreadable prior FindingSet lineage fail closed on compatible untyped ledger
+ports and permits a declared optional gather input to remain unwired without weakening the
+leftover-artifact check. The Campaign spent 868,457 tokens in total. Its Ledger has five fixed
+Findings and zero open, and the complete `make check` gate—including byte-identical fixture
+reproduction—passes.
+
+The v5 verdict remains honestly `Exhausted`: reaching the immutable two-Round ceiling is not
+convergence, even when every reported Finding is subsequently fixed. M3.1 stays open until a fresh
+pinned Campaign returns the required clean Round.
