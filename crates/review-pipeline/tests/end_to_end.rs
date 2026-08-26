@@ -10,7 +10,7 @@ mod support;
 use std::path::PathBuf;
 
 use review_check::{Arg, CheckDefinition, Command};
-use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
+use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, PortContract, Scheduler};
 use review_pipeline::Kernel;
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, ConvergencePolicy, EventStore, NewEvent, Status, Verdict};
@@ -125,7 +125,10 @@ runner = { program = "/bin/true" }
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture"]
+inputs = [
+  { name = "architecture", type = "review.kernel/Opaque@1", cardinality = "one", optional = false, snapshot_affinity = "any" },
+  { name = "extra", type = "review.kernel/Opaque@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -258,7 +261,10 @@ fn unwired_pipeline() -> Pipeline {
         )
         .node(
             Node::new("gather", NodeKind::Gather)
-                .accepting(&["architecture"])
+                .accepting_contracts(vec![
+                    PortContract::opaque("architecture"),
+                    PortContract::opaque("extra").optional(),
+                ])
                 .emitting(&["reports"]),
         )
         .node(

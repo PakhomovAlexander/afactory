@@ -374,6 +374,22 @@ fn canonical_prior_finding_set_id_from_events(
             .map_err(|error| error.to_string())?;
         return Ok(campaign.finding_genesis_id.clone());
     }
+    let pipeline = cas
+        .get(&campaign.pipeline.artifact_id)
+        .map_err(|error| format!("canonical pipeline authority is unreadable: {error}"))?;
+    let pipeline = std::str::from_utf8(&pipeline)
+        .map_err(|error| format!("canonical pipeline authority is not UTF-8: {error}"))?;
+    let definition = review_config::Definition::from_toml(pipeline)
+        .map_err(|error| format!("canonical pipeline authority is invalid: {error}"))?;
+    let ledger_nodes: BTreeSet<_> = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == review_config::NodeKindSpec::Ledger)
+        .map(|node| node.id.as_str())
+        .collect();
+    if ledger_nodes.is_empty() {
+        return Err("canonical pipeline authority has no ledger node".into());
+    }
     let prior_rounds: Vec<_> = events
         .iter()
         .rev()
@@ -410,6 +426,9 @@ fn canonical_prior_finding_set_id_from_events(
             }
             let receipt: NodeOutputReceiptPayloadV1 =
                 serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+            if !ledger_nodes.contains(receipt.node.as_str()) {
+                continue;
+            }
             for port in receipt.outputs {
                 if port.artifact_type == review_core::contract::FINDING_SET_V1 {
                     ids.extend(port.artifact_ids);
@@ -419,9 +438,9 @@ fn canonical_prior_finding_set_id_from_events(
                     continue;
                 }
                 for id in port.artifact_ids {
-                    let Ok(value) = cas.get_json(&id) else {
-                        continue;
-                    };
+                    let value = cas.get_json(&id).map_err(|error| {
+                        format!("prior ledger output {id} is unreadable: {error}")
+                    })?;
                     let Ok(envelope) =
                         serde_json::from_value::<review_core::ArtifactEnvelope>(value)
                     else {
@@ -2230,12 +2249,7 @@ impl<'a> Kernel<'a> {
                 .expect("reviewer selections");
             let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for (port, artifacts) in inputs {
-                let upstream = sources.get(port).ok_or_else(|| {
-                    format!(
-                        "canonical gather `{}.{port}` has no pinned upstream node",
-                        node.id
-                    )
-                })?;
+                let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
                 let mut remaining = artifacts.clone();
                 for source in upstream {
                     let selected = selections.get(source).ok_or_else(|| {
@@ -2963,6 +2977,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path()).unwrap();
         let digest = cas.put(b"genesis").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = ["findings"]
+"#,
+            )
+            .unwrap();
         let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
         let campaign = CampaignManifestV1 {
             authority_snapshot_id: digest.clone(),
@@ -2970,7 +2994,7 @@ mod tests {
             base_snapshot_id: None,
             pipeline: review_core::AuthorityFileV1 {
                 path: "review.toml".into(),
-                artifact_id: digest.clone(),
+                artifact_id: pipeline_id,
             },
             reviewer_lock: review_core::AuthorityFileV1 {
                 path: "review.lock".into(),
@@ -3052,6 +3076,145 @@ mod tests {
             .unwrap(),
             campaign.finding_genesis_id
         );
+    }
+
+    #[test]
+    fn canonical_lineage_refuses_an_unreadable_untyped_ledger_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let genesis = cas.put(b"genesis").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = ["findings"]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: genesis.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: genesis.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![genesis.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: genesis.clone(),
+            demand_genesis_id: genesis,
+        };
+        let round = review_core::RunEvent {
+            event_id: "round-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: 1,
+                epoch: 1,
+                campaign_manifest_id: campaign_manifest_id.clone(),
+                subject_id: format!("sha256:{}", "b".repeat(64)),
+                prior_finding_set_id: format!("sha256:{}", "c".repeat(64)),
+                prior_demand_set_id: format!("sha256:{}", "d".repeat(64)),
+            })
+            .unwrap(),
+        };
+        let unreadable_set_id = format!("sha256:{}", "f".repeat(64));
+        let hex = unreadable_set_id.strip_prefix("sha256:").unwrap();
+        let object = directory
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+        std::fs::write(object, b"corrupt").unwrap();
+        let receipt = review_core::RunEvent {
+            event_id: "receipt-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::NodeOutputReceiptV1,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: Some("ledger".into()),
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: vec![unreadable_set_id.clone()],
+            payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                node: "ledger".into(),
+                outputs: vec![PortArtifactsV1 {
+                    port: "findings".into(),
+                    artifact_type: review_core::contract::OPAQUE_V1.into(),
+                    cardinality: review_core::PortCardinality::One,
+                    optional: false,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                    artifact_ids: vec![unreadable_set_id],
+                    subject_snapshot_id: None,
+                }],
+            })
+            .unwrap(),
+        };
+        let terminal = review_core::RunEvent {
+            event_id: "report-1".into(),
+            run_id: "run".into(),
+            sequence: 2,
+            event_type: EventType::RunReportV3,
+            occurred_at: "2026-08-26T00:00:02Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RunReportPayloadV3 {
+                outcomes: vec![RunNodeReportV2 {
+                    node: "ledger".into(),
+                    outcome: RunNodeOutcomeV2::Failed {
+                        error: "campaign exhausted".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                },
+                spent_tokens: Some(1),
+            })
+            .unwrap(),
+        };
+
+        let error = canonical_prior_finding_set_id_from_events(
+            &cas,
+            &[round, receipt, terminal],
+            2,
+            &campaign_manifest_id,
+            &campaign,
+        )
+        .unwrap_err();
+        assert!(error.contains("prior ledger output"), "{error}");
+        assert!(error.contains("unreadable"), "{error}");
     }
 
     #[test]
