@@ -241,6 +241,46 @@ fn heavy_pipeline() -> Pipeline {
     )
 }
 
+fn unwired_pipeline() -> Pipeline {
+    Pipeline::default()
+        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
+        .node(
+            Node::new("architecture", NodeKind::Reviewer)
+                .accepting(&["gate"])
+                .emitting(&["result"])
+                .gated_by("gate"),
+        )
+        .node(
+            Node::new("sidecar", NodeKind::Reviewer)
+                .accepting(&["gate"])
+                .emitting(&["result"])
+                .gated_by("gate"),
+        )
+        .node(
+            Node::new("gather", NodeKind::Gather)
+                .accepting(&["architecture"])
+                .emitting(&["reports"]),
+        )
+        .node(
+            Node::new("ledger", NodeKind::Ledger)
+                .accepting(&["reports"])
+                .emitting(&["findings"]),
+        )
+        .edge(
+            Port::new("gate", "decision"),
+            Port::new("architecture", "gate"),
+        )
+        .edge(Port::new("gate", "decision"), Port::new("sidecar", "gate"))
+        .edge(
+            Port::new("architecture", "result"),
+            Port::new("gather", "architecture"),
+        )
+        .edge(
+            Port::new("gather", "reports"),
+            Port::new("ledger", "reports"),
+        )
+}
+
 fn passing_check() -> CheckDefinition {
     CheckDefinition::new(
         "build",
@@ -467,6 +507,17 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
             ]),
         )
         .unwrap();
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                review_core::EventType::GenerationAdvancedV1,
+                serde_json::json!({ "round": 2 }),
+            )
+            .caused_by(round_two_event.event_id.clone()),
+        )
+        .unwrap();
     let authority =
         review_pipeline::RoundAuthority::load(&store, &cas, "run", &round_two_event.event_id)
             .unwrap();
@@ -496,6 +547,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         serde_json::from_value(cas.get_json(&outputs["findings"][0]).unwrap()).unwrap();
     let round_two_set: review_core::FindingSetV1 =
         serde_json::from_value(round_two_envelope.payload).unwrap();
+    assert_eq!(round_two_set.round, 2);
     assert_eq!(
         round_two_set.prior_finding_set_id, set_id,
         "round 2 reduces from the exact round 1 FindingSet output"
@@ -529,6 +581,31 @@ fn canonical_barrier_assigns_identical_clean_results_to_distinct_attempts() {
         report.outcome("ledger"),
         Some(NodeOutcome::Completed { .. })
     ));
+}
+
+#[test]
+fn an_unwired_identical_result_does_not_confuse_canonical_provenance() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        UNWIRED_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("sidecar", clean_reviewer());
+
+    let report = Scheduler::new(&unwired_pipeline().plan().unwrap()).run(&kernel);
+
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert!(kernel.ledger().is_empty());
 }
 
 /// The property the gate exists for, end to end: a change that does not build produces **no
@@ -845,45 +922,7 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
 
     // `sidecar` runs (it is a planned node) but nothing consumes its result port.
-    let pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
-        .node(
-            Node::new("architecture", NodeKind::Reviewer)
-                .accepting(&["gate"])
-                .emitting(&["result"])
-                .gated_by("gate"),
-        )
-        .node(
-            Node::new("sidecar", NodeKind::Reviewer)
-                .accepting(&["gate"])
-                .emitting(&["result"])
-                .gated_by("gate"),
-        )
-        .node(
-            Node::new("gather", NodeKind::Gather)
-                .accepting(&["architecture"])
-                .emitting(&["reports"]),
-        )
-        .node(
-            Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["findings"]),
-        )
-        .edge(
-            Port::new("gate", "decision"),
-            Port::new("architecture", "gate"),
-        )
-        .edge(Port::new("gate", "decision"), Port::new("sidecar", "gate"))
-        .edge(
-            Port::new("architecture", "result"),
-            Port::new("gather", "architecture"),
-        )
-        .edge(
-            Port::new("gather", "reports"),
-            Port::new("ledger", "reports"),
-        );
-
-    let plan = pipeline.plan().unwrap();
+    let plan = unwired_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);

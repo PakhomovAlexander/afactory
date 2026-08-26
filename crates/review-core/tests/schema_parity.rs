@@ -912,6 +912,17 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
     assert_valid("finding-set-v1.json", &value);
     assert_eq!(serde_json::from_value::<FindingSetV1>(value).unwrap(), set);
 
+    let mut out_of_scope = set.clone();
+    out_of_scope.findings[0].scope = "out".into();
+    out_of_scope.findings[0].effective_severity = None;
+    let out_of_scope_value = serde_json::to_value(&out_of_scope).unwrap();
+    assert!(out_of_scope_value["findings"][0]["effective_severity"].is_null());
+    assert_valid("finding-set-v1.json", &out_of_scope_value);
+    assert_eq!(
+        serde_json::from_value::<FindingSetV1>(out_of_scope_value).unwrap(),
+        out_of_scope
+    );
+
     let mut empty_file = set.clone();
     empty_file.findings[0].file = Some(String::new());
     assert!(empty_file.validate().is_err());

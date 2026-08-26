@@ -14,7 +14,7 @@ pub struct FindingSetEntryV1 {
     pub finding_id: String,
     pub status: String,
     pub severity: Severity,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub effective_severity: Option<Severity>,
     pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

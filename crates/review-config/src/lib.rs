@@ -515,6 +515,25 @@ impl Loaded {
             .any(|edge| edge.to.name == port)
     }
 
+    /// Exact upstream node ids for every input port, captured from the validated graph.
+    pub fn input_sources(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
+        let mut sources: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+        for edge in &self.plan.edges {
+            sources
+                .entry(edge.to.node.clone())
+                .or_default()
+                .entry(edge.to.name.clone())
+                .or_default()
+                .push(edge.from.node.clone());
+        }
+        for ports in sources.values_mut() {
+            for nodes in ports.values_mut() {
+                nodes.sort();
+            }
+        }
+        sources
+    }
+
     /// Schedule only through a dispatcher whose execution semantics match this definition.
     pub fn run(&self, dispatcher: &impl SubjectDispatch) -> Result<RunReport, ConfigError> {
         if dispatcher.subject_kind() != self.subject.kind {

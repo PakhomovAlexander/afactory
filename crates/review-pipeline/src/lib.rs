@@ -893,6 +893,8 @@ pub struct Kernel<'a> {
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
     reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
     reviewer_input_artifacts: Mutex<BTreeMap<String, Vec<String>>>,
+    /// Validated graph provenance: downstream node -> input port -> exact upstream nodes.
+    input_sources: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     replayed_spent: u64,
 }
 
@@ -1023,6 +1025,7 @@ impl<'a> Kernel<'a> {
             replayed_refusal_histories: replayed.refusal_histories,
             reviewer_selections: Mutex::new(replayed.selected_reviewers),
             reviewer_input_artifacts: Mutex::new(reviewer_input_artifacts),
+            input_sources: BTreeMap::new(),
             replayed_spent: replayed.committed_tokens,
         })
     }
@@ -1059,7 +1062,7 @@ impl<'a> Kernel<'a> {
         loaded: &review_config::Loaded,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        Kernel::for_subject(
+        let mut kernel = Kernel::for_subject(
             cas,
             store,
             run_id,
@@ -1067,7 +1070,9 @@ impl<'a> Kernel<'a> {
             loaded.subject_kind(),
             loaded.version(),
             authority,
-        )
+        )?;
+        kernel.input_sources = loaded.input_sources();
+        Ok(kernel)
     }
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
@@ -2212,8 +2217,61 @@ impl<'a> Kernel<'a> {
     /// This is also the run's canonical barrier: every reviewer has finished, so the buffered
     /// reviewer events are flushed here in node order, giving the log a shape that is a
     /// function of the pipeline rather than of thread timing.
-    fn run_gather(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_gather(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         self.flush_reviewer_events()?;
+        if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            let sources = self.input_sources.get(&node.id).ok_or_else(|| {
+                format!("canonical gather `{}` has no pinned input graph", node.id)
+            })?;
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (port, artifacts) in inputs {
+                let upstream = sources.get(port).ok_or_else(|| {
+                    format!(
+                        "canonical gather `{}.{port}` has no pinned upstream node",
+                        node.id
+                    )
+                })?;
+                let mut remaining = artifacts.clone();
+                for source in upstream {
+                    let selected = selections.get(source).ok_or_else(|| {
+                        format!(
+                            "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
+                            node.id
+                        )
+                    })?;
+                    let Some(index) = remaining
+                        .iter()
+                        .position(|artifact| artifact == &selected.result_artifact)
+                    else {
+                        return Err(format!(
+                            "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
+                            node.id
+                        ));
+                    };
+                    manifest
+                        .entry(source.clone())
+                        .or_default()
+                        .push(remaining.remove(index));
+                }
+                if !remaining.is_empty() {
+                    return Err(format!(
+                        "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
+                        node.id,
+                        remaining.len()
+                    ));
+                }
+            }
+            let artifact = self
+                .cas
+                .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            return Ok(vec![artifact]);
+        }
         let artifact = self
             .cas
             .put_json(&serde_json::json!(inputs))
@@ -2221,12 +2279,13 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
         let canonical = self.authority.finding_identity_policy
             == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
         let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
+        let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
@@ -2237,7 +2296,38 @@ impl<'a> Kernel<'a> {
             for input in artifacts {
                 let value = self.cas.get_json(input).map_err(|e| e.to_string())?;
                 if value.get("verdict").is_some() && value.get("reports").is_some() {
-                    load(input_port, input, value)?;
+                    let source = if canonical {
+                        let upstream = self
+                            .input_sources
+                            .get(&node.id)
+                            .and_then(|ports| ports.get(input_port))
+                            .ok_or_else(|| {
+                                format!(
+                                    "canonical ledger `{}.{input_port}` has no pinned input graph",
+                                    node.id
+                                )
+                            })?;
+                        let selections = self
+                            .reviewer_selections
+                            .lock()
+                            .expect("reviewer selections");
+                        let source = upstream.iter().find(|source| {
+                            !direct_sources_used.contains(*source)
+                                && selections
+                                    .get(*source)
+                                    .is_some_and(|selection| selection.result_artifact == *input)
+                        });
+                        source.cloned().ok_or_else(|| {
+                            format!(
+                                "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                                node.id
+                            )
+                        })?
+                    } else {
+                        input_port.clone()
+                    };
+                    direct_sources_used.insert(source.clone());
+                    load(&source, input, value)?;
                     continue;
                 }
                 match value {
@@ -2303,24 +2393,43 @@ impl<'a> Kernel<'a> {
                     .or_default()
                     .push(index);
             }
-            for (result_id, mut indices) in result_indices {
+            for (result_id, indices) in result_indices {
+                let mut assigned = BTreeSet::new();
+                let mut unmatched = Vec::new();
+                for index in indices {
+                    let node = &results[index].0;
+                    if selections
+                        .get(node)
+                        .is_some_and(|selection| selection.result_artifact == result_id)
+                    {
+                        if !assigned.insert(node.clone()) {
+                            return Err(format!(
+                                "selected reviewer result for `{node}` was delivered more than once"
+                            ));
+                        }
+                    } else {
+                        unmatched.push(index);
+                    }
+                }
                 let mut selected: Vec<_> = selections
                     .iter()
-                    .filter(|(_, selection)| selection.result_artifact == result_id)
+                    .filter(|(node, selection)| {
+                        selection.result_artifact == result_id && !assigned.contains(*node)
+                    })
                     .map(|(node, _)| node.clone())
                     .collect();
-                if selected.len() != indices.len() {
+                if selected.len() < unmatched.len() {
                     return Err(format!(
-                        "selected reviewer result {result_id} has {} delivered copies and {} matching Attempts",
-                        indices.len(),
+                        "selected reviewer result {result_id} has {} unlabelled delivered copies and {} unused matching Attempts",
+                        unmatched.len(),
                         selected.len(),
                     ));
                 }
                 selected.sort();
-                indices.sort_by(|left, right| {
+                unmatched.sort_by(|left, right| {
                     (&results[*left].0, *left).cmp(&(&results[*right].0, *right))
                 });
-                for (index, node) in indices.into_iter().zip(selected) {
+                for (index, node) in unmatched.into_iter().zip(selected) {
                     results[index].0 = node;
                 }
             }
@@ -2370,6 +2479,8 @@ impl<'a> Kernel<'a> {
                 Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
                     .map_err(|e| e.to_string())?
                     .under_round(&self.authority.round_event_id);
+            let reduction_round =
+                canonical_reduction_round(ingest.ledger().round, self.authority.round)?;
             let reduction = match &canonical_metadata {
                 Some(metadata) => {
                     let stages: Vec<_> = results
@@ -2406,7 +2517,7 @@ impl<'a> Kernel<'a> {
                 }
             };
             (
-                ingest.ledger().round,
+                reduction_round,
                 ingest.ledger().len(),
                 canonical.then(|| finding_set_entries(ingest.ledger())),
                 reduction,
@@ -2518,6 +2629,15 @@ fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, 
         .ok_or("ReviewerResult@1 has no reports array")?;
     object.insert("findings".into(), reports);
     serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+}
+
+fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<u32, String> {
+    if ledger_round != authority_round {
+        return Err(format!(
+            "canonical ledger is at Round {ledger_round} but active Round authority is {authority_round}"
+        ));
+    }
+    Ok(authority_round)
 }
 
 fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::FindingSetEntryV1> {
@@ -2748,8 +2868,8 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
-            NodeKind::Gather => self.run_gather(inputs),
-            NodeKind::Ledger => self.run_ledger(inputs),
+            NodeKind::Gather => self.run_gather(node, inputs),
+            NodeKind::Ledger => self.run_ledger(node, inputs),
             NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
@@ -2828,6 +2948,15 @@ impl review_config::SubjectDispatch for Kernel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_reduction_refuses_a_stale_ledger_round() {
+        assert_eq!(canonical_reduction_round(2, 2).unwrap(), 2);
+        assert_eq!(
+            canonical_reduction_round(1, 2).unwrap_err(),
+            "canonical ledger is at Round 1 but active Round authority is 2"
+        );
+    }
 
     #[test]
     fn canonical_lineage_falls_back_to_genesis_when_a_closed_round_emitted_no_set() {
