@@ -309,8 +309,9 @@ before fix verification depends on it.
 
 ### M3.1 — Complete typed Report ingestion and canonical Finding identity
 
-**Status: implementation and local verification complete (2026-08-26); milestone remains open
-pending the pinned external convergence review.**
+**Status: implementation and local verification complete (2026-08-26); the first pinned Campaign
+exhausted with all twelve Findings fixed, so the milestone remains open pending a fresh converged
+Campaign.**
 
 The pre-M3.1 path validated each legacy finding through `FindingReport@1`, then discarded that
 typed Report's relations and keyed the Ledger by

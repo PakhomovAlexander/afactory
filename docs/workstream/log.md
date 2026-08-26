@@ -877,3 +877,26 @@ The disclosure gate then refused model dispatch because the owner's earlier appr
 `6bfaa13..f65f028`, not the expanded `6bfaa13..3e4e5c3` diff or its scratch compatibility
 pipeline. External convergence therefore awaits explicit approval for that exact payload. This
 refusal also spent zero model tokens and disclosed no code.
+
+## 2026-08-26 — M3.1 external review corrections locally verified
+
+The approved pinned Campaign `m3-1-canonical-identity-v4` used release `v0.2.0`, one Claude Opus
+correctness reviewer at high effort, the exact release-compatible authority projection, and Base
+`e792399`. Round 1 spent 247,296 chargeable tokens and opened seven Findings. Their corrections
+make selected-result provenance name the actual reviewer node, tolerate unreadable canonical
+Reports during replay, persist confirmation as corroborating evidence, distinguish unrecorded
+locations, reject unknown identity policy, bound fallback CAS reads, and require explicit
+FindingSet lineage.
+
+Round 2 spent 240,532 chargeable tokens. It retained six Round 1 fixes, kept the legacy-confirm
+prompt defect open, and opened five more Findings. Their corrections render policy-specific
+confirmation instructions, ignore unusable confirmations without discarding other evidence,
+recover canonical lineage across an exhausted Round with no emitted Set, assign identical result
+digests one-to-one to reviewer nodes, preserve replay while marking unreadable Campaign authority
+unavailable, and represent an unrecorded location without schema-invalid empty strings.
+
+Commits `8205ecb` and `b547e7a` fix all twelve Campaign Findings. The final Ledger has twelve fixed
+and zero open, and the full formatting, warnings-denied Clippy, workspace tests, doc tests, and
+byte-identical fixture reproduction pass. The Campaign verdict remains honestly `Exhausted`
+because its two-Round ceiling was reached; it did not converge. M3.1 therefore requires a fresh
+pinned Campaign before the milestone can close.

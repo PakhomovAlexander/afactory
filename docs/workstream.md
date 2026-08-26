@@ -2,8 +2,8 @@
 
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
-its pinned external convergence review awaits approval for the expanded `6bfaa13..3e4e5c3` diff
-after bootstrap preflight found and fixed an authority-reader defect. v3 remains deferred.
+its first pinned external Campaign exhausted after two Rounds, and all twelve resulting Findings
+are fixed and locally verified. A fresh pinned Campaign must still converge. v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -280,9 +280,10 @@ first real implementation dogfood: the kernel Gate passed, the evaluator approve
 `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
 M3.1 is implemented in `agent/m3-1`: canonical new Campaigns now persist enveloped Reports,
 derive path-independent Findings, and pass exact immutable `FindingSet@1` IDs across barriers;
-legacy replay remains frozen. The full local `make check` gate passes. Complete the pinned external
-review before starting M3.2; do not pull v3 delivery forward merely to write the dogfood Snapshot
-back.
+legacy replay remains frozen. Pinned Campaign `m3-1-canonical-identity-v4` exhausted its two-Round
+ceiling after twelve Findings; all twelve are fixed, and the full local `make check` gate passes.
+Run a fresh pinned Campaign to convergence before starting M3.2; do not pull v3 delivery forward
+merely to write the dogfood Snapshot back.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
