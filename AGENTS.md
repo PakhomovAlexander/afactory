@@ -10,8 +10,8 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.1-M2.6 and minimal product v1/v2 are implemented and verified. The first candidate
-implementation dogfood in `docs/backlog.md` is next, before M3.1. New Campaigns use the bounded
+M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
+verified. M3.1 in `docs/backlog.md` is next. New Campaigns use the bounded
 correctness-review policy in ADR-0027 rather than extending the retired two-specialist clean-window
 Campaign.
 Product rebranding must not rename

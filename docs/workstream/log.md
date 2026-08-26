@@ -821,3 +821,24 @@ minimum evaluator context, and no source-checkout mutation. While closing the fu
 dirty-capture comparison gained metadata change stamps so a rapid change-and-restore remains
 detectable even when macOS FSEvents coalesces both writes. `make check` passes in full. The first
 real candidate implementation dogfood is next.
+
+## 2026-08-26 — First v2 candidate implementation dogfood verified
+
+Candidate commit `caab486` (`af` binary
+`sha256:f0c4bc5d0ea8e5ed15ec0f683fe65f88c98488761fd8ad66e8426e62ee6b17a6`) ran Task
+`task-8732de714edb4550a628` against exact source Snapshot
+`sha256:9fd9d7e79c1b9c82ab4b7830b8ac579c924d3a46d0faaad7d87603b13b042854`. The real goal was the
+minimal local `make dogfood` entry point. The implementer changed only `Makefile`, `README.md`, and
+new executable `scripts/check-dogfood-target.sh` inside its private sandbox, producing derived
+Snapshot `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f`.
+
+The required read-only `make check` Gate passed with result artifact
+`sha256:df4552a9c040ca58b12b8dbff34be394575ba7b394306a6eb1fa98e19045701c`. The independent
+evaluator received no implementer transcript, approved the Snapshot, and its verdict is artifact
+`sha256:8e69f20e0504fca2009a4d7ecdd84542d504af99e8dc3abda917f7002cb32269`. Exact Worker context
+totalled 3,306 rendered bytes (827 estimated tokens). Provider receipts totalled 4,501,584 input,
+26,724 output, 4,301,312 cache-read, 16,340 reasoning, and 226,996 chargeable tokens. The typed
+outcome is `verified`, delivery is explicitly `none`, and the source checkout remained clean. The
+complete seven-event SQLite journal and its 317 CAS objects are preserved under XDG state at
+`~/.local/state/af/dogfood/task-8732de714edb4550a628/`. The verified `make dogfood` change remains
+an internal Snapshot; integrating it is v3 delivery work, not part of this gate. M3.1 is next.

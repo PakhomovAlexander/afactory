@@ -282,7 +282,11 @@ working tree or branch or creates a PR.
 
 ### V2.2 — First candidate implementation dogfood
 
-**Status: next.**
+**Status: complete (2026-08-26).** Candidate commit `caab486` used the v2 implement Task to
+produce a verified internal Snapshot for the real `make dogfood` entry-point change.
+The read-only kernel Gate passed, the independent evaluator approved, measured Worker context and
+Provider usage are recorded, and the caller's checkout remained clean. The Snapshot was not
+delivered; that boundary remains v3.
 
 `make dogfood` builds candidate v2 and uses `af` to implement one real change in a dedicated
 kernel worktree. Record candidate/source identity, authority and Snapshot IDs, exact context,

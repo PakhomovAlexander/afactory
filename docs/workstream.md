@@ -1,8 +1,8 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M2, private release `v0.2.0`, and minimal product v1/v2 are complete and fully
-verified. The first candidate implementation dogfood is next; resume M3.1 after that evidence
-exists.
+**Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
+implementation dogfood are complete and fully verified. M3.1 is next; v3 delivery remains
+deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -15,10 +15,10 @@ the originating RawTree hub and challenged the six-milestone reconstruction agai
 current contracts. The corrected roadmap has M0–M9 and an indexed ADR history; ADR-0003 and
 ADR-0004 are superseded. M0–M2 are complete; M2's first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
-migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
-complete. M2 converged under the recorded correctness-only review policy. Product v1 and v2 now
-establish the final local review and verified implementation boundaries before candidate dogfood
-and M3.1.
+migration, Project Hub external cutover, bounded Provider Operation dogfood slice, and first v2
+implementation dogfood are also complete. M2 converged under the recorded correctness-only review
+policy. Product v1/v2 now establish the final local review and verified implementation boundaries;
+M3.1 resumes from that evidence.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -115,7 +115,7 @@ and verification prerequisites exist.
       Worker Input, local state, token receipts, and a typed outcome beside green `make check`.
 - [x] Product v2 — one implementer produces an internal derived Snapshot; read-only acceptance
       Gates and a separate evaluator yield a sealed verified/unverified result with no delivery.
-- [ ] Candidate dogfood — v2 implements one real kernel change and records complete context,
+- [x] Candidate dogfood — v2 implements one real kernel change and records complete context,
       token, Gate, evaluator, Snapshot, and outcome evidence beside green `make check`.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
@@ -270,8 +270,10 @@ Campaign has 25 fixed findings and zero open. M2 and release `v0.2.0` are comple
 provides final `.af` local review with external state, context and Provider usage receipts, and one
 typed outcome. Minimal v2 now provides sequential `af task start --kind implement`, a fully
 materializable derived Snapshot, fresh read-only Gates, an independent evaluator, typed budgets,
-and explicit no-delivery outcomes. Both pass `make check`. Run the first real candidate
-implementation dogfood next, record its evidence here, then resume M3.1.
+and explicit no-delivery outcomes. Both pass `make check`. Candidate `caab486` then completed the
+first real implementation dogfood: the kernel Gate passed, the evaluator approved, and Snapshot
+`sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
+Resume M3.1; do not pull v3 delivery forward merely to write this Snapshot back.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
