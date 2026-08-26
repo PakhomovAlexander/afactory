@@ -872,3 +872,8 @@ suite and full `make check` gate pass. The released v0.2 bootstrap reviewer can 
 pipeline projection that omits only this explicit value: 3600 is that release's exact built-in
 default, so reviewer, budget, gate, timeout, and convergence authority remain unchanged. Both
 failed preflights spent zero model tokens and disclosed no code.
+
+The disclosure gate then refused model dispatch because the owner's earlier approval covered
+`6bfaa13..f65f028`, not the expanded `6bfaa13..3e4e5c3` diff or its scratch compatibility
+pipeline. External convergence therefore awaits explicit approval for that exact payload. This
+refusal also spent zero model tokens and disclosed no code.
