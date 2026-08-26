@@ -234,6 +234,7 @@ pub struct Ledger {
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
     subject_scope_cache: BTreeMap<String, CachedSubjectScope>,
     finding_identity_policy: String,
+    finding_identity_policy_unavailable: bool,
     pub round: u32,
 }
 
@@ -315,11 +316,13 @@ pub struct Convergence {
 }
 
 impl Ledger {
-    pub fn finding_identity_policy(&self) -> &str {
-        if self.finding_identity_policy.is_empty() {
-            LEGACY_FINDING_IDENTITY_POLICY
+    pub fn finding_identity_policy(&self) -> Option<&str> {
+        if self.finding_identity_policy_unavailable {
+            None
+        } else if self.finding_identity_policy.is_empty() {
+            Some(LEGACY_FINDING_IDENTITY_POLICY)
         } else {
-            &self.finding_identity_policy
+            Some(&self.finding_identity_policy)
         }
     }
 
@@ -407,7 +410,8 @@ impl Ledger {
                         ReportProjection::unreadable(report_id, &reason)
                     }
                 };
-                if self.finding_identity_policy() == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+                if self.finding_identity_policy()
+                    == Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY)
                     && !report.unreadable
                     && report.artifact_id.is_none()
                 {
@@ -642,20 +646,30 @@ impl Ledger {
     ) -> Result<(), crate::store::StoreError> {
         let opened: CampaignOpenedPayloadV1 = serde_json::from_value(payload.clone())
             .map_err(|error| malformed("CampaignOpened@1", &error.to_string()))?;
-        let manifest: CampaignManifestV1 = serde_json::from_value(
-            cas.get_json(&opened.campaign_manifest_id)
-                .map_err(|error| {
-                    crate::store::StoreError::Artifact(format!(
-                        "CampaignOpened@1 references unreadable manifest {}: {error}",
-                        opened.campaign_manifest_id
-                    ))
-                })?,
-        )
-        .map_err(|error| malformed("CampaignManifest@1", &error.to_string()))?;
-        manifest
-            .validate()
-            .map_err(|error| malformed("CampaignManifest@1", &error))?;
-        self.finding_identity_policy = manifest.finding_identity_policy;
+        let manifest = cas
+            .get_json(&opened.campaign_manifest_id)
+            .map_err(|error| error.to_string())
+            .and_then(|value| {
+                serde_json::from_value::<CampaignManifestV1>(value)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|manifest| manifest.validate().map(|()| manifest));
+        match manifest {
+            Ok(manifest) => {
+                self.finding_identity_policy = manifest.finding_identity_policy;
+                self.finding_identity_policy_unavailable = false;
+            }
+            Err(reason) => {
+                self.finding_identity_policy.clear();
+                self.finding_identity_policy_unavailable = true;
+                self.record_authority_failure(
+                    self.round,
+                    ScopeAuthorityKind::Subject,
+                    &opened.campaign_manifest_id,
+                    &format!("CampaignManifest authority unavailable: {reason}"),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -906,8 +920,9 @@ impl Ledger {
             .flat_map(|finding| finding.unreadable_reports.iter().map(String::as_str))
             .filter(|report_id| !recent_authority_ids.contains(*report_id))
             .collect();
-        let authority_failures_recent =
-            recent_authority_failures.len() + unresolved_unrecent_reports.len();
+        let authority_failures_recent = recent_authority_failures.len()
+            + unresolved_unrecent_reports.len()
+            + usize::from(self.finding_identity_policy_unavailable);
         let verdict = if authority_failures_recent == 0
             && open_blocking == 0
             && new_recent == 0

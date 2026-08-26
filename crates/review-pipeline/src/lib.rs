@@ -358,100 +358,115 @@ fn canonical_prior_finding_set_id(
     campaign_manifest_id: &str,
     campaign: &CampaignManifestV1,
 ) -> Result<String, String> {
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    canonical_prior_finding_set_id_from_events(cas, &events, round, campaign_manifest_id, campaign)
+}
+
+fn canonical_prior_finding_set_id_from_events(
+    cas: &Cas,
+    events: &[review_core::RunEvent],
+    round: u32,
+    campaign_manifest_id: &str,
+    campaign: &CampaignManifestV1,
+) -> Result<String, String> {
     if round == 1 {
         cas.verify(&campaign.finding_genesis_id)
             .map_err(|error| error.to_string())?;
         return Ok(campaign.finding_genesis_id.clone());
     }
-    let prior_round = round
-        .checked_sub(1)
-        .ok_or("canonical Finding Set lineage cannot precede round 1")?;
-    let events = store.replay(run_id).map_err(|error| error.to_string())?;
-    let prior_round_event_id = events
+    let prior_rounds: Vec<_> = events
         .iter()
+        .rev()
         .filter_map(|event| {
             if event.event_type != EventType::RoundStartedV1 {
                 return None;
             }
             let payload: RoundStartedPayloadV1 =
                 serde_json::from_value(event.payload.clone()).ok()?;
-            (payload.round == prior_round && payload.campaign_manifest_id == campaign_manifest_id)
-                .then(|| event.event_id.clone())
+            (payload.round < round && payload.campaign_manifest_id == campaign_manifest_id)
+                .then_some((event.event_id.as_str(), payload.round))
         })
-        .next_back()
-        .ok_or_else(|| format!("canonical Finding Set lineage has no round {prior_round}"))?;
-    let closed = events.iter().try_fold(false, |closed, event| {
-        if event.causation_id.as_deref() != Some(prior_round_event_id.as_str())
-            || !event.event_type.is_run_report()
-        {
-            return Ok(closed);
-        }
-        run_report_closes_round(event)
-            .map(|value| closed || value.unwrap_or(false))
-            .map_err(|error| error.to_string())
-    })?;
-    if !closed {
-        return Err(format!(
-            "canonical Finding Set lineage round {prior_round} has no terminal report"
-        ));
-    }
-    let mut ids = Vec::new();
-    for event in &events {
-        if event.event_type != EventType::NodeOutputReceiptV1
-            || event.causation_id.as_deref() != Some(prior_round_event_id.as_str())
-        {
+        .collect();
+    for (prior_round_event_id, prior_round) in prior_rounds {
+        let closed = events.iter().try_fold(false, |closed, event| {
+            if event.causation_id.as_deref() != Some(prior_round_event_id)
+                || !event.event_type.is_run_report()
+            {
+                return Ok(closed);
+            }
+            run_report_closes_round(event)
+                .map(|value| closed || value.unwrap_or(false))
+                .map_err(|error| error.to_string())
+        })?;
+        if !closed {
             continue;
         }
-        let receipt: NodeOutputReceiptPayloadV1 =
-            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
-        for id in receipt
-            .outputs
-            .into_iter()
-            .filter_map(|port| {
-                (port.artifact_type == review_core::contract::FINDING_SET_V1
-                    || port.port == "findings")
-                    .then_some(port.artifact_ids)
-            })
-            .flatten()
-        {
-            let Ok(value) = cas.get_json(&id) else {
+        let mut ids = Vec::new();
+        for event in events {
+            if event.event_type != EventType::NodeOutputReceiptV1
+                || event.causation_id.as_deref() != Some(prior_round_event_id)
+            {
                 continue;
-            };
-            let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
-            else {
-                continue;
-            };
-            if envelope.artifact_type == review_core::contract::FINDING_SET_V1 {
-                ids.push(id);
+            }
+            let receipt: NodeOutputReceiptPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+            for port in receipt.outputs {
+                if port.artifact_type == review_core::contract::FINDING_SET_V1 {
+                    ids.extend(port.artifact_ids);
+                    continue;
+                }
+                if port.port != "findings" {
+                    continue;
+                }
+                for id in port.artifact_ids {
+                    let Ok(value) = cas.get_json(&id) else {
+                        continue;
+                    };
+                    let Ok(envelope) =
+                        serde_json::from_value::<review_core::ArtifactEnvelope>(value)
+                    else {
+                        continue;
+                    };
+                    if envelope.artifact_type == review_core::contract::FINDING_SET_V1 {
+                        ids.push(id);
+                    }
+                }
             }
         }
+        if ids.is_empty() {
+            continue;
+        }
+        if ids.len() != 1 {
+            return Err(format!(
+                "canonical Finding Set lineage round {prior_round} has {} ledger outputs",
+                ids.len()
+            ));
+        }
+        let id = ids.pop().expect("exactly one canonical Finding Set output");
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&id).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("prior Finding Set {id} is not an artifact envelope: {error}"))?;
+        review_store::validate_envelope(&envelope).map_err(|error| error.to_string())?;
+        if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+            return Err(format!("prior ledger output {id} is not FindingSet@1"));
+        }
+        let set: review_core::FindingSetV1 = serde_json::from_value(envelope.payload)
+            .map_err(|error| format!("prior Finding Set {id} is invalid: {error}"))?;
+        set.validate()?;
+        if set.round != prior_round
+            || set.round >= round
+            || set.identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            return Err(format!(
+                "prior Finding Set {id} disagrees with canonical round {prior_round}"
+            ));
+        }
+        return Ok(id);
     }
-    if ids.len() != 1 {
-        return Err(format!(
-            "canonical Finding Set lineage round {prior_round} has {} ledger outputs",
-            ids.len()
-        ));
-    }
-    let id = ids.pop().expect("exactly one canonical Finding Set output");
-    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
-        cas.get_json(&id).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("prior Finding Set {id} is not an artifact envelope: {error}"))?;
-    review_store::validate_envelope(&envelope).map_err(|error| error.to_string())?;
-    if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
-        return Err(format!("prior ledger output {id} is not FindingSet@1"));
-    }
-    let set: review_core::FindingSetV1 = serde_json::from_value(envelope.payload)
-        .map_err(|error| format!("prior Finding Set {id} is invalid: {error}"))?;
-    set.validate()?;
-    if set.round != prior_round
-        || set.identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
-    {
-        return Err(format!(
-            "prior Finding Set {id} disagrees with canonical round {prior_round}"
-        ));
-    }
-    Ok(id)
+    cas.verify(&campaign.finding_genesis_id)
+        .map_err(|error| error.to_string())?;
+    Ok(campaign.finding_genesis_id.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1717,7 +1732,10 @@ impl<'a> Kernel<'a> {
             .and_then(|port| node_inputs.get(port))
             .and_then(|artifacts| artifacts.first())
             .cloned();
-        let mut inputs = ReviewerInputs::default();
+        let mut inputs = ReviewerInputs {
+            finding_identity_policy: Some(self.authority.finding_identity_policy.clone()),
+            ..ReviewerInputs::default()
+        };
         let resolved_inputs = (|| -> Result<(), String> {
             for (port, artifacts) in node_inputs {
                 let contract = node
@@ -2206,6 +2224,8 @@ impl<'a> Kernel<'a> {
     fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
+        let canonical = self.authority.finding_identity_policy
+            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
         let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let output =
@@ -2241,6 +2261,11 @@ impl<'a> Kernel<'a> {
                             let id = id
                                 .as_str()
                                 .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
+                            if canonical {
+                                let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
+                                load(input_port, id, value)?;
+                                continue;
+                            }
                             let selected: Vec<String> = self
                                 .reviewer_selections
                                 .lock()
@@ -2266,26 +2291,38 @@ impl<'a> Kernel<'a> {
                 }
             }
         }
-        let canonical = self.authority.finding_identity_policy
-            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
         if canonical {
             let selections = self
                 .reviewer_selections
                 .lock()
                 .expect("reviewer selections");
-            for (source, result_id, _) in &mut results {
-                let selected: Vec<_> = selections
+            let mut result_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (index, (_, result_id, _)) in results.iter().enumerate() {
+                result_indices
+                    .entry(result_id.clone())
+                    .or_default()
+                    .push(index);
+            }
+            for (result_id, mut indices) in result_indices {
+                let mut selected: Vec<_> = selections
                     .iter()
-                    .filter(|(_, selection)| selection.result_artifact == *result_id)
+                    .filter(|(_, selection)| selection.result_artifact == result_id)
                     .map(|(node, _)| node.clone())
                     .collect();
-                if selected.len() != 1 {
+                if selected.len() != indices.len() {
                     return Err(format!(
-                        "selected reviewer result {result_id} has {} matching Attempts",
-                        selected.len()
+                        "selected reviewer result {result_id} has {} delivered copies and {} matching Attempts",
+                        indices.len(),
+                        selected.len(),
                     ));
                 }
-                *source = selected[0].clone();
+                selected.sort();
+                indices.sort_by(|left, right| {
+                    (&results[*left].0, *left).cmp(&(&results[*right].0, *right))
+                });
+                for (index, node) in indices.into_iter().zip(selected) {
+                    results[index].0 = node;
+                }
             }
         }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
@@ -2498,7 +2535,7 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
                         false,
                     )
                 } else {
-                    (Some(finding.identity_file.clone()), None, true)
+                    (None, None, true)
                 };
             review_core::FindingSetEntryV1 {
                 finding_id: finding.key.clone(),
@@ -2791,6 +2828,138 @@ impl review_config::SubjectDispatch for Kernel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_lineage_falls_back_to_genesis_when_a_closed_round_emitted_no_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let digest = cas.put(b"genesis").unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: digest.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: digest.clone(),
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: digest.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![digest.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: digest.clone(),
+            demand_genesis_id: digest,
+        };
+        let round = review_core::RunEvent {
+            event_id: "round-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: 1,
+                epoch: 1,
+                campaign_manifest_id: campaign_manifest_id.clone(),
+                subject_id: format!("sha256:{}", "b".repeat(64)),
+                prior_finding_set_id: format!("sha256:{}", "c".repeat(64)),
+                prior_demand_set_id: format!("sha256:{}", "d".repeat(64)),
+            })
+            .unwrap(),
+        };
+        let terminal = review_core::RunEvent {
+            event_id: "report-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::RunReportV3,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RunReportPayloadV3 {
+                outcomes: vec![RunNodeReportV2 {
+                    node: "reviewer".into(),
+                    outcome: RunNodeOutcomeV2::Failed {
+                        error: "run budget exhausted".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                },
+                spent_tokens: Some(1_000_000),
+            })
+            .unwrap(),
+        };
+
+        assert_eq!(
+            canonical_prior_finding_set_id_from_events(
+                &cas,
+                &[round, terminal],
+                2,
+                &campaign_manifest_id,
+                &campaign,
+            )
+            .unwrap(),
+            campaign.finding_genesis_id
+        );
+    }
+
+    #[test]
+    fn unreadable_report_locations_are_omitted_from_finding_sets() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let report_id = cas.put(b"not a report").unwrap();
+        let mut ledger = Ledger::default();
+        ledger
+            .apply_event(
+                &review_core::RunEvent {
+                    event_id: "finding".into(),
+                    run_id: "run".into(),
+                    sequence: 0,
+                    event_type: EventType::FindingReportedV1,
+                    occurred_at: "2026-08-26T00:00:00Z".into(),
+                    node_id: None,
+                    attempt_id: None,
+                    causation_id: None,
+                    correlation_id: Some("claim".into()),
+                    artifact_refs: vec![report_id.clone()],
+                    payload: serde_json::json!({
+                        "key": "claim",
+                        "round": 1,
+                        "source": "correctness",
+                        "report_id": report_id,
+                    }),
+                },
+                &cas,
+            )
+            .unwrap();
+
+        let entries = finding_set_entries(&ledger);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].file, None);
+        assert!(entries[0].location_unrecorded);
+    }
 
     #[test]
     fn unavailable_authority_has_a_distinct_durable_failure_reason() {

@@ -3,7 +3,9 @@ use review_core::{
     CampaignOpenedPayloadV1, EventType, LegacyStageOutput, RoundStartedPayloadV1, SubjectKind,
     SubjectV1,
 };
-use review_store::{CanonicalStage, Cas, EventStore, Ingest, LedgerProjection, NewEvent};
+use review_store::{
+    CanonicalStage, Cas, ConvergencePolicy, EventStore, Ingest, LedgerProjection, NewEvent,
+};
 
 struct Authority {
     authority: String,
@@ -232,12 +234,30 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         "unreadable canonical Report authority must remain replayable and fail closed"
     );
 
-    // Keep all bootstrap IDs live in the test so accidental fixture weakening is visible.
+    // Keep all bootstrap IDs live until the manifest-corruption case deliberately breaks one.
     assert!(cas.contains(&authority.authority));
     assert!(cas.contains(&authority.manifest));
     assert!(cas.contains(&authority.subject));
     assert!(cas.contains(&authority.findings));
     assert!(cas.contains(&authority.demands));
+
+    let manifest_path = directory
+        .path()
+        .join("cas/objects")
+        .join(&authority.manifest[7..9])
+        .join(&authority.manifest[9..]);
+    std::fs::write(manifest_path, b"corrupt manifest").unwrap();
+    let rebuilt = LedgerProjection::rebuild(&store, &cas, run_id)
+        .unwrap()
+        .into_ledger();
+    assert_eq!(rebuilt.finding_identity_policy(), None);
+    assert!(
+        rebuilt
+            .convergence(ConvergencePolicy::default())
+            .authority_failures_recent
+            > 0,
+        "unreadable Campaign policy must remain replayable but block convergence"
+    );
 }
 
 #[test]
@@ -273,6 +293,10 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
             "claim_id": key,
             "position": "confirm",
             "reason": "verified against the current snapshot"
+        }, {
+            "claim_id": "sha256:mistyped-prior-finding",
+            "position": "confirm",
+            "reason": "cannot be attached safely"
         }]
     }))
     .unwrap();

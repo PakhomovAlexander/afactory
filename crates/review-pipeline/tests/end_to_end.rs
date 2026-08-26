@@ -199,6 +199,18 @@ fn reviewer(node: &str, title: &str, severity: &str) -> Command {
     )
 }
 
+fn clean_reviewer() -> Command {
+    Command::new(
+        "/bin/sh",
+        vec![
+            Arg::literal("-c"),
+            Arg::literal(
+                "cat src/main.rs > /dev/null; printf '%s\\n' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
+            ),
+        ],
+    )
+}
+
 fn heavy_pipeline() -> Pipeline {
     let mut pipeline = Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
@@ -488,6 +500,35 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         round_two_set.prior_finding_set_id, set_id,
         "round 2 reduces from the exact round 1 FindingSet output"
     );
+}
+
+#[test]
+fn canonical_barrier_assigns_identical_clean_results_to_distinct_attempts() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&kernel);
+
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert!(kernel.ledger().is_empty());
+    assert!(matches!(
+        report.outcome("ledger"),
+        Some(NodeOutcome::Completed { .. })
+    ));
 }
 
 /// The property the gate exists for, end to end: a change that does not build produces **no

@@ -80,6 +80,7 @@ impl FindingSetV1 {
                 || finding.title.trim().is_empty()
                 || finding.body.trim().is_empty()
                 || finding.source.trim().is_empty()
+                || finding.file.as_deref().is_some_and(str::is_empty)
                 || finding.last_seen_round == 0
                 || finding.report_ids.iter().any(|id| !is_digest(id))
         }) {

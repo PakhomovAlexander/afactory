@@ -331,10 +331,12 @@ impl<'a> Ingest<'a> {
         &mut self,
         stages: &[CanonicalStage<'_>],
     ) -> Result<CanonicalReduction, StoreError> {
-        if self.ledger.finding_identity_policy() != CANONICAL_FINDING_IDENTITY_POLICY {
+        if self.ledger.finding_identity_policy() != Some(CANONICAL_FINDING_IDENTITY_POLICY) {
             return Err(StoreError::Conflict(format!(
                 "canonical report ingestion disagrees with Campaign policy `{}`",
-                self.ledger.finding_identity_policy()
+                self.ledger
+                    .finding_identity_policy()
+                    .unwrap_or("unavailable")
             )));
         }
         let mut prepared = Vec::with_capacity(stages.len());
@@ -416,50 +418,39 @@ impl<'a> Ingest<'a> {
                         continue;
                     }
                     let key = dispute.fp.trim();
-                    let finding = self.ledger.get(key).ok_or_else(|| {
-                        StoreError::Conflict(format!(
-                            "{source} confirms Finding `{key}` outside its input Finding Set"
-                        ))
-                    })?;
-                    let locations = if finding.identity_file
-                        == review_core::legacy::CHANGE_WIDE_SENTINEL
-                    {
-                        Vec::new()
-                    } else if review_core::is_valid_repo_path(&finding.identity_file) {
-                        let line = finding
-                            .identity_line
-                            .map(u32::try_from)
-                            .transpose()
-                            .map_err(|_| {
-                                StoreError::Conflict(format!(
-                                    "{source} confirms Finding `{key}` with an invalid prior line"
-                                ))
-                            })?;
-                        vec![review_core::Location {
-                            path: finding.identity_file.clone(),
-                            line,
-                            end_line: None,
-                        }]
-                    } else {
-                        return Err(StoreError::Conflict(format!(
-                            "{source} confirms Finding `{key}` whose prior location is unrecorded; re-report it with a canonical current location"
-                        )));
+                    let Some(finding) = self.ledger.get(key) else {
+                        // A model may mistype a long canonical ID. Like an unresolvable refute,
+                        // it carries no safe authority and must not discard the other selected
+                        // reviewers' evidence.
+                        continue;
                     };
+                    let (Some(fix), Some(confidence)) = (finding.fix.clone(), finding.confidence)
+                    else {
+                        continue;
+                    };
+                    let locations =
+                        if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                            Vec::new()
+                        } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                            let line = match finding.identity_line.map(u32::try_from).transpose() {
+                                Ok(line) => line,
+                                Err(_) => continue,
+                            };
+                            vec![review_core::Location {
+                                path: finding.identity_file.clone(),
+                                line,
+                                end_line: None,
+                            }]
+                        } else {
+                            continue;
+                        };
                     reports.push(FindingReport {
                         title: finding.title.clone(),
                         severity: finding.severity,
                         locations,
                         body: finding.body.clone(),
-                        fix: finding.fix.clone().ok_or_else(|| {
-                            StoreError::Conflict(format!(
-                                "{source} confirms Finding `{key}` without an actionable prior fix"
-                            ))
-                        })?,
-                        confidence: finding.confidence.ok_or_else(|| {
-                            StoreError::Conflict(format!(
-                                "{source} confirms Finding `{key}` without prior confidence"
-                            ))
-                        })?,
+                        fix,
+                        confidence,
                         failure_trace: None,
                         rule_id: None,
                         occurrence_key: None,
