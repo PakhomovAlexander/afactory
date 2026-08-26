@@ -13,7 +13,7 @@ use review_check::{Arg, CheckDefinition, Command};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, Scheduler};
 use review_pipeline::Kernel;
 use review_source_git::{Capture, Repo};
-use review_store::{Cas, ConvergencePolicy, EventStore, Status, Verdict};
+use review_store::{Cas, ConvergencePolicy, EventStore, NewEvent, Status, Verdict};
 
 const HEAVY_AUTHORITY: &str = r#"
 version = 2
@@ -368,8 +368,24 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         envelope.producer.is_deterministic(),
         "a ledger barrier is a kernel operation"
     );
+    assert!(matches!(
+        kernel
+            .publish_report(&report, ConvergencePolicy::default())
+            .unwrap(),
+        review_pipeline::RunVerdict::Fail(Verdict::NotConverged)
+    ));
 
     drop(kernel);
+    let opened_event = store.campaign_opened("run").unwrap().unwrap();
+    let opened_event_id = opened_event.event_id.clone();
+    let opened: review_core::CampaignOpenedPayloadV1 =
+        serde_json::from_value(opened_event.payload).unwrap();
+    let campaign: review_core::CampaignManifestV1 =
+        serde_json::from_value(cas.get_json(&opened.campaign_manifest_id).unwrap()).unwrap();
+    assert_eq!(
+        set.prior_finding_set_id, campaign.finding_genesis_id,
+        "round 1 reduces from the canonical genesis, not the flat prompt projection"
+    );
     let round = store.latest_round_started("run").unwrap().unwrap();
     let authority =
         review_pipeline::RoundAuthority::load(&store, &cas, "run", &round.event_id).unwrap();
@@ -381,7 +397,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         &cas,
         &mut store,
         "run",
-        snapshot.manifest,
+        snapshot.manifest.clone(),
         &loaded,
         authority,
     )
@@ -390,7 +406,88 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     let NodeOutcome::Completed { outputs } = replayed.outcome("ledger").unwrap() else {
         panic!("canonical ledger replay did not complete")
     };
-    assert_eq!(outputs["findings"], [set_id]);
+    assert_eq!(outputs["findings"], [set_id.clone()]);
+    drop(replay);
+
+    let prior_prompt = cas
+        .put_json(&serde_json::json!({
+            "subject_id": round.payload["subject_id"],
+            "round": 2,
+            "prior_findings": [],
+        }))
+        .unwrap();
+    let prior_demands = cas
+        .put_json(&serde_json::json!({
+            "subject_id": round.payload["subject_id"],
+            "round": 2,
+            "demands": [],
+        }))
+        .unwrap();
+    let round_one: review_core::RoundStartedPayloadV1 =
+        serde_json::from_value(round.payload).unwrap();
+    let subject: review_core::SubjectV1 =
+        serde_json::from_value(cas.get_json(&round_one.subject_id).unwrap()).unwrap();
+    let round_two = review_core::RoundStartedPayloadV1 {
+        round: 2,
+        epoch: 1,
+        campaign_manifest_id: opened.campaign_manifest_id.clone(),
+        subject_id: round_one.subject_id.clone(),
+        prior_finding_set_id: prior_prompt.clone(),
+        prior_demand_set_id: prior_demands.clone(),
+    };
+    let round_two_event = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                review_core::EventType::RoundStartedV1,
+                serde_json::to_value(&round_two).unwrap(),
+            )
+            .caused_by(opened_event_id)
+            .correlating(round_two.subject_id.clone())
+            .referencing(vec![
+                campaign.authority_snapshot_id,
+                opened.campaign_manifest_id,
+                subject.head_snapshot_id,
+                round_two.subject_id,
+                prior_prompt,
+                prior_demands,
+            ]),
+        )
+        .unwrap();
+    let authority =
+        review_pipeline::RoundAuthority::load(&store, &cas, "run", &round_two_event.event_id)
+            .unwrap();
+    let round_two_kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(vec![passing_check()])
+    .with_reviewer(
+        "architecture",
+        reviewer("architecture", "Round two architecture", "major"),
+    )
+    .with_reviewer(
+        "performance",
+        reviewer("performance", "Round two performance", "major"),
+    );
+    let round_two_report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&round_two_kernel);
+    let NodeOutcome::Completed { outputs } = round_two_report.outcome("ledger").unwrap() else {
+        panic!("round two canonical ledger did not complete")
+    };
+    let round_two_envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(&outputs["findings"][0]).unwrap()).unwrap();
+    let round_two_set: review_core::FindingSetV1 =
+        serde_json::from_value(round_two_envelope.payload).unwrap();
+    assert_eq!(
+        round_two_set.prior_finding_set_id, set_id,
+        "round 2 reduces from the exact round 1 FindingSet output"
+    );
 }
 
 /// The property the gate exists for, end to end: a change that does not build produces **no
@@ -623,12 +720,11 @@ fn a_reviewer_named_gather_still_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = support::whole_tree_kernel_for_pipeline(
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest.clone(),
-        None,
         AWKWARD_AUTHORITY,
     )
     .with_checks(vec![passing_check()])
@@ -674,6 +770,11 @@ fn a_reviewer_named_gather_still_runs() {
     assert_eq!(
         ledger.findings()[0].title,
         "Found by the awkwardly named reviewer"
+    );
+    assert_eq!(
+        ledger.findings()[0].reports[0].source,
+        "gather",
+        "the gather input-port label must not replace reviewer provenance"
     );
 }
 

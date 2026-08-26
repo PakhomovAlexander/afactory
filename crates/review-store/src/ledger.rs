@@ -408,6 +408,7 @@ impl Ledger {
                     }
                 };
                 if self.finding_identity_policy() == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+                    && !report.unreadable
                     && report.artifact_id.is_none()
                 {
                     return Err(malformed(

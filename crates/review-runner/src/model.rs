@@ -570,7 +570,11 @@ impl ReviewerInputs {
                  each one against the current snapshot. A prior claim that still exists: confirm \
                  it in `disputes` with `claim_id` set to the finding's key; do not emit a second \
                  flat report for the same claim. The prior claim is change-wide when the row's \
-                 `file` is null. A genuinely new defect uses a canonical current \
+                 `file` is null and `location_unrecorded` is absent or false. When \
+                 `location_unrecorded` is true, its prior location is unknown: re-locate a \
+                 surviving claim with a canonical current repository-relative `file`, or use an \
+                 empty `file` only when it is truly change-wide, instead of confirming it only \
+                 in `disputes`. A genuinely new defect uses a canonical current \
                  repository-relative `file`; use an empty `file` to report it change-wide. \
                  A claim you believe is wrong: dispute it with \
                  claim_id set to the finding's key, position set to `refute`, and a concrete \

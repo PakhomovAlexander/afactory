@@ -364,6 +364,14 @@ fn subject_and_campaign_authority_roundtrip() {
         demand_genesis_id: digest.clone(),
     };
     manifest.validate().unwrap();
+    let mut unknown_policy = manifest.clone();
+    unknown_policy.finding_identity_policy = "future-policy@9".into();
+    assert!(
+        unknown_policy
+            .validate()
+            .unwrap_err()
+            .contains("unknown finding identity policy")
+    );
     let value = serde_json::to_value(&manifest).unwrap();
     assert_valid("campaign-manifest-v1.json", &value);
     assert_eq!(

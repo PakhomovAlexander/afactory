@@ -409,8 +409,73 @@ impl<'a> Ingest<'a> {
 
         for stage in stages {
             let source = stage.source.as_str();
-            let mut published = Vec::with_capacity(stage.reports.len());
-            for report in &stage.reports {
+            let mut reports = stage.reports.clone();
+            if stage.provenance.is_some() {
+                for dispute in &stage.disputes {
+                    if dispute.position.trim() != "confirm" {
+                        continue;
+                    }
+                    let key = dispute.fp.trim();
+                    let finding = self.ledger.get(key).ok_or_else(|| {
+                        StoreError::Conflict(format!(
+                            "{source} confirms Finding `{key}` outside its input Finding Set"
+                        ))
+                    })?;
+                    let locations = if finding.identity_file
+                        == review_core::legacy::CHANGE_WIDE_SENTINEL
+                    {
+                        Vec::new()
+                    } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                        let line = finding
+                            .identity_line
+                            .map(u32::try_from)
+                            .transpose()
+                            .map_err(|_| {
+                                StoreError::Conflict(format!(
+                                    "{source} confirms Finding `{key}` with an invalid prior line"
+                                ))
+                            })?;
+                        vec![review_core::Location {
+                            path: finding.identity_file.clone(),
+                            line,
+                            end_line: None,
+                        }]
+                    } else {
+                        return Err(StoreError::Conflict(format!(
+                            "{source} confirms Finding `{key}` whose prior location is unrecorded; re-report it with a canonical current location"
+                        )));
+                    };
+                    reports.push(FindingReport {
+                        title: finding.title.clone(),
+                        severity: finding.severity,
+                        locations,
+                        body: finding.body.clone(),
+                        fix: finding.fix.clone().ok_or_else(|| {
+                            StoreError::Conflict(format!(
+                                "{source} confirms Finding `{key}` without an actionable prior fix"
+                            ))
+                        })?,
+                        confidence: finding.confidence.ok_or_else(|| {
+                            StoreError::Conflict(format!(
+                                "{source} confirms Finding `{key}` without prior confidence"
+                            ))
+                        })?,
+                        failure_trace: None,
+                        rule_id: None,
+                        occurrence_key: None,
+                        relations: vec![review_core::Relation {
+                            kind: review_core::RelationKind::Corroborates,
+                            target: review_core::finding::RelationTarget {
+                                kind: review_core::finding::ClaimTargetKind::Finding,
+                                id: key.to_string(),
+                            },
+                            reason: Some(dispute.reason.clone()),
+                        }],
+                    });
+                }
+            }
+            let mut published = Vec::with_capacity(reports.len());
+            for report in &reports {
                 let (report_id, semantic_id) = match &stage.provenance {
                     Some(provenance) => {
                         let (record_id, envelope) = self
@@ -505,11 +570,13 @@ impl<'a> Ingest<'a> {
                 }
             }
 
-            // Reviewer disputes are part of the contract the model is asked to answer — a
-            // `refute` on a prior claim's `claim_id` says "I think this is wrong". Fold it:
+            // Reviewer disputes are part of the contract the model is asked to answer. A
+            // `confirm` above becomes a current, provenance-carrying Report with an explicit
+            // corroborates relation. A `refute` on a prior claim's `claim_id` says "I think this
+            // is wrong". Fold it:
             // an active claim a reviewer refutes becomes `contested`, which blocks convergence
             // and flags the claim for human adjudication rather than leaving the dispute inert in
-            // raw CAS output. A `confirm` agrees with an open claim and needs no transition.
+            // raw CAS output.
             for dispute in &stage.disputes {
                 if dispute.position.trim() != "refute" {
                     continue;

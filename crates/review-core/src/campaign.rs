@@ -140,9 +140,17 @@ impl CampaignManifestV1 {
             .focus
             .as_deref()
             .is_some_and(|focus| focus.trim().is_empty())
-            || self.finding_identity_policy.trim().is_empty()
         {
             return Err("CampaignManifest@1 contains empty policy text".into());
+        }
+        if !matches!(
+            self.finding_identity_policy.as_str(),
+            LEGACY_FINDING_IDENTITY_POLICY | CANONICAL_FINDING_IDENTITY_POLICY
+        ) {
+            return Err(format!(
+                "CampaignManifest@1 contains unknown finding identity policy `{}`",
+                self.finding_identity_policy
+            ));
         }
         if self.budgets.is_some_and(|budget| {
             budget.attempt_tokens == 0

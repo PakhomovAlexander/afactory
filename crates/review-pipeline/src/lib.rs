@@ -173,6 +173,7 @@ pub struct RoundAuthority {
     head_snapshot_id: String,
     head_content_digest: String,
     prior_finding_set_id: String,
+    prior_reduction_finding_set_id: String,
     finding_identity_policy: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
@@ -228,6 +229,20 @@ impl RoundAuthority {
         )
         .map_err(|error| error.to_string())?;
         campaign_manifest.validate()?;
+        let prior_reduction_finding_set_id = if campaign_manifest.finding_identity_policy
+            == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            canonical_prior_finding_set_id(
+                store,
+                cas,
+                run_id,
+                payload.round,
+                &opened.campaign_manifest_id,
+                &campaign_manifest,
+            )?
+        } else {
+            payload.prior_finding_set_id.clone()
+        };
         let reviewer_packages = campaign_manifest
             .reviewers
             .iter()
@@ -302,6 +317,7 @@ impl RoundAuthority {
             head_snapshot_id: subject.head_snapshot_id,
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
+            prior_reduction_finding_set_id,
             finding_identity_policy: campaign_manifest.finding_identity_policy,
             subject_kind: subject.kind,
             change_set_id,
@@ -332,6 +348,110 @@ impl RoundAuthority {
         ];
         refs
     }
+}
+
+fn canonical_prior_finding_set_id(
+    store: &EventStore,
+    cas: &Cas,
+    run_id: &str,
+    round: u32,
+    campaign_manifest_id: &str,
+    campaign: &CampaignManifestV1,
+) -> Result<String, String> {
+    if round == 1 {
+        cas.verify(&campaign.finding_genesis_id)
+            .map_err(|error| error.to_string())?;
+        return Ok(campaign.finding_genesis_id.clone());
+    }
+    let prior_round = round
+        .checked_sub(1)
+        .ok_or("canonical Finding Set lineage cannot precede round 1")?;
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let prior_round_event_id = events
+        .iter()
+        .filter_map(|event| {
+            if event.event_type != EventType::RoundStartedV1 {
+                return None;
+            }
+            let payload: RoundStartedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).ok()?;
+            (payload.round == prior_round && payload.campaign_manifest_id == campaign_manifest_id)
+                .then(|| event.event_id.clone())
+        })
+        .next_back()
+        .ok_or_else(|| format!("canonical Finding Set lineage has no round {prior_round}"))?;
+    let closed = events.iter().try_fold(false, |closed, event| {
+        if event.causation_id.as_deref() != Some(prior_round_event_id.as_str())
+            || !event.event_type.is_run_report()
+        {
+            return Ok(closed);
+        }
+        run_report_closes_round(event)
+            .map(|value| closed || value.unwrap_or(false))
+            .map_err(|error| error.to_string())
+    })?;
+    if !closed {
+        return Err(format!(
+            "canonical Finding Set lineage round {prior_round} has no terminal report"
+        ));
+    }
+    let mut ids = Vec::new();
+    for event in &events {
+        if event.event_type != EventType::NodeOutputReceiptV1
+            || event.causation_id.as_deref() != Some(prior_round_event_id.as_str())
+        {
+            continue;
+        }
+        let receipt: NodeOutputReceiptPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        for id in receipt
+            .outputs
+            .into_iter()
+            .filter_map(|port| {
+                (port.artifact_type == review_core::contract::FINDING_SET_V1
+                    || port.port == "findings")
+                    .then_some(port.artifact_ids)
+            })
+            .flatten()
+        {
+            let Ok(value) = cas.get_json(&id) else {
+                continue;
+            };
+            let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
+            else {
+                continue;
+            };
+            if envelope.artifact_type == review_core::contract::FINDING_SET_V1 {
+                ids.push(id);
+            }
+        }
+    }
+    if ids.len() != 1 {
+        return Err(format!(
+            "canonical Finding Set lineage round {prior_round} has {} ledger outputs",
+            ids.len()
+        ));
+    }
+    let id = ids.pop().expect("exactly one canonical Finding Set output");
+    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+        cas.get_json(&id).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("prior Finding Set {id} is not an artifact envelope: {error}"))?;
+    review_store::validate_envelope(&envelope).map_err(|error| error.to_string())?;
+    if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+        return Err(format!("prior ledger output {id} is not FindingSet@1"));
+    }
+    let set: review_core::FindingSetV1 = serde_json::from_value(envelope.payload)
+        .map_err(|error| format!("prior Finding Set {id} is invalid: {error}"))?;
+    set.validate()?;
+    if set.round != prior_round
+        || set.identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
+    {
+        return Err(format!(
+            "prior Finding Set {id} disagrees with canonical round {prior_round}"
+        ));
+    }
+    Ok(id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2146,11 +2266,32 @@ impl<'a> Kernel<'a> {
                 }
             }
         }
-        // Canonical gather order: node id — not completion order, not artifact digest order.
-        results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-
         let canonical = self.authority.finding_identity_policy
             == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
+        if canonical {
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            for (source, result_id, _) in &mut results {
+                let selected: Vec<_> = selections
+                    .iter()
+                    .filter(|(_, selection)| selection.result_artifact == *result_id)
+                    .map(|(node, _)| node.clone())
+                    .collect();
+                if selected.len() != 1 {
+                    return Err(format!(
+                        "selected reviewer result {result_id} has {} matching Attempts",
+                        selected.len()
+                    ));
+                }
+                *source = selected[0].clone();
+            }
+        }
+        // Canonical gather order: reviewer node id — not completion order, input-port label, or
+        // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
+        results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
         let canonical_metadata = if canonical {
             let selections = self
                 .reviewer_selections
@@ -2240,7 +2381,7 @@ impl<'a> Kernel<'a> {
             let payload = review_core::FindingSetV1 {
                 subject_id: self.authority.subject_id.clone(),
                 round,
-                prior_finding_set_id: self.authority.prior_finding_set_id.clone(),
+                prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
                 reducer_version: review_core::FINDING_REDUCER_VERSION.to_string(),
                 identity_policy: self.authority.finding_identity_policy.clone(),
                 selected_report_ids: reduction.selected_report_ids,
@@ -2249,7 +2390,7 @@ impl<'a> Kernel<'a> {
                 findings: entries,
             };
             payload.validate()?;
-            let mut reduction_inputs = vec![self.authority.prior_finding_set_id.clone()];
+            let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
             reduction_inputs.extend(reduction.input_artifact_ids);
             let operation_digest = review_store::content_id(&serde_json::json!({
                 "reducer_version": review_core::FINDING_REDUCER_VERSION,

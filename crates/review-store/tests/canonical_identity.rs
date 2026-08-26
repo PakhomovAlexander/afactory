@@ -179,6 +179,8 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         .unwrap();
 
     assert_eq!(ingest.ledger().len(), 2);
+    let corrupted_key = ingest.ledger().findings()[0].key.clone();
+    let corrupted_report_id = ingest.ledger().findings()[0].reports[0].report_id.clone();
     let keys: Vec<_> = ingest
         .ledger()
         .findings()
@@ -216,10 +218,87 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         .into_ledger();
     assert_eq!(rebuilt.len(), 2);
 
+    let corrupt_path = directory
+        .path()
+        .join("cas/objects")
+        .join(&corrupted_report_id[7..9])
+        .join(&corrupted_report_id[9..]);
+    std::fs::write(corrupt_path, b"corrupt envelope").unwrap();
+    let rebuilt = LedgerProjection::rebuild(&store, &cas, run_id)
+        .unwrap()
+        .into_ledger();
+    assert!(
+        rebuilt.get(&corrupted_key).unwrap().authority_diagnostic,
+        "unreadable canonical Report authority must remain replayable and fail closed"
+    );
+
     // Keep all bootstrap IDs live in the test so accidental fixture weakening is visible.
     assert!(cas.contains(&authority.authority));
     assert!(cas.contains(&authority.manifest));
     assert!(cas.contains(&authority.subject));
     assert!(cas.contains(&authority.findings));
     assert!(cas.contains(&authority.demands));
+}
+
+#[test]
+fn canonical_confirmation_becomes_current_corroborating_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "01jd8m4qz9k7v3n2p6r8t0w1xz";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let result_a = cas.put_json(&serde_json::json!({"wire": "a"})).unwrap();
+    let result_b = cas.put_json(&serde_json::json!({"wire": "b"})).unwrap();
+    let output = stage();
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "architecture",
+            stage: &output,
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
+            result_artifact_id: &result_a,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+        }])
+        .unwrap();
+    let key = ingest.ledger().findings()[0].key.clone();
+    let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
+        "verdict": "approve",
+        "summary": "still present",
+        "findings": [],
+        "benchmark_demands": [],
+        "disputes": [{
+            "claim_id": key,
+            "position": "confirm",
+            "reason": "verified against the current snapshot"
+        }]
+    }))
+    .unwrap();
+
+    let reduction = ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "correctness",
+            stage: &confirmation,
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
+            result_artifact_id: &result_b,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+        }])
+        .unwrap();
+
+    assert_eq!(reduction.selected_report_ids.len(), 1);
+    let finding = ingest.ledger().get(&key).unwrap();
+    assert_eq!(finding.reports.len(), 2);
+    assert_eq!(finding.reports[1].source, "correctness");
+    let envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(&finding.reports[1].report_id).unwrap()).unwrap();
+    let report: review_core::FindingReport = serde_json::from_value(envelope.payload).unwrap();
+    assert_eq!(report.relations.len(), 1);
+    assert_eq!(
+        report.relations[0].kind,
+        review_core::RelationKind::Corroborates
+    );
+    assert_eq!(report.relations[0].target.id, key);
 }

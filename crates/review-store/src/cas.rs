@@ -32,6 +32,9 @@ use serde_json::Value;
 use crate::canonical;
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+/// Typed artifact envelopes are control-plane records, not arbitrary source blobs. Bounding them
+/// makes the content-ID-to-envelope-ID compatibility fallback safe to buffer after a mismatch.
+const MAX_ARTIFACT_ENVELOPE_BYTES: u64 = 8 * 1024 * 1024;
 
 thread_local! {
     /// Verification is per-object, but scratch is per worker thread. Source trees commonly have
@@ -120,6 +123,11 @@ impl OpenedCasObject {
         })?;
         if content_id == self.digest {
             return Ok(size);
+        }
+        if self.stored_len > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(CasError::Corrupt {
+                digest: self.digest.clone(),
+            });
         }
         self.file.rewind()?;
         let mut bytes = Vec::new();
@@ -371,7 +379,11 @@ impl Cas {
         subject_snapshot_id: Option<String>,
         payload: Value,
     ) -> Result<(String, review_core::ArtifactEnvelope), CasError> {
-        let content_id = self.put_json(&payload)?;
+        review_core::json::admit(&payload).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        let payload_bytes = canonical::canonicalize(&payload)?;
+        let content_id = canonical::blob_content_id(&payload_bytes);
         let mut envelope = review_core::ArtifactEnvelope {
             artifact_type: artifact_type.into(),
             artifact_id: String::new(),
@@ -392,11 +404,18 @@ impl Cas {
             CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?;
         let bytes = canonical::canonicalize(&value)?;
+        if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(artifact_envelope_too_large(bytes.len() as u64));
+        }
+        self.put(&payload_bytes)?;
         self.put_artifact_bytes(&envelope.artifact_id, &bytes)?;
         Ok((envelope.artifact_id.clone(), envelope))
     }
 
     fn put_artifact_bytes(&self, artifact_id: &str, bytes: &[u8]) -> Result<(), CasError> {
+        if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(artifact_envelope_too_large(bytes.len() as u64));
+        }
         let final_path = self.path_for(artifact_id);
         if final_path.exists() {
             with_verify_scratch(|buffer| {
@@ -567,6 +586,11 @@ impl Cas {
         if actual == digest {
             return Ok(size);
         }
+        if size > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(CasError::Corrupt {
+                digest: digest.to_string(),
+            });
+        }
         reader.rewind()?;
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
@@ -672,6 +696,11 @@ fn verify_object_bytes(digest: &str, bytes: &[u8]) -> Result<(), CasError> {
     if canonical::blob_content_id(bytes) == digest {
         return Ok(());
     }
+    if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+        return Err(CasError::Corrupt {
+            digest: digest.to_string(),
+        });
+    }
     let value: Value = serde_json::from_slice(bytes).map_err(|_| CasError::Corrupt {
         digest: digest.to_string(),
     })?;
@@ -690,6 +719,13 @@ fn verify_object_bytes(digest: &str, bytes: &[u8]) -> Result<(), CasError> {
         });
     }
     Ok(())
+}
+
+fn artifact_envelope_too_large(size: u64) -> CasError {
+    CasError::Io(std::io::Error::new(
+        std::io::ErrorKind::FileTooLarge,
+        format!("typed artifact envelope is {size} bytes; limit is {MAX_ARTIFACT_ENVELOPE_BYTES}"),
+    ))
 }
 
 struct CopyingReader<'a, R, W> {
@@ -784,6 +820,22 @@ mod tests {
                 self.current = std::io::Cursor::new(replacement);
             }
             self.current.seek(position)
+        }
+    }
+
+    struct SeekFails {
+        current: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl Read for SeekFails {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.current.read(buffer)
+        }
+    }
+
+    impl Seek for SeekFails {
+        fn seek(&mut self, _position: std::io::SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::other("rewind must not be attempted"))
         }
     }
 
@@ -931,6 +983,37 @@ mod tests {
         assert_eq!(cas.get_bounded(&digest, 5).unwrap(), b"five!");
         assert!(matches!(
             cas.get_bounded(&digest, 4),
+            Err(CasError::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge
+        ));
+    }
+
+    #[test]
+    fn a_large_content_mismatch_never_enters_the_buffered_envelope_fallback() {
+        let mut reader = SeekFails {
+            current: std::io::Cursor::new(vec![
+                b'x';
+                usize::try_from(MAX_ARTIFACT_ENVELOPE_BYTES)
+                    .unwrap()
+                    + 1
+            ]),
+        };
+        let digest = canonical::blob_content_id(b"different bytes");
+        let mut scratch = vec![0_u8; 4096];
+
+        assert!(matches!(
+            Cas::verify_seekable(&digest, &mut reader, &mut scratch),
+            Err(CasError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_typed_artifact_envelopes_are_rejected_at_write_time() {
+        let (_dir, cas) = cas();
+        let bytes = vec![b'x'; usize::try_from(MAX_ARTIFACT_ENVELOPE_BYTES).unwrap() + 1];
+        let artifact_id = canonical::blob_content_id(b"typed artifact identity");
+
+        assert!(matches!(
+            cas.put_artifact_bytes(&artifact_id, &bytes),
             Err(CasError::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge
         ));
     }
