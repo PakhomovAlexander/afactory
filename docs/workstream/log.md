@@ -796,3 +796,28 @@ high effort, a 300,000-token attempt reservation, a 1,000,000-token run cap, one
 Round, and a two-Round maximum. Architecture-only and performance-only audits are opt-in. The
 review package remains digest-locked, and ADR-0027 records the accepted coverage/cost tradeoff.
 The exhausted Campaign is immutable and will not receive another old-policy Round.
+
+## 2026-08-26 — Minimal v1/v2 before candidate dogfood
+
+The owner superseded the compatibility-backed A0 checkpoint after its first implementation showed
+that it would add a substantial temporary path before the target runtime. ADR-0030 now requires
+minimal local-review v1, then sequential-implementation v2 ending at a verified internal Snapshot,
+then the first real candidate dogfood. Delivery, parallelism, optional integrations, and physical
+internal renaming move to v3. The A0 experiment remains isolated and does not enter this branch.
+
+## 2026-08-26 — Minimal product v1/v2 complete
+
+Final local `af review` now loads digest-pinned `.af` authority, defaults state outside the
+repository, supports the non-interactive shorthand, and emits one typed outcome with candidate,
+authority, node, Finding, exact Worker-context, and available Provider-token receipts. The frozen
+`.review/` path remains available only when explicitly selected.
+
+`af task start --kind implement` now executes one locked implementer, seals and publishes every
+derived-tree byte into CAS, runs required Gates against fresh read-only materializations, then
+gives a separate locked evaluator only the goal, derived Snapshot/diff, Gate evidence, authority,
+and reservation. It returns typed verified/unverified results with explicit no-delivery evidence;
+deterministic integration tests prove the verified path, the gate-failure path, materialization,
+minimum evaluator context, and no source-checkout mutation. While closing the full gate, the
+dirty-capture comparison gained metadata change stamps so a rapid change-and-restore remains
+detectable even when macOS FSEvents coalesces both writes. `make check` passes in full. The first
+real candidate implementation dogfood is next.

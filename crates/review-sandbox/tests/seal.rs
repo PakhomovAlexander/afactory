@@ -310,6 +310,28 @@ fn added_files_are_not_hashed() {
     assert!(!cas.contains(&review_source_git::digest_bytes(&big)));
 }
 
+#[test]
+fn a_derived_snapshot_publishes_added_bytes_and_materializes() {
+    let (_dir, sandbox, cas) = sandbox_of(Mode::EphemeralWrite);
+    std::fs::write(sandbox.root().join("generated.txt"), b"derived bytes\n").unwrap();
+
+    let sealed = sandbox.seal().unwrap();
+    assert_eq!(
+        sealed.final_manifest.get("generated.txt").unwrap().content,
+        ""
+    );
+    let derived = sealed.capture_snapshot(&cas).unwrap();
+    let added = derived.get("generated.txt").unwrap();
+    assert!(cas.contains(&added.content));
+
+    let destination = tempfile::tempdir().unwrap();
+    review_source_git::materialize(&derived, &cas, destination.path()).unwrap();
+    assert_eq!(
+        std::fs::read(destination.path().join("generated.txt")).unwrap(),
+        b"derived bytes\n"
+    );
+}
+
 /// Manual evidence for the 5,000-file / ~200 MiB sandbox preparation and sealing budgets.
 #[test]
 #[ignore = "manual 5,000-file / 200 MiB sandbox measurement"]

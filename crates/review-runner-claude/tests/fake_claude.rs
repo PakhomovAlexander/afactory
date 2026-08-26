@@ -90,12 +90,20 @@ fn a_success_envelope_yields_the_answer_and_uncached_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (adapter, cas, sandbox) = adapter_for(dir.path(), &success_envelope(ANSWER), 0);
 
-    let returned = adapter.invoke(&cas, &sandbox, &Default::default()).unwrap();
+    let receipt = adapter
+        .invoke_receipted(&cas, &sandbox, &Default::default())
+        .unwrap();
+    let returned = receipt.returned;
     assert_eq!(
         returned.cost_tokens,
         1804 + 42_000 + 5233,
         "cache reads are excluded but cache creation is chargeable"
     );
+    assert_eq!(receipt.usage.input_tokens, Some(1804));
+    assert_eq!(receipt.usage.cache_read_tokens, Some(951_000));
+    assert_eq!(receipt.usage.cache_write_tokens, Some(42_000));
+    assert_eq!(receipt.usage.output_tokens, Some(5233));
+    assert_eq!(receipt.usage.chargeable_tokens, returned.cost_tokens);
     assert_eq!(returned.output.findings.len(), 1);
     assert_eq!(returned.output.findings[0].title, "Unbounded loop");
     assert!(cas.contains(&returned.raw_artifact));

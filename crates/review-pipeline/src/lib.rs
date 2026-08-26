@@ -36,16 +36,20 @@ use review_core::event::{
     AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
-    MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
-    PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, run_report_closes_round,
+    CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
+    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1,
+    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
 };
-use review_runner::{ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError};
+use review_runner::{
+    ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
+    ReviewerInputs, RunnerError, TokenUsage,
+};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
@@ -145,6 +149,17 @@ pub enum RunVerdict {
     Incomplete { missing: Vec<(String, String)> },
 }
 
+/// Selected Attempt accounting reconstructed from its durable provenance artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptEvidence {
+    pub node: String,
+    pub attempt_id: String,
+    pub cost_tokens: u64,
+    pub usage: TokenUsage,
+    pub context_manifest: ContextManifest,
+    pub raw_artifact: String,
+}
+
 /// The immutable publication boundary every event emitted by one Round execution inherits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundAuthority {
@@ -161,9 +176,27 @@ pub struct RoundAuthority {
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
     change_set: Option<Arc<review_store::ResolvedChangeSet>>,
+    reviewer_packages: BTreeMap<String, (String, String)>,
+    policy_ids: Vec<String>,
 }
 
 impl RoundAuthority {
+    pub fn authority_snapshot_id(&self) -> &str {
+        &self.authority_snapshot_id
+    }
+
+    pub fn campaign_manifest_id(&self) -> &str {
+        &self.campaign_manifest_id
+    }
+
+    pub fn subject_id(&self) -> &str {
+        &self.subject_id
+    }
+
+    pub fn head_snapshot_id(&self) -> &str {
+        &self.head_snapshot_id
+    }
+
     pub fn load(
         store: &EventStore,
         cas: &Cas,
@@ -188,6 +221,29 @@ impl RoundAuthority {
         if payload.campaign_manifest_id != opened.campaign_manifest_id {
             return Err("RoundStarted@1 does not reference the opened CampaignManifest".into());
         }
+        let campaign_manifest: CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(&opened.campaign_manifest_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        campaign_manifest.validate()?;
+        let reviewer_packages = campaign_manifest
+            .reviewers
+            .iter()
+            .map(|reviewer| {
+                (
+                    reviewer.node.clone(),
+                    (
+                        reviewer.package_artifact_id.clone(),
+                        reviewer.digest.clone(),
+                    ),
+                )
+            })
+            .collect();
+        let mut policy_ids = campaign_manifest.execution_policy_ids.clone();
+        policy_ids.extend(campaign_manifest.project_policy_ids.clone());
+        policy_ids.sort();
+        policy_ids.dedup();
         let resolved = review_store::resolve_subject(cas, &payload.subject_id)
             .map_err(|error| error.to_string())?;
         let subject = resolved.subject;
@@ -248,6 +304,8 @@ impl RoundAuthority {
             subject_kind: subject.kind,
             change_set_id,
             change_set,
+            reviewer_packages,
+            policy_ids,
         })
     }
 
@@ -932,6 +990,62 @@ impl<'a> Kernel<'a> {
         self.attempts.lock().expect("attempt ledger").clone()
     }
 
+    /// Selected Attempt evidence for this exact Round epoch, loaded from the durable provenance
+    /// artifacts referenced by `AttemptAdmitted@1`.
+    pub fn selected_attempt_evidence(&self) -> Result<Vec<AttemptEvidence>, String> {
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let mut evidence = Vec::new();
+        for event in events.into_iter().filter(|event| {
+            event.event_type == EventType::AttemptAdmittedV1
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        }) {
+            let payload: AttemptAdmittedPayloadV1 =
+                serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+            if payload.selection != "selected" {
+                continue;
+            }
+            let node = event.node_id.ok_or("selected Attempt has no node ID")?;
+            let attempt_id = event
+                .attempt_id
+                .ok_or("selected Attempt has no Attempt ID")?;
+            let provenance_id = payload
+                .provenance_artifact
+                .ok_or("selected Attempt has no provenance artifact")?;
+            let provenance = self
+                .cas
+                .get_json(&provenance_id)
+                .map_err(|error| error.to_string())?;
+            if provenance["node"].as_str() != Some(node.as_str())
+                || provenance["attempt"].as_str() != Some(attempt_id.as_str())
+                || provenance["cost_tokens"].as_u64() != Some(payload.cost_tokens)
+            {
+                return Err("selected Attempt provenance contradicts its admission event".into());
+            }
+            evidence.push(AttemptEvidence {
+                node,
+                attempt_id,
+                cost_tokens: payload.cost_tokens,
+                usage: serde_json::from_value(provenance["usage"].clone())
+                    .map_err(|error| error.to_string())?,
+                context_manifest: serde_json::from_value(provenance["context_manifest"].clone())
+                    .map_err(|error| error.to_string())?,
+                raw_artifact: provenance["raw"]
+                    .as_str()
+                    .ok_or("selected Attempt provenance has no raw artifact")?
+                    .to_string(),
+            });
+        }
+        evidence.sort_by(|left, right| {
+            (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
+        });
+        Ok(evidence)
+    }
+
     /// The decision a gate node reached, if it ran.
     pub fn gate_decision(&self, node_id: &str) -> Option<GateDecision> {
         self.gates.lock().expect("gates").get(node_id).cloned()
@@ -1575,6 +1689,7 @@ impl<'a> Kernel<'a> {
                 inputs.prior_findings = Some(value);
             }
         }
+        inputs.prior_findings_artifact_id = prior_findings_artifact.clone();
 
         let mut retry_failures: Vec<String> = Vec::new();
         for _ in 0..=self.timeout_retries {
@@ -1593,11 +1708,12 @@ impl<'a> Kernel<'a> {
                 )?,
             };
 
-            inputs.refused_attempts = match refusal_history_id {
+            inputs.refusal_history_artifact_id = refusal_history_id.clone();
+            inputs.refused_attempts = match refusal_history_id.as_ref() {
                 Some(refusal_history_id) => {
                     let decoded = self
                         .cas
-                        .get_json(&refusal_history_id)
+                        .get_json(refusal_history_id)
                         .map_err(|error| error.to_string())
                         .and_then(|value| {
                             serde_json::from_value(value).map_err(|error| error.to_string())
@@ -1618,6 +1734,26 @@ impl<'a> Kernel<'a> {
                 None => Vec::new(),
             };
             retry_failures.clone_from(&inputs.refused_attempts);
+            inputs.attempt_context = Some(ReviewerAttemptContext {
+                attempt_id: attempt.to_string(),
+                round: self.authority.round,
+                epoch: self.authority.epoch,
+                subject_id: self.authority.subject_id.clone(),
+                head_snapshot_id: self.authority.head_snapshot_id.clone(),
+                campaign_manifest_id: self.authority.campaign_manifest_id.clone(),
+                reviewer_package_artifact_id: self
+                    .authority
+                    .reviewer_packages
+                    .get(node_id)
+                    .map(|(artifact_id, _)| artifact_id.clone()),
+                reviewer_package_digest: self
+                    .authority
+                    .reviewer_packages
+                    .get(node_id)
+                    .map(|(_, digest)| digest.clone()),
+                policy_ids: self.authority.policy_ids.clone(),
+                reserved_tokens: reservation.as_ref().map(|reservation| reservation.amount),
+            });
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
@@ -1631,7 +1767,7 @@ impl<'a> Kernel<'a> {
             };
 
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                adapter.invoke(self.cas, sandbox.root(), &inputs)
+                adapter.invoke_receipted(self.cas, sandbox.root(), &inputs)
             }));
             let invoked = match invoked {
                 Ok(invoked) => invoked,
@@ -1653,7 +1789,8 @@ impl<'a> Kernel<'a> {
             };
 
             match invoked {
-                Ok(returned) => {
+                Ok(receipted) => {
+                    let returned = receipted.returned;
                     let result_value = match reviewer_result_value(&returned.output) {
                         Ok(value) => value,
                         Err(error) => {
@@ -1703,6 +1840,8 @@ impl<'a> Kernel<'a> {
                                 "attempt": attempt.to_string(),
                                 "result_artifact": result_artifact,
                                 "cost_tokens": returned.cost_tokens,
+                                "usage": receipted.usage,
+                                "context_manifest": receipted.context_manifest,
                                 "raw": returned.raw_artifact,
                                 "sandbox_mutations": mutation_summary,
                             }))

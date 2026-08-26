@@ -1,10 +1,15 @@
 # Afactory
 
-A multi-agent coding factory. Its first capability is the Review Kernel: `af review` runs a
+A multi-agent coding factory. `af review` runs a
 sandboxed, budgeted reviewer pipeline against committed HEAD and folds the results into a
 findings ledger with convergence. The boundary it enforces:
 reviewers only ever mutate a private sandbox; they return typed findings, and only the
 kernel integrates anything. Publishing to a branch or PR stays an explicit human action.
+
+Minimal v2 also provides `af task start --kind implement`: one implementer edits a private
+sandbox, read-only acceptance gates inspect the sealed result, and an independent evaluator may
+approve a content-addressed internal Snapshot. v2 never writes that Snapshot back to the caller's
+working tree, branch, or PR.
 
 The kernel's own vocabulary is defined in [`CONTEXT.md`](CONTEXT.md) — read it before
 arguing about what a Finding, a Report, a Subject or a Scope is. Queued work lives in
@@ -22,6 +27,7 @@ make check       # fmt + clippy + tests + fixture reproduction
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
 cargo run -p reviewctl --bin af -- review tui
 cargo run -p reviewctl --bin af -- provider status
+cargo run -p reviewctl --bin af -- task start --kind implement --goal "describe the change" --authority HEAD --json
 ```
 
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex

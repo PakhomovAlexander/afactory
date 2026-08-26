@@ -1,6 +1,6 @@
 # Dogfood the candidate `af` before v1 is complete
 
-**Status:** accepted (2026-08-25)
+**Status:** superseded by [ADR-0030](0030-complete-minimal-v1-and-v2-before-dogfood.md)
 
 Released `v0.2.0` already reviews each milestone under ADR-0027, but that loop cannot validate the
 candidate binary or the new token/context rules while the target architecture is being built. The

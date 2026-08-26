@@ -1,0 +1,15 @@
+name = "implementer"
+version = "1.0.0"
+subjects = ["whole-tree"]
+
+[runner]
+program = "codex"
+args = [
+  { value = "exec" },
+  { value = "--ephemeral" },
+  { value = "--skip-git-repo-check" },
+  { value = "--json" },
+  { value = "-s" },
+  { value = "workspace-write" },
+  { value = "-" },
+]

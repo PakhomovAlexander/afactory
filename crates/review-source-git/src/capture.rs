@@ -29,8 +29,22 @@ use sha2::{Digest, Sha256};
 use crate::git::{GitError, Repo, TreeId, split_nul};
 use crate::manifest::{Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path};
 
-type WorktreeFingerprint = (EntryKind, String, u64);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorktreeFingerprint {
+    kind: EntryKind,
+    digest: String,
+    size: u64,
+    /// An observation boundary, not Snapshot identity. It catches change-and-restore races on
+    /// hosts where the filesystem watcher coalesces both writes into no delivered event.
+    change_stamp: ChangeStamp,
+}
 type ScannedWorktreeEntry = (String, WorktreeFingerprint);
+
+#[cfg(unix)]
+type ChangeStamp = (u64, u64, i64, i64, i64, i64);
+
+#[cfg(not(unix))]
+type ChangeStamp = Option<std::time::SystemTime>;
 
 #[derive(Debug)]
 pub enum CaptureError {
@@ -371,12 +385,12 @@ impl<'a> Capture<'a> {
 
             if !changed && index_before == index_after && first == second {
                 let mut entries = Vec::with_capacity(second.len());
-                for (path, (kind, digest, size)) in second {
+                for (path, fingerprint) in second {
                     entries.push(Entry {
                         path,
-                        kind,
-                        content: digest,
-                        size,
+                        kind: fingerprint.kind,
+                        content: fingerprint.digest,
+                        size: fingerprint.size,
                     });
                 }
                 let manifest = Manifest::new(entries)?;
@@ -407,8 +421,9 @@ impl<'a> Capture<'a> {
     }
 
     /// One complete pass over every path under review — tracked plus untracked-not-ignored —
-    /// reduced to fingerprints: kind, content digest, size. One file's bytes are resident at a
-    /// time; the stability comparison needs 32 bytes per path, never the tree twice.
+    /// reduced to fingerprints: kind, content digest, size, and a change stamp used only for the
+    /// read boundary. One file's bytes are resident at a time; the comparison keeps fixed-size
+    /// metadata per path, never the tree twice.
     ///
     /// Bytes are read from the filesystem, never through git, so no clean filter or textconv can
     /// interpose. `.gitattributes` has nothing to act on. With `publish` set, each file's bytes
@@ -485,9 +500,9 @@ impl<'a> Capture<'a> {
             let mut file = std::fs::File::open(&full)?;
             if publish {
                 match expected {
-                    Some((expected_kind, expected_digest, _)) if *expected_kind == kind => self
+                    Some(expected) if expected.kind == kind => self
                         .cas
-                        .put_reader_with_expected(expected_digest, &mut file, buffer)
+                        .put_reader_with_expected(&expected.digest, &mut file, buffer)
                         .map_err(|error| CaptureError::Cas(error.to_string()))?,
                     _ => self
                         .cas
@@ -504,7 +519,15 @@ impl<'a> Capture<'a> {
             return Err(CaptureError::UnsafePath { path });
         }
         let (digest, size) = fingerprint;
-        Ok(Some((path, (kind, digest, size))))
+        Ok(Some((
+            path,
+            WorktreeFingerprint {
+                kind,
+                digest,
+                size,
+                change_stamp: metadata_change_stamp(&metadata),
+            },
+        )))
     }
 
     /// Publish the bytes and return the digest they are filed under — the same value the
@@ -643,6 +666,24 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
+    use std::os::unix::fs::MetadataExt;
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    )
+}
+
+#[cfg(not(unix))]
+fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
+    metadata.modified().ok()
 }
 
 struct WorktreeMonitor {

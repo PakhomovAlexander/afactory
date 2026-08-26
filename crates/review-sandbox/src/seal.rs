@@ -12,7 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use review_source_git::{Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer};
+use review_source_git::{
+    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, fs_path,
+};
+use review_store::Cas;
 
 use crate::{Mode, Sandbox, ensure_directory_mode, restore_writable_dirs};
 
@@ -64,6 +67,52 @@ impl SealedSandbox {
     /// is a contract violation by the node, and worth surfacing rather than tolerating.
     pub fn unchanged(&self) -> bool {
         self.mutations.is_empty()
+    }
+
+    /// Publish every byte in the sealed tree and return its complete materializable Manifest.
+    ///
+    /// Ordinary review sealing deliberately does not hash added build output. An implement Task
+    /// has a different boundary: its derived Snapshot is the output, so every entry must name a
+    /// verified CAS object before the Snapshot can be recorded.
+    pub fn capture_snapshot(&self, cas: &Cas) -> Result<Manifest, std::io::Error> {
+        let mut entries = Vec::with_capacity(self.final_manifest.entries.len());
+        let mut buffer = vec![0_u8; 64 * 1024];
+        for expected in &self.final_manifest.entries {
+            let path = self.root.join(fs_path(&expected.path));
+            let metadata = std::fs::symlink_metadata(&path)?;
+            let kind = if metadata.file_type().is_symlink() {
+                EntryKind::Symlink
+            } else if is_executable(&metadata) {
+                EntryKind::Executable
+            } else {
+                EntryKind::File
+            };
+            if kind != expected.kind {
+                return Err(std::io::Error::other(format!(
+                    "sealed path {} changed kind during Snapshot capture",
+                    expected.path
+                )));
+            }
+            let (content, size) = if kind == EntryKind::Symlink {
+                let target = std::fs::read_link(&path)?;
+                let bytes = path_bytes(&target);
+                (
+                    cas.put(bytes).map_err(std::io::Error::other)?,
+                    bytes.len() as u64,
+                )
+            } else {
+                cas.put_reader_with_buffer(&mut std::fs::File::open(&path)?, &mut buffer)
+                    .map_err(std::io::Error::other)?
+            };
+            entries.push(Entry {
+                path: expected.path.clone(),
+                kind,
+                content,
+                size,
+            });
+        }
+        Manifest::new_with_encoding(entries, self.final_manifest.path_encoding)
+            .map_err(std::io::Error::other)
     }
 }
 

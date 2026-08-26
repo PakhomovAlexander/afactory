@@ -35,7 +35,15 @@ fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
         .env("USER", "loop-test");
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
-        actual.splice(1..1, ["--authority", "HEAD"]);
+        actual.splice(
+            1..1,
+            [
+                "--authority",
+                "HEAD",
+                "--pipeline",
+                ".review/pipelines/heavy.toml",
+            ],
+        );
     }
     let out = command.args(actual).output().unwrap();
     (
@@ -116,6 +124,27 @@ gate = "major"
 "#
     );
     std::fs::write(repo.join(".review/pipelines/heavy.toml"), pipeline).unwrap();
+
+    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+    std::fs::write(
+        repo.join(".af/af.toml"),
+        "version = 1\n[defaults]\npipeline = \"review\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        repo.join(".review/pipelines/heavy.toml"),
+        repo.join(".af/pipelines/review.toml"),
+    )
+    .unwrap();
+    let pipeline = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
+    std::fs::write(
+        repo.join(".af/af.lock"),
+        format!(
+            "version = 1\n[pipelines.review]\nversion = \"1.0.0\"\ndigest = \"{}\"\n",
+            review_store::canonical::blob_content_id(&pipeline)
+        ),
+    )
+    .unwrap();
 }
 
 fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
@@ -133,6 +162,41 @@ fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
     git(&repo, &home, &["commit", "-q", "-m", "initial"]);
     let state_flag = state.to_string_lossy().into_owned();
     (repo, home, state_flag)
+}
+
+#[test]
+fn final_local_review_uses_af_authority_and_one_json_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["--authority", "HEAD", "--state", &state, "--json"],
+    );
+
+    assert_eq!(code, 3, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["schema"], "af/review-outcome@1");
+    assert_eq!(outcome["outcome"]["kind"], "fail");
+    assert_eq!(outcome["findings"].as_array().unwrap().len(), 1);
+    let attempts = outcome["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["node"], "architecture");
+    assert_eq!(attempts[0]["cost_tokens"], 0);
+    assert!(
+        attempts[0]["context_manifest"]["rendered_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(outcome["totals"]["usage"]["chargeable_tokens"], 0);
+    assert_eq!(
+        attempts[0]["context_manifest"]["entries"][0]["name"],
+        "worker_input"
+    );
+    assert!(stderr.contains("authority sha256:"));
+    assert!(Path::new(&state).join("events.sqlite").exists());
+    assert!(!repo.join(".af/runs").exists());
 }
 
 #[test]

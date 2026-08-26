@@ -68,3 +68,5 @@ options you rejected and why — that is the part future-you needs.
   context](0028-prioritize-wise-token-use-and-minimum-worker-context.md)
 - [0029 — Dogfood the candidate `af` before v1 is
   complete](0029-dogfood-the-candidate-af-before-v1-is-complete.md)
+- [0030 — Complete minimal v1 and v2 before candidate
+  dogfood](0030-complete-minimal-v1-and-v2-before-dogfood.md)

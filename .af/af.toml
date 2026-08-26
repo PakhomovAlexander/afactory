@@ -1,0 +1,22 @@
+version = 1
+
+[project]
+name = "afactory"
+min_af = "0.2"
+
+[defaults]
+pipeline = "review"
+task_pipeline = "implement"
+
+[env.default]
+isolation = "host"
+network = "ambient"
+
+[worker.correctness]
+package = "correctness"
+
+[worker.implementer]
+package = "implementer"
+
+[worker.evaluator]
+package = "evaluator"

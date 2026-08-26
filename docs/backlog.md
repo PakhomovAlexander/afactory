@@ -1,17 +1,17 @@
 # Afactory Review Kernel - backlog
 
 Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity, and M0–M2 are complete. The candidate architecture dogfood gate below precedes
-M3.1 and must not alter the frozen persisted Review Kernel contracts it temporarily adapts.
+release parity, and M0–M2 are complete. Minimal product v1 and v2 now precede candidate dogfood
+and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
 
 Sequencing rationale: M0 freezes append-only contracts before new events are introduced. This
 repository then reviews itself with the kernel it ships, so M1's triage visibility is on the
-critical path. M2 establishes the trusted diff Subject. The architecture gate makes the candidate
-`af` useful for its own development before the complete v1 migration; M3 then makes typed reviewer
-claims authoritative before later evidence, patch, and scatter work.
+critical path. M2 establishes the trusted diff Subject. Product v1 establishes final local review;
+v2 adds verified sequential implementation; candidate dogfood proves that loop. M3 then makes
+typed reviewer claims authoritative before later evidence, patch, and scatter work.
 
 ---
 
@@ -237,54 +237,62 @@ permits. See [ADR-0020](adr/0020-stream-cas-materialization-and-clone-duplicates
 
 ---
 
-## A0 · Candidate architecture dogfood gate
+## Product v1/v2 · Minimal route to development dogfood
 
-This is an implementation gate between completed M2 and M3, not a replacement capability
-milestone. Released `v0.2.0` already reviews every milestone; A0 makes the in-tree candidate run
-that useful loop early enough to shape the architecture that follows. Decisions are
+This release gate sits between completed M2 and M3. It builds required behavior once on the final
+user-facing boundary. Decisions are
 [ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md) and
-[ADR-0029](adr/0029-dogfood-the-candidate-af-before-v1-is-complete.md).
+[ADR-0030](adr/0030-complete-minimal-v1-and-v2-before-dogfood.md).
 
-### A0.1 — Measure tokens and minimize Worker context
+### V1.1 — Final local review
 
-Every selected Attempt records a context manifest: each artifact rendered into the model prompt,
-the typed port or rule that requires it, its byte size, and an estimated token size. Provider usage
-receipts preserve reported input, output, cache, and reasoning tokens; the final report aggregates
-what is available against the reserved budget.
+**Status: complete (2026-08-26).** The `.af` authority is digest-pinned, local state defaults to
+XDG state outside the repository, shorthand `af review` emits one typed JSON result, and selected
+Attempts persist exact context manifests plus available Provider token dimensions. Legacy
+`.review/` authority remains readable only when selected explicitly.
 
-The default review Worker receives the exact Subject and Change Set, required instructions, active
-prior claims, Gate decision, package/policy identities, reservation, and epoch. It does not receive
-the parent session, whole Ledger, unrelated docs, a repository dump, or another Worker's private
-reasoning. The Snapshot remains materialized and inspectable through allowed Tools; bounded
-retrieval is an event, not permanent prompt growth. Fixtures vary an unrelated file and parent
-transcript while proving the rendered Input is byte-identical, then exercise one explicit bounded
-retrieval.
+Expose non-interactive `af review` for exact committed and uncommitted Subjects through
+`.af/af.toml` and `.af/af.lock`. State lives outside the repository behind a local Store with
+embedded SQLite. Task, Pipeline, and Worker execute sequentially; the existing Review Kernel and
+prompt-in/JSON-out contract may remain internal behind those boundaries.
 
-### A0.2 — Add the real `make dogfood` walking skeleton
+Every selected Attempt records an exact context manifest and available Provider input, output,
+cache, and reasoning token usage. The review Worker receives only the Subject/Change Set,
+instructions, active prior claims, gate decision, authority identities, reservation, and epoch.
+Its final result is typed clean/fail/incomplete. `make check` stays independent and green.
 
-`make dogfood` builds the candidate binary and invokes its non-interactive `af review` path over an
-exact diff or uncommitted Subject in a dedicated worktree. It prints or records the candidate
-binary/source identity, authority and Subject IDs, context sizes, token usage, Findings, spend, and
-typed clean/fail/incomplete outcome. `make check` runs separately and remains mandatory.
+### V2.1 — Sequential `implement` with independent verification
 
-The first A0 change is reviewed by pinned last-green `v0.2.0`. A0 exits only after one real kernel
-change completes candidate build, `make check`, candidate review, Finding disposition, and final
-structured outcome; a synthetic fixture demo alone is insufficient. If a later candidate cannot
-start, the last-green binary reviews the change and the candidate failure is retained.
+**Status: complete (2026-08-26).** `af task start --kind implement` captures one exact source
+Snapshot, executes one locked implementer, seals and fully publishes the derived tree into CAS,
+runs each acceptance Gate against a fresh read-only materialization, and dispatches a locked
+evaluator without the implementer transcript. Typed outcomes include context, usage, authority,
+Gate, Snapshot, budget, and explicit no-delivery receipts. Deterministic tests prove verified and
+unverified terminals and prove that the caller's checkout is untouched.
 
-A0 deliberately uses the existing `.review/` policy and proven Store, pipeline, Provider, and
-prompt/JSON contracts through narrow adapters. It adds no `.review/` key and no
-`review.kernel/*` persisted type. Those contracts stay frozen until a separate accepted migration
-ADR replaces them.
+An `implement` Task pins a goal, acceptance contract, and authority Snapshot. One implementer
+Worker produces a candidate internal derived Snapshot. Required acceptance Gates inspect it
+read-only, then a separate evaluator Worker receives the goal, candidate diff, Gate attestations,
+and required authority without the implementer's private reasoning.
 
-### A0.3 — Ratchet dogfood over the v1 foundation
+Seal and return the derived Snapshot as `verified` only when all required Gates succeed, the
+evaluator accepts, and token accounting is complete. Every other terminal result is typed
+`unverified` with evidence. Execution is sequential. No v2 transition writes to the caller's
+working tree or branch or creates a PR.
 
-After A0, every material architecture slice runs `make dogfood` with the candidate and reports its
-token/context delta. Temporary adapters stay behind the target interfaces, acquire explicit
-removal work, and are gone before the v1 release. Open the complete-v1 implementation issue from
-the accepted architecture, record its breaking name/Store/state-machine decisions as kernel ADRs,
-and finish that foundation before M3.1. Store and worker-protocol redesigns, TUI, `implement`,
-dynamic fan-out, and delivery are not prerequisites for A0 itself.
+### V2.2 — First candidate implementation dogfood
+
+**Status: next.**
+
+`make dogfood` builds candidate v2 and uses `af` to implement one real change in a dedicated
+kernel worktree. Record candidate/source identity, authority and Snapshot IDs, exact context,
+Provider usage, Gate attestations, evaluator verdict, and final outcome beside a green
+`make check`. A fixture demo alone does not count. Released `v0.2.0` remains the independent
+last-green reviewer during bootstrap.
+
+Delivery/write-back, dynamic fan-out and parallel graphs, shared/distributed storage, TUI,
+MCP/hooks/connections, direct API Providers, richer Envs, hosted integrations, and physical
+internal renaming are v3 work after this dogfood produces evidence.
 
 ---
 

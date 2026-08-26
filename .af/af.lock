@@ -1,0 +1,21 @@
+version = 1
+
+[workers.correctness]
+version = "1.0.0"
+digest = "sha256:d98f90030481680f9f001967061ca794a3f3a4e13b8a7fb1041119a88f195b3a"
+
+[workers.implementer]
+version = "1.0.0"
+digest = "sha256:e67e0ecd6ccb7e20db6b050195600ff1a77679a44df6d535b37dc972307180b7"
+
+[workers.evaluator]
+version = "1.0.0"
+digest = "sha256:cec369961c685997a857c7b7ea206163178cdb72eea568bfdcc0b35daef73ec0"
+
+[pipelines.review]
+version = "1.0.0"
+digest = "sha256:7eda000bd5da04c3bda66a56bcd9e0e807d84c3b54b9f5d61091dbd0c347c2b1"
+
+[pipelines.implement]
+version = "1.0.0"
+digest = "sha256:93e750b071481afd9094a82ea86211143fe556b1aea44b7a227f46b9e25f245b"

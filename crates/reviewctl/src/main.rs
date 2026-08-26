@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,10 +33,12 @@ use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::Repo;
-use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status};
+use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
+use sha2::{Digest, Sha256};
 
 mod authority;
 mod providers;
+mod task;
 mod tui;
 
 #[derive(Clone)]
@@ -52,6 +55,7 @@ struct Options {
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
+    json: bool,
 }
 
 impl Options {
@@ -64,36 +68,51 @@ impl Options {
         }
         let requested = match (&self.state, &self.campaign) {
             (Some(state), _) => state.clone(),
-            (None, Some(campaign)) => PathBuf::from(format!(".review/runs/{campaign}")),
-            (None, None) => PathBuf::from(".review/runs/local"),
+            (None, Some(campaign)) => default_campaign_state(campaign)?,
+            (None, None) => default_local_state(&self.repo)?,
         };
         let state = resolve_filesystem_path(&requested)?;
         let repository = std::fs::canonicalize(&self.repo)
             .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
         if state.starts_with(&repository) {
-            let pipeline = if self.pipeline.is_absolute() {
-                self.pipeline.clone()
-            } else {
-                repository.join(&self.pipeline)
-            };
-            let pipeline = pipeline
-                .strip_prefix(&repository)
-                .map_err(|_| "the pipeline path must be inside --repo".to_string())?
-                .to_str()
-                .ok_or_else(|| "the pipeline path must be UTF-8".to_string())?;
-            let review_root = repository.join(authority::review_dir(pipeline)?);
-            refuse_repository_symlinks(&repository, &review_root.join("runs"))?;
-            let allowed = resolve_filesystem_path(&review_root.join("runs"))?;
-            if !state.starts_with(&allowed) {
-                return Err(format!(
-                    "state {} overlaps captured repository content; use state outside --repo or below {}",
-                    state.display(),
-                    review_root.join("runs").display()
-                ));
-            }
+            return Err(format!(
+                "state {} is inside the repository; af state must live under XDG state or an explicit external --state directory",
+                state.display()
+            ));
         }
         Ok(state)
     }
+}
+
+fn xdg_state_root() -> Result<PathBuf, String> {
+    if let Some(configured) = std::env::var_os("XDG_STATE_HOME") {
+        let configured = PathBuf::from(configured);
+        if !configured.is_absolute() {
+            return Err("XDG_STATE_HOME must be absolute".to_string());
+        }
+        return Ok(configured);
+    }
+    let user_home =
+        std::env::var_os("HOME").ok_or("HOME is not set and XDG_STATE_HOME is absent")?;
+    let user_home = PathBuf::from(user_home);
+    if !user_home.is_absolute() {
+        return Err("HOME must be absolute".to_string());
+    }
+    Ok(user_home.join(".local/state"))
+}
+
+fn default_campaign_state(campaign: &str) -> Result<PathBuf, String> {
+    validate_campaign_name(campaign)?;
+    Ok(xdg_state_root()?.join("af/review/campaigns").join(campaign))
+}
+
+fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
+    let repository = std::fs::canonicalize(repository)
+        .map_err(|error| format!("opening repository {}: {error}", repository.display()))?;
+    let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
+    Ok(xdg_state_root()?
+        .join("af/review/local")
+        .join(&format!("{identity:x}")[..16]))
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
@@ -104,28 +123,6 @@ fn validate_campaign_name(campaign: &str) -> Result<(), String> {
         return Err(format!(
             "campaign name `{campaign}` must be one safe path component"
         ));
-    }
-    Ok(())
-}
-
-fn refuse_repository_symlinks(repository: &Path, path: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(repository)
-        .map_err(|_| format!("path {} is outside --repo", path.display()))?;
-    let mut current = repository.to_path_buf();
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "repository-contained state path {} is a symlink",
-                    current.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(format!("opening {}: {error}", current.display())),
-        }
     }
     Ok(())
 }
@@ -226,9 +223,9 @@ struct ResolveOptions {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: af review run     [--repo DIR] [--pipeline FILE] [--state DIR] \
+        "usage: af review [run]   [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
-        \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH]\n\
+        \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH] [--json]\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
@@ -236,6 +233,7 @@ fn usage() -> ! {
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
         \x20      af provider status\n\
+        \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
         \x20      af --version\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
@@ -249,17 +247,17 @@ fn campaign_run_id(campaign: &str) -> String {
 
 fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, String> {
     validate_campaign_name(campaign)?;
-    resolve_filesystem_path(
-        &state
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(format!(".review/runs/{campaign}"))),
-    )
+    let requested = match state {
+        Some(state) => state.clone(),
+        None => default_campaign_state(campaign)?,
+    };
+    resolve_filesystem_path(&requested)
 }
 
-fn parse_run(mut args: std::env::Args) -> Options {
+fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
     let mut options = Options {
         repo: PathBuf::from("."),
-        pipeline: PathBuf::from(".review/pipelines/heavy.toml"),
+        pipeline: PathBuf::from(".af/pipelines/review.toml"),
         state: None,
         campaign: None,
         focus: None,
@@ -270,6 +268,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
         git_timeout: None,
         provider_bindings: std::collections::BTreeMap::new(),
         provider_resumes: std::collections::BTreeMap::new(),
+        json: false,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
@@ -282,6 +281,7 @@ fn parse_run(mut args: std::env::Args) -> Options {
             "--authority" => options.authority = Some(value()),
             "--uncommitted" => options.uncommitted = true,
             "--restart-round" => options.restart_round = true,
+            "--json" => options.json = true,
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
                     value().parse().unwrap_or_else(|_| usage()),
@@ -433,10 +433,25 @@ fn main() {
         providers::print_status();
         return;
     }
+    if namespace.as_deref() == Some("task") {
+        if args.next().as_deref() != Some("start") {
+            usage();
+        }
+        init_review_workers();
+        match task::start(task::parse(args).unwrap_or_else(|_| usage())) {
+            Ok(true) => return,
+            Ok(false) => std::process::exit(3),
+            Err(error) => {
+                eprintln!("af task: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     if namespace.as_deref() != Some("review") {
         usage();
     }
-    let result = match args.next().as_deref() {
+    let command = args.next();
+    let result = match command.as_deref() {
         Some("run") => {
             init_review_workers();
             run(&parse_run(args)).map(exit_for_verdict)
@@ -449,11 +464,23 @@ fn main() {
             init_review_workers();
             tui::launch(parse_run(args))
         }
+        Some(flag) if flag.starts_with("--") => {
+            init_review_workers();
+            run(&parse_run(std::iter::once(flag.to_string()).chain(args))).map(exit_for_verdict)
+        }
         _ => usage(),
     };
     if let Err(error) = result {
         eprintln!("af review: {error}");
         std::process::exit(1);
+    }
+}
+
+fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
+    if options.json {
+        eprintln!("{arguments}");
+    } else {
+        println!("{arguments}");
     }
 }
 
@@ -866,6 +893,75 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     Ok(())
 }
 
+struct CandidateIdentity {
+    version: &'static str,
+    executable: String,
+    binary_sha256: String,
+}
+
+struct ReviewAuthority {
+    authority_snapshot_id: String,
+    campaign_manifest_id: String,
+    subject_id: String,
+    head_snapshot_id: String,
+    round: u32,
+    epoch: u32,
+}
+
+fn candidate_identity() -> Result<CandidateIdentity, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(&executable).map_err(|error| error.to_string())?;
+    Ok(CandidateIdentity {
+        version: env!("CARGO_PKG_VERSION"),
+        executable: executable.display().to_string(),
+        binary_sha256: format!("sha256:{:x}", Sha256::digest(bytes)),
+    })
+}
+
+fn verdict_value(verdict: &RunVerdict) -> serde_json::Value {
+    match verdict {
+        RunVerdict::Pass => serde_json::json!({"kind": "clean"}),
+        RunVerdict::Fail(Verdict::NotConverged) => {
+            serde_json::json!({"kind": "fail", "reason": "not_converged"})
+        }
+        RunVerdict::Fail(Verdict::Exhausted) => {
+            serde_json::json!({"kind": "fail", "reason": "exhausted"})
+        }
+        RunVerdict::Fail(Verdict::Converged) => {
+            serde_json::json!({"kind": "fail", "reason": "invalid_converged_failure"})
+        }
+        RunVerdict::Incomplete { missing } => serde_json::json!({
+            "kind": "incomplete",
+            "missing_nodes": missing.iter().map(|(node, reason)| {
+                serde_json::json!({"node": node, "reason": reason})
+            }).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn aggregate_usage(attempts: &[review_pipeline::AttemptEvidence]) -> review_runner::TokenUsage {
+    fn sum(
+        attempts: &[review_pipeline::AttemptEvidence],
+        select: impl Fn(&review_runner::TokenUsage) -> Option<u64>,
+    ) -> Option<u64> {
+        attempts
+            .iter()
+            .filter_map(|attempt| select(&attempt.usage))
+            .reduce(u64::saturating_add)
+    }
+    review_runner::TokenUsage {
+        input_tokens: sum(attempts, |usage| usage.input_tokens),
+        output_tokens: sum(attempts, |usage| usage.output_tokens),
+        cache_read_tokens: sum(attempts, |usage| usage.cache_read_tokens),
+        cache_write_tokens: sum(attempts, |usage| usage.cache_write_tokens),
+        reasoning_tokens: sum(attempts, |usage| usage.reasoning_tokens),
+        chargeable_tokens: attempts
+            .iter()
+            .map(|attempt| attempt.cost_tokens)
+            .fold(0, u64::saturating_add),
+    }
+}
+
 fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
@@ -889,12 +985,23 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         authority,
         ledger_projection,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
-    println!("run      {run_id}");
-    println!(
-        "timeouts reviewer {}s, checks {}s, git capture {}s (pinned)",
-        timeout.as_secs(),
-        check_timeout.as_secs(),
-        git_timeout.as_secs()
+    let authority_receipt = ReviewAuthority {
+        authority_snapshot_id: authority.authority_snapshot_id().to_string(),
+        campaign_manifest_id: authority.campaign_manifest_id().to_string(),
+        subject_id: authority.subject_id().to_string(),
+        head_snapshot_id: authority.head_snapshot_id().to_string(),
+        round: authority.round(),
+        epoch: authority.epoch(),
+    };
+    run_progress(options, format_args!("run      {run_id}"));
+    run_progress(
+        options,
+        format_args!(
+            "timeouts reviewer {}s, checks {}s, git capture {}s (pinned)",
+            timeout.as_secs(),
+            check_timeout.as_secs(),
+            git_timeout.as_secs()
+        ),
     );
 
     for node in options.provider_bindings.keys() {
@@ -989,9 +1096,12 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         .with_checks(loaded.checks().to_vec())
         .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
-        println!(
-            "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
-            budgets.attempt, budgets.run
+        run_progress(
+            options,
+            format_args!(
+                "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
+                budgets.attempt, budgets.run
+            ),
         );
         kernel = kernel.with_budgets(budgets.attempt, budgets.run);
     }
@@ -1057,43 +1167,149 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         kernel = kernel.with_adapter(node.clone(), adapter);
     }
     for (node, program) in &bound {
-        println!("reviewer {node} -> {program}");
+        run_progress(options, format_args!("reviewer {node} -> {program}"));
     }
 
     let report = loaded.run(&kernel).map_err(|error| error.to_string())?;
-    println!();
+    run_progress(options, format_args!(""));
     for (node, outcome) in &report.outcomes {
         match outcome {
-            NodeOutcome::Completed { .. } => println!("  done      {node}"),
-            NodeOutcome::Failed { error, .. } => println!("  FAILED    {node}: {error}"),
+            NodeOutcome::Completed { .. } => {
+                run_progress(options, format_args!("  done      {node}"))
+            }
+            NodeOutcome::Failed { error, .. } => {
+                run_progress(options, format_args!("  FAILED    {node}: {error}"))
+            }
             NodeOutcome::Suppressed { reason } => {
-                println!("  never-ran {node}: {reason:?}")
+                run_progress(options, format_args!("  never-ran {node}: {reason:?}"))
             }
         }
     }
 
     let ledger = kernel.ledger();
     print_scope_authority_warnings(&ledger);
-    println!();
-    println!("findings {}", ledger.len());
+    run_progress(options, format_args!(""));
+    run_progress(options, format_args!("findings {}", ledger.len()));
     for finding in ledger.findings() {
-        println!(
-            "  [{:?}] {}:{} - {} ({:?})",
-            finding.severity,
-            finding.file,
-            finding
-                .line
-                .map_or("?".to_string(), |line| line.to_string()),
-            finding.title,
-            finding.status
+        run_progress(
+            options,
+            format_args!(
+                "  [{:?}] {}:{} - {} ({:?})",
+                finding.severity,
+                finding.file,
+                finding
+                    .line
+                    .map_or("?".to_string(), |line| line.to_string()),
+                finding.title,
+                finding.status
+            ),
         );
     }
     if let Some(spent) = kernel.spent() {
-        println!("spent    {spent} tokens");
+        run_progress(options, format_args!("spent    {spent} tokens"));
     }
 
     let verdict = kernel.publish_report(&report, *loaded.convergence())?;
-    println!("verdict  {verdict:?}");
+    let attempts = kernel.selected_attempt_evidence()?;
+    if options.json {
+        let candidate = candidate_identity()?;
+        let findings = ledger
+            .findings()
+            .into_iter()
+            .map(|finding| {
+                serde_json::json!({
+                    "key": finding.key,
+                    "severity": format!("{:?}", finding.severity).to_lowercase(),
+                    "effective_severity": finding.convergence_severity
+                        .map(|severity| format!("{severity:?}").to_lowercase()),
+                    "status": finding.status.as_str(),
+                    "scope": finding.convergence_scope_label(),
+                    "file": finding.file,
+                    "line": finding.line,
+                    "title": finding.title,
+                })
+            })
+            .collect::<Vec<_>>();
+        let node_outcomes = report
+            .outcomes
+            .iter()
+            .map(|(node, outcome)| match outcome {
+                NodeOutcome::Completed { outputs } => serde_json::json!({
+                    "node": node,
+                    "kind": "completed",
+                    "output_artifacts": outputs.values().flatten().collect::<Vec<_>>(),
+                }),
+                NodeOutcome::Failed { error, .. } => serde_json::json!({
+                    "node": node,
+                    "kind": "failed",
+                    "error": error,
+                }),
+                NodeOutcome::Suppressed { reason } => serde_json::json!({
+                    "node": node,
+                    "kind": "suppressed",
+                    "reason": format!("{reason:?}").to_lowercase(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        let rendered_bytes = attempts
+            .iter()
+            .map(|attempt| attempt.context_manifest.rendered_bytes)
+            .fold(0, u64::saturating_add);
+        let estimated_tokens = attempts
+            .iter()
+            .map(|attempt| attempt.context_manifest.estimated_tokens)
+            .fold(0, u64::saturating_add);
+        let usage = aggregate_usage(&attempts);
+        let attempt_values = attempts
+            .iter()
+            .map(|attempt| {
+                serde_json::json!({
+                    "node": &attempt.node,
+                    "attempt_id": &attempt.attempt_id,
+                    "cost_tokens": attempt.cost_tokens,
+                    "usage": &attempt.usage,
+                    "context_manifest": &attempt.context_manifest,
+                    "raw_artifact": &attempt.raw_artifact,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "schema": "af/review-outcome@1",
+                "candidate": {
+                    "version": candidate.version,
+                    "executable": candidate.executable,
+                    "binary_sha256": candidate.binary_sha256,
+                },
+                "run_id": run_id,
+                "authority": {
+                    "authority_snapshot_id": authority_receipt.authority_snapshot_id,
+                    "campaign_manifest_id": authority_receipt.campaign_manifest_id,
+                    "subject_id": authority_receipt.subject_id,
+                    "head_snapshot_id": authority_receipt.head_snapshot_id,
+                    "round": authority_receipt.round,
+                    "epoch": authority_receipt.epoch,
+                },
+                "node_outcomes": node_outcomes,
+                "blocked_gates": report.blocked_gates,
+                "attempts": attempt_values,
+                "totals": {
+                    "context": {
+                        "rendered_bytes": rendered_bytes,
+                        "estimated_tokens": estimated_tokens,
+                    },
+                    "usage": usage,
+                    "spent_tokens": kernel.spent(),
+                },
+                "findings": findings,
+                "outcome": verdict_value(&verdict),
+            }))
+            .map_err(|error| error.to_string())?
+        );
+    } else {
+        run_progress(options, format_args!("verdict  {verdict:?}"));
+    }
     Ok(verdict)
 }
 
@@ -1137,25 +1353,13 @@ mod option_tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn repository_runs_symlink_cannot_redirect_state() {
-        use std::os::unix::fs::symlink;
-
-        let repository = std::env::temp_dir().join(format!(
-            "reviewctl-state-symlink-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(repository.join(".review/reviewers")).unwrap();
-        symlink("reviewers", repository.join(".review/runs")).unwrap();
+    fn repository_state_is_always_refused() {
+        let repository = tempfile::tempdir().unwrap();
         let options = Options {
-            repo: repository.clone(),
-            pipeline: ".review/pipelines/heavy.toml".into(),
-            state: Some(repository.join(".review/runs/architecture")),
+            repo: repository.path().to_path_buf(),
+            pipeline: ".af/pipelines/review.toml".into(),
+            state: Some(repository.path().join(".af/state/architecture")),
             campaign: Some("architecture".to_string()),
             focus: None,
             authority: None,
@@ -1165,9 +1369,9 @@ mod option_tests {
             git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
+            json: false,
         };
         let error = options.resolved_state_dir().unwrap_err();
-        assert!(error.contains("is a symlink"));
-        std::fs::remove_dir_all(repository).unwrap();
+        assert!(error.contains("state must live under XDG state"));
     }
 }

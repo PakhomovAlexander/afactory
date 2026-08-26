@@ -92,8 +92,16 @@ fn a_real_success_stream_yields_the_answer_and_the_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (adapter, cas, sandbox) = adapter_for(dir.path(), ANSWER, SUCCESS_EVENTS, 0);
 
-    let returned = adapter.invoke(&cas, &sandbox, &Default::default()).unwrap();
+    let receipt = adapter
+        .invoke_receipted(&cas, &sandbox, &Default::default())
+        .unwrap();
+    let returned = receipt.returned;
     assert_eq!(returned.cost_tokens, 12746 - 4608 + 49);
+    assert_eq!(receipt.usage.input_tokens, Some(12746));
+    assert_eq!(receipt.usage.cache_read_tokens, Some(4608));
+    assert_eq!(receipt.usage.output_tokens, Some(49));
+    assert_eq!(receipt.usage.reasoning_tokens, Some(42));
+    assert_eq!(receipt.usage.chargeable_tokens, returned.cost_tokens);
     assert_eq!(returned.output.findings.len(), 1);
     assert_eq!(returned.output.findings[0].title, "Unbounded loop");
     assert!(
