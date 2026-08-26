@@ -24,6 +24,7 @@ fn authority(cas: &Cas, label: &str) -> Authority {
     let pipeline = cas
         .put(
             br#"version = 2
+check_timeout_seconds = 3600
 [subject]
 kind = "whole-tree"
 [[nodes]]

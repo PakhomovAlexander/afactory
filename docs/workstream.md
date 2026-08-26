@@ -2,7 +2,8 @@
 
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
-its pinned external convergence review awaits explicit disclosure approval. v3 remains deferred.
+its pinned external convergence review is approved and in bootstrap preflight. v3 remains
+deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.

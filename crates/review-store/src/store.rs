@@ -651,6 +651,8 @@ struct AuthorityDefinition {
     #[serde(default)]
     checks: Vec<toml::Value>,
     #[serde(default)]
+    check_timeout_seconds: Option<u64>,
+    #[serde(default)]
     edges: Vec<toml::Value>,
     #[serde(default)]
     budgets: Option<toml::Value>,

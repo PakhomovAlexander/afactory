@@ -863,3 +863,12 @@ pass. The full pinned Rust formatting, warnings-denied Clippy, workspace test, d
 byte-identical fixture gate passes via `make check`. The pinned external correctness review was
 not started because transmitting the private diff requires explicit approval; no code or model
 tokens were disclosed or spent.
+
+After approval, pinned `af v0.1.0` and then `v0.2.0` both refused the checked-in pipeline before
+reviewer dispatch. The main config loader accepts `check_timeout_seconds = 3600`, but the store's
+second authority-only TOML reader omitted that field. The M3.1 branch now mirrors it as a typed
+optional integer, and the campaign-authority fixture includes the explicit timeout. The focused
+suite and full `make check` gate pass. The released v0.2 bootstrap reviewer can use a scratch
+pipeline projection that omits only this explicit value: 3600 is that release's exact built-in
+default, so reviewer, budget, gate, timeout, and convergence authority remain unchanged. Both
+failed preflights spent zero model tokens and disclosed no code.
