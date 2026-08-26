@@ -1,8 +1,8 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
-implementation dogfood are complete and fully verified. M3.1 is next; v3 delivery remains
-deferred.
+implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
+its pinned external convergence review awaits explicit disclosure approval. v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -17,8 +17,8 @@ ADR-0004 are superseded. M0–M2 are complete; M2's first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
 migration, Project Hub external cutover, bounded Provider Operation dogfood slice, and first v2
 implementation dogfood are also complete. M2 converged under the recorded correctness-only review
-policy. Product v1/v2 now establish the final local review and verified implementation boundaries;
-M3.1 resumes from that evidence.
+policy. Product v1/v2 establish the final local review and verified implementation boundaries.
+M3.1 now builds canonical Report identity and immutable Finding Sets on that evidence.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -40,16 +40,18 @@ The findings that now drive the roadmap, all verified in code or the recovered d
 1. **Reviewers cannot see the change.** `Capture::committed` is `git ls-tree -r` — blobs only, no
    `.git`, no base. `ReviewerInputs` carries one field, `prior_findings`. Both reviewer prompts
    open with *"Read the change in the working directory you were given."*
-2. **Canonical Report content is hidden by the projection.** `fix` exists in the referenced CAS
-   Report, but Ledger replay ignores that authority and no command prints it.
-3. **Reviewer semantics are discarded.** Disputes and benchmark demands are parsed and dropped;
-   omission of a prior Finding is treated as a Drop even though no explicit disposition exists.
+2. **Canonical Report authority is now projected for new Campaigns.** M3.1 reads validated,
+   enveloped Reports while retaining the frozen legacy reader for old Campaigns.
+3. **Explicit dispositions remain M3.2.** Flat `refute` answers project directly to contested
+   status, but disputes and Drops are not immutable attached artifacts; reviewer silence still
+   stands in for an explicit disposition.
 4. **A Rust `Debug` impl is load-bearing for convergence.** `publish_report` persists
    `format!("{verdict:?}")`, and the round counter reads it back with
    `.starts_with("Incomplete")`. Renaming `RunVerdict::Incomplete` makes incomplete rounds start
    *closing* rounds, with no compile error.
-5. **Legacy grouping is used as identity.** The typed Report contract says path/title is only a
-   hint, but the live Ledger still keys canonical state by `sha256(file + "|" + title)`.
+5. **Canonical identity is policy-versioned.** New Campaigns derive a Finding from its selected
+   Report artifact unless an explicit relation or exact trusted occurrence key attaches it;
+   legacy Campaigns permanently retain `sha256(file + "|" + title)` replay.
 6. **Campaign authority can drift.** Every Round reloads pipeline and package bytes from the live
    checkout; candidate content can change authority while retaining one Campaign identity.
 7. **Evidence has no lifecycle.** Demands have no durable state and `fixed` may be asserted
@@ -119,6 +121,8 @@ and verification prerequisites exist.
       token, Gate, evaluator, Snapshot, and outcome evidence beside green `make check`.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
+  - [x] M3.1 implementation and local `make check`.
+  - [ ] M3.1 pinned external convergence review.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views.
@@ -273,7 +277,11 @@ materializable derived Snapshot, fresh read-only Gates, an independent evaluator
 and explicit no-delivery outcomes. Both pass `make check`. Candidate `caab486` then completed the
 first real implementation dogfood: the kernel Gate passed, the evaluator approved, and Snapshot
 `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
-Resume M3.1; do not pull v3 delivery forward merely to write this Snapshot back.
+M3.1 is implemented in `agent/m3-1`: canonical new Campaigns now persist enveloped Reports,
+derive path-independent Findings, and pass exact immutable `FindingSet@1` IDs across barriers;
+legacy replay remains frozen. The full local `make check` gate passes. Complete the pinned external
+review before starting M3.2; do not pull v3 delivery forward merely to write the dogfood Snapshot
+back.
 The owner then retired the two-specialist clean-window policy after roughly four million tokens in
 this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
 ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another

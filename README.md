@@ -82,6 +82,7 @@ fixtures/
 |---|---|
 | `artifact-envelope-v1.json` | type, content and artifact IDs, producer, exact inputs, subject snapshot |
 | `finding-report-v1.json` | one immutable claim by one attempt — no status, no round, no resolution |
+| `finding-set-v1.json` | one Subject-bound canonical Finding view at a ledger barrier |
 | `source-snapshot-v1.json` | content identity, never a branch; committed, synthetic-worktree or derived |
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
 | `run-event-v1.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
@@ -148,13 +149,20 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
   content be stored once while two provenance records stay distinct. Numbers outside the range
   it can format exactly are **refused**, not guessed at — a digest that is subtly wrong for
   large magnitudes is worse than one that fails loudly.
-- **`cas`** — write temp, fsync, rename, fsync the directory. Objects are verified against their
-  digest on read, because a store that trusts its own filenames cannot detect corruption.
+- **`cas`** — write temp, fsync, rename, fsync the directory. Raw payloads are addressed by
+  `content_id`; typed envelopes are also stored and addressed directly by `artifact_id`, with both
+  envelope and payload identity verified on read. A store that trusts filenames cannot detect
+  corruption.
 - **`store`** — SQLite in WAL mode, one writer, a dense per-run sequence that is the ordering
   authority (never `occurred_at`). It **refuses** an event referencing an artifact the CAS does
   not already hold, which turns a class of crash corruption into an immediate error.
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
+
+New Campaigns use the canonical identity policy: a selected Report artifact creates one
+path-independent Finding unless an explicit relation or exact trusted occurrence key attaches it.
+Each barrier publishes an immutable, Subject-bound `FindingSet@1`; legacy Campaigns retain their
+recorded path/title fingerprint policy and permanent reader.
 
 ### Acceptance: the kernel reaches the harness's conclusions
 

@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{SubjectKind, is_digest};
 
+/// Permanent replay policy for campaigns opened before canonical Finding identity landed.
+pub const LEGACY_FINDING_IDENTITY_POLICY: &str = "legacy-path-title@1";
+
+/// Path-independent identity policy used by every newly opened campaign.
+pub const CANONICAL_FINDING_IDENTITY_POLICY: &str = "report-derived@1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityFileV1 {

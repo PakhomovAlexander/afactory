@@ -842,3 +842,24 @@ outcome is `verified`, delivery is explicitly `none`, and the source checkout re
 complete seven-event SQLite journal and its 317 CAS objects are preserved under XDG state at
 `~/.local/state/af/dogfood/task-8732de714edb4550a628/`. The verified `make dogfood` change remains
 an internal Snapshot; integrating it is v3 delivery work, not part of this gate. M3.1 is next.
+
+## 2026-08-26 — M3.1 canonical identity locally verified
+
+New Campaign manifests now select `report-derived@1`; existing manifests retain permanent
+`legacy-path-title@1` replay. The canonical adapter publishes each selected flat result as a
+validated `FindingReport@1` envelope with exact Attempt, Subject Snapshot, and invocation inputs.
+The reducer derives new Finding IDs from semantic Report artifact IDs, attaches only by an exact
+trusted occurrence key or explicit corroboration, and never collapses identity through disputes.
+
+Every canonical ledger barrier now publishes a validated, Subject-bound `FindingSet@1`. Its
+envelope names the prior Set and selected Report inputs, its kernel-operation producer binds the
+reducer and policy versions, and the graph passes the exact artifact ID rather than ambient Ledger
+state. Typed envelopes are directly CAS-addressable by artifact ID while their payload remains
+deduplicated by content ID. Immutable disposition relation/resolution artifacts remain M3.2;
+their FindingSet input lists are intentionally empty in this minimal milestone.
+
+Focused identity, provenance, replay, schema-parity, CAS-addressing, and end-to-end pipeline tests
+pass. The full pinned Rust formatting, warnings-denied Clippy, workspace test, doc-test, and
+byte-identical fixture gate passes via `make check`. The pinned external correctness review was
+not started because transmitting the private diff requires explicit approval; no code or model
+tokens were disclosed or spent.

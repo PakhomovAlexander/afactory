@@ -57,3 +57,57 @@ impl Producer {
         matches!(self, Producer::KernelOperation { .. })
     }
 }
+
+impl ArtifactEnvelope {
+    /// Enforce the language-neutral envelope shape before identity verification.
+    pub fn validate(&self) -> Result<(), String> {
+        if !crate::is_artifact_type(&self.artifact_type)
+            || !crate::is_digest(&self.artifact_id)
+            || !crate::is_digest(&self.content_id)
+            || self.input_artifacts.iter().any(|id| !crate::is_digest(id))
+            || self
+                .subject_snapshot_id
+                .as_deref()
+                .is_some_and(|id| !crate::is_digest(id))
+            || !self.payload.is_object()
+        {
+            return Err("artifact envelope contains invalid type, IDs, or payload".into());
+        }
+        match &self.producer {
+            Producer::Attempt {
+                run_id,
+                node_id,
+                attempt_id,
+            } => {
+                if run_id.trim().is_empty()
+                    || node_id.trim().is_empty()
+                    || !is_monotonic_id(attempt_id)
+                {
+                    return Err("artifact envelope contains invalid Attempt producer".into());
+                }
+            }
+            Producer::KernelOperation {
+                run_id,
+                node_id,
+                operation_id,
+            } => {
+                if run_id.trim().is_empty()
+                    || operation_id.trim().is_empty()
+                    || node_id
+                        .as_deref()
+                        .is_some_and(|node| node.trim().is_empty())
+                {
+                    return Err("artifact envelope contains invalid kernel producer".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_monotonic_id(value: &str) -> bool {
+    value.len() == 26
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+}

@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
-    Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
-    SubjectKind, SubjectV1,
+    FindingSetEntryV1, FindingSetV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PortArtifactsV1, PortCardinality,
+    Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ReviewerPackageV1,
+    RunEvent, RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
@@ -867,4 +867,40 @@ fn artifact_envelope_roundtrips_both_producers() {
         );
         assert_eq!(envelope.producer.is_deterministic(), deterministic);
     }
+}
+
+#[test]
+fn finding_set_roundtrips_as_an_exact_reducer_projection() {
+    let digest = format!("sha256:{}", "d".repeat(64));
+    let set = FindingSetV1 {
+        subject_id: digest.clone(),
+        round: 1,
+        prior_finding_set_id: digest.clone(),
+        reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+        identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+        selected_report_ids: vec![digest.clone()],
+        relation_ids: Vec::new(),
+        resolution_ids: Vec::new(),
+        findings: vec![FindingSetEntryV1 {
+            finding_id: digest.clone(),
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(7),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: "correctness".into(),
+            last_seen_round: 1,
+            report_ids: vec![digest],
+        }],
+    };
+    set.validate().unwrap();
+    let value = serde_json::to_value(&set).unwrap();
+    assert_valid("finding-set-v1.json", &value);
+    assert_eq!(serde_json::from_value::<FindingSetV1>(value).unwrap(), set);
 }

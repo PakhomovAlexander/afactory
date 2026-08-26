@@ -319,6 +319,80 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
     );
 }
 
+#[test]
+fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact_set_id() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer(
+        "architecture",
+        reviewer("architecture", "Same presentation", "major"),
+    )
+    .with_reviewer(
+        "performance",
+        reviewer("performance", "Same presentation", "major"),
+    );
+
+    let report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&kernel);
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert_eq!(kernel.ledger().len(), 2, "path and title are not identity");
+    let NodeOutcome::Completed { outputs } = report.outcome("ledger").unwrap() else {
+        panic!("canonical ledger did not complete")
+    };
+    let set_id = outputs["findings"][0].clone();
+    let envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(&set_id).unwrap()).unwrap();
+    assert_eq!(set_id, envelope.artifact_id, "the edge carries the Set ID");
+    review_store::validate_envelope(&envelope).unwrap();
+    assert_eq!(
+        envelope.artifact_type,
+        review_core::contract::FINDING_SET_V1
+    );
+    assert!(envelope.subject_snapshot_id.is_some());
+    let set: review_core::FindingSetV1 = serde_json::from_value(envelope.payload).unwrap();
+    set.validate().unwrap();
+    assert_eq!(set.selected_report_ids.len(), 2);
+    assert_eq!(set.findings.len(), 2);
+    assert!(
+        envelope.producer.is_deterministic(),
+        "a ledger barrier is a kernel operation"
+    );
+
+    drop(kernel);
+    let round = store.latest_round_started("run").unwrap().unwrap();
+    let authority =
+        review_pipeline::RoundAuthority::load(&store, &cas, "run", &round.event_id).unwrap();
+    let loaded = review_config::Definition::from_toml(HEAVY_AUTHORITY)
+        .unwrap()
+        .load()
+        .unwrap();
+    let replay = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap();
+    let replayed = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&replay);
+    let NodeOutcome::Completed { outputs } = replayed.outcome("ledger").unwrap() else {
+        panic!("canonical ledger replay did not complete")
+    };
+    assert_eq!(outputs["findings"], [set_id]);
+}
+
 /// The property the gate exists for, end to end: a change that does not build produces **no
 /// reviewer artifacts at all** — not reviewer artifacts nobody reads.
 #[test]

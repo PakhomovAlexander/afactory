@@ -208,6 +208,20 @@ pub fn artifact_id(envelope: &review_core::ArtifactEnvelope) -> Result<String, C
     Ok(digest(DOMAIN_ARTIFACT, &canonicalize(&value)?))
 }
 
+/// Validate both identities carried by a decoded artifact envelope.
+pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(), String> {
+    envelope.validate()?;
+    let content = content_id(&envelope.payload).map_err(|error| error.to_string())?;
+    if content != envelope.content_id {
+        return Err("artifact envelope content_id disagrees with its payload".into());
+    }
+    let artifact = artifact_id(envelope).map_err(|error| error.to_string())?;
+    if artifact != envelope.artifact_id {
+        return Err("artifact envelope artifact_id disagrees with its provenance".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

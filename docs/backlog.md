@@ -302,16 +302,21 @@ internal renaming are v3 work after this dogfood produces evidence.
 
 ## M3 · Canonical claims and explicit dispositions
 
-The live path validates `FindingReport@1` and then discards its identity semantics; it also
-parses disputes but drops them and infers repaired claims from reviewer silence. M3 makes the
-typed claim model authoritative on M2's immutable Subjects before fix verification depends on it.
+Before M3.1, the live path validated `FindingReport@1` and then discarded its identity semantics;
+it also projected flat `refute` answers directly to status events and inferred repaired claims
+from reviewer silence. M3 makes the typed claim model authoritative on M2's immutable Subjects
+before fix verification depends on it.
 
 ### M3.1 — Complete typed Report ingestion and canonical Finding identity
 
-The live path validates each legacy finding through `FindingReport@1`, then discards that typed
-Report's relations and keys the Ledger by `sha256(file + "|" + normalized_title)`. That directly
-contradicts the contract, which calls path/title a dedupe hint and permits auto-attachment only by
-an explicit relation or an exact trusted occurrence key.
+**Status: implementation and local verification complete (2026-08-26); milestone remains open
+pending the pinned external convergence review.**
+
+The pre-M3.1 path validated each legacy finding through `FindingReport@1`, then discarded that
+typed Report's relations and keyed the Ledger by
+`sha256(file + "|" + normalized_title)`. That directly contradicts the contract, which calls
+path/title a dedupe hint and permits auto-attachment only by an explicit relation or an exact
+trusted occurrence key.
 
 Make the reducer consume immutable `FindingReport@1` artifacts. A Report creates a deterministic
 Finding ID from its selected Report ID unless it explicitly corroborates an existing Finding or
@@ -329,10 +334,17 @@ canonical selected Report/relation/resolution artifact IDs. Its deterministic re
 includes reducer and policy versions; graph edges pass that exact Set ID to reviewers, gates, and
 later reducers instead of querying ambient Ledger state.
 
+The minimal M3.1 boundary publishes canonical Report and FindingSet artifacts. `FindingSet@1`
+reserves relation and resolution artifact-ID lists, but they remain empty until M3.2 makes
+dispositions immutable inputs; flat `refute` compatibility continues to project its legacy status
+event in the meantime.
+
 ### M3.2 — Prior-Finding dispositions become explicit
 
-`docs/self-review-heavy.md` states that *"a dispute lands the finding as `contested`"*. That
-behaviour does not exist; `Status::Contested` is reachable only by a human typing it.
+The flat compatibility adapter currently turns `refute` directly into a
+`FindingResolved(contested)` event. The rendered status therefore exists, but the dispute itself
+is not an immutable attached artifact and the reviewer cannot express complete explicit coverage
+of every assigned prior Finding.
 
 Store each dispute as an immutable attached artifact — source, position, reason, Round, and
 Subject — and move the Finding to `contested`. Blocking is unchanged because contested claims are

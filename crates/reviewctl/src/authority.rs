@@ -240,7 +240,7 @@ fn open_new(
         git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
         budgets,
         focus: options.focus.clone(),
-        finding_identity_policy: "legacy-path-title@1".to_string(),
+        finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
         finding_genesis_id,
         demand_genesis_id,
     };

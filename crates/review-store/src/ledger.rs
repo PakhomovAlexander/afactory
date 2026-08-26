@@ -15,7 +15,10 @@ use std::{
     sync::Arc,
 };
 
-use review_core::{EventType, RoundStartedPayloadV1, Severity, SubjectKind};
+use review_core::{
+    ArtifactEnvelope, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
+    LEGACY_FINDING_IDENTITY_POLICY, Relation, RoundStartedPayloadV1, Severity, SubjectKind,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -108,10 +111,20 @@ impl Status {
 /// One report, kept immutable. The shell harness discarded every report after the first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachedReport {
+    /// CAS ID of the complete envelope or frozen payload referenced by the event.
     pub report_id: String,
+    /// Domain-separated typed Report identity. Absent for pre-envelope history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
     pub round: u32,
     pub source: String,
     pub severity: Severity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Relation>,
     /// The Subject-dependent location selected for presentation from this immutable Report.
     pub file: String,
     pub line: Option<i64>,
@@ -220,6 +233,7 @@ pub struct Ledger {
     scope_authority_failures: Vec<ScopeAuthorityFailure>,
     scope_authority_failure_keys: HashSet<ScopeAuthorityFailure>,
     subject_scope_cache: BTreeMap<String, CachedSubjectScope>,
+    finding_identity_policy: String,
     pub round: u32,
 }
 
@@ -237,6 +251,7 @@ pub struct LedgerProjection {
 struct ActiveScope {
     round: u32,
     subject_id: String,
+    head_snapshot_id: String,
     subject: Arc<SubjectScope>,
 }
 
@@ -244,6 +259,7 @@ struct ActiveScope {
 struct CachedSubjectScope {
     scope: Arc<SubjectScope>,
     change_set_id: Option<String>,
+    head_snapshot_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +315,26 @@ pub struct Convergence {
 }
 
 impl Ledger {
+    pub fn finding_identity_policy(&self) -> &str {
+        if self.finding_identity_policy.is_empty() {
+            LEGACY_FINDING_IDENTITY_POLICY
+        } else {
+            &self.finding_identity_policy
+        }
+    }
+
+    /// Resolve only an exact rule-owned occurrence key. Ambiguous historical state fails closed.
+    pub fn finding_for_occurrence(&self, rule_id: &str, occurrence_key: &str) -> Option<&str> {
+        let mut matches = self.findings.values().filter(|finding| {
+            finding.reports.iter().any(|report| {
+                report.rule_id.as_deref() == Some(rule_id)
+                    && report.occurrence_key.as_deref() == Some(occurrence_key)
+            })
+        });
+        let finding = matches.next()?;
+        matches.next().is_none().then_some(finding.key.as_str())
+    }
+
     /// Fold one event in. Public so an ingest can keep a live projection without re-reading the
     /// whole log after every append — the fold is the same code either way.
     pub fn apply_event(
@@ -317,6 +353,7 @@ impl Ledger {
         cas: &Cas,
     ) -> Result<(), crate::store::StoreError> {
         match event_type {
+            EventType::CampaignOpenedV1 => self.apply_campaign_opened(payload, cas)?,
             EventType::RoundStartedV1 => self.apply_round_started(payload, cas)?,
             EVENT_GENERATION_ADVANCED => {
                 let round = payload
@@ -370,6 +407,14 @@ impl Ledger {
                         ReportProjection::unreadable(report_id, &reason)
                     }
                 };
+                if self.finding_identity_policy() == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+                    && report.artifact_id.is_none()
+                {
+                    return Err(malformed(
+                        "FindingReported@1",
+                        "canonical identity requires an enveloped FindingReport@1",
+                    ));
+                }
                 (report_id.clone(), report)
             }
             ([], true) => (
@@ -392,6 +437,24 @@ impl Ledger {
         if let Some(reason) = report.scope_authority_reason.as_deref() {
             self.record_authority_failure(round, ScopeAuthorityKind::Report, &report_id, reason);
         }
+        if let (Some(active), Some(snapshot_id)) = (
+            self.active_scope.as_ref(),
+            report.subject_snapshot_id.as_deref(),
+        ) && !active.head_snapshot_id.is_empty()
+            && snapshot_id != active.head_snapshot_id
+        {
+            let reason = format!(
+                "Report Subject Snapshot {snapshot_id} disagrees with active Snapshot {}",
+                active.head_snapshot_id
+            );
+            self.record_authority_failure(
+                round,
+                ScopeAuthorityKind::RoundBinding,
+                &report_id,
+                &reason,
+            );
+            report.location = ReportLocation::Unrecorded;
+        }
         let severity = report.severity;
         let unreadable = report.unreadable;
         let (identity_file, identity_line) = report.identity_location();
@@ -399,9 +462,13 @@ impl Ledger {
         report.select_location(selected_location);
         let attached = AttachedReport {
             report_id,
+            artifact_id: report.artifact_id.clone(),
             round,
             source: source.clone(),
             severity,
+            rule_id: report.rule_id.clone(),
+            occurrence_key: report.occurrence_key.clone(),
+            relations: report.relations.clone(),
             file: report.file.clone(),
             line: report.line,
             scope,
@@ -567,6 +634,30 @@ impl Ledger {
         Ok(())
     }
 
+    fn apply_campaign_opened(
+        &mut self,
+        payload: &Value,
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        let opened: CampaignOpenedPayloadV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| malformed("CampaignOpened@1", &error.to_string()))?;
+        let manifest: CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(&opened.campaign_manifest_id)
+                .map_err(|error| {
+                    crate::store::StoreError::Artifact(format!(
+                        "CampaignOpened@1 references unreadable manifest {}: {error}",
+                        opened.campaign_manifest_id
+                    ))
+                })?,
+        )
+        .map_err(|error| malformed("CampaignManifest@1", &error.to_string()))?;
+        manifest
+            .validate()
+            .map_err(|error| malformed("CampaignManifest@1", &error))?;
+        self.finding_identity_policy = manifest.finding_identity_policy;
+        Ok(())
+    }
+
     fn apply_round_started(
         &mut self,
         payload: &Value,
@@ -595,7 +686,7 @@ impl Ledger {
                         .map(|_| ())
                         .map_err(|error| error.to_string())
                 })
-                .map(|()| cached.scope.clone())
+                .map(|()| (cached.scope.clone(), cached.head_snapshot_id.clone()))
         } else {
             let resolved = crate::resolve_subject_scope(cas, &started.subject_id)
                 .map_err(|error| error.to_string())
@@ -616,16 +707,17 @@ impl Ledger {
                     Ok(CachedSubjectScope {
                         scope,
                         change_set_id,
+                        head_snapshot_id: resolved.subject.head_snapshot_id,
                     })
                 });
             if let Ok(cached) = &resolved {
                 self.subject_scope_cache
                     .insert(started.subject_id.clone(), cached.clone());
             }
-            resolved.map(|cached| cached.scope)
+            resolved.map(|cached| (cached.scope, cached.head_snapshot_id))
         };
-        let subject_scope = match resolved_scope {
-            Ok(scope) => scope,
+        let (subject_scope, head_snapshot_id) = match resolved_scope {
+            Ok(authority) => authority,
             Err(reason) => {
                 self.record_authority_failure(
                     started.round,
@@ -633,12 +725,13 @@ impl Ledger {
                     &started.subject_id,
                     &reason,
                 );
-                Arc::new(SubjectScope::Unavailable)
+                (Arc::new(SubjectScope::Unavailable), String::new())
             }
         };
         self.active_scope = Some(ActiveScope {
             round: started.round,
             subject_id: started.subject_id,
+            head_snapshot_id,
             subject: subject_scope,
         });
         Ok(())
@@ -939,6 +1032,8 @@ impl LedgerProjection {
 }
 
 struct ReportProjection {
+    artifact_id: Option<String>,
+    subject_snapshot_id: Option<String>,
     severity: Severity,
     file: String,
     location: ReportLocation,
@@ -947,6 +1042,9 @@ struct ReportProjection {
     body: String,
     fix: Option<String>,
     confidence: Option<f64>,
+    rule_id: Option<String>,
+    occurrence_key: Option<String>,
+    relations: Vec<Relation>,
     unreadable: bool,
     scope_authority_reason: Option<String>,
 }
@@ -984,8 +1082,33 @@ impl ReportProjection {
     }
 
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
+        let (value, artifact_id, subject_snapshot_id) = if value.get("type").is_some() {
+            let envelope: ArtifactEnvelope =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    crate::store::StoreError::Artifact(format!(
+                        "report {report_id} is not an ArtifactEnvelope: {error}"
+                    ))
+                })?;
+            crate::canonical::validate_envelope(&envelope).map_err(|error| {
+                crate::store::StoreError::Artifact(format!("report {report_id}: {error}"))
+            })?;
+            if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
+                return Err(crate::store::StoreError::Artifact(format!(
+                    "report {report_id} has type {}, expected {}",
+                    envelope.artifact_type,
+                    review_core::contract::FINDING_REPORT_V1
+                )));
+            }
+            (
+                envelope.payload,
+                Some(envelope.artifact_id),
+                envelope.subject_snapshot_id,
+            )
+        } else {
+            (value.clone(), None, None)
+        };
         if value.get("locations").is_some() {
-            let report: review_core::FindingReport = serde::Deserialize::deserialize(value)
+            let report: review_core::FindingReport = serde::Deserialize::deserialize(&value)
                 .map_err(|error| {
                     crate::store::StoreError::Artifact(format!(
                         "report {report_id} is not FindingReport@1: {error}"
@@ -1053,6 +1176,8 @@ impl ReportProjection {
                 ReportLocation::Paths(valid_locations)
             };
             return Ok(Self {
+                artifact_id,
+                subject_snapshot_id,
                 severity: report.severity,
                 file,
                 location,
@@ -1061,6 +1186,9 @@ impl ReportProjection {
                 body: report.body,
                 fix: Some(report.fix),
                 confidence: Some(report.confidence),
+                rule_id: report.rule_id,
+                occurrence_key: report.occurrence_key,
+                relations: report.relations,
                 unreadable: false,
                 scope_authority_reason,
             });
@@ -1125,6 +1253,8 @@ impl ReportProjection {
             }])
         };
         Ok(Self {
+            artifact_id,
+            subject_snapshot_id,
             severity,
             file: if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
                 "(change-wide)".to_string()
@@ -1137,6 +1267,9 @@ impl ReportProjection {
             body: required("body")?.to_string(),
             fix: Some(required("fix")?.to_string()),
             confidence,
+            rule_id: None,
+            occurrence_key: None,
+            relations: Vec::new(),
             unreadable: false,
             scope_authority_reason,
         })
@@ -1151,6 +1284,8 @@ impl ReportProjection {
             )
         })?;
         Ok(Self {
+            artifact_id: None,
+            subject_snapshot_id: None,
             severity,
             file: required_string(payload, "imported FindingReported@1", "file")?,
             location: ReportLocation::Unrecorded,
@@ -1159,6 +1294,9 @@ impl ReportProjection {
             body: required_string(payload, "imported FindingReported@1", "body")?,
             fix: None,
             confidence: payload["confidence"].as_f64(),
+            rule_id: None,
+            occurrence_key: None,
+            relations: Vec::new(),
             unreadable: false,
             scope_authority_reason: None,
         })
@@ -1166,6 +1304,8 @@ impl ReportProjection {
 
     fn unreadable(report_id: &str, reason: &str) -> Self {
         Self {
+            artifact_id: None,
+            subject_snapshot_id: None,
             severity: Severity::Blocker,
             file: String::new(),
             location: ReportLocation::Unrecorded,
@@ -1174,6 +1314,9 @@ impl ReportProjection {
             body: reason.to_string(),
             fix: Some("Restore or migrate the exact content-addressed Report artifact".into()),
             confidence: None,
+            rule_id: None,
+            occurrence_key: None,
+            relations: Vec::new(),
             unreadable: true,
             scope_authority_reason: None,
         }

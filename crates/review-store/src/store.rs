@@ -925,6 +925,22 @@ fn validate_plan_ports(
             {
                 validated_change_set = Some(change_set);
             }
+            if affinity == "same_subject"
+                && let Some(value) = prepared.json.get(artifact)
+                && value.get("type").is_some()
+            {
+                let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())
+                    .map_err(|error| {
+                        StoreError::Conflict(format!(
+                            "typed artifact {artifact} is not an envelope: {error}"
+                        ))
+                    })?;
+                if envelope.subject_snapshot_id.as_deref() != Some(subject_snapshot_id) {
+                    return Err(StoreError::Conflict(format!(
+                        "typed artifact {artifact} is bound to the wrong Subject snapshot"
+                    )));
+                }
+            }
         }
         if port.artifact_type == review_core::contract::CHANGE_SET_V1 {
             let expected = subject_change_set_id.ok_or_else(|| {
@@ -1035,14 +1051,37 @@ fn validate_artifact_payload(
             }
         }
         review_core::contract::FINDING_SET_V1 => {
-            exact_keys(object, &["round", "sources", "findings"], artifact_type)?;
-            if value["round"].as_u64().is_none()
-                || !string_array(&value["sources"])
-                || value["findings"].as_u64().is_none()
-            {
-                return Err(StoreError::Conflict(
-                    "FindingSet@1 artifact violates its payload contract".into(),
-                ));
+            if value.get("type").is_some() {
+                let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())
+                    .map_err(|error| {
+                        StoreError::Conflict(format!(
+                            "FindingSet@1 artifact is not an envelope: {error}"
+                        ))
+                    })?;
+                crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+                if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+                    return Err(StoreError::Conflict(
+                        "FindingSet@1 envelope carries the wrong type".into(),
+                    ));
+                }
+                let payload: review_core::FindingSetV1 = serde_json::from_value(envelope.payload)
+                    .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingSet@1 envelope has an invalid payload: {error}"
+                    ))
+                })?;
+                payload.validate().map_err(StoreError::Conflict)?;
+            } else {
+                // Permanent reader for the pre-M3 summary artifact.
+                exact_keys(object, &["round", "sources", "findings"], artifact_type)?;
+                if value["round"].as_u64().is_none()
+                    || !string_array(&value["sources"])
+                    || value["findings"].as_u64().is_none()
+                {
+                    return Err(StoreError::Conflict(
+                        "FindingSet@1 artifact violates its payload contract".into(),
+                    ));
+                }
             }
         }
         _ => {

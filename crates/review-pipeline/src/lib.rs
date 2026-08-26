@@ -173,6 +173,7 @@ pub struct RoundAuthority {
     head_snapshot_id: String,
     head_content_digest: String,
     prior_finding_set_id: String,
+    finding_identity_policy: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
     change_set: Option<Arc<review_store::ResolvedChangeSet>>,
@@ -301,6 +302,7 @@ impl RoundAuthority {
             head_snapshot_id: subject.head_snapshot_id,
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
+            finding_identity_policy: campaign_manifest.finding_identity_policy,
             subject_kind: subject.kind,
             change_set_id,
             change_set,
@@ -755,6 +757,7 @@ pub struct Kernel<'a> {
     replayed_outputs: BTreeMap<String, DurableReceipt>,
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
     reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
+    reviewer_input_artifacts: Mutex<BTreeMap<String, Vec<String>>>,
     replayed_spent: u64,
 }
 
@@ -843,6 +846,20 @@ impl<'a> Kernel<'a> {
         let attempts =
             AttemptLedger::scoped(&authority.round_event_id, replayed.attempt_counts.clone());
         let prior_findings = Some(authority.prior_finding_set_id.clone());
+        let reviewer_input_artifacts = replayed
+            .invocations
+            .iter()
+            .map(|(node, invocation)| {
+                (
+                    node.clone(),
+                    invocation
+                        .inputs
+                        .iter()
+                        .flat_map(|port| port.artifact_ids.iter().cloned())
+                        .collect(),
+                )
+            })
+            .collect();
         Ok(Kernel {
             cas,
             store: Mutex::new(store),
@@ -870,6 +887,7 @@ impl<'a> Kernel<'a> {
             replayed_outputs: replayed.outputs,
             replayed_refusal_histories: replayed.refusal_histories,
             reviewer_selections: Mutex::new(replayed.selected_reviewers),
+            reviewer_input_artifacts: Mutex::new(reviewer_input_artifacts),
             replayed_spent: replayed.committed_tokens,
         })
     }
@@ -2068,11 +2086,11 @@ impl<'a> Kernel<'a> {
     fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let mut results: Vec<(String, LegacyStageOutput)> = Vec::new();
+        let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
-            results.push((node.to_string(), output));
+            results.push((node.to_string(), id.to_string(), output));
             Ok(())
         };
         for (input_port, artifacts) in inputs {
@@ -2129,29 +2147,137 @@ impl<'a> Kernel<'a> {
             }
         }
         // Canonical gather order: node id — not completion order, not artifact digest order.
-        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+        let canonical = self.authority.finding_identity_policy
+            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
+        let canonical_metadata = if canonical {
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let reviewer_inputs = self
+                .reviewer_input_artifacts
+                .lock()
+                .expect("reviewer inputs");
+            Some(
+                results
+                    .iter()
+                    .map(|(node, result_id, _)| {
+                        let selection = selections.get(node).ok_or_else(|| {
+                            format!("selected reviewer result for `{node}` has no Attempt")
+                        })?;
+                        if &selection.result_artifact != result_id {
+                            return Err(format!(
+                                "selected reviewer result for `{node}` disagrees with its Attempt"
+                            ));
+                        }
+                        Ok((
+                            selection.attempt_id.clone(),
+                            reviewer_inputs.get(node).cloned().ok_or_else(|| {
+                                format!("selected reviewer `{node}` has no exact invocation inputs")
+                            })?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            )
+        } else {
+            None
+        };
 
         let projection = self.take_ledger_projection();
-        let (round, finding_count, projection) = {
+        let (round, finding_count, finding_entries, reduction, projection) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =
                 Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
                     .map_err(|e| e.to_string())?
                     .under_round(&self.authority.round_event_id);
-            let stages: Vec<_> = results
-                .iter()
-                .map(|(node, stage)| (node.as_str(), stage))
-                .collect();
-            ingest
-                .add_live_stage_outputs(&stages)
-                .map_err(|e| e.to_string())?;
+            let reduction = match &canonical_metadata {
+                Some(metadata) => {
+                    let stages: Vec<_> = results
+                        .iter()
+                        .zip(metadata)
+                        .map(
+                            |((node, result_id, stage), (attempt_id, input_artifacts))| {
+                                review_store::CanonicalStage {
+                                    source: node,
+                                    stage,
+                                    attempt_id,
+                                    result_artifact_id: result_id,
+                                    input_artifacts,
+                                    subject_snapshot_id: &self.authority.head_snapshot_id,
+                                }
+                            },
+                        )
+                        .collect();
+                    Some(
+                        ingest
+                            .add_canonical_stage_outputs(&stages)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
+                None => {
+                    let stages: Vec<_> = results
+                        .iter()
+                        .map(|(node, _, stage)| (node.as_str(), stage))
+                        .collect();
+                    ingest
+                        .add_live_stage_outputs(&stages)
+                        .map_err(|error| error.to_string())?;
+                    None
+                }
+            };
             (
                 ingest.ledger().round,
                 ingest.ledger().len(),
+                canonical.then(|| finding_set_entries(ingest.ledger())),
+                reduction,
                 ingest.into_projection(),
             )
         };
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
+        if let (Some(entries), Some(reduction)) = (finding_entries, reduction) {
+            let payload = review_core::FindingSetV1 {
+                subject_id: self.authority.subject_id.clone(),
+                round,
+                prior_finding_set_id: self.authority.prior_finding_set_id.clone(),
+                reducer_version: review_core::FINDING_REDUCER_VERSION.to_string(),
+                identity_policy: self.authority.finding_identity_policy.clone(),
+                selected_report_ids: reduction.selected_report_ids,
+                relation_ids: reduction.relation_ids,
+                resolution_ids: Vec::new(),
+                findings: entries,
+            };
+            payload.validate()?;
+            let mut reduction_inputs = vec![self.authority.prior_finding_set_id.clone()];
+            reduction_inputs.extend(reduction.input_artifact_ids);
+            let operation_digest = review_store::content_id(&serde_json::json!({
+                "reducer_version": review_core::FINDING_REDUCER_VERSION,
+                "identity_policy": self.authority.finding_identity_policy,
+                "inputs": reduction_inputs,
+            }))
+            .map_err(|error| error.to_string())?;
+            let (record_id, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::FINDING_SET_V1,
+                    review_core::Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: Some("ledger".into()),
+                        operation_id: format!(
+                            "{}:{}:{}",
+                            review_core::FINDING_REDUCER_VERSION,
+                            self.authority.finding_identity_policy,
+                            operation_digest
+                        ),
+                    },
+                    reduction_inputs,
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(vec![record_id]);
+        }
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.
@@ -2159,7 +2285,7 @@ impl<'a> Kernel<'a> {
             .cas
             .put_json(&serde_json::json!({
                 "round": round,
-                "sources": results.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                "sources": results.iter().map(|(node, _, _)| node).collect::<Vec<_>>(),
                 "findings": finding_count,
             }))
             .map_err(|e| e.to_string())?;
@@ -2214,6 +2340,53 @@ fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, 
         .ok_or("ReviewerResult@1 has no reports array")?;
     object.insert("findings".into(), reports);
     serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+}
+
+fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::FindingSetEntryV1> {
+    ledger
+        .findings()
+        .iter()
+        .map(|finding| {
+            let (file, line, location_unrecorded) =
+                if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                    (None, None, false)
+                } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                    (
+                        Some(finding.identity_file.clone()),
+                        finding.identity_line,
+                        false,
+                    )
+                } else {
+                    (Some(finding.identity_file.clone()), None, true)
+                };
+            review_core::FindingSetEntryV1 {
+                finding_id: finding.key.clone(),
+                status: finding.status.as_str().to_string(),
+                severity: finding.severity,
+                effective_severity: finding.convergence_severity,
+                scope: finding.convergence_scope_label().to_string(),
+                file,
+                line,
+                location_unrecorded,
+                title: finding.title.clone(),
+                body: finding.body.clone(),
+                fix: finding.fix.clone(),
+                confidence: finding.confidence,
+                source: finding.source.clone(),
+                last_seen_round: finding.last_seen_round,
+                report_ids: finding
+                    .reports
+                    .iter()
+                    .map(|report| {
+                        report
+                            .artifact_id
+                            .clone()
+                            .unwrap_or_else(|| report.report_id.clone())
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
@@ -2309,6 +2482,12 @@ impl Dispatch for Kernel<'_> {
                 .node(&node.id)
                 .referencing(artifact_ids(inputs)),
             )?;
+        }
+        if node.kind == NodeKind::Reviewer {
+            self.reviewer_input_artifacts
+                .lock()
+                .expect("reviewer inputs")
+                .insert(node.id.clone(), artifact_ids(inputs));
         }
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             if !self.reviewers.contains_key(&node.id) {
