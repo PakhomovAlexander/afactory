@@ -919,3 +919,22 @@ reproduction—passes.
 The v5 verdict remains honestly `Exhausted`: reaching the immutable two-Round ceiling is not
 convergence, even when every reported Finding is subsequently fixed. M3.1 stays open until a fresh
 pinned Campaign returns the required clean Round.
+
+## 2026-08-27 — M3.1 v6 Round 1 corrections locally verified
+
+Fresh pinned Campaign `m3-1-canonical-identity-v6` reviewed candidate `c6e6af7` against Base
+`e792399` with release `v0.2.0`, one Claude Opus correctness reviewer at high effort, a 300,000
+token Attempt reservation, and the one-million-token Run cap. Round 1 spent 346,086 chargeable
+tokens and opened one major and three minor Findings.
+
+Commit `517e0f8` makes canonical lineage inspect every pinned ledger output port and fail closed
+when a ledger receipt yields no FindingSet, closes FindingSet validation and Campaign Manifest
+schema parity, and records the deliberate M3.2 boundary for reviewer/gate Set wiring. A direct
+M3.1 wiring experiment was rejected by the Campaign-loop gate: immutable Sets do not yet carry
+post-publication operator resolutions, so feeding them back now resurrects fixed/rejected claims.
+The `PriorFindings@1` compatibility projection remains until M3.2 makes dispositions immutable
+Set inputs.
+
+The v6 Ledger has four fixed Findings and zero open. Formatting, warnings-denied Clippy, all
+workspace tests and doc tests, and byte-identical fixture reproduction pass. Round 1 is honestly
+`Fail(NotConverged)`; Round 2 still must confirm the fixes and supply the required clean Round.
