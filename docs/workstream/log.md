@@ -1068,3 +1068,19 @@ the current gate root at runtime. The full `scripts/verify.sh` gate passes again
 cache that produced the failure, fixture reproduction remains byte-identical, and all eleven
 client-pilot tests pass. Restart the incomplete zero-token Round on this expanded exact candidate;
 a fresh pinned Pass remains the V3.1 handoff gate.
+
+## 2026-08-27 — V3.1 fresh Campaign passed and milestone closed
+
+Round 1 epoch 2 of pinned Campaign `v3-1-client-pilot-v3` reviewed candidate `814d3d0` against
+Base `9d8e0e0` with release `v0.2.0` and one high-effort Claude Opus correctness reviewer. Both
+gates passed in the fresh materialized sandbox, proving the runtime workspace-root correction
+against the real shared-cache boundary. The reviewer spent 279,039 chargeable tokens and returned
+Pass with three minor Findings.
+
+Commit `d061d27` synchronizes the binding `AGENTS.md` status, converts decoded ignored paths to
+Git `:(literal)` byte pathspecs before staging, and derives the optional template-authority test
+from the runtime workspace root. Literal staging was reproduced with bracketed and leading-colon
+filenames; the focused definition suite passes 25/25, the full kernel gate and byte-identical
+fixture reproduction pass, and all eleven client-pilot tests pass. All three Findings are fixed
+and the Campaign Ledger has zero open. V3.1 is complete for trusted design-partner pilots;
+publishing a client release remains a separate human action.

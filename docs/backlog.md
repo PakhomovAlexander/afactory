@@ -300,9 +300,9 @@ internal renaming are v3 work after this dogfood produces evidence.
 
 ### V3.1 — Deliver a verified Snapshot to a new local worktree
 
-**Status: implementation, local verification, and the real trusted-repository pilot are complete
-(2026-08-27). The external two-Round Campaign's seven Findings are fixed and locally green; the
-Campaign exhausted, so a fresh pinned Campaign must return Pass.**
+**Status: complete for trusted design-partner pilots (2026-08-27). Fresh pinned Campaign
+`v3-1-client-pilot-v3` returned Pass; its three minor Findings are fixed and the Ledger has zero
+open. Publishing a client release remains a separate human action.**
 The first v3 slice delivers only an exact verified Task result to a new local branch and linked
 worktree after explicit Task-ID confirmation.
 The target must be a clean repository at the Task's recorded source Snapshot; both branch and path
