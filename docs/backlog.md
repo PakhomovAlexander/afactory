@@ -301,8 +301,9 @@ internal renaming are v3 work after this dogfood produces evidence.
 ### V3.1 — Deliver a verified Snapshot to a new local worktree
 
 **Status: implementation, local verification, and the real trusted-repository pilot are complete
-(2026-08-27); external correctness review remains required.** The first v3 slice delivers only an
-exact verified Task result to a new local branch and linked worktree after explicit Task-ID confirmation.
+(2026-08-27). External Round 1 Findings are fixed and locally green; a confirming Round remains.**
+The first v3 slice delivers only an exact verified Task result to a new local branch and linked
+worktree after explicit Task-ID confirmation.
 The target must be a clean repository at the Task's recorded source Snapshot; both branch and path
 must be absent. The transition is durable, idempotent, recoverable, and locally verified before it
 is reported complete. It never mutates the current checkout, commits, pushes, opens a pull
@@ -325,9 +326,8 @@ before fix verification depends on it.
 
 ### M3.1 — Complete typed Report ingestion and canonical Finding identity
 
-**Status: implementation and local verification complete (2026-08-27); v4/v5 exhausted with
-seventeen fixed Findings, and v6 exhausted with six fixed Findings and zero open. The milestone
-remains open pending a fresh pinned Campaign that returns the required clean Round.**
+**Status: complete (2026-08-27). Fresh pinned Campaign v7 returned Pass in Round 1; its three
+minor Findings are fixed, the Ledger has zero open, and the full local gate passes.**
 
 The pre-M3.1 path validated each legacy finding through `FindingReport@1`, then discarded that
 typed Report's relations and keyed the Ledger by

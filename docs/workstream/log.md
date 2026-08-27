@@ -1011,3 +1011,28 @@ recovery may remove only an empty worktree and otherwise fails closed. Regressio
 modified bytes, deletion of a derived file, and staged index changes after the terminal receipt is
 lost; every case retains the branch, worktree, and prepared event. The focused eight-test delivery
 suite and the complete `make check` gate pass.
+
+## 2026-08-27 — M3.1 v7 passed and milestone closed
+
+Fresh pinned Campaign `m3-1-canonical-identity-v7` reviewed candidate `9d8e0e0` against Base
+`e792399` with release `v0.2.0` and one high-effort Claude Opus correctness reviewer. Round 1
+spent 346,321 chargeable tokens and returned Pass with three minor Findings. Commit `bff36f4`
+makes `effective_severity` presence-required, enforces coherent canonical FindingSet locations,
+and binds non-reviewer gather inputs through validated graph provenance and durable outputs. The
+v7 Ledger has three fixed Findings and zero open, and the full `make check` gate passes. M3.1 is
+complete; resume at M3.2.
+
+## 2026-08-27 — V3.1 external Round 1 corrections locally verified
+
+Pinned Campaign `v3-1-client-pilot-v2` reviewed candidate `6e92d8a` against Base `9d8e0e0` with
+release `v0.2.0` and the same one-reviewer policy. Round 1 spent 213,903 chargeable tokens and
+opened one major and three minor Findings. Commit `f11a09f` recovers an empty unpopulated
+per-worktree index without weakening operator-staging or filesystem guards, keeps sealed receipts
+inspectable after operator use without re-attesting current bytes, aborts the runbook installation
+on checksum failure, and records losslessly encoded ignored Snapshot paths in the delivery
+receipt and operator guidance.
+
+All four Findings are fixed and the Campaign Ledger has zero open. The integrated candidate also
+contains the verified M3.1 corrections. Formatting, warnings-denied Clippy, all workspace and doc
+tests, byte-identical fixture reproduction, the full nine-test pilot suite, and markdown lint pass.
+A confirming external Round remains required before V3.1 closes.

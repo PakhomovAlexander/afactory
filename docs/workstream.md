@@ -1,11 +1,11 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
-implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
-v4/v5 exhausted with seventeen fixed Findings; v6 exhausted with six more, all fixed and verified.
-A fresh pinned Campaign must still establish convergence. The accepted V3.1 local-delivery slice
-is implemented, locally green, and proven against the real v2 dogfood Task; its external review
-remains open, and broader v3 remains deferred.
+implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
+v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
+local-delivery slice is implemented and proven against the real v2 dogfood Task; its external
+Round 1 Findings are fixed and locally green, with a confirming Round still required. Broader v3
+remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -131,7 +131,7 @@ and verification prerequisites exist.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
-  - [ ] M3.1 pinned external convergence review.
+  - [x] M3.1 pinned external convergence review.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views.
@@ -286,14 +286,12 @@ materializable derived Snapshot, fresh read-only Gates, an independent evaluator
 and explicit no-delivery outcomes. Both pass `make check`. Candidate `caab486` then completed the
 first real implementation dogfood: the kernel Gate passed, the evaluator approved, and Snapshot
 `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
-M3.1 is implemented in `agent/m3-1`: canonical new Campaigns now persist enveloped Reports,
-derive path-independent Findings, and pass exact immutable `FindingSet@1` IDs across barriers;
-legacy replay remains frozen. Pinned Campaigns `m3-1-canonical-identity-v4` and
-`m3-1-canonical-identity-v5` each exhausted their two-Round ceiling. All seventeen Findings across
-them are fixed. Fresh v6 opened six more Findings across two Rounds; commits `517e0f8` and
-`93cef0d` fix all six, the v6 Ledger has zero open, and the full local `make check` gate passes.
-Because v6 exhausted rather than passed, open a fresh pinned Campaign and require its clean Round
-before starting M3.2. ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
+M3.1 is complete: canonical new Campaigns persist enveloped Reports, derive path-independent
+Findings, and pass exact immutable `FindingSet@1` IDs across barriers; legacy replay remains
+frozen. Campaigns v4/v5 exhausted with seventeen fixed Findings, v6 exhausted with six more, and
+fresh Campaign `m3-1-canonical-identity-v7` returned Pass in Round 1. Commit `bff36f4` fixes its
+three minor Findings, its Ledger has zero open, and the full local gate passes. Resume M3 at M3.2.
+ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,
 prepared and terminal delivery records, process serialization, owned-ref rollback/recovery,
@@ -307,7 +305,12 @@ review remains before partner handoff. A final local safety audit found that pre
 recovery could force-remove an operator-modified worktree when its refs and HEAD were unchanged.
 Commit `09853ac` now requires the index to remain at the source tree and refuses recovery rollback
 for any non-empty worktree whose bytes were not observed during the current creation attempt;
-filesystem edits, deletions, and staged changes are regression-tested and preserved.
+filesystem edits, deletions, and staged changes are regression-tested and preserved. External
+Campaign `v3-1-client-pilot-v2` Round 1 then spent 213,903 tokens and opened one major and three
+minor Findings. Commit `f11a09f` fixes all four: empty-index recovery no longer wedges, sealed
+repeat remains inspectable after operator use, checksum failure aborts installation, and ignored
+Snapshot paths are explicit in the receipt and runbook. The Ledger has zero open and both
+`make check` and `make pilot-check` pass; run the confirming Round on this integrated candidate.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
