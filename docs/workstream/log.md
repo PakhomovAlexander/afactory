@@ -996,3 +996,18 @@ source and derived Snapshots, and recorded `remote_actions: []`. Git status show
 modified files and one new script produced by the verified Task; no source deletion was staged.
 The delivered worktree's `make dogfood-contract` passed. Pinned external correctness review is
 the only remaining V3.1 handoff gate.
+
+## 2026-08-27 — Recovery preserves operator work
+
+A requirement audit against ADR-0031 found that prepared-state recovery verified ownership refs,
+branch, HEAD, and repository identity before `git worktree remove --force`, but did not prove that
+the operator had left the delivered filesystem and index untouched. A crash followed by a human
+edit could therefore make exact verification fail and then lose that edit during rollback.
+
+Commit `09853ac` separates rollback of the still-running creation attempt from later crash
+recovery. Both paths require unchanged owned refs, branch, HEAD, repository identity, and a source
+index. The current attempt may remove only bytes that are an exact subset of its derived Manifest;
+recovery may remove only an empty worktree and otherwise fails closed. Regression tests simulate
+modified bytes, deletion of a derived file, and staged index changes after the terminal receipt is
+lost; every case retains the branch, worktree, and prepared event. The focused eight-test delivery
+suite and the complete `make check` gate pass.

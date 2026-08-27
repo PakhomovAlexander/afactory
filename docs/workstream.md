@@ -303,7 +303,11 @@ worktree. Commit `41c085d` populates the per-worktree index with plumbing-only `
 exact replay returned delivery receipt
 `delivery-b6ba56b39cac1793e7c96f160b82f265e4630eac6e497bfb64a1211fd5365aa6` with no remote
 actions. The delivered `make dogfood-contract` and the full kernel gate pass. Pinned external
-review remains before partner handoff.
+review remains before partner handoff. A final local safety audit found that prepared-state
+recovery could force-remove an operator-modified worktree when its refs and HEAD were unchanged.
+Commit `09853ac` now requires the index to remain at the source tree and refuses recovery rollback
+for any non-empty worktree whose bytes were not observed during the current creation attempt;
+filesystem edits, deletions, and staged changes are regression-tested and preserved.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
