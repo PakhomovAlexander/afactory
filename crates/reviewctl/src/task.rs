@@ -547,6 +547,10 @@ impl DeliveryGit {
                 "-c",
                 "core.attributesFile=/dev/null",
                 "-c",
+                "core.sparseCheckout=false",
+                "-c",
+                "core.sparseCheckoutCone=false",
+                "-c",
                 "diff.external=",
                 "-c",
                 "protocol.allow=never",
@@ -601,7 +605,11 @@ impl DeliveryGit {
                 .map_err(|_| format!("Git returned a non-UTF-8 object ID for {reference}"))?;
             return Ok(Some(oid.trim().to_string()));
         }
-        if output.status.code() == Some(1) && output.stderr.is_empty() {
+        // `rev-parse --verify --quiet` uses exit 1 to mean that the ref does not
+        // resolve. Git may still print a platform warning on stderr (for example
+        // macOS falling back from DARWIN_USER_TEMP_DIR), which does not turn the
+        // missing ref into an infrastructure failure.
+        if output.status.code() == Some(1) {
             return Ok(None);
         }
         Err(format!(
@@ -1173,6 +1181,10 @@ fn execute_delivery(
     )?;
     let worktree = Path::new(&prepared.target.worktree);
     ensure_empty_linked_worktree(worktree)?;
+    // `--no-checkout` prevents candidate-controlled filters from executing, but also starts with
+    // an empty per-worktree index. Populate that index from the immutable source tree through
+    // plumbing only, without touching the still-empty worktree.
+    DeliveryGit::new(worktree, git_home).require(["read-tree", "HEAD"], None)?;
     review_source_git::materialize(&assets.derived_manifest, cas, worktree)
         .map_err(|error| format!("materializing verified Snapshot: {error}"))?;
     verify_existing_delivery(git, git_home, assets, prepared)
@@ -1255,6 +1267,21 @@ fn verify_existing_delivery(
         != prepared.source_revision
     {
         return Err("delivered branch no longer points at the Task source revision".into());
+    }
+    let staged = git.run(
+        [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+        ],
+        None,
+    )?;
+    if !staged.status.success() {
+        return Err("delivered worktree index no longer equals the Task source tree".into());
     }
     let delivered_repo = Repo::open(worktree, git_home);
     if delivered_repo

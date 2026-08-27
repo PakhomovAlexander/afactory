@@ -242,6 +242,23 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
         std::fs::read_to_string(worktree.join("proof.generated")).unwrap(),
         "ignored but delivered\n"
     );
+    let delivered_status = Command::new("git")
+        .current_dir(&worktree)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(delivered_status.status.success());
+    let delivered_status = String::from_utf8(delivered_status.stdout).unwrap();
+    assert!(
+        delivered_status
+            .lines()
+            .any(|line| line == "?? implemented.txt"),
+        "derived change was not presented as ordinary unstaged work: {delivered_status}"
+    );
+    assert!(
+        delivered_status.lines().all(|line| !line.starts_with('D')),
+        "source tree was staged as deleted: {delivered_status}"
+    );
     assert!(!repo.join("implemented.txt").exists());
     let source_status = Command::new("git")
         .current_dir(&repo)
