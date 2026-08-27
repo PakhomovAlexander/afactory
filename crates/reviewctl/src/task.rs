@@ -687,7 +687,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                 print_delivery(&options, &receipt)?;
                 return Ok(());
             }
-            Err(_) => rollback_owned_delivery(&git, &existing)?,
+            Err(_) => rollback_owned_delivery(
+                &git,
+                &existing,
+                &assets.derived_manifest,
+                RollbackContext::Recovery,
+            )?,
         }
     }
 
@@ -709,7 +714,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
             append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
             print_delivery(&options, &receipt)
         }
-        Err(reason) => match rollback_owned_delivery(&git, &prepared) {
+        Err(reason) => match rollback_owned_delivery(
+            &git,
+            &prepared,
+            &assets.derived_manifest,
+            RollbackContext::CurrentAttempt,
+        ) {
             Ok(()) => {
                 let receipt = failed_receipt(&prepared, &reason);
                 append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
@@ -1268,19 +1278,7 @@ fn verify_existing_delivery(
     {
         return Err("delivered branch no longer points at the Task source revision".into());
     }
-    let staged = git.run(
-        [
-            "diff-index",
-            "--cached",
-            "--quiet",
-            "--no-ext-diff",
-            "--no-textconv",
-            "HEAD",
-            "--",
-        ],
-        None,
-    )?;
-    if !staged.status.success() {
+    if !index_matches_head(&git)? {
         return Err("delivered worktree index no longer equals the Task source tree".into());
     }
     let delivered_repo = Repo::open(worktree, git_home);
@@ -1302,7 +1300,18 @@ fn verify_existing_delivery(
     Ok(())
 }
 
-fn rollback_owned_delivery(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Result<(), String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RollbackContext {
+    CurrentAttempt,
+    Recovery,
+}
+
+fn rollback_owned_delivery(
+    git: &DeliveryGit,
+    prepared: &DeliveryPrepared,
+    derived_manifest: &Manifest,
+    context: RollbackContext,
+) -> Result<(), String> {
     let owner = git.ref_oid(&owner_ref(&prepared.task_id))?;
     let branch = git.ref_oid(&branch_ref(&prepared.target.branch))?;
     let worktree = Path::new(&prepared.target.worktree);
@@ -1342,6 +1351,19 @@ fn rollback_owned_delivery(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Re
                 || owner.as_deref() != Some(prepared.source_revision.as_str())
             {
                 return Err("worktree ownership changed; refusing rollback".into());
+            }
+            if !index_matches_head(&target_git)? {
+                return Err("delivered worktree index changed; refusing rollback".into());
+            }
+            let actual = scan_delivery_manifest(worktree, derived_manifest.path_encoding)?;
+            let removable = actual.entries.is_empty()
+                || context == RollbackContext::CurrentAttempt
+                    && manifest_is_subset(&actual, derived_manifest);
+            if !removable {
+                return Err(
+                    "delivered worktree contains content recovery cannot prove belongs to the current attempt; refusing rollback"
+                        .into(),
+                );
             }
             git.require(
                 [
@@ -1384,6 +1406,41 @@ fn rollback_owned_delivery(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Re
     commands.push_str("prepare\ncommit\n");
     git.require(["update-ref", "--stdin"], Some(commands.into_bytes()))?;
     Ok(())
+}
+
+fn manifest_is_subset(actual: &Manifest, expected: &Manifest) -> bool {
+    actual.path_encoding == expected.path_encoding
+        && actual.entries.iter().all(|entry| {
+            expected
+                .entries
+                .binary_search_by(|candidate| candidate.path.as_bytes().cmp(entry.path.as_bytes()))
+                .is_ok_and(|index| expected.entries[index] == *entry)
+        })
+}
+
+fn index_matches_head(git: &DeliveryGit) -> Result<bool, String> {
+    let output = git.run(
+        [
+            "diff-index",
+            "--cached",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+        ],
+        None,
+    )?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(format!(
+        "checking delivered worktree index: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }
 
 fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {

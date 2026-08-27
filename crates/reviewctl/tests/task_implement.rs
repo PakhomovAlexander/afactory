@@ -331,6 +331,136 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
 }
 
 #[test]
+fn crash_recovery_preserves_operator_modified_delivery() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let worktree = directory.path().join("operator-work");
+    let delivery_args = [
+        "task",
+        "deliver",
+        task_id,
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "af/operator-work",
+        "--worktree",
+        worktree.to_str().unwrap(),
+        "--confirm",
+        task_id,
+        "--state",
+        state.to_str().unwrap(),
+        "--json",
+    ];
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+
+    // Simulate a crash after materialization but before the terminal receipt, followed by a human
+    // editing the delivered worktree. Recovery must preserve those bytes and remain prepared.
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
+            [task_id],
+        )
+        .unwrap();
+    std::fs::write(worktree.join("implemented.txt"), "operator work\n").unwrap();
+
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("refusing rollback"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("implemented.txt")).unwrap(),
+        "operator work\n"
+    );
+
+    // A deletion is operator work too. Once the remaining bytes are restored to an exact subset
+    // of the Snapshot, recovery must still refuse because it did not observe the prior process.
+    std::fs::write(worktree.join("implemented.txt"), "derived\n").unwrap();
+    std::fs::remove_file(worktree.join("proof.generated")).unwrap();
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("refusing rollback"), "{stderr}");
+    assert!(!worktree.join("proof.generated").exists());
+    let branch = Command::new("git")
+        .current_dir(&repo)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/heads/af/operator-work",
+        ])
+        .output()
+        .unwrap();
+    assert!(branch.status.success(), "delivery branch was removed");
+    let terminal: String = connection
+        .query_row(
+            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(terminal, "TaskDeliveryPrepared@1");
+}
+
+#[test]
+fn crash_recovery_preserves_operator_staging() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let worktree = directory.path().join("operator-index");
+    let delivery_args = [
+        "task",
+        "deliver",
+        task_id,
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "af/operator-index",
+        "--worktree",
+        worktree.to_str().unwrap(),
+        "--confirm",
+        task_id,
+        "--state",
+        state.to_str().unwrap(),
+    ];
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
+            [task_id],
+        )
+        .unwrap();
+    git(&worktree, &home, &["add", "implemented.txt"]);
+
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("index changed; refusing rollback"),
+        "{stderr}"
+    );
+    assert!(worktree.join("implemented.txt").is_file());
+    let staged = Command::new("git")
+        .current_dir(&worktree)
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap().trim(),
+        "implemented.txt"
+    );
+}
+
+#[test]
 fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), false);
