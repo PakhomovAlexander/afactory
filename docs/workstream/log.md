@@ -1084,3 +1084,18 @@ filenames; the focused definition suite passes 25/25, the full kernel gate and b
 fixture reproduction pass, and all eleven client-pilot tests pass. All three Findings are fixed
 and the Campaign Ledger has zero open. V3.1 is complete for trusted design-partner pilots;
 publishing a client release remains a separate human action.
+
+## 2026-08-27 — Private v0.3.0 trusted-pilot release published
+
+[Product PR #11](https://github.com/PakhomovAlexander/afactory/pull/11) merged V3.1 at `main`
+commit `1412847`. Its first CI run exposed ambient `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL`
+leaking into one delivery test; commit `1d53ed1` isolates the test's Git configuration without
+changing the delivery contract. Replacement CI passed, and the full `scripts/verify.sh` gate plus
+all eleven pilot tests passed again from a detached worktree at the exact merge commit.
+
+Lightweight tag `v0.3.0` points to `1412847`. The private GitHub release workflow built and
+published both supported archives. Their downloaded checksum sidecars passed: macOS arm64 archive
+`sha256:abbedf77fb5bf1bf07a1a6d234c0d9f91c366b9c4dfb2a5b14d5dc9d62b6314f` and Linux x86_64
+archive `sha256:954b303c6749797b329213a00b9dbaceecb319c3a638e86be0c7e7afa936e816`. The extracted
+macOS release binary reports `af 0.3.0`. The bounded client runbook is now ready for trusted
+design-partner handoff; broader delivery and automatic publication remain outside V3.1.
