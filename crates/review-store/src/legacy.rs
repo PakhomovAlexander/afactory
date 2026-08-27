@@ -9,7 +9,10 @@
 //!   history — and the import is honest about it: it produces one report and at most one
 //!   resolution per row, and claims nothing about what happened in between.
 
-use review_core::{FindingReport, LegacyStageOutput, RunEvent, Severity};
+use review_core::{
+    CANONICAL_FINDING_IDENTITY_POLICY, FindingReport, LegacyStageOutput, Producer, RunEvent,
+    Severity,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -68,9 +71,8 @@ pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     format!("{:x}", hasher.finalize())[..12].to_string()
 }
 
-/// Stable bridge identity until M3 replaces path-based fingerprints. A report's location order
-/// is model output and therefore not identity; sorting is unnecessary when only the minimum is
-/// needed, and the existing one-location legacy shape retains its exact key.
+/// Permanent bridge identity for legacy campaigns. A report's location order is model output;
+/// selecting the minimum retains deterministic replay and the one-location legacy key exactly.
 fn report_identity_path(report: &review_core::FindingReport) -> &str {
     report
         .locations
@@ -114,10 +116,40 @@ pub struct Ingest<'a> {
     round_event_id: Option<String>,
 }
 
+/// One selected flat reviewer result plus the exact authority needed by the typed-report bridge.
+pub struct CanonicalStage<'a> {
+    pub source: &'a str,
+    pub stage: &'a LegacyStageOutput,
+    pub attempt_id: &'a str,
+    pub result_artifact_id: &'a str,
+    pub input_artifacts: &'a [String],
+    pub subject_snapshot_id: &'a str,
+}
+
+/// The exact immutable inputs emitted by one canonical ledger reduction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalReduction {
+    pub summary: AddSummary,
+    /// Domain-separated typed Report IDs recorded in `FindingSet@1`.
+    pub selected_report_ids: Vec<String>,
+    /// Domain-separated relation IDs recorded in `FindingSet@1`.
+    pub relation_ids: Vec<String>,
+    /// CAS IDs of all Report and relation envelopes consumed by the Set reducer.
+    pub input_artifact_ids: Vec<String>,
+}
+
+#[derive(Clone)]
+struct ReportProvenance {
+    producer: Producer,
+    input_artifacts: Vec<String>,
+    subject_snapshot_id: String,
+}
+
 struct PreparedStage {
     source: String,
     reports: Vec<FindingReport>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
+    provenance: Option<ReportProvenance>,
 }
 
 impl<'a> Ingest<'a> {
@@ -286,12 +318,71 @@ impl<'a> Ingest<'a> {
                 source: (*source).to_string(),
                 reports,
                 disputes: stage.disputes.clone(),
+                provenance: None,
+            });
+        }
+        self.add_prepared_outputs(&prepared)
+            .map(|reduction| reduction.summary)
+    }
+
+    /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
+    /// them with the canonical path-independent identity policy.
+    pub fn add_canonical_stage_outputs(
+        &mut self,
+        stages: &[CanonicalStage<'_>],
+    ) -> Result<CanonicalReduction, StoreError> {
+        if self.ledger.finding_identity_policy() != Some(CANONICAL_FINDING_IDENTITY_POLICY) {
+            return Err(StoreError::Conflict(format!(
+                "canonical report ingestion disagrees with Campaign policy `{}`",
+                self.ledger
+                    .finding_identity_policy()
+                    .unwrap_or("unavailable")
+            )));
+        }
+        let mut prepared = Vec::with_capacity(stages.len());
+        for stage in stages {
+            let reports = stage
+                .stage
+                .findings
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, finding)| {
+                    finding.into_report(index).map_err(|reason| {
+                        StoreError::Conflict(format!(
+                            "{} finding {index} violates FindingReport@1: {reason}",
+                            stage.source
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut input_artifacts = Vec::with_capacity(stage.input_artifacts.len() + 1);
+            input_artifacts.push(stage.result_artifact_id.to_string());
+            input_artifacts.extend(stage.input_artifacts.iter().cloned());
+            let mut seen = BTreeSet::new();
+            input_artifacts.retain(|id| seen.insert(id.clone()));
+            prepared.push(PreparedStage {
+                source: stage.source.to_string(),
+                reports,
+                disputes: stage.stage.disputes.clone(),
+                provenance: Some(ReportProvenance {
+                    producer: Producer::Attempt {
+                        run_id: self.run_id.clone(),
+                        node_id: stage.source.to_string(),
+                        attempt_id: stage.attempt_id.to_string(),
+                    },
+                    input_artifacts,
+                    subject_snapshot_id: stage.subject_snapshot_id.to_string(),
+                }),
             });
         }
         self.add_prepared_outputs(&prepared)
     }
 
-    fn add_prepared_outputs(&mut self, stages: &[PreparedStage]) -> Result<AddSummary, StoreError> {
+    fn add_prepared_outputs(
+        &mut self,
+        stages: &[PreparedStage],
+    ) -> Result<CanonicalReduction, StoreError> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
         let mut projected = self.ledger.clone();
@@ -312,22 +403,181 @@ impl<'a> Ingest<'a> {
             })
             .collect();
         let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
+        let mut selected_report_ids = Vec::new();
+        let relation_ids = Vec::new();
+        let mut input_artifact_ids = Vec::new();
+        let mut pending_occurrences: std::collections::BTreeMap<(String, String), String> =
+            std::collections::BTreeMap::new();
 
         for stage in stages {
             let source = stage.source.as_str();
-            for report in &stage.reports {
-                let file = report_identity_path(report);
-                let key = legacy_fingerprint(file, &report.title);
+            let mut reports = stage.reports.clone();
+            if let Some(provenance) = &stage.provenance {
+                for dispute in &stage.disputes {
+                    if dispute.position.trim() != "confirm" {
+                        continue;
+                    }
+                    let key = dispute.fp.trim();
+                    let Some(finding) = self.ledger.get(key) else {
+                        // A model may mistype a long canonical ID. Like an unresolvable refute,
+                        // it carries no safe authority and must not discard the other selected
+                        // reviewers' evidence.
+                        continue;
+                    };
+                    let mut replayed = false;
+                    for existing in finding.reports.iter().filter(|report| {
+                        report.source == source
+                            && report.round == round
+                            && report.relations.iter().any(|relation| {
+                                relation.kind == review_core::RelationKind::Corroborates
+                                    && relation.target.kind
+                                        == review_core::finding::ClaimTargetKind::Finding
+                                    && relation.target.id == key
+                            })
+                    }) {
+                        let value = self.cas.get_json(&existing.report_id).map_err(|error| {
+                            StoreError::Artifact(format!(
+                                "corroborating Report {} is unreadable during replay: {error}",
+                                existing.report_id
+                            ))
+                        })?;
+                        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value)
+                            .map_err(|error| {
+                                StoreError::Artifact(format!(
+                                    "corroborating Report {} is not an ArtifactEnvelope: {error}",
+                                    existing.report_id
+                                ))
+                            })?;
+                        crate::canonical::validate_envelope(&envelope).map_err(|error| {
+                            StoreError::Artifact(format!(
+                                "corroborating Report {}: {error}",
+                                existing.report_id
+                            ))
+                        })?;
+                        if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
+                            return Err(StoreError::Artifact(format!(
+                                "corroborating Report {} has type {}",
+                                existing.report_id, envelope.artifact_type
+                            )));
+                        }
+                        if envelope.producer != provenance.producer
+                            || envelope.input_artifacts != provenance.input_artifacts
+                            || envelope.subject_snapshot_id.as_deref()
+                                != Some(provenance.subject_snapshot_id.as_str())
+                        {
+                            continue;
+                        }
+                        reports.push(serde_json::from_value(envelope.payload).map_err(
+                            |error| {
+                                StoreError::Artifact(format!(
+                                    "corroborating Report {} is not FindingReport@1: {error}",
+                                    existing.report_id
+                                ))
+                            },
+                        )?);
+                        replayed = true;
+                        break;
+                    }
+                    if replayed {
+                        continue;
+                    }
+                    let (Some(fix), Some(confidence)) = (finding.fix.clone(), finding.confidence)
+                    else {
+                        continue;
+                    };
+                    let locations =
+                        if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                            Vec::new()
+                        } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                            let line = match finding.identity_line.map(u32::try_from).transpose() {
+                                Ok(line) => line,
+                                Err(_) => continue,
+                            };
+                            vec![review_core::Location {
+                                path: finding.identity_file.clone(),
+                                line,
+                                end_line: None,
+                            }]
+                        } else {
+                            continue;
+                        };
+                    reports.push(FindingReport {
+                        title: finding.title.clone(),
+                        severity: finding.severity,
+                        locations,
+                        body: finding.body.clone(),
+                        fix,
+                        confidence,
+                        failure_trace: None,
+                        rule_id: None,
+                        occurrence_key: None,
+                        relations: vec![review_core::Relation {
+                            kind: review_core::RelationKind::Corroborates,
+                            target: review_core::finding::RelationTarget {
+                                kind: review_core::finding::ClaimTargetKind::Finding,
+                                id: key.to_string(),
+                            },
+                            reason: Some(dispute.reason.clone()),
+                        }],
+                    });
+                }
+            }
+            let mut published = Vec::with_capacity(reports.len());
+            for report in &reports {
+                let (report_id, semantic_id) = match &stage.provenance {
+                    Some(provenance) => {
+                        let (record_id, envelope) = self
+                            .cas
+                            .put_artifact(
+                                review_core::contract::FINDING_REPORT_V1,
+                                provenance.producer.clone(),
+                                provenance.input_artifacts.clone(),
+                                Some(provenance.subject_snapshot_id.clone()),
+                                serde_json::to_value(report)?,
+                            )
+                            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                        (record_id, envelope.artifact_id)
+                    }
+                    None => {
+                        let value = serde_json::to_value(report)?;
+                        let record_id = self
+                            .cas
+                            .put_json(&value)
+                            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                        (record_id.clone(), record_id)
+                    }
+                };
+                published.push((report, report_id, semantic_id));
+            }
+            let keys = match &stage.provenance {
+                Some(_) => canonical_stage_keys(&published, &self.ledger, &pending_occurrences)?,
+                None => published
+                    .iter()
+                    .map(|(report, _, _)| {
+                        legacy_fingerprint(report_identity_path(report), &report.title)
+                    })
+                    .collect(),
+            };
+
+            for ((report, report_id, semantic_id), key) in
+                published.into_iter().zip(keys.into_iter())
+            {
+                if let (Some(rule_id), Some(occurrence_key)) =
+                    (&report.rule_id, &report.occurrence_key)
+                {
+                    pending_occurrences
+                        .insert((rule_id.clone(), occurrence_key.clone()), key.clone());
+                }
 
                 // The report is an immutable artifact; the event references it. Even a duplicate
                 // gets stored — that is the whole difference from the shell ledger, which counted
                 // it and threw it away.
-                let report_artifact = serde_json::to_value(report)?;
-                let report_id = self
-                    .cas
-                    .put_json(&report_artifact)
-                    .map_err(|e| StoreError::Conflict(e.to_string()))?;
                 let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
+
+                if stage.provenance.is_some() {
+                    selected_report_ids.push(semantic_id);
+                    input_artifact_ids.push(report_id.clone());
+                }
 
                 if existing_reports.contains(&(key.as_str(), source, round, report_id.as_str()))
                     || pending_reports.contains(&report_identity)
@@ -368,11 +618,13 @@ impl<'a> Ingest<'a> {
                 }
             }
 
-            // Reviewer disputes are part of the contract the model is asked to answer — a
-            // `refute` on a prior claim's `claim_id` says "I think this is wrong". Fold it:
+            // Reviewer disputes are part of the contract the model is asked to answer. A
+            // `confirm` above becomes a current, provenance-carrying Report with an explicit
+            // corroborates relation. A `refute` on a prior claim's `claim_id` says "I think this
+            // is wrong". Fold it:
             // an active claim a reviewer refutes becomes `contested`, which blocks convergence
             // and flags the claim for human adjudication rather than leaving the dispute inert in
-            // raw CAS output. A `confirm` agrees with an open claim and needs no transition.
+            // raw CAS output.
             for dispute in &stage.disputes {
                 if dispute.position.trim() != "refute" {
                     continue;
@@ -413,7 +665,12 @@ impl<'a> Ingest<'a> {
             self.advance_watermark(event)?;
         }
         self.ledger = projected;
-        Ok(summary)
+        Ok(CanonicalReduction {
+            summary,
+            selected_report_ids,
+            relation_ids,
+            input_artifact_ids,
+        })
     }
 
     /// `ledger.sh resolve <fp> <status> [--note ...]`.
@@ -462,6 +719,193 @@ impl<'a> Ingest<'a> {
         }
         Ok(())
     }
+}
+
+/// A new canonical Finding is derived from the first selected Report that establishes it.
+pub fn canonical_finding_id(report_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"review.kernel/finding-id/v1\0");
+    hasher.update(report_id.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn canonical_stage_keys(
+    reports: &[(&FindingReport, String, String)],
+    prior: &Ledger,
+    pending_occurrences: &std::collections::BTreeMap<(String, String), String>,
+) -> Result<Vec<String>, StoreError> {
+    let mut parent: Vec<usize> = (0..reports.len()).collect();
+    let find = |parent: &mut Vec<usize>, mut index: usize| {
+        while parent[index] != index {
+            let grandparent = parent[parent[index]];
+            parent[index] = grandparent;
+            index = grandparent;
+        }
+        index
+    };
+    let union = |parent: &mut Vec<usize>, left: usize, right: usize| {
+        let find_root = |mut index: usize| {
+            while parent[index] != index {
+                index = parent[index];
+            }
+            index
+        };
+        let left = find_root(left);
+        let right = find_root(right);
+        if left != right {
+            let (keep, merge) = if left < right {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            parent[merge] = keep;
+        }
+    };
+
+    let mut by_report = std::collections::BTreeMap::new();
+    for (index, (_, _, artifact_id)) in reports.iter().enumerate() {
+        if let Some(previous) = by_report.insert(artifact_id.as_str(), index) {
+            union(&mut parent, previous, index);
+        }
+    }
+
+    let mut occurrence_first = std::collections::BTreeMap::new();
+    for (index, (report, _, _)) in reports.iter().enumerate() {
+        if let (Some(rule_id), Some(occurrence_key)) = (&report.rule_id, &report.occurrence_key) {
+            if let Some(previous) = occurrence_first.insert((rule_id, occurrence_key), index) {
+                union(&mut parent, previous, index);
+            }
+        }
+    }
+
+    let mut first_report = std::collections::BTreeMap::new();
+    for index in 0..reports.len() {
+        let root = find(&mut parent, index);
+        first_report.entry(root).or_insert(index);
+    }
+    let mut candidates: std::collections::BTreeMap<usize, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut outgoing: std::collections::BTreeMap<usize, BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, (report, _, _)) in reports.iter().enumerate() {
+        let root = find(&mut parent, index);
+        if let (Some(rule_id), Some(occurrence_key)) = (&report.rule_id, &report.occurrence_key) {
+            let occurrence = (rule_id.clone(), occurrence_key.clone());
+            if let Some(finding) = pending_occurrences
+                .get(&occurrence)
+                .map(String::as_str)
+                .or_else(|| prior.finding_for_occurrence(rule_id, occurrence_key))
+            {
+                candidates
+                    .entry(root)
+                    .or_default()
+                    .insert(finding.to_string());
+            }
+        }
+        for relation in &report.relations {
+            match (relation.kind, relation.target.kind) {
+                (
+                    review_core::RelationKind::Corroborates,
+                    review_core::finding::ClaimTargetKind::Report,
+                ) => {
+                    let target = by_report.get(relation.target.id.as_str()).ok_or_else(|| {
+                        StoreError::Conflict(format!(
+                            "Report {} corroborates Report `{}` outside its selected attempt",
+                            reports[index].2, relation.target.id
+                        ))
+                    })?;
+                    let target_root = find(&mut parent, *target);
+                    if target_root != root {
+                        outgoing.entry(root).or_default().insert(target_root);
+                    }
+                }
+                (_, review_core::finding::ClaimTargetKind::Report) => {
+                    if !by_report.contains_key(relation.target.id.as_str()) {
+                        return Err(StoreError::Conflict(format!(
+                            "Report {} disputes Report `{}` outside its selected attempt",
+                            reports[index].2, relation.target.id
+                        )));
+                    }
+                }
+                (_, review_core::finding::ClaimTargetKind::Finding) => {
+                    if prior.get(&relation.target.id).is_none() {
+                        return Err(StoreError::Conflict(format!(
+                            "Report {} relates to Finding `{}` outside its input Finding Set",
+                            reports[index].2, relation.target.id
+                        )));
+                    }
+                    if relation.kind == review_core::RelationKind::Corroborates {
+                        candidates
+                            .entry(root)
+                            .or_default()
+                            .insert(relation.target.id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut states = std::collections::BTreeMap::new();
+    let mut resolved = std::collections::BTreeMap::new();
+    let mut keys = Vec::with_capacity(reports.len());
+    for index in 0..reports.len() {
+        let root = find(&mut parent, index);
+        keys.push(resolve_canonical_group(
+            root,
+            reports,
+            &first_report,
+            &outgoing,
+            &candidates,
+            &mut states,
+            &mut resolved,
+        )?);
+    }
+    Ok(keys)
+}
+
+fn resolve_canonical_group(
+    root: usize,
+    reports: &[(&FindingReport, String, String)],
+    first_report: &std::collections::BTreeMap<usize, usize>,
+    outgoing: &std::collections::BTreeMap<usize, BTreeSet<usize>>,
+    external: &std::collections::BTreeMap<usize, BTreeSet<String>>,
+    states: &mut std::collections::BTreeMap<usize, u8>,
+    resolved: &mut std::collections::BTreeMap<usize, String>,
+) -> Result<String, StoreError> {
+    if let Some(finding) = resolved.get(&root) {
+        return Ok(finding.clone());
+    }
+    if states.get(&root) == Some(&1) {
+        return Err(StoreError::Conflict(
+            "cyclic Report corroboration has no authoritative first Report".into(),
+        ));
+    }
+    states.insert(root, 1);
+    let mut candidates = external.get(&root).cloned().unwrap_or_default();
+    for target in outgoing.get(&root).into_iter().flatten() {
+        candidates.insert(resolve_canonical_group(
+            *target,
+            reports,
+            first_report,
+            outgoing,
+            external,
+            states,
+            resolved,
+        )?);
+    }
+    if candidates.len() > 1 {
+        return Err(StoreError::Conflict(format!(
+            "corroboration and occurrence authority disagree for Report {}",
+            reports[first_report[&root]].2
+        )));
+    }
+    let finding = candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| canonical_finding_id(&reports[first_report[&root]].2));
+    states.insert(root, 2);
+    resolved.insert(root, finding.clone());
+    Ok(finding)
 }
 
 /// One row of a committed `ledger.jsonl`.
@@ -787,6 +1231,151 @@ mod tests {
         assert_eq!(
             legacy_fingerprint(report_identity_path(&report), &report.title),
             legacy_fingerprint(report_identity_path(&reversed), &reversed.title)
+        );
+    }
+
+    fn typed_report(rule: Option<&str>, occurrence: Option<&str>) -> FindingReport {
+        FindingReport {
+            title: "claim".into(),
+            severity: Severity::Major,
+            locations: vec![review_core::Location::file("src/lib.rs")],
+            body: "body".into(),
+            fix: "fix".into(),
+            confidence: 0.9,
+            failure_trace: None,
+            rule_id: rule.map(str::to_string),
+            occurrence_key: occurrence.map(str::to_string),
+            relations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn exact_occurrence_keys_attach_but_disputes_do_not_collapse_claims() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let mut prior = Ledger::default();
+        let first = typed_report(Some("afactory/retry-loop@1"), Some("loop-7"));
+        let first_id = cas
+            .put_json(&serde_json::to_value(&first).unwrap())
+            .unwrap();
+        apply_candidate(
+            &mut prior,
+            &NewEvent::new(
+                EVENT_FINDING_REPORTED,
+                json!({
+                    "key": "existing-finding",
+                    "round": 1,
+                    "source": "first",
+                    "report_id": first_id,
+                }),
+            )
+            .referencing(vec![first_id]),
+            &cas,
+        )
+        .unwrap();
+
+        let repeated = typed_report(Some("afactory/retry-loop@1"), Some("loop-7"));
+        let repeated_id = format!("sha256:{}", "b".repeat(64));
+        let keys = canonical_stage_keys(
+            &[(&repeated, repeated_id.clone(), repeated_id)],
+            &prior,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(keys, ["existing-finding"]);
+
+        let mut disputed = typed_report(None, None);
+        disputed.relations.push(review_core::Relation {
+            kind: review_core::RelationKind::Disputes,
+            target: review_core::finding::RelationTarget {
+                kind: review_core::finding::ClaimTargetKind::Finding,
+                id: "existing-finding".into(),
+            },
+            reason: Some("different evidence".into()),
+        });
+        let disputed_id = format!("sha256:{}", "c".repeat(64));
+        let keys = canonical_stage_keys(
+            &[(&disputed, disputed_id.clone(), disputed_id.clone())],
+            &prior,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(keys, [canonical_finding_id(&disputed_id)]);
+    }
+
+    #[test]
+    fn explicit_corroboration_attaches_to_the_named_prior_finding() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let mut prior = Ledger::default();
+        let first = typed_report(None, None);
+        let first_id = cas
+            .put_json(&serde_json::to_value(&first).unwrap())
+            .unwrap();
+        apply_candidate(
+            &mut prior,
+            &NewEvent::new(
+                EVENT_FINDING_REPORTED,
+                json!({
+                    "key": "existing-finding",
+                    "round": 1,
+                    "source": "first",
+                    "report_id": first_id,
+                }),
+            )
+            .referencing(vec![first_id]),
+            &cas,
+        )
+        .unwrap();
+        let mut corroborating = typed_report(None, None);
+        corroborating.relations.push(review_core::Relation {
+            kind: review_core::RelationKind::Corroborates,
+            target: review_core::finding::RelationTarget {
+                kind: review_core::finding::ClaimTargetKind::Finding,
+                id: "existing-finding".into(),
+            },
+            reason: None,
+        });
+        let report_id = format!("sha256:{}", "d".repeat(64));
+        let keys = canonical_stage_keys(
+            &[(&corroborating, report_id.clone(), report_id)],
+            &prior,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(keys, ["existing-finding"]);
+    }
+
+    #[test]
+    fn same_attempt_corroboration_uses_the_target_reports_identity() {
+        let prior = Ledger::default();
+        let target_id = format!("sha256:{}", "f".repeat(64));
+        let source_id = format!("sha256:{}", "0".repeat(64));
+        let target = typed_report(None, None);
+        let mut corroborating = typed_report(None, None);
+        corroborating.relations.push(review_core::Relation {
+            kind: review_core::RelationKind::Corroborates,
+            target: review_core::finding::RelationTarget {
+                kind: review_core::finding::ClaimTargetKind::Report,
+                id: target_id.clone(),
+            },
+            reason: None,
+        });
+        let keys = canonical_stage_keys(
+            &[
+                (&corroborating, source_id.clone(), source_id),
+                (&target, target_id.clone(), target_id.clone()),
+            ],
+            &prior,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys,
+            [
+                canonical_finding_id(&target_id),
+                canonical_finding_id(&target_id)
+            ]
         );
     }
 }

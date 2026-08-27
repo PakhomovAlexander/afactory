@@ -28,8 +28,8 @@ use std::time::Duration;
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
-    ModelRunner, RESULT_CONTRACT, ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError,
-    parse_stage_output,
+    ContextManifest, ModelRunner, RESULT_CONTRACT, ReceiptedReviewerReturn, ReviewerAdapter,
+    ReviewerInputs, ReviewerReturn, RunnerError, TokenUsage, parse_stage_output,
 };
 use review_store::Cas;
 
@@ -148,6 +148,16 @@ impl ReviewerAdapter for CodexAdapter {
         sandbox_root: &Path,
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
+        self.invoke_receipted(cas, sandbox_root, inputs)
+            .map(|receipt| receipt.returned)
+    }
+
+    fn invoke_receipted(
+        &self,
+        cas: &Cas,
+        sandbox_root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
         // The last-message file lives outside the sandbox: seal must never see the plumbing.
         let staging = tempfile::tempdir()
             .map_err(|e| RunnerError::Unavailable(format!("staging dir: {e}")))?;
@@ -156,9 +166,32 @@ impl ReviewerAdapter for CodexAdapter {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let mut prompt = self.prompt.clone();
+        let instruction_bytes = prompt.len();
         inputs
             .render_into(&mut prompt)
             .map_err(RunnerError::Refused)?;
+        let mut context_manifest = ContextManifest::default();
+        context_manifest.record(
+            "worker_instructions",
+            "digest-pinned Worker package and output contract",
+            inputs
+                .attempt_context
+                .as_ref()
+                .and_then(|context| context.reviewer_package_artifact_id.clone()),
+            Some("review.kernel/ReviewerPackage@1".into()),
+            instruction_bytes,
+        );
+        context_manifest.record(
+            "role_scoped_inputs",
+            "exact Worker Input",
+            inputs
+                .attempt_context
+                .as_ref()
+                .map(|context| context.campaign_manifest_id.clone()),
+            None,
+            prompt.len() - instruction_bytes,
+        );
+        context_manifest.finish(prompt.len());
         let command = codex_command(
             &self.program,
             &self.model_flags,
@@ -210,10 +243,14 @@ impl ReviewerAdapter for CodexAdapter {
             raw_artifact: capture.raw_artifact.clone(),
             why: e.to_string(),
         })?;
-        Ok(ReviewerReturn {
-            output,
-            cost_tokens: events.cost_tokens,
-            raw_artifact: capture.raw_artifact,
+        Ok(ReceiptedReviewerReturn {
+            returned: ReviewerReturn {
+                output,
+                cost_tokens: events.cost_tokens,
+                raw_artifact: capture.raw_artifact,
+            },
+            usage: events.usage,
+            context_manifest,
         })
     }
 }
@@ -221,6 +258,7 @@ impl ReviewerAdapter for CodexAdapter {
 #[derive(Default)]
 struct Events {
     cost_tokens: u64,
+    usage: TokenUsage,
     final_message: Option<String>,
     error: Option<String>,
 }
@@ -239,9 +277,20 @@ impl Events {
                     if let Some(usage) = value.get("usage") {
                         let count =
                             |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-                        events.cost_tokens += count("input_tokens")
-                            .saturating_sub(count("cached_input_tokens"))
-                            + count("output_tokens");
+                        let input = count("input_tokens");
+                        let cache_read = count("cached_input_tokens");
+                        let output = count("output_tokens");
+                        let reasoning = count("reasoning_output_tokens");
+                        let cache_write = count("cache_write_input_tokens");
+                        let chargeable = input.saturating_sub(cache_read) + output;
+                        events.cost_tokens = events.cost_tokens.saturating_add(chargeable);
+                        add_usage(&mut events.usage.input_tokens, input);
+                        add_usage(&mut events.usage.output_tokens, output);
+                        add_usage(&mut events.usage.cache_read_tokens, cache_read);
+                        add_usage(&mut events.usage.cache_write_tokens, cache_write);
+                        add_usage(&mut events.usage.reasoning_tokens, reasoning);
+                        events.usage.chargeable_tokens =
+                            events.usage.chargeable_tokens.saturating_add(chargeable);
                     }
                 }
                 Some("item.completed") => {
@@ -266,4 +315,8 @@ impl Events {
         }
         events
     }
+}
+
+fn add_usage(total: &mut Option<u64>, amount: u64) {
+    *total = Some(total.unwrap_or(0).saturating_add(amount));
 }

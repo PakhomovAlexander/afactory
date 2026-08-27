@@ -68,7 +68,7 @@ fn a_change_wide_finding_is_still_admitted() {
 }
 
 #[test]
-fn legacy_live_identity_remains_path_based_until_m3() {
+fn direct_legacy_ingest_remains_on_the_permanent_fingerprint_path() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
@@ -103,7 +103,7 @@ fn legacy_live_identity_remains_path_based_until_m3() {
     assert_ne!(
         ingest.ledger().findings()[0].key,
         ingest.ledger().findings()[1].key,
-        "the permanent legacy path must stay explicit until M3 introduces canonical identity"
+        "direct legacy ingestion must remain on the permanent fingerprint replay path"
     );
 }
 

@@ -7,6 +7,12 @@ use review_config::{ConfigError, Definition};
 use review_core::SubjectKind;
 use review_graph::PlanError;
 
+fn workspace_root() -> std::path::PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 const MINIMAL: &str = r#"
 version = 2
 
@@ -323,7 +329,7 @@ outputs = ["decision"]
 /// this shape is asserted instead, and each assertion below would fail on a real mistake.
 #[test]
 fn the_checked_in_pipeline_loads() {
-    let review_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.review");
+    let review_dir = workspace_root().join(".review");
     let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
     let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
     let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
@@ -374,7 +380,7 @@ fn the_checked_in_pipeline_loads() {
 
 #[test]
 fn the_template_repository_self_review_pipeline_loads_when_present() {
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../..");
+    let repo = workspace_root().join("../../..");
     if !repo.join("template/.review").is_dir() {
         return;
     }

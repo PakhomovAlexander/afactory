@@ -10,13 +10,17 @@ Before changing behavior, read:
 - [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
-M2.1-M2.6 are implemented and verified; M3.1 is next. New Campaigns use the bounded
-correctness-review policy in ADR-0027 rather than extending the retired two-specialist
+M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
+verified. M3.1 is complete: fresh pinned Campaign v7 returned Pass. V3.1 local delivery is
+implemented, proven against a real trusted repository, and passed a fresh pinned correctness
+Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
+bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
 clean-window Campaign.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
-domain terms. Project-specific pipelines, reviewer packages, campaign state, and private corpora
-belong in consuming repositories, not here.
+domain terms until a separate accepted migration ADR supersedes this rule. v1 adds the final
+user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
+reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
 
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
 budget, or sandbox boundary to make a test or review pass.
@@ -41,6 +45,20 @@ budget, or sandbox boundary to make a test or review pass.
   `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
   adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
   ([ADR-0026](docs/adr/0026-share-process-supervision-through-a-leaf-crate.md)).
+- Wise token use and minimum Worker context are the first two design values. Every model call has
+  a bounded reservation and named informational purpose; every Attempt carries an exact context
+  manifest. Parent transcripts, whole Ledgers, repository dumps, unrelated documents, and other
+  Workers' private reasoning are absent by default; bounded Tool retrieval is recorded
+  ([ADR-0028](docs/adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
+- Complete minimal v1 and v2 before candidate dogfood. v1 is final local review; v2 is sequential
+  implementation ending at a verified internal Snapshot with no working-tree, branch, or PR
+  delivery. Scale and optional integrations are v3; `make check` remains independent
+  ([ADR-0030](docs/adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
+- V3.1 delivery accepts only a verified Task whose target is clean and exactly matches its source
+  Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
+  persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
+  an existing branch or path
+  ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

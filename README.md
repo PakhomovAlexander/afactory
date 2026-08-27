@@ -1,10 +1,17 @@
 # Afactory
 
-A multi-agent coding factory. Its first capability is the Review Kernel: `af review` runs a
+A multi-agent coding factory. `af review` runs a
 sandboxed, budgeted reviewer pipeline against committed HEAD and folds the results into a
 findings ledger with convergence. The boundary it enforces:
 reviewers only ever mutate a private sandbox; they return typed findings, and only the
 kernel integrates anything. Publishing to a branch or PR stays an explicit human action.
+
+Minimal v2 provides `af task start --kind implement`: one implementer edits a private
+sandbox, read-only acceptance gates inspect the sealed result, and an independent evaluator may
+approve a content-addressed internal Snapshot. V3.1 adds an explicitly confirmed local delivery:
+only a verified Task may create a new branch and linked worktree, and it still never commits,
+pushes, opens a PR, invokes a remote, or changes the source checkout. The operating boundary for
+trusted design partners is in [`docs/client-pilot.md`](docs/client-pilot.md).
 
 The kernel's own vocabulary is defined in [`CONTEXT.md`](CONTEXT.md) — read it before
 arguing about what a Finding, a Report, a Subject or a Scope is. Queued work lives in
@@ -19,9 +26,14 @@ the synthetic fixture corpus, gated in CI.
 
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction
+make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
 cargo run -p reviewctl --bin af -- review tui
 cargo run -p reviewctl --bin af -- provider status
+cargo run -p reviewctl --bin af -- task start --kind implement --goal "describe the change" --authority HEAD --json
+cargo run -p reviewctl --bin af -- task list --json
+cargo run -p reviewctl --bin af -- task show TASK_ID --json
+cargo run -p reviewctl --bin af -- task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID --json
 ```
 
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
@@ -76,6 +88,7 @@ fixtures/
 |---|---|
 | `artifact-envelope-v1.json` | type, content and artifact IDs, producer, exact inputs, subject snapshot |
 | `finding-report-v1.json` | one immutable claim by one attempt — no status, no round, no resolution |
+| `finding-set-v1.json` | one Subject-bound canonical Finding view at a ledger barrier |
 | `source-snapshot-v1.json` | content identity, never a branch; committed, synthetic-worktree or derived |
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
 | `run-event-v1.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
@@ -142,13 +155,20 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
   content be stored once while two provenance records stay distinct. Numbers outside the range
   it can format exactly are **refused**, not guessed at — a digest that is subtly wrong for
   large magnitudes is worse than one that fails loudly.
-- **`cas`** — write temp, fsync, rename, fsync the directory. Objects are verified against their
-  digest on read, because a store that trusts its own filenames cannot detect corruption.
+- **`cas`** — write temp, fsync, rename, fsync the directory. Raw payloads are addressed by
+  `content_id`; typed envelopes are also stored and addressed directly by `artifact_id`, with both
+  envelope and payload identity verified on read. A store that trusts filenames cannot detect
+  corruption.
 - **`store`** — SQLite in WAL mode, one writer, a dense per-run sequence that is the ordering
   authority (never `occurred_at`). It **refuses** an event referencing an artifact the CAS does
   not already hold, which turns a class of crash corruption into an immediate error.
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
+
+New Campaigns use the canonical identity policy: a selected Report artifact creates one
+path-independent Finding unless an explicit relation or exact trusted occurrence key attaches it.
+Each barrier publishes an immutable, Subject-bound `FindingSet@1`; legacy Campaigns retain their
+recorded path/title fingerprint policy and permanent reader.
 
 ### Acceptance: the kernel reaches the harness's conclusions
 

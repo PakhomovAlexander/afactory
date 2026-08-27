@@ -1,4 +1,4 @@
-//! The content-addressed artifact store.
+//! The content- and artifact-addressed immutable store.
 //!
 //! Publication order is the whole contract: an object must be durable *before* any event can
 //! reference it, or a crash leaves the log pointing at bytes that were never written. The
@@ -32,6 +32,9 @@ use serde_json::Value;
 use crate::canonical;
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+/// Typed artifact envelopes are control-plane records, not arbitrary source blobs. Bounding them
+/// makes the content-ID-to-envelope-ID compatibility fallback safe to buffer after a mismatch.
+const MAX_ARTIFACT_ENVELOPE_BYTES: u64 = 8 * 1024 * 1024;
 
 thread_local! {
     /// Verification is per-object, but scratch is per worker thread. Source trees commonly have
@@ -49,7 +52,7 @@ pub enum CasError {
     Io(std::io::Error),
     Canonical(canonical::CanonicalError),
     InvalidDigest(String),
-    /// The stored bytes do not hash to the digest they are filed under.
+    /// The stored bytes do not validate under the content or envelope identity they are filed under.
     Corrupt {
         digest: String,
     },
@@ -88,7 +91,7 @@ impl From<canonical::CanonicalError> for CasError {
     }
 }
 
-/// One opened CAS object whose stored length and verifying stream share the same file handle.
+/// One opened immutable object whose stored length and verifying stream share the same file handle.
 ///
 /// The bytes are not trusted until [`OpenedCasObject::copy_to_and_verify`] succeeds. Keeping the
 /// handle private prevents callers from accidentally replacing the verified stream with a second
@@ -114,7 +117,23 @@ impl OpenedCasObject {
             source: &mut self.file,
             destination: writer,
         };
-        with_verify_scratch(|buffer| Cas::verify_reader(&self.digest, &mut copying, buffer))
+        let (content_id, size) = with_verify_scratch(|buffer| {
+            canonical::blob_content_id_reader_with_buffer(&mut copying, buffer)
+                .map_err(CasError::Io)
+        })?;
+        if content_id == self.digest {
+            return Ok(size);
+        }
+        if self.stored_len > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(CasError::Corrupt {
+                digest: self.digest.clone(),
+            });
+        }
+        self.file.rewind()?;
+        let mut bytes = Vec::new();
+        self.file.read_to_end(&mut bytes)?;
+        verify_object_bytes(&self.digest, &bytes)?;
+        Ok(size)
     }
 }
 
@@ -144,7 +163,7 @@ impl Cas {
         self.root.join("objects").join(prefix).join(rest)
     }
 
-    /// Store bytes, returning their digest. Idempotent: storing the same bytes twice is one
+    /// Store content bytes, returning their content digest. Idempotent: storing the same bytes twice is one
     /// object and one digest.
     pub fn put(&self, bytes: &[u8]) -> Result<String, CasError> {
         let digest = canonical::blob_content_id(bytes);
@@ -346,6 +365,77 @@ impl Cas {
         self.put(&bytes)
     }
 
+    /// Publish a typed artifact envelope and return the CAS ID of the complete immutable record.
+    ///
+    /// The payload is also stored under its `content_id`, so equal content is retained once even
+    /// when distinct producers create distinct provenance records. The returned ID addresses the
+    /// envelope bytes; the envelope's domain-separated `artifact_id` is the semantic Report or
+    /// Set ID used by reducers.
+    pub fn put_artifact(
+        &self,
+        artifact_type: impl Into<String>,
+        producer: review_core::Producer,
+        input_artifacts: Vec<String>,
+        subject_snapshot_id: Option<String>,
+        payload: Value,
+    ) -> Result<(String, review_core::ArtifactEnvelope), CasError> {
+        review_core::json::admit(&payload).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        let payload_bytes = canonical::canonicalize(&payload)?;
+        let content_id = canonical::blob_content_id(&payload_bytes);
+        let mut envelope = review_core::ArtifactEnvelope {
+            artifact_type: artifact_type.into(),
+            artifact_id: String::new(),
+            content_id,
+            producer,
+            input_artifacts,
+            subject_snapshot_id,
+            payload,
+        };
+        envelope.artifact_id = canonical::artifact_id(&envelope)?;
+        canonical::validate_envelope(&envelope).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        let value = serde_json::to_value(&envelope).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        review_core::json::admit(&value).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        let bytes = canonical::canonicalize(&value)?;
+        if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(artifact_envelope_too_large(bytes.len() as u64));
+        }
+        self.put(&payload_bytes)?;
+        self.put_artifact_bytes(&envelope.artifact_id, &bytes)?;
+        Ok((envelope.artifact_id.clone(), envelope))
+    }
+
+    fn put_artifact_bytes(&self, artifact_id: &str, bytes: &[u8]) -> Result<(), CasError> {
+        if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(artifact_envelope_too_large(bytes.len() as u64));
+        }
+        let final_path = self.path_for(artifact_id);
+        if final_path.exists() {
+            with_verify_scratch(|buffer| {
+                verify_exact_bytes(&final_path, artifact_id, bytes, buffer)
+            })?;
+            verify_object_bytes(artifact_id, bytes)?;
+            self.pend_existing_if_needed(final_path);
+            return Ok(());
+        }
+        let directory = final_path.parent().expect("object path has a parent");
+        fs::create_dir_all(directory)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(bytes)?;
+        temporary
+            .persist(&final_path)
+            .map_err(|error| CasError::Io(error.error))?;
+        self.pending.lock().expect("cas pending").insert(final_path);
+        Ok(())
+    }
+
     pub fn get(&self, digest: &str) -> Result<Vec<u8>, CasError> {
         self.get_bounded(digest, u64::MAX)
     }
@@ -423,11 +513,7 @@ impl Cas {
             });
         }
         // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
-        if canonical::blob_content_id(&bytes) != digest {
-            return Err(CasError::Corrupt {
-                digest: digest.to_string(),
-            });
-        }
+        verify_object_bytes(digest, &bytes)?;
         Ok(bytes)
     }
 
@@ -461,7 +547,7 @@ impl Cas {
             });
         if let Ok(mut temporary) = cloned {
             let size = with_verify_scratch(|buffer| {
-                Self::verify_reader(digest, temporary.as_file_mut(), buffer)
+                Self::verify_seekable(digest, temporary.as_file_mut(), buffer)
             })?;
             temporary
                 .persist(target)
@@ -491,17 +577,24 @@ impl Cas {
             .copy_to_and_verify(writer)
     }
 
-    fn verify_reader(
+    fn verify_seekable(
         digest: &str,
-        reader: &mut impl Read,
+        reader: &mut (impl Read + Seek),
         buffer: &mut [u8],
     ) -> Result<u64, CasError> {
-        let (actual, size) = canonical::blob_content_id_reader_with_buffer(reader, buffer)?;
-        if actual != digest {
+        let (actual, size) = canonical::blob_content_id_reader_with_buffer(&mut *reader, buffer)?;
+        if actual == digest {
+            return Ok(size);
+        }
+        if size > MAX_ARTIFACT_ENVELOPE_BYTES {
             return Err(CasError::Corrupt {
                 digest: digest.to_string(),
             });
         }
+        reader.rewind()?;
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        verify_object_bytes(digest, &bytes)?;
         Ok(size)
     }
 
@@ -535,7 +628,7 @@ impl Cas {
             },
             _ => CasError::Io(error),
         })?;
-        with_verify_scratch(|buffer| Self::verify_reader(digest, &mut file, buffer))
+        with_verify_scratch(|buffer| Self::verify_seekable(digest, &mut file, buffer))
     }
 
     /// Verify an object and schedule its bytes and directory entries for the next publication
@@ -597,6 +690,42 @@ fn verify_exact_bytes(
         });
     }
     Ok(())
+}
+
+fn verify_object_bytes(digest: &str, bytes: &[u8]) -> Result<(), CasError> {
+    if canonical::blob_content_id(bytes) == digest {
+        return Ok(());
+    }
+    if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
+        return Err(CasError::Corrupt {
+            digest: digest.to_string(),
+        });
+    }
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| CasError::Corrupt {
+        digest: digest.to_string(),
+    })?;
+    if canonical::canonicalize(&value).ok().as_deref() != Some(bytes) {
+        return Err(CasError::Corrupt {
+            digest: digest.to_string(),
+        });
+    }
+    let envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(value).map_err(|_| CasError::Corrupt {
+            digest: digest.to_string(),
+        })?;
+    if envelope.artifact_id != digest || canonical::validate_envelope(&envelope).is_err() {
+        return Err(CasError::Corrupt {
+            digest: digest.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn artifact_envelope_too_large(size: u64) -> CasError {
+    CasError::Io(std::io::Error::new(
+        std::io::ErrorKind::FileTooLarge,
+        format!("typed artifact envelope is {size} bytes; limit is {MAX_ARTIFACT_ENVELOPE_BYTES}"),
+    ))
 }
 
 struct CopyingReader<'a, R, W> {
@@ -691,6 +820,22 @@ mod tests {
                 self.current = std::io::Cursor::new(replacement);
             }
             self.current.seek(position)
+        }
+    }
+
+    struct SeekFails {
+        current: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl Read for SeekFails {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.current.read(buffer)
+        }
+    }
+
+    impl Seek for SeekFails {
+        fn seek(&mut self, _position: std::io::SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::other("rewind must not be attempted"))
         }
     }
 
@@ -843,6 +988,37 @@ mod tests {
     }
 
     #[test]
+    fn a_large_content_mismatch_never_enters_the_buffered_envelope_fallback() {
+        let mut reader = SeekFails {
+            current: std::io::Cursor::new(vec![
+                b'x';
+                usize::try_from(MAX_ARTIFACT_ENVELOPE_BYTES)
+                    .unwrap()
+                    + 1
+            ]),
+        };
+        let digest = canonical::blob_content_id(b"different bytes");
+        let mut scratch = vec![0_u8; 4096];
+
+        assert!(matches!(
+            Cas::verify_seekable(&digest, &mut reader, &mut scratch),
+            Err(CasError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_typed_artifact_envelopes_are_rejected_at_write_time() {
+        let (_dir, cas) = cas();
+        let bytes = vec![b'x'; usize::try_from(MAX_ARTIFACT_ENVELOPE_BYTES).unwrap() + 1];
+        let artifact_id = canonical::blob_content_id(b"typed artifact identity");
+
+        assert!(matches!(
+            cas.put_artifact_bytes(&artifact_id, &bytes),
+            Err(CasError::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge
+        ));
+    }
+
+    #[test]
     fn missing_is_distinct_from_corrupt() {
         let (_dir, cas) = cas();
         let digest = canonical::blob_content_id(b"never stored");
@@ -862,6 +1038,31 @@ mod tests {
         for digest in &digests {
             assert!(cas.contains(digest));
         }
+    }
+
+    #[test]
+    fn typed_artifacts_are_addressed_by_their_envelope_identity() {
+        let (_directory, cas) = cas();
+        let payload = json!({"title": "claim"});
+        let input = cas.put(b"input").unwrap();
+        let (artifact_id, envelope) = cas
+            .put_artifact(
+                review_core::contract::FINDING_REPORT_V1,
+                review_core::Producer::Attempt {
+                    run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+                    node_id: "correctness".into(),
+                    attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202".into(),
+                },
+                vec![input],
+                None,
+                payload.clone(),
+            )
+            .unwrap();
+        assert_eq!(artifact_id, envelope.artifact_id);
+        assert_ne!(artifact_id, envelope.content_id);
+        assert_eq!(cas.get_json(&artifact_id).unwrap()["payload"], payload);
+        assert_eq!(cas.get_json(&envelope.content_id).unwrap(), payload);
+        assert!(cas.verify(&artifact_id).is_ok());
     }
 
     #[test]

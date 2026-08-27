@@ -16,8 +16,14 @@ use review_store::{
     Cas, EventStore, LedgerProjection, LegacyRow, Status, import_ledger_jsonl, legacy_fingerprint,
 };
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn legacy_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/legacy")
+    workspace_root().join("fixtures/legacy")
 }
 
 /// Every frozen `ledger.jsonl`, including the two empty ones — a run that found nothing is a
@@ -59,7 +65,7 @@ fn require_corpus(ledgers: &[(String, String)]) {
 
 /// Every `ledger.jsonl` under `fixtures/synthetic/`, produced by running the real harness.
 fn synthetic_ledgers() -> Vec<(String, String)> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/synthetic");
+    let root = workspace_root().join("fixtures/synthetic");
     let mut cases: Vec<PathBuf> = std::fs::read_dir(root)
         .expect("the synthetic corpus ships with every checkout")
         .filter_map(Result::ok)

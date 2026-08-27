@@ -114,8 +114,8 @@ fn open_new(
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
     let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
-    let review_dir = review_dir(pipeline_path)?;
-    let lock_path = format!("{review_dir}/review.lock");
+    let layout = authority_layout(pipeline_path)?;
+    let lock_path = layout.lock.clone();
     let pipeline_bytes = authority_bytes(&snapshot.manifest, cas, pipeline_path)?;
     let lock_bytes = authority_bytes(&snapshot.manifest, cas, &lock_path)?;
     let pipeline_text = std::str::from_utf8(&pipeline_bytes)
@@ -123,7 +123,14 @@ fn open_new(
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{lock_path}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    let registry = Registry::captured(captured_registry(&snapshot.manifest, cas, &review_dir)?);
+    if layout.root == ".af" {
+        validate_af_pipeline_pin(&lockfile, pipeline_path, &pipeline_bytes)?;
+    }
+    let registry = Registry::captured(captured_registry(
+        &snapshot.manifest,
+        cas,
+        &layout.registry,
+    )?);
     let loaded = Definition::from_toml(pipeline_text)
         .map_err(|error| error.to_string())?
         .load_with(&lockfile, &registry)
@@ -133,6 +140,14 @@ fn open_new(
         .put(&pipeline_bytes)
         .map_err(|error| error.to_string())?;
     let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
+    let project_policy_ids = if layout.root == ".af" {
+        let project_path = ".af/af.toml";
+        let project_bytes = authority_bytes(&snapshot.manifest, cas, project_path)?;
+        validate_af_project(&project_bytes, pipeline_path)?;
+        vec![cas.put(&project_bytes).map_err(|error| error.to_string())?]
+    } else {
+        Vec::new()
+    };
     let finding_genesis_id = cas
         .put_json(&serde_json::json!({
             "kind": "finding-set-genesis@1",
@@ -211,7 +226,7 @@ fn open_new(
         },
         reviewers,
         execution_policy_ids: execution_policy_ids.into_iter().collect(),
-        project_policy_ids: Vec::new(),
+        project_policy_ids: project_policy_ids.clone(),
         convergence: CampaignConvergenceV1 {
             clean_rounds: convergence.clean_rounds,
             max_rounds: convergence.max_rounds,
@@ -225,7 +240,7 @@ fn open_new(
         git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
         budgets,
         focus: options.focus.clone(),
-        finding_identity_policy: "legacy-path-title@1".to_string(),
+        finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
         finding_genesis_id,
         demand_genesis_id,
     };
@@ -242,6 +257,7 @@ fn open_new(
         manifest.finding_genesis_id.clone(),
         manifest.demand_genesis_id.clone(),
     ];
+    refs.extend(project_policy_ids);
     for (package_id, file_ids) in package_artifacts.values() {
         refs.push(package_id.clone());
         refs.extend(file_ids.iter().cloned());
@@ -264,8 +280,8 @@ fn open_new(
             .referencing(refs),
         )
         .map_err(|error| error.to_string())?;
-    println!("authority {authority_snapshot_id}");
-    println!("manifest  {manifest_id}");
+    super::run_progress(options, format_args!("authority {authority_snapshot_id}"));
+    super::run_progress(options, format_args!("manifest  {manifest_id}"));
     Ok(OpenCampaign {
         loaded,
         manifest,
@@ -395,8 +411,14 @@ fn resume(
         return Err("captured pipeline disagrees with CampaignManifest Subject kind".into());
     }
     validate_manifest_authority(cas, &manifest, &loaded, &captured)?;
-    println!("authority {} (pinned)", manifest.authority_snapshot_id);
-    println!("manifest  {} (resumed)", payload.campaign_manifest_id);
+    super::run_progress(
+        options,
+        format_args!("authority {} (pinned)", manifest.authority_snapshot_id),
+    );
+    super::run_progress(
+        options,
+        format_args!("manifest  {} (resumed)", payload.campaign_manifest_id),
+    );
     Ok(OpenCampaign {
         loaded,
         manifest,
@@ -508,10 +530,10 @@ fn validate_manifest_authority(
     {
         return Err("CampaignManifest authority files are not reachable from its Snapshot".into());
     }
-    let root = review_dir(&manifest.pipeline.path)?;
+    let layout = authority_layout(&manifest.pipeline.path)?;
     for (package, _) in captured.values() {
         for (path, artifact_id) in &package.files {
-            let authority_path = format!("{root}/reviewers/{}/{path}", package.name);
+            let authority_path = format!("{}/{}/{path}", layout.registry, package.name);
             if tree.get(&authority_path).map(|entry| &entry.content) != Some(artifact_id) {
                 return Err(format!(
                     "captured reviewer file `{authority_path}` is not authority Snapshot content"
@@ -564,6 +586,7 @@ fn prepare_round(
 
     let round = match (existing, options.restart_round) {
         (Some((event, payload)), false) => load_round(
+            options,
             cas,
             event.event_id.clone(),
             payload,
@@ -599,12 +622,18 @@ fn prepare_round(
         }
         round.ledger_projection = ingest.into_projection();
     }
-    println!(
-        "round    {} (epoch {})",
-        round.payload.round, round.payload.epoch
+    super::run_progress(
+        options,
+        format_args!(
+            "round    {} (epoch {})",
+            round.payload.round, round.payload.epoch
+        ),
     );
     if round.prior_count > 0 {
-        println!("prior    {} findings carried", round.prior_count);
+        super::run_progress(
+            options,
+            format_args!("prior    {} findings carried", round.prior_count),
+        );
     }
     Ok(round)
 }
@@ -983,7 +1012,10 @@ fn capture_round(
             .map_err(|error| error.to_string())?;
         started
     };
-    println!("snapshot {}", snapshot.content_digest);
+    super::run_progress(
+        options,
+        format_args!("snapshot {}", snapshot.content_digest),
+    );
     Ok(RoundInput {
         payload,
         event_id: started.event_id,
@@ -1002,6 +1034,7 @@ fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
 }
 
 fn load_round(
+    options: &Options,
     cas: &Cas,
     event_id: String,
     payload: RoundStartedPayloadV1,
@@ -1066,7 +1099,10 @@ fn load_round(
         payload.round,
         "demands",
     )?;
-    println!("snapshot {} (reused)", snapshot.content_digest);
+    super::run_progress(
+        options,
+        format_args!("snapshot {} (reused)", snapshot.content_digest),
+    );
     Ok(RoundInput {
         payload,
         event_id,
@@ -1193,9 +1229,9 @@ fn authority_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>
 fn captured_registry(
     manifest: &Manifest,
     cas: &Cas,
-    review_dir: &str,
+    registry: &str,
 ) -> Result<BTreeMap<String, BTreeMap<String, Vec<u8>>>, String> {
-    let prefix = format!("{review_dir}/reviewers/");
+    let prefix = format!("{registry}/");
     let mut packages: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
     for entry in &manifest.entries {
         let Some(relative) = entry.path.strip_prefix(&prefix) else {
@@ -1221,16 +1257,88 @@ fn captured_registry(
     Ok(packages)
 }
 
-pub(crate) fn review_dir(pipeline: &str) -> Result<String, String> {
-    Path::new(pipeline)
+struct AuthorityLayout {
+    root: String,
+    lock: String,
+    registry: String,
+}
+
+fn authority_layout(pipeline: &str) -> Result<AuthorityLayout, String> {
+    let root = Path::new(pipeline)
         .parent()
         .and_then(Path::parent)
         .and_then(Path::to_str)
         .filter(|path| !path.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            "the pipeline path must live under an authority review directory".to_string()
+        .ok_or_else(|| "the pipeline path must live under `.af/pipelines/`".to_string())?;
+    match root {
+        ".af" => Ok(AuthorityLayout {
+            root: root.to_string(),
+            lock: ".af/af.lock".to_string(),
+            registry: ".af/workers".to_string(),
+        }),
+        ".review" => Ok(AuthorityLayout {
+            root: root.to_string(),
+            lock: ".review/review.lock".to_string(),
+            registry: ".review/reviewers".to_string(),
+        }),
+        _ => Err("the pipeline path must live under `.af/pipelines/`".to_string()),
+    }
+}
+
+pub(crate) fn review_dir(pipeline: &str) -> Result<String, String> {
+    authority_layout(pipeline).map(|layout| layout.root)
+}
+
+fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
+    let project: toml::Value = toml::from_str(text)
+        .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
+    if project.get("version").and_then(toml::Value::as_integer) != Some(1) {
+        return Err("authority project `.af/af.toml` must declare `version = 1`".to_string());
+    }
+    let selected = project
+        .get("defaults")
+        .and_then(|value| value.get("pipeline"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("review");
+    if selected.is_empty()
+        || !selected.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
         })
+    {
+        return Err("authority project default pipeline must be one safe name".to_string());
+    }
+    let selected_path = format!(".af/pipelines/{selected}.toml");
+    if selected_path != pipeline_path {
+        return Err(format!(
+            "authority project selects pipeline `{selected_path}` but invocation requested `{pipeline_path}`"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_af_pipeline_pin(
+    lockfile: &Lockfile,
+    pipeline_path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let name = Path::new(pipeline_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or("authority pipeline has no UTF-8 name")?;
+    let pin = lockfile
+        .pipelines
+        .get(name)
+        .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
+    let found = review_store::canonical::blob_content_id(bytes);
+    if pin.digest != found {
+        return Err(format!(
+            "pipeline `{name}` does not match `.af/af.lock`: locked {}, found {found}",
+            pin.digest
+        ));
+    }
+    Ok(())
 }
 
 fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {

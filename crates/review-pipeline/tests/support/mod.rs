@@ -30,7 +30,16 @@ pub fn test_round_authority(
     run_id: &str,
     snapshot: &Manifest,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(cas, store, run_id, snapshot, None, TEST_PIPELINE).unwrap()
+    test_round_authority_with_prior(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        TEST_PIPELINE,
+        review_core::LEGACY_FINDING_IDENTITY_POLICY,
+    )
+    .unwrap()
 }
 
 #[allow(dead_code)]
@@ -41,7 +50,16 @@ pub fn test_round_authority_for_pipeline(
     snapshot: &Manifest,
     pipeline: &str,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(cas, store, run_id, snapshot, None, pipeline).unwrap()
+    test_round_authority_with_prior(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        pipeline,
+        review_core::LEGACY_FINDING_IDENTITY_POLICY,
+    )
+    .unwrap()
 }
 
 #[allow(dead_code)]
@@ -60,6 +78,7 @@ pub fn test_diff_round_authority(
         None,
         pipeline,
         TestSubject::Diff(b""),
+        review_core::LEGACY_FINDING_IDENTITY_POLICY,
     )
     .unwrap()
 }
@@ -81,6 +100,7 @@ pub fn test_diff_round_authority_with_patch(
         None,
         pipeline,
         TestSubject::Diff(patch),
+        review_core::LEGACY_FINDING_IDENTITY_POLICY,
     )
 }
 
@@ -91,6 +111,7 @@ fn test_round_authority_with_prior(
     snapshot: &Manifest,
     prior_finding_set_id: Option<String>,
     pipeline: &str,
+    identity_policy: &str,
 ) -> Result<RoundAuthority, String> {
     test_round_authority_with_subject(
         cas,
@@ -100,9 +121,11 @@ fn test_round_authority_with_prior(
         prior_finding_set_id,
         pipeline,
         TestSubject::WholeTree,
+        identity_policy,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn test_round_authority_with_subject(
     cas: &Cas,
     store: &mut EventStore,
@@ -111,6 +134,7 @@ fn test_round_authority_with_subject(
     prior_finding_set_id: Option<String>,
     pipeline: &str,
     test_subject: TestSubject<'_>,
+    identity_policy: &str,
 ) -> Result<RoundAuthority, String> {
     let subject_kind = match test_subject {
         TestSubject::WholeTree => SubjectKind::WholeTree,
@@ -162,7 +186,7 @@ fn test_round_authority_with_subject(
                 git_timeout_seconds: Some(300),
                 budgets: None,
                 focus: None,
-                finding_identity_policy: "legacy-path-title@1".into(),
+                finding_identity_policy: identity_policy.into(),
                 finding_genesis_id,
                 demand_genesis_id,
             })
@@ -316,6 +340,30 @@ pub fn whole_tree_kernel_for_pipeline<'a>(
         &snapshot,
         prior_finding_set_id,
         pipeline,
+        review_core::LEGACY_FINDING_IDENTITY_POLICY,
+    )
+    .unwrap();
+    Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
+}
+
+#[allow(dead_code)]
+pub fn canonical_whole_tree_kernel_for_pipeline<'a>(
+    cas: &'a Cas,
+    store: &'a mut EventStore,
+    run_id: impl Into<String>,
+    snapshot: Manifest,
+    pipeline: &str,
+) -> Kernel<'a> {
+    let loaded = Definition::from_toml(pipeline).unwrap().load().unwrap();
+    let run_id = run_id.into();
+    let authority = test_round_authority_with_prior(
+        cas,
+        store,
+        &run_id,
+        &snapshot,
+        None,
+        pipeline,
+        review_core::CANONICAL_FINDING_IDENTITY_POLICY,
     )
     .unwrap();
     Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()

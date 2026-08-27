@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:finding-set:1",
+  "title": "FindingSet@1 payload",
+  "description": "One immutable Subject-bound Findings reducer projection. Exact reduction inputs and producer authority live in its ArtifactEnvelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subject_id", "round", "prior_finding_set_id", "reducer_version", "identity_policy", "selected_report_ids", "relation_ids", "resolution_ids", "findings"],
+  "properties": {
+    "subject_id": { "$ref": "#/$defs/digest" },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "prior_finding_set_id": { "$ref": "#/$defs/digest" },
+    "reducer_version": { "const": "review.kernel/finding-reducer@1" },
+    "identity_policy": { "type": "string", "minLength": 1 },
+    "selected_report_ids": { "$ref": "#/$defs/digests" },
+    "relation_ids": { "$ref": "#/$defs/digests" },
+    "resolution_ids": { "$ref": "#/$defs/digests" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "status", "severity", "effective_severity", "scope", "title", "body", "source", "last_seen_round", "report_ids"],
+        "properties": {
+          "finding_id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["open", "fixed", "rejected", "wontfix", "contested"] },
+          "severity": { "enum": ["minor", "major", "blocker"] },
+          "effective_severity": {
+            "oneOf": [
+              { "enum": ["minor", "major", "blocker"] },
+              { "type": "null" }
+            ]
+          },
+          "scope": { "enum": ["in", "out", "unknown"] },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "allOf": [
+              { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+              { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+            ]
+          },
+          "line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "location_unrecorded": { "type": "boolean" },
+          "title": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1 },
+          "fix": { "type": "string", "minLength": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "last_seen_round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+          "report_ids": { "$ref": "#/$defs/digests" }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["line"] },
+            "then": { "required": ["file"] }
+          },
+          {
+            "if": {
+              "required": ["location_unrecorded"],
+              "properties": { "location_unrecorded": { "const": true } }
+            },
+            "then": { "not": { "required": ["file"] } }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "digests": { "type": "array", "items": { "$ref": "#/$defs/digest" } }
+  }
+}

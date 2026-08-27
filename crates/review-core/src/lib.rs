@@ -17,6 +17,7 @@ pub mod envelope;
 pub mod event;
 pub mod exec;
 pub mod finding;
+pub mod finding_set;
 pub mod json;
 pub mod legacy;
 pub mod patch;
@@ -25,8 +26,9 @@ pub mod snapshot;
 pub mod subject;
 
 pub use campaign::{
-    AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
+    AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
+    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1,
+    LEGACY_FINDING_IDENTITY_POLICY, ReviewerPackageV1, RoundInputSupersededPayloadV1,
     RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
@@ -41,6 +43,7 @@ pub use event::{
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
+pub use finding_set::{FINDING_REDUCER_VERSION, FindingSetEntryV1, FindingSetV1};
 pub use json::{NumericDomainError, admit};
 pub use legacy::{
     LegacyImportError, LegacyStageOutput, ReviewerResultRejection, validate_reviewer_result,

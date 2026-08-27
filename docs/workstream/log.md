@@ -796,3 +796,291 @@ high effort, a 300,000-token attempt reservation, a 1,000,000-token run cap, one
 Round, and a two-Round maximum. Architecture-only and performance-only audits are opt-in. The
 review package remains digest-locked, and ADR-0027 records the accepted coverage/cost tradeoff.
 The exhausted Campaign is immutable and will not receive another old-policy Round.
+
+## 2026-08-26 — Minimal v1/v2 before candidate dogfood
+
+The owner superseded the compatibility-backed A0 checkpoint after its first implementation showed
+that it would add a substantial temporary path before the target runtime. ADR-0030 now requires
+minimal local-review v1, then sequential-implementation v2 ending at a verified internal Snapshot,
+then the first real candidate dogfood. Delivery, parallelism, optional integrations, and physical
+internal renaming move to v3. The A0 experiment remains isolated and does not enter this branch.
+
+## 2026-08-26 — Minimal product v1/v2 complete
+
+Final local `af review` now loads digest-pinned `.af` authority, defaults state outside the
+repository, supports the non-interactive shorthand, and emits one typed outcome with candidate,
+authority, node, Finding, exact Worker-context, and available Provider-token receipts. The frozen
+`.review/` path remains available only when explicitly selected.
+
+`af task start --kind implement` now executes one locked implementer, seals and publishes every
+derived-tree byte into CAS, runs required Gates against fresh read-only materializations, then
+gives a separate locked evaluator only the goal, derived Snapshot/diff, Gate evidence, authority,
+and reservation. It returns typed verified/unverified results with explicit no-delivery evidence;
+deterministic integration tests prove the verified path, the gate-failure path, materialization,
+minimum evaluator context, and no source-checkout mutation. While closing the full gate, the
+dirty-capture comparison gained metadata change stamps so a rapid change-and-restore remains
+detectable even when macOS FSEvents coalesces both writes. `make check` passes in full. The first
+real candidate implementation dogfood is next.
+
+## 2026-08-26 — First v2 candidate implementation dogfood verified
+
+Candidate commit `caab486` (`af` binary
+`sha256:f0c4bc5d0ea8e5ed15ec0f683fe65f88c98488761fd8ad66e8426e62ee6b17a6`) ran Task
+`task-8732de714edb4550a628` against exact source Snapshot
+`sha256:9fd9d7e79c1b9c82ab4b7830b8ac579c924d3a46d0faaad7d87603b13b042854`. The real goal was the
+minimal local `make dogfood` entry point. The implementer changed only `Makefile`, `README.md`, and
+new executable `scripts/check-dogfood-target.sh` inside its private sandbox, producing derived
+Snapshot `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f`.
+
+The required read-only `make check` Gate passed with result artifact
+`sha256:df4552a9c040ca58b12b8dbff34be394575ba7b394306a6eb1fa98e19045701c`. The independent
+evaluator received no implementer transcript, approved the Snapshot, and its verdict is artifact
+`sha256:8e69f20e0504fca2009a4d7ecdd84542d504af99e8dc3abda917f7002cb32269`. Exact Worker context
+totalled 3,306 rendered bytes (827 estimated tokens). Provider receipts totalled 4,501,584 input,
+26,724 output, 4,301,312 cache-read, 16,340 reasoning, and 226,996 chargeable tokens. The typed
+outcome is `verified`, delivery is explicitly `none`, and the source checkout remained clean. The
+complete seven-event SQLite journal and its 317 CAS objects are preserved under XDG state at
+`~/.local/state/af/dogfood/task-8732de714edb4550a628/`. The verified `make dogfood` change remains
+an internal Snapshot; integrating it is v3 delivery work, not part of this gate. M3.1 is next.
+
+## 2026-08-26 — M3.1 canonical identity locally verified
+
+New Campaign manifests now select `report-derived@1`; existing manifests retain permanent
+`legacy-path-title@1` replay. The canonical adapter publishes each selected flat result as a
+validated `FindingReport@1` envelope with exact Attempt, Subject Snapshot, and invocation inputs.
+The reducer derives new Finding IDs from semantic Report artifact IDs, attaches only by an exact
+trusted occurrence key or explicit corroboration, and never collapses identity through disputes.
+
+Every canonical ledger barrier now publishes a validated, Subject-bound `FindingSet@1`. Its
+envelope names the prior Set and selected Report inputs, its kernel-operation producer binds the
+reducer and policy versions, and the graph passes the exact artifact ID rather than ambient Ledger
+state. Typed envelopes are directly CAS-addressable by artifact ID while their payload remains
+deduplicated by content ID. Immutable disposition relation/resolution artifacts remain M3.2;
+their FindingSet input lists are intentionally empty in this minimal milestone.
+
+Focused identity, provenance, replay, schema-parity, CAS-addressing, and end-to-end pipeline tests
+pass. The full pinned Rust formatting, warnings-denied Clippy, workspace test, doc-test, and
+byte-identical fixture gate passes via `make check`. The pinned external correctness review was
+not started because transmitting the private diff requires explicit approval; no code or model
+tokens were disclosed or spent.
+
+After approval, pinned `af v0.1.0` and then `v0.2.0` both refused the checked-in pipeline before
+reviewer dispatch. The main config loader accepts `check_timeout_seconds = 3600`, but the store's
+second authority-only TOML reader omitted that field. The M3.1 branch now mirrors it as a typed
+optional integer, and the campaign-authority fixture includes the explicit timeout. The focused
+suite and full `make check` gate pass. The released v0.2 bootstrap reviewer can use a scratch
+pipeline projection that omits only this explicit value: 3600 is that release's exact built-in
+default, so reviewer, budget, gate, timeout, and convergence authority remain unchanged. Both
+failed preflights spent zero model tokens and disclosed no code.
+
+The disclosure gate then refused model dispatch because the owner's earlier approval covered
+`6bfaa13..f65f028`, not the expanded `6bfaa13..3e4e5c3` diff or its scratch compatibility
+pipeline. External convergence therefore awaits explicit approval for that exact payload. This
+refusal also spent zero model tokens and disclosed no code.
+
+## 2026-08-26 — M3.1 external review corrections locally verified
+
+The approved pinned Campaign `m3-1-canonical-identity-v4` used release `v0.2.0`, one Claude Opus
+correctness reviewer at high effort, the exact release-compatible authority projection, and Base
+`e792399`. Round 1 spent 247,296 chargeable tokens and opened seven Findings. Their corrections
+make selected-result provenance name the actual reviewer node, tolerate unreadable canonical
+Reports during replay, persist confirmation as corroborating evidence, distinguish unrecorded
+locations, reject unknown identity policy, bound fallback CAS reads, and require explicit
+FindingSet lineage.
+
+Round 2 spent 240,532 chargeable tokens. It retained six Round 1 fixes, kept the legacy-confirm
+prompt defect open, and opened five more Findings. Their corrections render policy-specific
+confirmation instructions, ignore unusable confirmations without discarding other evidence,
+recover canonical lineage across an exhausted Round with no emitted Set, assign identical result
+digests one-to-one to reviewer nodes, preserve replay while marking unreadable Campaign authority
+unavailable, and represent an unrecorded location without schema-invalid empty strings.
+
+Commits `8205ecb` and `b547e7a` fix all twelve Campaign Findings. The final Ledger has twelve fixed
+and zero open, and the full formatting, warnings-denied Clippy, workspace tests, doc tests, and
+byte-identical fixture reproduction pass. The Campaign verdict remains honestly `Exhausted`
+because its two-Round ceiling was reached; it did not converge. M3.1 therefore requires a fresh
+pinned Campaign before the milestone can close.
+
+## 2026-08-26 — M3.1 v5 review corrections locally verified
+
+Fresh pinned Campaign `m3-1-canonical-identity-v5` reviewed the corrected candidate against Base
+`e792399` with release `v0.2.0` and the same one-reviewer correctness policy. Round 1 spent 577,185
+chargeable tokens and opened three Findings. Commit `3a97c50` binds FindingSet round numbers to
+Round authority, scopes identical result provenance to the ledger's graph closure, and serializes
+absent effective severity as explicit `null`.
+
+Round 2 confirmed all three fixes, spent 291,272 chargeable tokens, and opened two Findings.
+Commit `ea10d3e` makes unreadable prior FindingSet lineage fail closed on compatible untyped ledger
+ports and permits a declared optional gather input to remain unwired without weakening the
+leftover-artifact check. The Campaign spent 868,457 tokens in total. Its Ledger has five fixed
+Findings and zero open, and the complete `make check` gate—including byte-identical fixture
+reproduction—passes.
+
+The v5 verdict remains honestly `Exhausted`: reaching the immutable two-Round ceiling is not
+convergence, even when every reported Finding is subsequently fixed. M3.1 stays open until a fresh
+pinned Campaign returns the required clean Round.
+
+## 2026-08-27 — M3.1 v6 Round 1 corrections locally verified
+
+Fresh pinned Campaign `m3-1-canonical-identity-v6` reviewed candidate `c6e6af7` against Base
+`e792399` with release `v0.2.0`, one Claude Opus correctness reviewer at high effort, a 300,000
+token Attempt reservation, and the one-million-token Run cap. Round 1 spent 346,086 chargeable
+tokens and opened one major and three minor Findings.
+
+Commit `517e0f8` makes canonical lineage inspect every pinned ledger output port and fail closed
+when a ledger receipt yields no FindingSet, closes FindingSet validation and Campaign Manifest
+schema parity, and records the deliberate M3.2 boundary for reviewer/gate Set wiring. A direct
+M3.1 wiring experiment was rejected by the Campaign-loop gate: immutable Sets do not yet carry
+post-publication operator resolutions, so feeding them back now resurrects fixed/rejected claims.
+The `PriorFindings@1` compatibility projection remains until M3.2 makes dispositions immutable
+Set inputs.
+
+The v6 Ledger has four fixed Findings and zero open. Formatting, warnings-denied Clippy, all
+workspace tests and doc tests, and byte-identical fixture reproduction pass. Round 1 is honestly
+`Fail(NotConverged)`; Round 2 still must confirm the fixes and supply the required clean Round.
+
+## 2026-08-27 — M3.1 v6 Round 2 corrections locally verified
+
+Round 2 reviewed candidate `e4247a4` against Base `e792399`, retained all four Round 1 fixes,
+spent 285,501 chargeable tokens, and opened one major and one minor Finding. Commit `93cef0d`
+anchors canonical lineage to a superseded epoch's exact FindingSet when that epoch reached its
+ledger barrier, and makes confirm synthesis reuse the exact previously published corroborating
+Report when a canonical barrier resumes. Regression tests pin both event-sequence lineage and
+byte-stable Report inputs with no duplicate event append.
+
+Campaign v6 spent 631,587 tokens in total. Its Ledger has six fixed Findings and zero open, and
+the complete formatting, warnings-denied Clippy, workspace tests, doc tests, and byte-identical
+fixture gate passes via `make check`. The verdict remains honestly `Fail(Exhausted)`: fixes made
+after the immutable two-Round ceiling cannot retroactively create a clean Round. M3.1 therefore
+remains open until a fresh pinned Campaign returns Pass.
+
+## 2026-08-27 — Verified local Task delivery implemented and locally green
+
+ADR-0031 accepts the first narrow v3 slice: a verified Task may be delivered only after exact
+Task-ID confirmation to a new local branch and linked worktree. Commit `fdaf37f` implements the
+transition without checkout filters or remote operations. It revalidates the clean target against
+the Task's committed source Snapshot, verifies every derived CAS object, reserves an atomic
+ownership ref and branch, creates a no-checkout worktree, materializes and re-reads the exact
+derived Manifest, and persists prepared plus terminal delivery artifacts. A separate SQLite
+process lock serializes delivery while leaving prepared recovery state durable across a crash.
+
+The deterministic pilot suite proves verified and unverified terminals, source-checkout
+isolation, ignored-file delivery, explicit no-remote receipts, list/show spend and history,
+idempotent exact repeat, crash reconciliation after materialization, concurrent-command refusal,
+dirty-source refusal, and owned-ref rollback on local creation failure. The full `make check` gate
+and `make pilot-check` pass. The pilot runbook covers checksummed private installation/update,
+Provider and authority setup, operator inspection, recovery, troubleshooting, and binary rollback.
+Pinned external review and one real trusted-repository pilot remain required before design-partner
+handoff.
+
+## 2026-08-27 — Real V3.1 delivery pilot passed after index correction
+
+The release candidate delivered the existing verified v2 dogfood Task
+`task-8732de714edb4550a628` from source Snapshot
+`sha256:9fd9d7e79c1b9c82ab4b7830b8ac579c924d3a46d0faaad7d87603b13b042854` to derived Snapshot
+`sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f`. The first real
+delivery exposed that `git worktree add --no-checkout` also creates an empty per-worktree index:
+the filesystem bytes were exact, but ordinary Git status presented the source as staged deleted
+and the derived tree as untracked.
+
+Commit `41c085d` preserves the filter-free boundary while populating that index from immutable
+`HEAD` with plumbing-only `git read-tree`. Exact-delivery verification now also rejects an index
+that differs from the source tree, and the integration suite pins ordinary unstaged presentation.
+The complete `make check` gate passes, including formatting, warnings-denied Clippy, workspace
+and doc tests, and byte-identical fixture reproduction.
+
+After repairing only the disposable pilot index with that same plumbing step, the rebuilt
+candidate replayed the exact request idempotently. It returned receipt
+`delivery-b6ba56b39cac1793e7c96f160b82f265e4630eac6e497bfb64a1211fd5365aa6`, named the exact
+source and derived Snapshots, and recorded `remote_actions: []`. Git status showed only the two
+modified files and one new script produced by the verified Task; no source deletion was staged.
+The delivered worktree's `make dogfood-contract` passed. Pinned external correctness review is
+the only remaining V3.1 handoff gate.
+
+## 2026-08-27 — Recovery preserves operator work
+
+A requirement audit against ADR-0031 found that prepared-state recovery verified ownership refs,
+branch, HEAD, and repository identity before `git worktree remove --force`, but did not prove that
+the operator had left the delivered filesystem and index untouched. A crash followed by a human
+edit could therefore make exact verification fail and then lose that edit during rollback.
+
+Commit `09853ac` separates rollback of the still-running creation attempt from later crash
+recovery. Both paths require unchanged owned refs, branch, HEAD, repository identity, and a source
+index. The current attempt may remove only bytes that are an exact subset of its derived Manifest;
+recovery may remove only an empty worktree and otherwise fails closed. Regression tests simulate
+modified bytes, deletion of a derived file, and staged index changes after the terminal receipt is
+lost; every case retains the branch, worktree, and prepared event. The focused eight-test delivery
+suite and the complete `make check` gate pass.
+
+## 2026-08-27 — M3.1 v7 passed and milestone closed
+
+Fresh pinned Campaign `m3-1-canonical-identity-v7` reviewed candidate `9d8e0e0` against Base
+`e792399` with release `v0.2.0` and one high-effort Claude Opus correctness reviewer. Round 1
+spent 346,321 chargeable tokens and returned Pass with three minor Findings. Commit `bff36f4`
+makes `effective_severity` presence-required, enforces coherent canonical FindingSet locations,
+and binds non-reviewer gather inputs through validated graph provenance and durable outputs. The
+v7 Ledger has three fixed Findings and zero open, and the full `make check` gate passes. M3.1 is
+complete; resume at M3.2.
+
+## 2026-08-27 — V3.1 external Round 1 corrections locally verified
+
+Pinned Campaign `v3-1-client-pilot-v2` reviewed candidate `6e92d8a` against Base `9d8e0e0` with
+release `v0.2.0` and the same one-reviewer policy. Round 1 spent 213,903 chargeable tokens and
+opened one major and three minor Findings. Commit `f11a09f` recovers an empty unpopulated
+per-worktree index without weakening operator-staging or filesystem guards, keeps sealed receipts
+inspectable after operator use without re-attesting current bytes, aborts the runbook installation
+on checksum failure, and records losslessly encoded ignored Snapshot paths in the delivery
+receipt and operator guidance.
+
+All four Findings are fixed and the Campaign Ledger has zero open. The integrated candidate also
+contains the verified M3.1 corrections. Formatting, warnings-denied Clippy, all workspace and doc
+tests, byte-identical fixture reproduction, the full nine-test pilot suite, and markdown lint pass.
+A confirming external Round remains required before V3.1 closes.
+
+## 2026-08-27 — V3.1 Round 2 exhausted; all Findings fixed
+
+Round 2 of pinned Campaign `v3-1-client-pilot-v2` reviewed integrated candidate `f0c13e7`, carried
+all four fixed Round 1 Findings, spent 167,787 chargeable tokens, and opened one major plus two
+minor Findings before the immutable two-Round ceiling exhausted. It found that a crash during
+materialization could leave an ambiguous partial worktree permanently prepared, ignore
+classification omitted the operator's global excludes, and the runbook passed percent-encoded
+receipt identifiers to `git add` as literal paths.
+
+Commit `63ccf57` fixes all three without weakening operator-work preservation. Ambiguous partial
+content becomes a failed terminal while the original branch/worktree remains untouched; a later
+explicitly confirmed attempt releases only Afactory's internal ownership ref and can deliver to a
+new absent target. Read-only ignore classification uses the operator's `HOME`, `XDG_CONFIG_HOME`,
+and `GIT_CONFIG_GLOBAL` while every mutating Git command stays sanitized. The runbook decodes
+lossless receipt paths to raw filesystem bytes before `git add -f`. Eleven focused pilot tests,
+the full workspace gate, fixture reproduction, and markdown lint pass. All seven Campaign Findings
+are fixed and its Ledger has zero open; a fresh pinned Campaign must return Pass before V3.1 closes.
+
+## 2026-08-27 — V3.1 fresh review gate cache corrected
+
+Fresh Campaign `v3-1-client-pilot-v3` captured exact candidate `05490dd` against Base `9d8e0e0`,
+then stopped at `GateBlocked` before any reviewer ran or any model tokens were spent. The captured
+Snapshot contained the required fixtures; the failure came from `scripts/verify.sh` reusing a
+global Cargo target whose cached test binaries embedded the compile-time path of an earlier,
+already-destroyed review sandbox.
+
+Commit `94f7bad` preserves the external shared build cache but gives every workspace-artifact test
+the current gate root at runtime. The full `scripts/verify.sh` gate passes against the same global
+cache that produced the failure, fixture reproduction remains byte-identical, and all eleven
+client-pilot tests pass. Restart the incomplete zero-token Round on this expanded exact candidate;
+a fresh pinned Pass remains the V3.1 handoff gate.
+
+## 2026-08-27 — V3.1 fresh Campaign passed and milestone closed
+
+Round 1 epoch 2 of pinned Campaign `v3-1-client-pilot-v3` reviewed candidate `814d3d0` against
+Base `9d8e0e0` with release `v0.2.0` and one high-effort Claude Opus correctness reviewer. Both
+gates passed in the fresh materialized sandbox, proving the runtime workspace-root correction
+against the real shared-cache boundary. The reviewer spent 279,039 chargeable tokens and returned
+Pass with three minor Findings.
+
+Commit `d061d27` synchronizes the binding `AGENTS.md` status, converts decoded ignored paths to
+Git `:(literal)` byte pathspecs before staging, and derives the optional template-authority test
+from the runtime workspace root. Literal staging was reproduced with bracketed and leading-colon
+filenames; the focused definition suite passes 25/25, the full kernel gate and byte-identical
+fixture reproduction pass, and all eleven client-pilot tests pass. All three Findings are fixed
+and the Campaign Ledger has zero open. V3.1 is complete for trusted design-partner pilots;
+publishing a client release remains a separate human action.

@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
-    Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
-    SubjectKind, SubjectV1,
+    FindingSetEntryV1, FindingSetV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PortArtifactsV1, PortCardinality,
+    Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ReviewerPackageV1,
+    RunEvent, RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
@@ -41,10 +41,14 @@ const SCHEMAS: [&str; 18] = [
     "subject-v1.json",
 ];
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn schema(name: &str) -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas")
-        .join(name);
+    let path = workspace_root().join("schemas").join(name);
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}")))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -135,8 +139,7 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
 
 #[test]
 fn reviewer_result_legacy_conformance_corpus_matches_schema() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/reviewer-result-v1-conformance.json");
+    let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
     let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         assert_valid("reviewer-result-v1.json", &case["payload"]);
@@ -218,8 +221,7 @@ fn finding_report_rejects_what_the_design_forbids() {
 
 #[test]
 fn finding_report_semantic_conformance_corpus_matches_schema_and_reader() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/finding-report-v1-conformance.json");
+    let path = workspace_root().join("schemas/finding-report-v1-conformance.json");
     let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         assert_valid("finding-report-v1.json", &case["payload"]);
@@ -364,6 +366,19 @@ fn subject_and_campaign_authority_roundtrip() {
         demand_genesis_id: digest.clone(),
     };
     manifest.validate().unwrap();
+    let mut unknown_policy = manifest.clone();
+    unknown_policy.finding_identity_policy = "future-policy@9".into();
+    assert!(
+        unknown_policy
+            .validate()
+            .unwrap_err()
+            .contains("unknown finding identity policy")
+    );
+    assert_invalid(
+        "campaign-manifest-v1.json",
+        &serde_json::to_value(&unknown_policy).unwrap(),
+        "unknown finding identity policy",
+    );
     let value = serde_json::to_value(&manifest).unwrap();
     assert_valid("campaign-manifest-v1.json", &value);
     assert_eq!(
@@ -407,8 +422,7 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
 
 #[test]
 fn change_set_semantic_conformance_corpus_matches_the_permanent_reader() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/change-set-v1-conformance.json");
+    let path = workspace_root().join("schemas/change-set-v1-conformance.json");
     let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
@@ -866,5 +880,121 @@ fn artifact_envelope_roundtrips_both_producers() {
             envelope
         );
         assert_eq!(envelope.producer.is_deterministic(), deterministic);
+    }
+}
+
+#[test]
+fn finding_set_roundtrips_as_an_exact_reducer_projection() {
+    let digest = format!("sha256:{}", "d".repeat(64));
+    let set = FindingSetV1 {
+        subject_id: digest.clone(),
+        round: 1,
+        prior_finding_set_id: digest.clone(),
+        reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+        identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+        selected_report_ids: vec![digest.clone()],
+        relation_ids: Vec::new(),
+        resolution_ids: Vec::new(),
+        findings: vec![FindingSetEntryV1 {
+            finding_id: digest.clone(),
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(7),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: "correctness".into(),
+            last_seen_round: 1,
+            report_ids: vec![digest],
+        }],
+    };
+    set.validate().unwrap();
+    let value = serde_json::to_value(&set).unwrap();
+    assert_valid("finding-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<FindingSetV1>(value.clone()).unwrap(),
+        set
+    );
+    let mut missing_effective_severity = value;
+    missing_effective_severity["findings"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_severity");
+    assert!(serde_json::from_value::<FindingSetV1>(missing_effective_severity.clone()).is_err());
+    assert_invalid(
+        "finding-set-v1.json",
+        &missing_effective_severity,
+        "effective severity is required",
+    );
+
+    let mut out_of_scope = set.clone();
+    out_of_scope.findings[0].scope = "out".into();
+    out_of_scope.findings[0].effective_severity = None;
+    let out_of_scope_value = serde_json::to_value(&out_of_scope).unwrap();
+    assert!(out_of_scope_value["findings"][0]["effective_severity"].is_null());
+    assert_valid("finding-set-v1.json", &out_of_scope_value);
+    assert_eq!(
+        serde_json::from_value::<FindingSetV1>(out_of_scope_value).unwrap(),
+        out_of_scope
+    );
+
+    let mut empty_file = set.clone();
+    empty_file.findings[0].file = Some(String::new());
+    assert!(empty_file.validate().is_err());
+
+    for invalid in [
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].status = "triaged".into();
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].scope = "maybe".into();
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].line = Some(0);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].file = Some("../../etc/passwd".into());
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].file = None;
+            invalid.findings[0].line = Some(1);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].location_unrecorded = true;
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].confidence = Some(1.1);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].fix = Some(String::new());
+            invalid
+        },
+    ] {
+        assert!(invalid.validate().is_err());
+        assert_invalid(
+            "finding-set-v1.json",
+            &serde_json::to_value(invalid).unwrap(),
+            "invalid Finding projection",
+        );
     }
 }

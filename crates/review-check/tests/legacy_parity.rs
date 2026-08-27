@@ -11,8 +11,14 @@ use std::path::PathBuf;
 use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command, GateDecision};
 use review_store::Cas;
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn corpus() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/synthetic")
+    workspace_root().join("fixtures/synthetic")
 }
 
 /// Read a case's check list, porting each line to a typed command.
@@ -172,10 +178,7 @@ fn a_later_execution_does_not_erase_an_earlier_one() {
 #[test]
 fn every_result_validates_against_check_result_v1() {
     let schema: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas/check-result-v1.json"),
-        )
-        .unwrap(),
+        &std::fs::read_to_string(workspace_root().join("schemas/check-result-v1.json")).unwrap(),
     )
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();

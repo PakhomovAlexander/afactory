@@ -407,6 +407,10 @@ pub struct Lockfile {
     pub version: u32,
     #[serde(default)]
     pub reviewers: BTreeMap<String, Pin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workers: BTreeMap<String, Pin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pipelines: BTreeMap<String, Pin>,
 }
 
 /// A reviewer that survived resolution. The type itself lives with the adapters
@@ -601,6 +605,8 @@ impl Lockfile {
         Lockfile {
             version: 1,
             reviewers: BTreeMap::new(),
+            workers: BTreeMap::new(),
+            pipelines: BTreeMap::new(),
         }
     }
 
@@ -615,8 +621,10 @@ impl Lockfile {
                 lockfile.version
             )));
         }
-        for (name, pin) in &lockfile.reviewers {
-            validate_pin(name, pin)?;
+        for pins in [&lockfile.reviewers, &lockfile.workers, &lockfile.pipelines] {
+            for (name, pin) in pins {
+                validate_pin(name, pin)?;
+            }
         }
         Ok(lockfile)
     }
@@ -635,6 +643,7 @@ impl Lockfile {
         let pin = self
             .reviewers
             .get(name)
+            .or_else(|| self.workers.get(name))
             .ok_or_else(|| LockError::NotLocked {
                 name: name.to_string(),
             })?;

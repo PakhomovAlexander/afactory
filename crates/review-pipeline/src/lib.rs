@@ -36,16 +36,20 @@ use review_core::event::{
     AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
-    MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
-    PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, run_report_closes_round,
+    CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
+    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1,
+    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
 };
-use review_runner::{ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError};
+use review_runner::{
+    ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
+    ReviewerInputs, RunnerError, TokenUsage,
+};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
 use review_store::{
@@ -145,6 +149,17 @@ pub enum RunVerdict {
     Incomplete { missing: Vec<(String, String)> },
 }
 
+/// Selected Attempt accounting reconstructed from its durable provenance artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptEvidence {
+    pub node: String,
+    pub attempt_id: String,
+    pub cost_tokens: u64,
+    pub usage: TokenUsage,
+    pub context_manifest: ContextManifest,
+    pub raw_artifact: String,
+}
+
 /// The immutable publication boundary every event emitted by one Round execution inherits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundAuthority {
@@ -158,12 +173,32 @@ pub struct RoundAuthority {
     head_snapshot_id: String,
     head_content_digest: String,
     prior_finding_set_id: String,
+    prior_reduction_finding_set_id: String,
+    finding_identity_policy: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
     change_set: Option<Arc<review_store::ResolvedChangeSet>>,
+    reviewer_packages: BTreeMap<String, (String, String)>,
+    policy_ids: Vec<String>,
 }
 
 impl RoundAuthority {
+    pub fn authority_snapshot_id(&self) -> &str {
+        &self.authority_snapshot_id
+    }
+
+    pub fn campaign_manifest_id(&self) -> &str {
+        &self.campaign_manifest_id
+    }
+
+    pub fn subject_id(&self) -> &str {
+        &self.subject_id
+    }
+
+    pub fn head_snapshot_id(&self) -> &str {
+        &self.head_snapshot_id
+    }
+
     pub fn load(
         store: &EventStore,
         cas: &Cas,
@@ -188,6 +223,44 @@ impl RoundAuthority {
         if payload.campaign_manifest_id != opened.campaign_manifest_id {
             return Err("RoundStarted@1 does not reference the opened CampaignManifest".into());
         }
+        let campaign_manifest: CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(&opened.campaign_manifest_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        campaign_manifest.validate()?;
+        let prior_reduction_finding_set_id = if campaign_manifest.finding_identity_policy
+            == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            canonical_prior_finding_set_id(
+                store,
+                cas,
+                run_id,
+                round.sequence,
+                payload.round,
+                &opened.campaign_manifest_id,
+                &campaign_manifest,
+            )?
+        } else {
+            payload.prior_finding_set_id.clone()
+        };
+        let reviewer_packages = campaign_manifest
+            .reviewers
+            .iter()
+            .map(|reviewer| {
+                (
+                    reviewer.node.clone(),
+                    (
+                        reviewer.package_artifact_id.clone(),
+                        reviewer.digest.clone(),
+                    ),
+                )
+            })
+            .collect();
+        let mut policy_ids = campaign_manifest.execution_policy_ids.clone();
+        policy_ids.extend(campaign_manifest.project_policy_ids.clone());
+        policy_ids.sort();
+        policy_ids.dedup();
         let resolved = review_store::resolve_subject(cas, &payload.subject_id)
             .map_err(|error| error.to_string())?;
         let subject = resolved.subject;
@@ -245,9 +318,13 @@ impl RoundAuthority {
             head_snapshot_id: subject.head_snapshot_id,
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
+            prior_reduction_finding_set_id,
+            finding_identity_policy: campaign_manifest.finding_identity_policy,
             subject_kind: subject.kind,
             change_set_id,
             change_set,
+            reviewer_packages,
+            policy_ids,
         })
     }
 
@@ -272,6 +349,154 @@ impl RoundAuthority {
         ];
         refs
     }
+}
+
+fn canonical_prior_finding_set_id(
+    store: &EventStore,
+    cas: &Cas,
+    run_id: &str,
+    round_sequence: u64,
+    round: u32,
+    campaign_manifest_id: &str,
+    campaign: &CampaignManifestV1,
+) -> Result<String, String> {
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    canonical_prior_finding_set_id_from_events(
+        cas,
+        &events,
+        round_sequence,
+        round,
+        campaign_manifest_id,
+        campaign,
+    )
+}
+
+fn canonical_prior_finding_set_id_from_events(
+    cas: &Cas,
+    events: &[review_core::RunEvent],
+    active_sequence: u64,
+    round: u32,
+    campaign_manifest_id: &str,
+    campaign: &CampaignManifestV1,
+) -> Result<String, String> {
+    let pipeline = cas
+        .get(&campaign.pipeline.artifact_id)
+        .map_err(|error| format!("canonical pipeline authority is unreadable: {error}"))?;
+    let pipeline = std::str::from_utf8(&pipeline)
+        .map_err(|error| format!("canonical pipeline authority is not UTF-8: {error}"))?;
+    let definition = review_config::Definition::from_toml(pipeline)
+        .map_err(|error| format!("canonical pipeline authority is invalid: {error}"))?;
+    let ledger_nodes: BTreeSet<_> = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == review_config::NodeKindSpec::Ledger)
+        .map(|node| node.id.as_str())
+        .collect();
+    if ledger_nodes.is_empty() {
+        return Err("canonical pipeline authority has no ledger node".into());
+    }
+    let prior_rounds: Vec<_> = events
+        .iter()
+        .rev()
+        .filter_map(|event| {
+            if event.event_type != EventType::RoundStartedV1 {
+                return None;
+            }
+            let payload: RoundStartedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).ok()?;
+            (payload.campaign_manifest_id == campaign_manifest_id
+                && (payload.round < round
+                    || (payload.round == round && event.sequence < active_sequence)))
+                .then_some((event.event_id.as_str(), payload.round))
+        })
+        .collect();
+    for (prior_round_event_id, prior_round) in prior_rounds {
+        let closed = events.iter().try_fold(false, |closed, event| {
+            if event.causation_id.as_deref() != Some(prior_round_event_id)
+                || !event.event_type.is_run_report()
+            {
+                return Ok(closed);
+            }
+            run_report_closes_round(event)
+                .map(|value| closed || value.unwrap_or(false))
+                .map_err(|error| error.to_string())
+        })?;
+        if prior_round < round && !closed {
+            continue;
+        }
+        let mut ids = Vec::new();
+        let mut saw_ledger_receipt = false;
+        for event in events {
+            if event.event_type != EventType::NodeOutputReceiptV1
+                || event.causation_id.as_deref() != Some(prior_round_event_id)
+            {
+                continue;
+            }
+            let receipt: NodeOutputReceiptPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+            if !ledger_nodes.contains(receipt.node.as_str()) {
+                continue;
+            }
+            saw_ledger_receipt = true;
+            for port in receipt.outputs {
+                if port.artifact_type == review_core::contract::FINDING_SET_V1 {
+                    ids.extend(port.artifact_ids);
+                    continue;
+                }
+                for id in port.artifact_ids {
+                    let value = cas.get_json(&id).map_err(|error| {
+                        format!("prior ledger output {id} is unreadable: {error}")
+                    })?;
+                    let Ok(envelope) =
+                        serde_json::from_value::<review_core::ArtifactEnvelope>(value)
+                    else {
+                        continue;
+                    };
+                    if envelope.artifact_type == review_core::contract::FINDING_SET_V1 {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        if ids.is_empty() {
+            if saw_ledger_receipt {
+                return Err(format!(
+                    "canonical Finding Set lineage round {prior_round} has a ledger receipt but no FindingSet@1 output"
+                ));
+            }
+            continue;
+        }
+        if ids.len() != 1 {
+            return Err(format!(
+                "canonical Finding Set lineage round {prior_round} has {} ledger outputs",
+                ids.len()
+            ));
+        }
+        let id = ids.pop().expect("exactly one canonical Finding Set output");
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&id).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("prior Finding Set {id} is not an artifact envelope: {error}"))?;
+        review_store::validate_envelope(&envelope).map_err(|error| error.to_string())?;
+        if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+            return Err(format!("prior ledger output {id} is not FindingSet@1"));
+        }
+        let set: review_core::FindingSetV1 = serde_json::from_value(envelope.payload)
+            .map_err(|error| format!("prior Finding Set {id} is invalid: {error}"))?;
+        set.validate()?;
+        if set.round != prior_round
+            || set.round > round
+            || set.identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            return Err(format!(
+                "prior Finding Set {id} disagrees with canonical round {prior_round}"
+            ));
+        }
+        return Ok(id);
+    }
+    cas.verify(&campaign.finding_genesis_id)
+        .map_err(|error| error.to_string())?;
+    Ok(campaign.finding_genesis_id.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -697,6 +922,13 @@ pub struct Kernel<'a> {
     replayed_outputs: BTreeMap<String, DurableReceipt>,
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
     reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
+    reviewer_input_artifacts: Mutex<BTreeMap<String, Vec<String>>>,
+    /// Validated graph provenance: downstream node -> input port -> exact upstream node, output
+    /// port, and kind. The kind distinguishes reviewer selection from deterministic node output.
+    input_bindings: review_config::InputBindings,
+    /// Outputs made durable in this scheduler run, keyed by their producing node. Downstream
+    /// canonical reducers consult only this map plus the validated graph when binding artifacts.
+    node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
     replayed_spent: u64,
 }
 
@@ -785,6 +1017,20 @@ impl<'a> Kernel<'a> {
         let attempts =
             AttemptLedger::scoped(&authority.round_event_id, replayed.attempt_counts.clone());
         let prior_findings = Some(authority.prior_finding_set_id.clone());
+        let reviewer_input_artifacts = replayed
+            .invocations
+            .iter()
+            .map(|(node, invocation)| {
+                (
+                    node.clone(),
+                    invocation
+                        .inputs
+                        .iter()
+                        .flat_map(|port| port.artifact_ids.iter().cloned())
+                        .collect(),
+                )
+            })
+            .collect();
         Ok(Kernel {
             cas,
             store: Mutex::new(store),
@@ -812,6 +1058,9 @@ impl<'a> Kernel<'a> {
             replayed_outputs: replayed.outputs,
             replayed_refusal_histories: replayed.refusal_histories,
             reviewer_selections: Mutex::new(replayed.selected_reviewers),
+            reviewer_input_artifacts: Mutex::new(reviewer_input_artifacts),
+            input_bindings: BTreeMap::new(),
+            node_outputs: Mutex::new(BTreeMap::new()),
             replayed_spent: replayed.committed_tokens,
         })
     }
@@ -848,7 +1097,7 @@ impl<'a> Kernel<'a> {
         loaded: &review_config::Loaded,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        Kernel::for_subject(
+        let mut kernel = Kernel::for_subject(
             cas,
             store,
             run_id,
@@ -856,7 +1105,9 @@ impl<'a> Kernel<'a> {
             loaded.subject_kind(),
             loaded.version(),
             authority,
-        )
+        )?;
+        kernel.input_bindings = loaded.input_bindings();
+        Ok(kernel)
     }
 
     pub fn with_checks(mut self, checks: Vec<CheckDefinition>) -> Self {
@@ -930,6 +1181,62 @@ impl<'a> Kernel<'a> {
     /// Every attempt this run made, quarantines included — the operator's view.
     pub fn attempts(&self) -> AttemptLedger {
         self.attempts.lock().expect("attempt ledger").clone()
+    }
+
+    /// Selected Attempt evidence for this exact Round epoch, loaded from the durable provenance
+    /// artifacts referenced by `AttemptAdmitted@1`.
+    pub fn selected_attempt_evidence(&self) -> Result<Vec<AttemptEvidence>, String> {
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let mut evidence = Vec::new();
+        for event in events.into_iter().filter(|event| {
+            event.event_type == EventType::AttemptAdmittedV1
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        }) {
+            let payload: AttemptAdmittedPayloadV1 =
+                serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+            if payload.selection != "selected" {
+                continue;
+            }
+            let node = event.node_id.ok_or("selected Attempt has no node ID")?;
+            let attempt_id = event
+                .attempt_id
+                .ok_or("selected Attempt has no Attempt ID")?;
+            let provenance_id = payload
+                .provenance_artifact
+                .ok_or("selected Attempt has no provenance artifact")?;
+            let provenance = self
+                .cas
+                .get_json(&provenance_id)
+                .map_err(|error| error.to_string())?;
+            if provenance["node"].as_str() != Some(node.as_str())
+                || provenance["attempt"].as_str() != Some(attempt_id.as_str())
+                || provenance["cost_tokens"].as_u64() != Some(payload.cost_tokens)
+            {
+                return Err("selected Attempt provenance contradicts its admission event".into());
+            }
+            evidence.push(AttemptEvidence {
+                node,
+                attempt_id,
+                cost_tokens: payload.cost_tokens,
+                usage: serde_json::from_value(provenance["usage"].clone())
+                    .map_err(|error| error.to_string())?,
+                context_manifest: serde_json::from_value(provenance["context_manifest"].clone())
+                    .map_err(|error| error.to_string())?,
+                raw_artifact: provenance["raw"]
+                    .as_str()
+                    .ok_or("selected Attempt provenance has no raw artifact")?
+                    .to_string(),
+            });
+        }
+        evidence.sort_by(|left, right| {
+            (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
+        });
+        Ok(evidence)
     }
 
     /// The decision a gate node reached, if it ran.
@@ -1465,7 +1772,10 @@ impl<'a> Kernel<'a> {
             .and_then(|port| node_inputs.get(port))
             .and_then(|artifacts| artifacts.first())
             .cloned();
-        let mut inputs = ReviewerInputs::default();
+        let mut inputs = ReviewerInputs {
+            finding_identity_policy: Some(self.authority.finding_identity_policy.clone()),
+            ..ReviewerInputs::default()
+        };
         let resolved_inputs = (|| -> Result<(), String> {
             for (port, artifacts) in node_inputs {
                 let contract = node
@@ -1575,6 +1885,7 @@ impl<'a> Kernel<'a> {
                 inputs.prior_findings = Some(value);
             }
         }
+        inputs.prior_findings_artifact_id = prior_findings_artifact.clone();
 
         let mut retry_failures: Vec<String> = Vec::new();
         for _ in 0..=self.timeout_retries {
@@ -1593,11 +1904,12 @@ impl<'a> Kernel<'a> {
                 )?,
             };
 
-            inputs.refused_attempts = match refusal_history_id {
+            inputs.refusal_history_artifact_id = refusal_history_id.clone();
+            inputs.refused_attempts = match refusal_history_id.as_ref() {
                 Some(refusal_history_id) => {
                     let decoded = self
                         .cas
-                        .get_json(&refusal_history_id)
+                        .get_json(refusal_history_id)
                         .map_err(|error| error.to_string())
                         .and_then(|value| {
                             serde_json::from_value(value).map_err(|error| error.to_string())
@@ -1618,6 +1930,26 @@ impl<'a> Kernel<'a> {
                 None => Vec::new(),
             };
             retry_failures.clone_from(&inputs.refused_attempts);
+            inputs.attempt_context = Some(ReviewerAttemptContext {
+                attempt_id: attempt.to_string(),
+                round: self.authority.round,
+                epoch: self.authority.epoch,
+                subject_id: self.authority.subject_id.clone(),
+                head_snapshot_id: self.authority.head_snapshot_id.clone(),
+                campaign_manifest_id: self.authority.campaign_manifest_id.clone(),
+                reviewer_package_artifact_id: self
+                    .authority
+                    .reviewer_packages
+                    .get(node_id)
+                    .map(|(artifact_id, _)| artifact_id.clone()),
+                reviewer_package_digest: self
+                    .authority
+                    .reviewer_packages
+                    .get(node_id)
+                    .map(|(_, digest)| digest.clone()),
+                policy_ids: self.authority.policy_ids.clone(),
+                reserved_tokens: reservation.as_ref().map(|reservation| reservation.amount),
+            });
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
@@ -1631,7 +1963,7 @@ impl<'a> Kernel<'a> {
             };
 
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                adapter.invoke(self.cas, sandbox.root(), &inputs)
+                adapter.invoke_receipted(self.cas, sandbox.root(), &inputs)
             }));
             let invoked = match invoked {
                 Ok(invoked) => invoked,
@@ -1653,7 +1985,8 @@ impl<'a> Kernel<'a> {
             };
 
             match invoked {
-                Ok(returned) => {
+                Ok(receipted) => {
+                    let returned = receipted.returned;
                     let result_value = match reviewer_result_value(&returned.output) {
                         Ok(value) => value,
                         Err(error) => {
@@ -1703,6 +2036,8 @@ impl<'a> Kernel<'a> {
                                 "attempt": attempt.to_string(),
                                 "result_artifact": result_artifact,
                                 "cost_tokens": returned.cost_tokens,
+                                "usage": receipted.usage,
+                                "context_manifest": receipted.context_manifest,
                                 "raw": returned.raw_artifact,
                                 "sandbox_mutations": mutation_summary,
                             }))
@@ -1917,8 +2252,75 @@ impl<'a> Kernel<'a> {
     /// This is also the run's canonical barrier: every reviewer has finished, so the buffered
     /// reviewer events are flushed here in node order, giving the log a shape that is a
     /// function of the pipeline rather than of thread timing.
-    fn run_gather(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_gather(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         self.flush_reviewer_events()?;
+        if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            let sources = self.input_bindings.get(&node.id).ok_or_else(|| {
+                format!("canonical gather `{}` has no pinned input graph", node.id)
+            })?;
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let node_outputs = self.node_outputs.lock().expect("node outputs");
+            let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (port, artifacts) in inputs {
+                let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
+                let mut remaining = artifacts.clone();
+                for (source, source_port, kind) in upstream {
+                    let produced = node_outputs
+                        .get(source)
+                        .and_then(|outputs| outputs.get(source_port))
+                        .ok_or_else(|| {
+                            format!(
+                                "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
+                                node.id
+                            )
+                        })?;
+                    if *kind == NodeKind::Reviewer {
+                        let selected = selections.get(source).ok_or_else(|| {
+                            format!(
+                                "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
+                                node.id
+                            )
+                        })?;
+                        if produced.as_slice() != [selected.result_artifact.as_str()] {
+                            return Err(format!(
+                                "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
+                                node.id
+                            ));
+                        }
+                    }
+                    for artifact in produced {
+                        let Some(index) =
+                            remaining.iter().position(|delivered| delivered == artifact)
+                        else {
+                            return Err(format!(
+                                "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
+                                node.id
+                            ));
+                        };
+                        manifest
+                            .entry(source.clone())
+                            .or_default()
+                            .push(remaining.remove(index));
+                    }
+                }
+                if !remaining.is_empty() {
+                    return Err(format!(
+                        "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
+                        node.id,
+                        remaining.len()
+                    ));
+                }
+            }
+            let artifact = self
+                .cas
+                .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            return Ok(vec![artifact]);
+        }
         let artifact = self
             .cas
             .put_json(&serde_json::json!(inputs))
@@ -1926,21 +2328,56 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_ledger(&self, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let mut results: Vec<(String, LegacyStageOutput)> = Vec::new();
+        let canonical = self.authority.finding_identity_policy
+            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
+        let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
+        let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
-            results.push((node.to_string(), output));
+            results.push((node.to_string(), id.to_string(), output));
             Ok(())
         };
         for (input_port, artifacts) in inputs {
             for input in artifacts {
                 let value = self.cas.get_json(input).map_err(|e| e.to_string())?;
                 if value.get("verdict").is_some() && value.get("reports").is_some() {
-                    load(input_port, input, value)?;
+                    let source = if canonical {
+                        let upstream = self
+                            .input_bindings
+                            .get(&node.id)
+                            .and_then(|ports| ports.get(input_port))
+                            .ok_or_else(|| {
+                                format!(
+                                    "canonical ledger `{}.{input_port}` has no pinned input graph",
+                                    node.id
+                                )
+                            })?;
+                        let selections = self
+                            .reviewer_selections
+                            .lock()
+                            .expect("reviewer selections");
+                        let source = upstream.iter().find(|(source, _, kind)| {
+                            *kind == NodeKind::Reviewer
+                                && !direct_sources_used.contains(source)
+                                && selections
+                                    .get(source)
+                                    .is_some_and(|selection| selection.result_artifact == *input)
+                        });
+                        source.map(|(source, _, _)| source.clone()).ok_or_else(|| {
+                            format!(
+                                "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                                node.id
+                            )
+                        })?
+                    } else {
+                        input_port.clone()
+                    };
+                    direct_sources_used.insert(source.clone());
+                    load(&source, input, value)?;
                     continue;
                 }
                 match value {
@@ -1964,6 +2401,11 @@ impl<'a> Kernel<'a> {
                             let id = id
                                 .as_str()
                                 .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
+                            if canonical {
+                                let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
+                                load(input_port, id, value)?;
+                                continue;
+                            }
                             let selected: Vec<String> = self
                                 .reviewer_selections
                                 .lock()
@@ -1989,30 +2431,192 @@ impl<'a> Kernel<'a> {
                 }
             }
         }
-        // Canonical gather order: node id — not completion order, not artifact digest order.
-        results.sort_by(|a, b| a.0.cmp(&b.0));
+        if canonical {
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let mut result_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (index, (_, result_id, _)) in results.iter().enumerate() {
+                result_indices
+                    .entry(result_id.clone())
+                    .or_default()
+                    .push(index);
+            }
+            for (result_id, indices) in result_indices {
+                let mut assigned = BTreeSet::new();
+                let mut unmatched = Vec::new();
+                for index in indices {
+                    let node = &results[index].0;
+                    if selections
+                        .get(node)
+                        .is_some_and(|selection| selection.result_artifact == result_id)
+                    {
+                        if !assigned.insert(node.clone()) {
+                            return Err(format!(
+                                "selected reviewer result for `{node}` was delivered more than once"
+                            ));
+                        }
+                    } else {
+                        unmatched.push(index);
+                    }
+                }
+                let mut selected: Vec<_> = selections
+                    .iter()
+                    .filter(|(node, selection)| {
+                        selection.result_artifact == result_id && !assigned.contains(*node)
+                    })
+                    .map(|(node, _)| node.clone())
+                    .collect();
+                if selected.len() < unmatched.len() {
+                    return Err(format!(
+                        "selected reviewer result {result_id} has {} unlabelled delivered copies and {} unused matching Attempts",
+                        unmatched.len(),
+                        selected.len(),
+                    ));
+                }
+                selected.sort();
+                unmatched.sort_by(|left, right| {
+                    (&results[*left].0, *left).cmp(&(&results[*right].0, *right))
+                });
+                for (index, node) in unmatched.into_iter().zip(selected) {
+                    results[index].0 = node;
+                }
+            }
+        }
+        // Canonical gather order: reviewer node id — not completion order, input-port label, or
+        // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
+        results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+        let canonical_metadata = if canonical {
+            let selections = self
+                .reviewer_selections
+                .lock()
+                .expect("reviewer selections");
+            let reviewer_inputs = self
+                .reviewer_input_artifacts
+                .lock()
+                .expect("reviewer inputs");
+            Some(
+                results
+                    .iter()
+                    .map(|(node, result_id, _)| {
+                        let selection = selections.get(node).ok_or_else(|| {
+                            format!("selected reviewer result for `{node}` has no Attempt")
+                        })?;
+                        if &selection.result_artifact != result_id {
+                            return Err(format!(
+                                "selected reviewer result for `{node}` disagrees with its Attempt"
+                            ));
+                        }
+                        Ok((
+                            selection.attempt_id.clone(),
+                            reviewer_inputs.get(node).cloned().ok_or_else(|| {
+                                format!("selected reviewer `{node}` has no exact invocation inputs")
+                            })?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            )
+        } else {
+            None
+        };
 
         let projection = self.take_ledger_projection();
-        let (round, finding_count, projection) = {
+        let (round, finding_count, finding_entries, reduction, projection) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =
                 Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
                     .map_err(|e| e.to_string())?
                     .under_round(&self.authority.round_event_id);
-            let stages: Vec<_> = results
-                .iter()
-                .map(|(node, stage)| (node.as_str(), stage))
-                .collect();
-            ingest
-                .add_live_stage_outputs(&stages)
-                .map_err(|e| e.to_string())?;
+            let reduction_round =
+                canonical_reduction_round(ingest.ledger().round, self.authority.round)?;
+            let reduction = match &canonical_metadata {
+                Some(metadata) => {
+                    let stages: Vec<_> = results
+                        .iter()
+                        .zip(metadata)
+                        .map(
+                            |((node, result_id, stage), (attempt_id, input_artifacts))| {
+                                review_store::CanonicalStage {
+                                    source: node,
+                                    stage,
+                                    attempt_id,
+                                    result_artifact_id: result_id,
+                                    input_artifacts,
+                                    subject_snapshot_id: &self.authority.head_snapshot_id,
+                                }
+                            },
+                        )
+                        .collect();
+                    Some(
+                        ingest
+                            .add_canonical_stage_outputs(&stages)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
+                None => {
+                    let stages: Vec<_> = results
+                        .iter()
+                        .map(|(node, _, stage)| (node.as_str(), stage))
+                        .collect();
+                    ingest
+                        .add_live_stage_outputs(&stages)
+                        .map_err(|error| error.to_string())?;
+                    None
+                }
+            };
             (
-                ingest.ledger().round,
+                reduction_round,
                 ingest.ledger().len(),
+                canonical.then(|| finding_set_entries(ingest.ledger())),
+                reduction,
                 ingest.into_projection(),
             )
         };
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
+        if let (Some(entries), Some(reduction)) = (finding_entries, reduction) {
+            let payload = review_core::FindingSetV1 {
+                subject_id: self.authority.subject_id.clone(),
+                round,
+                prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
+                reducer_version: review_core::FINDING_REDUCER_VERSION.to_string(),
+                identity_policy: self.authority.finding_identity_policy.clone(),
+                selected_report_ids: reduction.selected_report_ids,
+                relation_ids: reduction.relation_ids,
+                resolution_ids: Vec::new(),
+                findings: entries,
+            };
+            payload.validate()?;
+            let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
+            reduction_inputs.extend(reduction.input_artifact_ids);
+            let operation_digest = review_store::content_id(&serde_json::json!({
+                "reducer_version": review_core::FINDING_REDUCER_VERSION,
+                "identity_policy": self.authority.finding_identity_policy,
+                "inputs": reduction_inputs,
+            }))
+            .map_err(|error| error.to_string())?;
+            let (record_id, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::FINDING_SET_V1,
+                    review_core::Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: Some("ledger".into()),
+                        operation_id: format!(
+                            "{}:{}:{}",
+                            review_core::FINDING_REDUCER_VERSION,
+                            self.authority.finding_identity_policy,
+                            operation_digest
+                        ),
+                    },
+                    reduction_inputs,
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(vec![record_id]);
+        }
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.
@@ -2020,7 +2624,7 @@ impl<'a> Kernel<'a> {
             .cas
             .put_json(&serde_json::json!({
                 "round": round,
-                "sources": results.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                "sources": results.iter().map(|(node, _, _)| node).collect::<Vec<_>>(),
                 "findings": finding_count,
             }))
             .map_err(|e| e.to_string())?;
@@ -2075,6 +2679,62 @@ fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, 
         .ok_or("ReviewerResult@1 has no reports array")?;
     object.insert("findings".into(), reports);
     serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+}
+
+fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<u32, String> {
+    if ledger_round != authority_round {
+        return Err(format!(
+            "canonical ledger is at Round {ledger_round} but active Round authority is {authority_round}"
+        ));
+    }
+    Ok(authority_round)
+}
+
+fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::FindingSetEntryV1> {
+    ledger
+        .findings()
+        .iter()
+        .map(|finding| {
+            let (file, line, location_unrecorded) =
+                if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                    (None, None, false)
+                } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                    (
+                        Some(finding.identity_file.clone()),
+                        finding.identity_line,
+                        false,
+                    )
+                } else {
+                    (None, None, true)
+                };
+            review_core::FindingSetEntryV1 {
+                finding_id: finding.key.clone(),
+                status: finding.status.as_str().to_string(),
+                severity: finding.severity,
+                effective_severity: finding.convergence_severity,
+                scope: finding.convergence_scope_label().to_string(),
+                file,
+                line,
+                location_unrecorded,
+                title: finding.title.clone(),
+                body: finding.body.clone(),
+                fix: finding.fix.clone(),
+                confidence: finding.confidence,
+                source: finding.source.clone(),
+                last_seen_round: finding.last_seen_round,
+                report_ids: finding
+                    .reports
+                    .iter()
+                    .map(|report| {
+                        report
+                            .artifact_id
+                            .clone()
+                            .unwrap_or_else(|| report.report_id.clone())
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
@@ -2171,6 +2831,12 @@ impl Dispatch for Kernel<'_> {
                 .referencing(artifact_ids(inputs)),
             )?;
         }
+        if node.kind == NodeKind::Reviewer {
+            self.reviewer_input_artifacts
+                .lock()
+                .expect("reviewer inputs")
+                .insert(node.id.clone(), artifact_ids(inputs));
+        }
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             if !self.reviewers.contains_key(&node.id) {
                 return Err(format!("no reviewer bound to node {}", node.id));
@@ -2252,8 +2918,8 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
-            NodeKind::Gather => self.run_gather(inputs),
-            NodeKind::Ledger => self.run_ledger(inputs),
+            NodeKind::Gather => self.run_gather(node, inputs),
+            NodeKind::Ledger => self.run_ledger(node, inputs),
             NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
@@ -2267,6 +2933,10 @@ impl Dispatch for Kernel<'_> {
                 outputs: port_artifacts(&node.outputs, outputs, &self.authority.head_snapshot_id),
             };
             return if recorded.payload == expected {
+                self.node_outputs
+                    .lock()
+                    .expect("node outputs")
+                    .insert(node.id.clone(), outputs.clone());
                 Ok(())
             } else {
                 Err(format!(
@@ -2310,6 +2980,10 @@ impl Dispatch for Kernel<'_> {
         events.push(event);
         self.append_batch(&events)?;
         pending.retain(|((id, _), _)| id != &node.id);
+        self.node_outputs
+            .lock()
+            .expect("node outputs")
+            .insert(node.id.clone(), outputs.clone());
         Ok(())
     }
 
@@ -2332,6 +3006,442 @@ impl review_config::SubjectDispatch for Kernel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_reduction_refuses_a_stale_ledger_round() {
+        assert_eq!(canonical_reduction_round(2, 2).unwrap(), 2);
+        assert_eq!(
+            canonical_reduction_round(1, 2).unwrap_err(),
+            "canonical ledger is at Round 1 but active Round authority is 2"
+        );
+    }
+
+    #[test]
+    fn canonical_lineage_falls_back_to_genesis_when_a_closed_round_emitted_no_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let digest = cas.put(b"genesis").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = ["findings"]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: digest.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: digest.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![digest.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: digest.clone(),
+            demand_genesis_id: digest,
+        };
+        let round = review_core::RunEvent {
+            event_id: "round-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: 1,
+                epoch: 1,
+                campaign_manifest_id: campaign_manifest_id.clone(),
+                subject_id: format!("sha256:{}", "b".repeat(64)),
+                prior_finding_set_id: format!("sha256:{}", "c".repeat(64)),
+                prior_demand_set_id: format!("sha256:{}", "d".repeat(64)),
+            })
+            .unwrap(),
+        };
+        let terminal = review_core::RunEvent {
+            event_id: "report-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::RunReportV3,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RunReportPayloadV3 {
+                outcomes: vec![RunNodeReportV2 {
+                    node: "reviewer".into(),
+                    outcome: RunNodeOutcomeV2::Failed {
+                        error: "run budget exhausted".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                },
+                spent_tokens: Some(1_000_000),
+            })
+            .unwrap(),
+        };
+
+        assert_eq!(
+            canonical_prior_finding_set_id_from_events(
+                &cas,
+                &[round, terminal],
+                2,
+                2,
+                &campaign_manifest_id,
+                &campaign,
+            )
+            .unwrap(),
+            campaign.finding_genesis_id
+        );
+    }
+
+    #[test]
+    fn canonical_lineage_anchors_a_superseded_epoch_of_the_active_round() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let genesis = cas.put(b"genesis").unwrap();
+        let subject = cas.put(b"subject").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: genesis.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: genesis.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![genesis.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: genesis.clone(),
+            demand_genesis_id: genesis.clone(),
+        };
+        let set = review_core::FindingSetV1 {
+            subject_id: subject.clone(),
+            round: 1,
+            prior_finding_set_id: genesis.clone(),
+            reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: Vec::new(),
+        };
+        let (set_id, _) = cas
+            .put_artifact(
+                review_core::contract::FINDING_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: "run".into(),
+                    node_id: Some("ledger".into()),
+                    operation_id: "superseded-epoch-test".into(),
+                },
+                vec![genesis.clone()],
+                Some(subject.clone()),
+                serde_json::to_value(set).unwrap(),
+            )
+            .unwrap();
+        let round_payload = |epoch| RoundStartedPayloadV1 {
+            round: 1,
+            epoch,
+            campaign_manifest_id: campaign_manifest_id.clone(),
+            subject_id: subject.clone(),
+            prior_finding_set_id: genesis.clone(),
+            prior_demand_set_id: genesis.clone(),
+        };
+        let superseded_round = review_core::RunEvent {
+            event_id: "round-1-epoch-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(round_payload(1)).unwrap(),
+        };
+        let receipt = review_core::RunEvent {
+            event_id: "receipt-1-epoch-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::NodeOutputReceiptV1,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: Some("ledger".into()),
+            attempt_id: None,
+            causation_id: Some(superseded_round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: vec![set_id.clone()],
+            payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                node: "ledger".into(),
+                outputs: vec![PortArtifactsV1 {
+                    port: "set".into(),
+                    artifact_type: review_core::contract::FINDING_SET_V1.into(),
+                    cardinality: review_core::PortCardinality::One,
+                    optional: false,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                    artifact_ids: vec![set_id.clone()],
+                    subject_snapshot_id: None,
+                }],
+            })
+            .unwrap(),
+        };
+        let active_round = review_core::RunEvent {
+            event_id: "round-1-epoch-2".into(),
+            run_id: "run".into(),
+            sequence: 2,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:02Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(round_payload(2)).unwrap(),
+        };
+
+        assert_eq!(
+            canonical_prior_finding_set_id_from_events(
+                &cas,
+                &[superseded_round, receipt, active_round],
+                2,
+                1,
+                &campaign_manifest_id,
+                &campaign,
+            )
+            .unwrap(),
+            set_id
+        );
+    }
+
+    #[test]
+    fn canonical_lineage_refuses_an_unreadable_untyped_ledger_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let genesis = cas.put(b"genesis").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = ["findings"]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: genesis.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: genesis.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![genesis.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: genesis.clone(),
+            demand_genesis_id: genesis,
+        };
+        let round = review_core::RunEvent {
+            event_id: "round-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: 1,
+                epoch: 1,
+                campaign_manifest_id: campaign_manifest_id.clone(),
+                subject_id: format!("sha256:{}", "b".repeat(64)),
+                prior_finding_set_id: format!("sha256:{}", "c".repeat(64)),
+                prior_demand_set_id: format!("sha256:{}", "d".repeat(64)),
+            })
+            .unwrap(),
+        };
+        let unreadable_set_id = format!("sha256:{}", "f".repeat(64));
+        let hex = unreadable_set_id.strip_prefix("sha256:").unwrap();
+        let object = directory
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+        std::fs::write(object, b"corrupt").unwrap();
+        let receipt = review_core::RunEvent {
+            event_id: "receipt-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::NodeOutputReceiptV1,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: Some("ledger".into()),
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: vec![unreadable_set_id.clone()],
+            payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                node: "ledger".into(),
+                outputs: vec![PortArtifactsV1 {
+                    port: "set".into(),
+                    artifact_type: review_core::contract::OPAQUE_V1.into(),
+                    cardinality: review_core::PortCardinality::One,
+                    optional: false,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                    artifact_ids: vec![unreadable_set_id],
+                    subject_snapshot_id: None,
+                }],
+            })
+            .unwrap(),
+        };
+        let terminal = review_core::RunEvent {
+            event_id: "report-1".into(),
+            run_id: "run".into(),
+            sequence: 2,
+            event_type: EventType::RunReportV3,
+            occurred_at: "2026-08-26T00:00:02Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RunReportPayloadV3 {
+                outcomes: vec![RunNodeReportV2 {
+                    node: "ledger".into(),
+                    outcome: RunNodeOutcomeV2::Failed {
+                        error: "campaign exhausted".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: RunVerdictV3::Fail {
+                    reason: RunFailureReasonV3::Exhausted,
+                },
+                spent_tokens: Some(1),
+            })
+            .unwrap(),
+        };
+
+        let error = canonical_prior_finding_set_id_from_events(
+            &cas,
+            &[round, receipt, terminal],
+            3,
+            2,
+            &campaign_manifest_id,
+            &campaign,
+        )
+        .unwrap_err();
+        assert!(error.contains("prior ledger output"), "{error}");
+        assert!(error.contains("unreadable"), "{error}");
+    }
+
+    #[test]
+    fn unreadable_report_locations_are_omitted_from_finding_sets() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let report_id = cas.put(b"not a report").unwrap();
+        let mut ledger = Ledger::default();
+        ledger
+            .apply_event(
+                &review_core::RunEvent {
+                    event_id: "finding".into(),
+                    run_id: "run".into(),
+                    sequence: 0,
+                    event_type: EventType::FindingReportedV1,
+                    occurred_at: "2026-08-26T00:00:00Z".into(),
+                    node_id: None,
+                    attempt_id: None,
+                    causation_id: None,
+                    correlation_id: Some("claim".into()),
+                    artifact_refs: vec![report_id.clone()],
+                    payload: serde_json::json!({
+                        "key": "claim",
+                        "round": 1,
+                        "source": "correctness",
+                        "report_id": report_id,
+                    }),
+                },
+                &cas,
+            )
+            .unwrap();
+
+        let entries = finding_set_entries(&ledger);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].file, None);
+        assert!(entries[0].location_unrecorded);
+    }
 
     #[test]
     fn unavailable_authority_has_a_distinct_durable_failure_reason() {

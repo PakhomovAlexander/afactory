@@ -28,8 +28,8 @@ use std::time::Duration;
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
-    ModelRunner, RESULT_CONTRACT, ReviewerAdapter, ReviewerInputs, ReviewerReturn, RunnerError,
-    parse_stage_output,
+    ContextManifest, ModelRunner, RESULT_CONTRACT, ReceiptedReviewerReturn, ReviewerAdapter,
+    ReviewerInputs, ReviewerReturn, RunnerError, TokenUsage, parse_stage_output,
 };
 use review_store::Cas;
 
@@ -137,12 +137,45 @@ impl ReviewerAdapter for ClaudeAdapter {
         sandbox_root: &Path,
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
+        self.invoke_receipted(cas, sandbox_root, inputs)
+            .map(|receipt| receipt.returned)
+    }
+
+    fn invoke_receipted(
+        &self,
+        cas: &Cas,
+        sandbox_root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let mut prompt = self.prompt.clone();
+        let instruction_bytes = prompt.len();
         inputs
             .render_into(&mut prompt)
             .map_err(RunnerError::Refused)?;
+        let mut context_manifest = ContextManifest::default();
+        context_manifest.record(
+            "worker_instructions",
+            "digest-pinned Worker package and output contract",
+            inputs
+                .attempt_context
+                .as_ref()
+                .and_then(|context| context.reviewer_package_artifact_id.clone()),
+            Some("review.kernel/ReviewerPackage@1".into()),
+            instruction_bytes,
+        );
+        context_manifest.record(
+            "role_scoped_inputs",
+            "exact Worker Input",
+            inputs
+                .attempt_context
+                .as_ref()
+                .map(|context| context.campaign_manifest_id.clone()),
+            None,
+            prompt.len() - instruction_bytes,
+        );
+        context_manifest.finish(prompt.len());
         let command = claude_command(&self.program, &self.model_flags);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
@@ -165,10 +198,14 @@ impl ReviewerAdapter for ClaudeAdapter {
                 raw_artifact: capture.raw_artifact.clone(),
                 why: e.to_string(),
             })?;
-            return Ok(ReviewerReturn {
-                output,
-                cost_tokens: cost,
-                raw_artifact: capture.raw_artifact,
+            return Ok(ReceiptedReviewerReturn {
+                returned: ReviewerReturn {
+                    output,
+                    cost_tokens: cost,
+                    raw_artifact: capture.raw_artifact,
+                },
+                usage: envelope.usage,
+                context_manifest,
             });
         }
 
@@ -193,6 +230,7 @@ struct Envelope {
     is_error: bool,
     result: Option<String>,
     cost_tokens: u64,
+    usage: TokenUsage,
 }
 
 impl Envelope {
@@ -210,6 +248,11 @@ impl Envelope {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
         };
+        let input = count("input_tokens");
+        let output = count("output_tokens");
+        let cache_read = count("cache_read_input_tokens");
+        let cache_write = count("cache_creation_input_tokens");
+        let cost_tokens = input + cache_write + output;
         Envelope {
             is_error: value
                 .get("is_error")
@@ -219,9 +262,15 @@ impl Envelope {
                 .get("result")
                 .and_then(|r| r.as_str())
                 .map(str::to_string),
-            cost_tokens: count("input_tokens")
-                + count("cache_creation_input_tokens")
-                + count("output_tokens"),
+            cost_tokens,
+            usage: TokenUsage {
+                input_tokens: Some(input),
+                output_tokens: Some(output),
+                cache_read_tokens: Some(cache_read),
+                cache_write_tokens: Some(cache_write),
+                reasoning_tokens: None,
+                chargeable_tokens: cost_tokens,
+            },
         }
     }
 }

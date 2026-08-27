@@ -19,13 +19,16 @@ pub mod legacy;
 pub mod store;
 pub mod subject;
 
-pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id};
+pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id, validate_envelope};
 pub use cas::{Cas, CasError, OpenedCasObject};
 pub use ledger::{
     AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
-pub use legacy::{AddSummary, Ingest, LegacyRow, import_ledger_jsonl, legacy_fingerprint};
+pub use legacy::{
+    AddSummary, CanonicalReduction, CanonicalStage, Ingest, LegacyRow, canonical_finding_id,
+    import_ledger_jsonl, legacy_fingerprint,
+};
 pub use store::{EventStore, NewEvent, StoreError, validate_reviewer_result};
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,

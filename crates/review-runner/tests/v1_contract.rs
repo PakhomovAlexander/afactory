@@ -11,8 +11,14 @@ use std::path::PathBuf;
 use review_runner::parse_stage_output;
 use serde_json::{Value, json};
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn validator(name: &str) -> jsonschema::Validator {
-    let schema_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let schema_root = workspace_root().join("schemas");
     let path = schema_root.join(name);
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let finding_report: Value = serde_json::from_str(

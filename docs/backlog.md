@@ -1,15 +1,17 @@
 # Afactory Review Kernel - backlog
 
-Work queued for `af review`, in the order it should be done. Repository migration and private
-release parity precede M2.5; they must not alter the persisted Review Kernel contracts below.
+Work queued for `af review`, in the order it should be done. Repository migration, private
+release parity, and M0–M2 are complete. Minimal product v1 and v2 now precede candidate dogfood
+and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
 
 Sequencing rationale: M0 freezes append-only contracts before new events are introduced. This
 repository then reviews itself with the kernel it ships, so M1's triage visibility is on the
-critical path. M2 establishes the trusted diff Subject, and M3 makes typed reviewer claims
-authoritative before later evidence, patch, and scatter work.
+critical path. M2 establishes the trusted diff Subject. Product v1 establishes final local review;
+v2 adds verified sequential implementation; candidate dogfood proves that loop. M3 then makes
+typed reviewer claims authoritative before later evidence, patch, and scatter work.
 
 ---
 
@@ -235,18 +237,104 @@ permits. See [ADR-0020](adr/0020-stream-cas-materialization-and-clone-duplicates
 
 ---
 
+## Product v1/v2 · Minimal route to development dogfood
+
+This release gate sits between completed M2 and M3. It builds required behavior once on the final
+user-facing boundary. Decisions are
+[ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md) and
+[ADR-0030](adr/0030-complete-minimal-v1-and-v2-before-dogfood.md).
+
+### V1.1 — Final local review
+
+**Status: complete (2026-08-26).** The `.af` authority is digest-pinned, local state defaults to
+XDG state outside the repository, shorthand `af review` emits one typed JSON result, and selected
+Attempts persist exact context manifests plus available Provider token dimensions. Legacy
+`.review/` authority remains readable only when selected explicitly.
+
+Expose non-interactive `af review` for exact committed and uncommitted Subjects through
+`.af/af.toml` and `.af/af.lock`. State lives outside the repository behind a local Store with
+embedded SQLite. Task, Pipeline, and Worker execute sequentially; the existing Review Kernel and
+prompt-in/JSON-out contract may remain internal behind those boundaries.
+
+Every selected Attempt records an exact context manifest and available Provider input, output,
+cache, and reasoning token usage. The review Worker receives only the Subject/Change Set,
+instructions, active prior claims, gate decision, authority identities, reservation, and epoch.
+Its final result is typed clean/fail/incomplete. `make check` stays independent and green.
+
+### V2.1 — Sequential `implement` with independent verification
+
+**Status: complete (2026-08-26).** `af task start --kind implement` captures one exact source
+Snapshot, executes one locked implementer, seals and fully publishes the derived tree into CAS,
+runs each acceptance Gate against a fresh read-only materialization, and dispatches a locked
+evaluator without the implementer transcript. Typed outcomes include context, usage, authority,
+Gate, Snapshot, budget, and explicit no-delivery receipts. Deterministic tests prove verified and
+unverified terminals and prove that the caller's checkout is untouched.
+
+An `implement` Task pins a goal, acceptance contract, and authority Snapshot. One implementer
+Worker produces a candidate internal derived Snapshot. Required acceptance Gates inspect it
+read-only, then a separate evaluator Worker receives the goal, candidate diff, Gate attestations,
+and required authority without the implementer's private reasoning.
+
+Seal and return the derived Snapshot as `verified` only when all required Gates succeed, the
+evaluator accepts, and token accounting is complete. Every other terminal result is typed
+`unverified` with evidence. Execution is sequential. No v2 transition writes to the caller's
+working tree or branch or creates a PR.
+
+### V2.2 — First candidate implementation dogfood
+
+**Status: complete (2026-08-26).** Candidate commit `caab486` used the v2 implement Task to
+produce a verified internal Snapshot for the real `make dogfood` entry-point change.
+The read-only kernel Gate passed, the independent evaluator approved, measured Worker context and
+Provider usage are recorded, and the caller's checkout remained clean. The Snapshot was not
+delivered; that boundary remains v3.
+
+`make dogfood` builds candidate v2 and uses `af` to implement one real change in a dedicated
+kernel worktree. Record candidate/source identity, authority and Snapshot IDs, exact context,
+Provider usage, Gate attestations, evaluator verdict, and final outcome beside a green
+`make check`. A fixture demo alone does not count. Released `v0.2.0` remains the independent
+last-green reviewer during bootstrap.
+
+Delivery/write-back, dynamic fan-out and parallel graphs, shared/distributed storage, TUI,
+MCP/hooks/connections, direct API Providers, richer Envs, hosted integrations, and physical
+internal renaming are v3 work after this dogfood produces evidence.
+
+### V3.1 — Deliver a verified Snapshot to a new local worktree
+
+**Status: complete for trusted design-partner pilots (2026-08-27). Fresh pinned Campaign
+`v3-1-client-pilot-v3` returned Pass; its three minor Findings are fixed and the Ledger has zero
+open. Publishing a client release remains a separate human action.**
+The first v3 slice delivers only an exact verified Task result to a new local branch and linked
+worktree after explicit Task-ID confirmation.
+The target must be a clean repository at the Task's recorded source Snapshot; both branch and path
+must be absent. The transition is durable, idempotent, recoverable, and locally verified before it
+is reported complete. It never mutates the current checkout, commits, pushes, opens a pull
+request, or invokes a remote. See
+[ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md).
+
+This slice also adds the minimum local operator surface needed for trusted design-partner pilots:
+enumerable Task history and spend, inspectable delivery receipts, installation/update guidance,
+and a deterministic end-to-end smoke. Scale, hosted integrations, arbitrary client credentials,
+and automatic Integration remain later v3/M4-M9 work.
+
+---
+
 ## M3 · Canonical claims and explicit dispositions
 
-The live path validates `FindingReport@1` and then discards its identity semantics; it also
-parses disputes but drops them and infers repaired claims from reviewer silence. M3 makes the
-typed claim model authoritative on M2's immutable Subjects before fix verification depends on it.
+Before M3.1, the live path validated `FindingReport@1` and then discarded its identity semantics;
+it also projected flat `refute` answers directly to status events and inferred repaired claims
+from reviewer silence. M3 makes the typed claim model authoritative on M2's immutable Subjects
+before fix verification depends on it.
 
 ### M3.1 — Complete typed Report ingestion and canonical Finding identity
 
-The live path validates each legacy finding through `FindingReport@1`, then discards that typed
-Report's relations and keys the Ledger by `sha256(file + "|" + normalized_title)`. That directly
-contradicts the contract, which calls path/title a dedupe hint and permits auto-attachment only by
-an explicit relation or an exact trusted occurrence key.
+**Status: complete (2026-08-27). Fresh pinned Campaign v7 returned Pass in Round 1; its three
+minor Findings are fixed, the Ledger has zero open, and the full local gate passes.**
+
+The pre-M3.1 path validated each legacy finding through `FindingReport@1`, then discarded that
+typed Report's relations and keyed the Ledger by
+`sha256(file + "|" + normalized_title)`. That directly contradicts the contract, which calls
+path/title a dedupe hint and permits auto-attachment only by an explicit relation or an exact
+trusted occurrence key.
 
 Make the reducer consume immutable `FindingReport@1` artifacts. A Report creates a deterministic
 Finding ID from its selected Report ID unless it explicitly corroborates an existing Finding or
@@ -261,13 +349,24 @@ reviewer/round provenance does not leak back into the `FindingReport@1` payload.
 
 Each ledger barrier emits an immutable, Subject-bound `FindingSet@1` from the prior Set plus
 canonical selected Report/relation/resolution artifact IDs. Its deterministic reduction ID
-includes reducer and policy versions; graph edges pass that exact Set ID to reviewers, gates, and
-later reducers instead of querying ambient Ledger state.
+includes reducer and policy versions; reducer barriers and later reducers pass that exact Set ID
+instead of querying ambient Ledger state.
+
+The minimal M3.1 boundary publishes canonical Report and FindingSet artifacts. `FindingSet@1`
+reserves relation and resolution artifact-ID lists, but they remain empty until M3.2 makes
+dispositions immutable inputs; flat `refute` compatibility continues to project its legacy status
+event in the meantime. Reviewer and gate inputs therefore retain the Subject-bound
+`PriorFindings@1` compatibility projection through M3.1: an exact Set published before an operator
+resolution cannot yet carry that later resolution, so wiring it back to reviewers now would
+resurrect fixed/rejected claims. M3.2 replaces that projection only after immutable dispositions
+make the exact Set a complete assignment view.
 
 ### M3.2 — Prior-Finding dispositions become explicit
 
-`docs/self-review-heavy.md` states that *"a dispute lands the finding as `contested`"*. That
-behaviour does not exist; `Status::Contested` is reachable only by a human typing it.
+The flat compatibility adapter currently turns `refute` directly into a
+`FindingResolved(contested)` event. The rendered status therefore exists, but the dispute itself
+is not an immutable attached artifact and the reviewer cannot express complete explicit coverage
+of every assigned prior Finding.
 
 Store each dispute as an immutable attached artifact — source, position, reason, Round, and
 Subject — and move the Finding to `contested`. Blocking is unchanged because contested claims are

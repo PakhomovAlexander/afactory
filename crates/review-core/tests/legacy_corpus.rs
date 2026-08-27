@@ -18,8 +18,14 @@ use std::path::PathBuf;
 
 use review_core::{FindingReport, LegacyStageOutput, json};
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn corpus_dirs() -> Vec<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/legacy");
+    let root = workspace_root().join("fixtures/legacy");
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -46,15 +52,13 @@ fn require_corpus(outputs: &[(String, String)]) {
 }
 
 fn schema_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas")
-        .join(name)
+    workspace_root().join("schemas").join(name)
 }
 
 /// The synthetic cases' stage inputs: real harness input, public, always present. Every case
 /// directory holds `input/r<N>.json`, one stage output per round.
 fn synthetic_stage_outputs() -> Vec<(String, String)> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/synthetic");
+    let root = workspace_root().join("fixtures/synthetic");
     let mut cases: Vec<PathBuf> = std::fs::read_dir(root)
         .expect("the synthetic corpus ships with every checkout")
         .filter_map(Result::ok)

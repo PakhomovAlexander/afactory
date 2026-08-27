@@ -64,3 +64,11 @@ options you rejected and why — that is the part future-you needs.
   crate](0026-share-process-supervision-through-a-leaf-crate.md)
 - [0027 — Use one correctness reviewer per
   milestone](0027-use-one-correctness-reviewer-per-milestone.md)
+- [0028 — Prioritize wise token use and minimum Worker
+  context](0028-prioritize-wise-token-use-and-minimum-worker-context.md)
+- [0029 — Dogfood the candidate `af` before v1 is
+  complete](0029-dogfood-the-candidate-af-before-v1-is-complete.md)
+- [0030 — Complete minimal v1 and v2 before candidate
+  dogfood](0030-complete-minimal-v1-and-v2-before-dogfood.md)
+- [0031 — Deliver verified Tasks only to new local
+  worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)

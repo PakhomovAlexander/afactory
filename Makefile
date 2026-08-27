@@ -1,4 +1,4 @@
-.PHONY: check fmt lint test fixtures build
+.PHONY: check fmt lint test fixtures build pilot-check
 
 check: fmt lint test fixtures
 
@@ -16,3 +16,6 @@ fixtures:
 
 build:
 	cargo build --release --locked --bin af
+
+pilot-check:
+	cargo test --locked -p reviewctl --test task_implement

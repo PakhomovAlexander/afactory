@@ -23,9 +23,10 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    CommandAdapter, Grant, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter,
-    ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, extract_result, parse_stage_output,
-    unfence,
+    CommandAdapter, ContextEntry, ContextManifest, Grant, ModelRunner, RESULT_CONTRACT, RawCapture,
+    ReceiptedReviewerReturn, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
+    ReviewerInputs, ReviewerReturn, TokenUsage, estimate_tokens, extract_result,
+    parse_stage_output, unfence,
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{

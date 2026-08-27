@@ -1,21 +1,27 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0-M2 are complete and fully verified. Capability work is paused at the M2 boundary
-for the intermediate `v0.2.0` release; resume with M3.1 canonical Finding identity.
+**Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
+implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
+v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
+local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
+v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
+fixed with zero open. Publishing remains a human action; broader v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
-can be read, triaged, and closed only through explicit evidence-bearing policy.
+can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
+lets `af` implement a real change and return a verified internal Snapshot.
 **Log:** [`workstream/log.md`](workstream/log.md)
 
 ## Summary
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
-current contracts. The corrected roadmap has M0–M9 and nineteen ADR records; ADR-0003 and ADR-0004
-are superseded. M0-M2 are complete; M2's first Campaign exhausted
+current contracts. The corrected roadmap has M0–M9 and an indexed ADR history; ADR-0003 and
+ADR-0004 are superseded. M0–M2 are complete; M2's first Campaign exhausted
 after four Rounds opened 45 Findings while retaining every prior correction. The repository/release
-migration, Project Hub external cutover, and bounded Provider Operation dogfood slice are also
-complete. M2 converged under the recorded correctness-only review policy; work resumes at M3.1
-after the intermediate release.
+migration, Project Hub external cutover, bounded Provider Operation dogfood slice, and first v2
+implementation dogfood are also complete. M2 converged under the recorded correctness-only review
+policy. Product v1/v2 establish the final local review and verified implementation boundaries.
+M3.1 now builds canonical Report identity and immutable Finding Sets on that evidence.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -27,8 +33,8 @@ Everything decided is written down. **Do not re-derive it; read it.**
 
 ## Background / current state
 
-The kernel is ~15.3k lines of Rust across 13 crates, with zero TODOs and unusually disciplined
-tests. The backlog is **not** a cleanup list — it is capability the design implies that the code
+The kernel is a multi-crate Rust workspace with unusually disciplined tests. The backlog is
+**not** a cleanup list — it is capability the design implies that the code
 does not yet deliver, plus a few places where checked-in docs describe behaviour that does not
 exist.
 
@@ -37,16 +43,19 @@ The findings that now drive the roadmap, all verified in code or the recovered d
 1. **Reviewers cannot see the change.** `Capture::committed` is `git ls-tree -r` — blobs only, no
    `.git`, no base. `ReviewerInputs` carries one field, `prior_findings`. Both reviewer prompts
    open with *"Read the change in the working directory you were given."*
-2. **Canonical Report content is hidden by the projection.** `fix` exists in the referenced CAS
-   Report, but Ledger replay ignores that authority and no command prints it.
-3. **Reviewer semantics are discarded.** Disputes and benchmark demands are parsed and dropped;
-   omission of a prior Finding is treated as a Drop even though no explicit disposition exists.
+2. **Canonical Report authority is now projected for new Campaigns.** M3.1 reads validated,
+   enveloped Reports while retaining the frozen legacy reader for old Campaigns.
+3. **Explicit dispositions remain M3.2.** Flat `refute` answers project directly to contested
+   status, but disputes and Drops are not immutable attached artifacts; reviewer silence still
+   stands in for an explicit disposition. Reviewer/gate inputs retain the `PriorFindings@1`
+   compatibility projection until those post-Set resolutions can be immutable Set inputs.
 4. **A Rust `Debug` impl is load-bearing for convergence.** `publish_report` persists
    `format!("{verdict:?}")`, and the round counter reads it back with
    `.starts_with("Incomplete")`. Renaming `RunVerdict::Incomplete` makes incomplete rounds start
    *closing* rounds, with no compile error.
-5. **Legacy grouping is used as identity.** The typed Report contract says path/title is only a
-   hint, but the live Ledger still keys canonical state by `sha256(file + "|" + title)`.
+5. **Canonical identity is policy-versioned.** New Campaigns derive a Finding from its selected
+   Report artifact unless an explicit relation or exact trusted occurrence key attaches it;
+   legacy Campaigns permanently retain `sha256(file + "|" + title)` replay.
 6. **Campaign authority can drift.** Every Round reloads pipeline and package bytes from the live
    checkout; candidate content can change authority while retaining one Campaign identity.
 7. **Evidence has no lifecycle.** Demands have no durable state and `fixed` may be asserted
@@ -71,6 +80,12 @@ corrections from the second audit are:
 - Proposals are base-bound and exported by Proposal ID; ADR-0010 supersedes ADR-0004.
 - Dynamic scatter/semantic closure and internal derived-Snapshot Integration are restored as M8
   and M9 rather than silently omitted.
+- Wise token use and minimum Worker context are the first two design values; Inputs carry a
+  measured context manifest and context expands only through bounded recorded retrieval
+  ([ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
+- Minimal v1 and v2 precede candidate dogfood and M3.1. v2 ends at a verified internal Snapshot;
+  delivery and optional platform surface are v3
+  ([ADR-0030](adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
 
 ## Scope
 
@@ -79,11 +94,16 @@ contracts. Out: project-specific `.review/` pipelines, reviewer packages, campai
 private corpora. The retired shell harness under `compat/legacy-harness/` remains only as the
 executable specification that regenerates the synthetic fixture corpus.
 
+Minimal v1/v2 are inside scope because they establish the kernel's own development gate. They add
+the final `.af/` user surface without renaming frozen internal declarations or persisted contracts.
+
 **Sequencing is deliberate.** M0 freezes append-only contracts; M1 makes current evidence usable;
-M2 adds the trusted Subject; M3 establishes canonical claim identity and explicit dispositions;
-M4 builds snapshot-scoped Evidence and resolution on it. M5–M7 add operator, gate, and Proposal
-capabilities. M8 and M9 then add dynamic execution and internal Integration only after their
-identity, authority, isolation, and verification prerequisites exist.
+M2 adds the trusted Subject; product v1 establishes final local review; v2 adds verified sequential
+implementation; candidate dogfood proves that loop. M3 establishes canonical claim identity and
+explicit dispositions; M4 builds snapshot-scoped
+Evidence and resolution on it. M5–M7 add operator, gate, and Proposal capabilities. M8 and M9 then
+add dynamic execution and internal Integration only after their identity, authority, isolation,
+and verification prerequisites exist.
 
 ## Acceptance criteria
 
@@ -97,8 +117,21 @@ identity, authority, isolation, and verification prerequisites exist.
       revalidated dirty heads produce wired diff Subjects; generic Git execution still refuses
       `diff`; both rename endpoints govern Report Scope and replay never rewrites existing legacy
       keys. Canonical path-independent Finding identity remains M3.1.
+- [x] Product v1 — final local `af review` uses `.af/`, sequential execution, exact measured
+      Worker Input, local state, token receipts, and a typed outcome beside green `make check`.
+- [x] Product v2 — one implementer produces an internal derived Snapshot; read-only acceptance
+      Gates and a separate evaluator yield a sealed verified/unverified result with no delivery.
+- [x] Candidate dogfood — v2 implements one real kernel change and records complete context,
+      token, Gate, evaluator, Snapshot, and outcome evidence beside green `make check`.
+- [x] Product V3.1 — an explicitly confirmed verified Task can be delivered only to a new local
+      branch/worktree, with durable history, rollback/recovery, and no commit, push, PR, or remote.
+  - [x] Local implementation, full kernel gate, and deterministic pilot smoke.
+  - [x] Real trusted-repository pilot and exact idempotent replay.
+  - [x] Pinned external correctness review.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
+  - [x] M3.1 implementation and local `make check`.
+  - [x] M3.1 pinned external convergence review.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views.
@@ -113,7 +146,8 @@ identity, authority, isolation, and verification prerequisites exist.
       semantic-output closure prevent omitted shard output from passing.
 - [ ] M9 — automatic Integration is opt-in, advances only an internal derived Snapshot at one
       transactional boundary, and leaves claims pending until a later verified Round.
-- [ ] `make review-kernel` and `make review-kernel-fixtures` stay green throughout.
+- [ ] `make check` stays green throughout; candidate `make dogfood` becomes available only after
+      v2 and never replaces the deterministic gate.
 
 ## Open work (resume here)
 
@@ -245,12 +279,48 @@ all eighteen fixes, opened seven claims, and exhausted the Campaign. Their corre
 and Git deadlines, type run-budget exhaustion, preserve held-stderr check evidence, guard raw
 Change Sets before encoding, unify Ledger projection input, and avoid irrelevant authority-plan
 parsing. Commit `d8f0812` passes the full local gate, and all seven claims are resolved; the
-Campaign has 25 fixed findings and zero open. M2 is complete; release `v0.2.0`, then resume at
-M3.1.
-The owner then retired the two-specialist clean-window policy after roughly four million tokens in
-this Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a two-Round
-ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not run another
-Round under the exhausted immutable Campaign.
+Campaign has 25 fixed findings and zero open. M2 and release `v0.2.0` are complete. Minimal v1 now
+provides final `.af` local review with external state, context and Provider usage receipts, and one
+typed outcome. Minimal v2 now provides sequential `af task start --kind implement`, a fully
+materializable derived Snapshot, fresh read-only Gates, an independent evaluator, typed budgets,
+and explicit no-delivery outcomes. Both pass `make check`. Candidate `caab486` then completed the
+first real implementation dogfood: the kernel Gate passed, the evaluator approved, and Snapshot
+`sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
+M3.1 is complete: canonical new Campaigns persist enveloped Reports, derive path-independent
+Findings, and pass exact immutable `FindingSet@1` IDs across barriers; legacy replay remains
+frozen. Campaigns v4/v5 exhausted with seventeen fixed Findings, v6 exhausted with six more, and
+fresh Campaign `m3-1-canonical-identity-v7` returned Pass in Round 1. Commit `bff36f4` fixes its
+three minor Findings, its Ledger has zero open, and the full local gate passes. Resume M3 at M3.2.
+ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
+design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
+work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,
+prepared and terminal delivery records, process serialization, owned-ref rollback/recovery,
+`task list`/`task show`, and the client-pilot runbook all pass `make check` and `make pilot-check`.
+The real v2 dogfood Task then exposed an empty-index presentation defect in the first delivered
+worktree. Commit `41c085d` populates the per-worktree index with plumbing-only `read-tree`, and
+exact replay returned delivery receipt
+`delivery-b6ba56b39cac1793e7c96f160b82f265e4630eac6e497bfb64a1211fd5365aa6` with no remote
+actions. The delivered `make dogfood-contract` and the full kernel gate pass. That left pinned
+external review before partner handoff. A final local safety audit found that prepared-state
+recovery could force-remove an operator-modified worktree when its refs and HEAD were unchanged.
+Commit `09853ac` now requires the index to remain at the source tree and refuses recovery rollback
+for any non-empty worktree whose bytes were not observed during the current creation attempt;
+filesystem edits, deletions, and staged changes are regression-tested and preserved. External
+Campaign `v3-1-client-pilot-v2` Round 1 then spent 213,903 tokens and opened one major and three
+minor Findings. Commit `f11a09f` fixes all four: empty-index recovery no longer wedges, sealed
+repeat remains inspectable after operator use, checksum failure aborts installation, and ignored
+Snapshot paths are explicit in the receipt and runbook. Round 2 spent 167,787 tokens and opened
+one major plus two minor Findings before exhausting the Campaign. Commit `63ccf57` makes ambiguous
+partial-materialization recovery terminal and retryable without deleting operator work, applies
+the operator's global Git excludes to the advisory receipt, and gives the runbook a byte-safe
+decoder for encoded paths. All seven Findings are fixed, the Ledger has zero open, and both
+`make check` and `make pilot-check` pass. Fresh Campaign `v3-1-client-pilot-v3` subsequently
+returned Pass. Commit `d061d27` fixes its three minor Findings, the Ledger has zero open, and the
+full gate remains green. V3.1 is complete for trusted design-partner pilots; resume M3 at M3.2.
+After v4, the owner retired the two-specialist clean-window policy after roughly four million
+tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
+two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
+run another Round under either exhausted immutable Campaign.
 Continue in milestone order; do not pull Proposal or scatter work forward past Subject, authority,
 isolation, and verification prerequisites.
 
@@ -274,3 +344,6 @@ isolation, and verification prerequisites.
   the kernel repo's shipped generator. Replace `.review/review.lock` with its stdout atomically.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.
+- **Candidate dogfood cannot be its own only safety story.** `make check` remains independent;
+  pinned `v0.2.0` remains the last-green reviewer while v1/v2 are built and during the first real
+  candidate implementation run.
