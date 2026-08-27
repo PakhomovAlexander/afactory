@@ -16,14 +16,13 @@ implemented, proven against a real trusted repository, and passed a fresh pinned
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
 clean-window Campaign.
+V3.2 `af onboard` shipped in private release `v0.4.0` from exact `main` commit `bb9e5a3`; its
+supported release archives and checksum sidecars were downloaded and verified.
 Product rebranding must not rename
 `.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
 domain terms until a separate accepted migration ADR supersedes this rule. v1 adds the final
 user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
 reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
-V3.2 `af onboard` is implemented and locally verified on `agent/onboard-command`; it is not a
-released capability until that branch is integrated and a new binary is published.
-
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
 budget, or sandbox boundary to make a test or review pass.
 

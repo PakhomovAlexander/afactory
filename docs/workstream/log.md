@@ -1120,3 +1120,16 @@ eight-file authority in a disposable Git repository. The full
 `make check` gate passes: formatting, warnings-denied Clippy, all workspace and doc tests, and
 byte-identical fixture reproduction. Integration to `main` and a checksummed release remain
 explicit human publication actions.
+
+## 2026-08-27 — Private v0.4.0 review-onboarding release published
+
+[Product PR #13](https://github.com/PakhomovAlexander/afactory/pull/13) merged V3.2 at exact
+`main` commit `bb9e5a3`. PR CI and the complete exact-main CI run passed. Lightweight tag
+`v0.4.0` points to that commit, and release workflow run `33102292695` completed every macOS,
+Linux, and publish job successfully.
+
+Both published checksum sidecars passed after download: macOS arm64 archive
+`sha256:ab2f73f85718d7764d8cccee3964ef04d37d250dba3fd2d3885eb6f21270e258` and Linux x86_64
+archive `sha256:bb90eb44296eb69ab24ce10289811db785a44dff610ba92216472288a1509cb0`. The extracted macOS
+binary reports `af 0.4.0`, and `af onboard --help` exposes the shipped command. V3.2 is complete;
+the canonical capability roadmap resumes at M3.2.

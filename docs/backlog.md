@@ -319,12 +319,13 @@ and automatic Integration remain later v3/M4-M9 work.
 
 ### V3.2 — Generate trusted review onboarding from the binary
 
-**Status: implemented and locally verified (2026-08-27) on `agent/onboard-command`; integration
-and release remain.** `af onboard` provides deterministic, token-free preview, absent-only apply,
-existing-authority validation, explicit lock refresh, and built-in agent guidance for one bounded
-static multi-review profile. The command generates exact pins itself and fails closed when it
-cannot identify a real Gate. It does not fetch or publish PRs, execute a review, or pull dynamic
-fan-out ahead of M8. See
+**Status: shipped in private release `v0.4.0` (2026-08-27).** Product PR #13 merged at exact
+`main` commit `bb9e5a3`; PR and main CI passed, and both supported checksummed archives were
+downloaded and verified. `af onboard` provides deterministic, token-free preview, absent-only
+apply, existing-authority validation, explicit lock refresh, and built-in agent guidance for one
+bounded static multi-review profile. The command generates exact pins itself and fails closed
+when it cannot identify a real Gate. It does not fetch or publish PRs, execute a review, or pull
+dynamic fan-out ahead of M8. See
 [ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md).
 
 ---

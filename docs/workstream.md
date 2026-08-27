@@ -1,13 +1,13 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M2, private releases through `v0.3.0`, minimal product v1/v2, and the first candidate
+**Status:** M0–M2, private releases through `v0.4.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
 v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
-binary-owned review-onboarding slice is implemented and locally verified on
-`agent/onboard-command`; integration and release remain, and broader v3 stays deferred.
+binary-owned review-onboarding slice shipped through PR #13 in private `v0.4.0`; exact-main CI,
+downloaded checksums, and the extracted macOS binary passed. Broader v3 resumes at M3.2.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -130,13 +130,13 @@ and verification prerequisites exist.
   - [x] Local implementation, full kernel gate, and deterministic pilot smoke.
   - [x] Real trusted-repository pilot and exact idempotent replay.
   - [x] Pinned external correctness review.
-- [ ] Product V3.2 — `af onboard` deterministically previews, creates, validates, explains, and
+- [x] Product V3.2 — `af onboard` deterministically previews, creates, validates, explains, and
       explicitly re-locks one static multi-review authority bundle without model calls or
       publication.
   - [x] Binary implementation, focused integration tests, full `make check`, hub preview dogfood,
         and disposable-repository apply/validate dogfood.
-  - [ ] Integrate to `main`, verify there, and publish a checksummed release by explicit human
-        action.
+  - [x] Integrated to exact `main` commit `bb9e5a3`; PR and main CI passed; private `v0.4.0`
+        checksummed release assets were downloaded and verified.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
