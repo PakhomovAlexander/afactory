@@ -8,30 +8,34 @@ use std::path::PathBuf;
 
 use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
-    FindingSetEntryV1, FindingSetV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PortArtifactsV1, PortCardinality,
-    Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ReviewerPackageV1,
-    RunEvent, RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType,
+    FindingDispositionPosition, FindingDispositionV1, FindingReport, FindingSetEntryV1,
+    FindingSetV1, Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
+    PatchProposal, PathRenameV1, PortArtifactsV1, PortCardinality, Producer,
+    ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ReviewerPackageV1, RunEvent,
+    RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
+    SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 18] = [
+const SCHEMAS: [&str; 21] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
     "change-set-v1.json",
+    "finding-disposition-v1.json",
     "finding-report-v1.json",
+    "finding-set-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "provider-operation-transition-v1.json",
     "reviewer-package-v1.json",
     "reviewer-result-v1.json",
+    "reviewer-result-v2.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
@@ -56,8 +60,14 @@ fn schema(name: &str) -> Value {
 fn validator(name: &str) -> jsonschema::Validator {
     let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
         .expect("FindingReport@1 is a schema resource");
+    let reviewer_result = jsonschema::Resource::from_contents(schema("reviewer-result-v1.json"))
+        .expect("ReviewerResult@1 is a schema resource");
     jsonschema::options()
         .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
+        .with_resource(
+            "urn:review-kernel:schema:reviewer-result:1",
+            reviewer_result,
+        )
         .build(&schema(name))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -151,6 +161,51 @@ fn reviewer_result_legacy_conformance_corpus_matches_schema() {
             case["name"].as_str().unwrap(),
         );
     }
+}
+
+#[test]
+fn reviewer_result_v2_names_explicit_dispositions() {
+    let value = json!({
+        "verdict": "approve",
+        "summary": null,
+        "reports": [],
+        "benchmark_demands": [],
+        "dispositions": [{
+            "finding_id": "finding:one",
+            "position": "not_reproduced",
+            "reason": "the guarded branch no longer reaches the failing call"
+        }]
+    });
+    assert_valid("reviewer-result-v2.json", &value);
+    review_core::validate_reviewer_result_v2(&value).unwrap();
+
+    let mut omitted = value.clone();
+    omitted.as_object_mut().unwrap().remove("dispositions");
+    assert_invalid(
+        "reviewer-result-v2.json",
+        &omitted,
+        "silence cannot stand in for explicit coverage",
+    );
+    assert!(review_core::validate_reviewer_result_v2(&omitted).is_err());
+}
+
+#[test]
+fn finding_disposition_roundtrips() {
+    let disposition = FindingDispositionV1 {
+        finding_id: "finding:one".into(),
+        source: "correctness".into(),
+        position: FindingDispositionPosition::Dispute,
+        reason: "the claimed branch is unreachable".into(),
+        round: 2,
+        subject_id: format!("sha256:{}", "a".repeat(64)),
+    };
+    disposition.validate().unwrap();
+    let value = serde_json::to_value(&disposition).unwrap();
+    assert_valid("finding-disposition-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<FindingDispositionV1>(value).unwrap(),
+        disposition
+    );
 }
 
 #[test]

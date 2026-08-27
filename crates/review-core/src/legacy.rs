@@ -79,6 +79,34 @@ pub struct LegacyStageOutput {
     pub disputes: Vec<LegacyDispute>,
 }
 
+/// The selected result wire contract for one reviewer node. The runner keeps one tolerant
+/// internal stage shape, while the durable wire types remain explicitly versioned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReviewerResultContract {
+    #[serde(rename = "review.kernel/ReviewerResult@1")]
+    #[default]
+    V1,
+    #[serde(rename = "review.kernel/ReviewerResult@2")]
+    V2,
+}
+
+impl ReviewerResultContract {
+    pub const fn artifact_type(self) -> &'static str {
+        match self {
+            Self::V1 => crate::contract::REVIEWER_RESULT_V1,
+            Self::V2 => crate::contract::REVIEWER_RESULT_V2,
+        }
+    }
+
+    pub fn parse_artifact_type(value: &str) -> Option<Self> {
+        match value {
+            crate::contract::REVIEWER_RESULT_V1 => Some(Self::V1),
+            crate::contract::REVIEWER_RESULT_V2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+}
+
 /// Closed, kernel-owned reasons a `ReviewerResult@1` can be refused at admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewerResultRejection {
@@ -96,6 +124,11 @@ pub enum ReviewerResultRejection {
     EmptyBenchmarkDemand,
     MalformedDispute,
     InvalidDispute,
+    MalformedDisposition,
+    InvalidDisposition,
+    MissingDispositionCoverage,
+    DuplicateDisposition,
+    UnassignedDisposition,
 }
 
 impl ReviewerResultRejection {
@@ -116,13 +149,18 @@ impl ReviewerResultRejection {
             Self::EmptyBenchmarkDemand => "empty_benchmark_demand",
             Self::MalformedDispute => "malformed_dispute",
             Self::InvalidDispute => "invalid_dispute",
+            Self::MalformedDisposition => "malformed_disposition",
+            Self::InvalidDisposition => "invalid_disposition",
+            Self::MissingDispositionCoverage => "missing_disposition_coverage",
+            Self::DuplicateDisposition => "duplicate_disposition",
+            Self::UnassignedDisposition => "unassigned_disposition",
         }
     }
 }
 
 impl std::fmt::Display for ReviewerResultRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ReviewerResult@1 admission refused: {}", self.code())
+        write!(f, "reviewer result admission refused: {}", self.code())
     }
 }
 
@@ -217,6 +255,108 @@ pub fn validate_reviewer_result_classified(
             || dispute["reason"].as_str().is_none_or(str::is_empty)
         {
             return Err(ReviewerResultRejection::InvalidDispute);
+        }
+    }
+    Ok(())
+}
+
+/// Validate the additive `ReviewerResult@2` wire value. Coverage of the exact assigned prior
+/// Finding Set is deliberately enforced by the pipeline, which owns that input authority.
+pub fn validate_reviewer_result_v2(value: &serde_json::Value) -> Result<(), String> {
+    validate_reviewer_result_v2_classified(value)
+        .map_err(|error| format!("ReviewerResult@2 admission refused: {}", error.code()))
+}
+
+pub fn validate_reviewer_result_v2_classified(
+    value: &serde_json::Value,
+) -> Result<(), ReviewerResultRejection> {
+    let object = value
+        .as_object()
+        .ok_or(ReviewerResultRejection::NotObject)?;
+    exact_reviewer_keys(
+        object,
+        &[
+            "verdict",
+            "summary",
+            "reports",
+            "benchmark_demands",
+            "dispositions",
+        ],
+        ReviewerResultRejection::UnexpectedFields,
+    )?;
+    if !matches!(
+        value["verdict"].as_str(),
+        Some("approve" | "request-changes" | "block")
+    ) || value["reports"]
+        .as_array()
+        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
+        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
+        || value["benchmark_demands"].as_array().is_none()
+        || value["dispositions"].as_array().is_none()
+    {
+        return Err(ReviewerResultRejection::TopLevelPayload);
+    }
+    validate_reports_and_demands(value)?;
+    for disposition in value["dispositions"]
+        .as_array()
+        .expect("top-level contract checked dispositions")
+    {
+        let disposition = disposition
+            .as_object()
+            .ok_or(ReviewerResultRejection::MalformedDisposition)?;
+        exact_reviewer_keys(
+            disposition,
+            &["finding_id", "position", "reason"],
+            ReviewerResultRejection::UnexpectedFields,
+        )?;
+        if disposition["finding_id"].as_str().is_none_or(str::is_empty)
+            || !matches!(
+                disposition["position"].as_str(),
+                Some("corroborate" | "not_reproduced" | "dispute")
+            )
+            || disposition["reason"].as_str().is_none_or(str::is_empty)
+        {
+            return Err(ReviewerResultRejection::InvalidDisposition);
+        }
+    }
+    Ok(())
+}
+
+fn validate_reports_and_demands(value: &serde_json::Value) -> Result<(), ReviewerResultRejection> {
+    for (index, report) in value["reports"]
+        .as_array()
+        .expect("top-level contract checked reports")
+        .iter()
+        .enumerate()
+    {
+        let legacy: LegacyFinding = serde::Deserialize::deserialize(report)
+            .map_err(|_| ReviewerResultRejection::ReportPayload)?;
+        legacy.validate(index).map_err(|error| match error.reason {
+            ImportReason::MissingFix => ReviewerResultRejection::MissingFix,
+            ImportReason::EmptyTitle => ReviewerResultRejection::EmptyTitle,
+            ImportReason::EmptyBody => ReviewerResultRejection::EmptyBody,
+            ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
+            ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
+            ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
+        })?;
+    }
+    for demand in value["benchmark_demands"]
+        .as_array()
+        .expect("top-level contract checked demands")
+    {
+        let demand = demand
+            .as_object()
+            .ok_or(ReviewerResultRejection::MalformedBenchmarkDemand)?;
+        exact_reviewer_keys(
+            demand,
+            &["claim", "why", "suggested_method"],
+            ReviewerResultRejection::UnexpectedFields,
+        )?;
+        if demand
+            .values()
+            .any(|field| field.as_str().is_none_or(str::is_empty))
+        {
+            return Err(ReviewerResultRejection::EmptyBenchmarkDemand);
         }
     }
     Ok(())

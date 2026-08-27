@@ -6,7 +6,7 @@
 //! them means the change was reviewed and the other does not.
 
 use review_core::Command;
-use review_core::LegacyStageOutput;
+use review_core::{LegacyStageOutput, ReviewerResultContract};
 use review_store::Cas;
 use std::time::Duration;
 
@@ -93,7 +93,7 @@ impl<'a> CommandRunner<'a> {
         &self,
         command: &Command,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
-        self.invoke_raw_inner(command, None)
+        self.invoke_raw_inner(command, None, ReviewerResultContract::V1)
     }
 
     /// Invoke a command reviewer with the exact serialized `ReviewerInputs` document on stdin.
@@ -102,13 +102,23 @@ impl<'a> CommandRunner<'a> {
         command: &Command,
         input: Vec<u8>,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
-        self.invoke_raw_inner(command, Some(input))
+        self.invoke_raw_inner(command, Some(input), ReviewerResultContract::V1)
+    }
+
+    pub fn invoke_raw_with_input_for(
+        &self,
+        command: &Command,
+        input: Vec<u8>,
+        contract: ReviewerResultContract,
+    ) -> Result<(LegacyStageOutput, String), RunnerError> {
+        self.invoke_raw_inner(command, Some(input), contract)
     }
 
     fn invoke_raw_inner(
         &self,
         command: &Command,
         input: Option<Vec<u8>>,
+        contract: ReviewerResultContract,
     ) -> Result<(LegacyStageOutput, String), RunnerError> {
         let argv = command
             .resolve()
@@ -157,7 +167,10 @@ impl<'a> CommandRunner<'a> {
             .put(&stdout)
             .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
 
-        match serde_json::from_slice::<LegacyStageOutput>(&stdout) {
+        match std::str::from_utf8(&stdout)
+            .map_err(|error| error.to_string())
+            .and_then(|text| crate::parse_stage_output_for(contract, text))
+        {
             Ok(parsed) => Ok((parsed, raw_artifact)),
             Err(error) => Err(RunnerError::MalformedOutput {
                 raw_artifact,

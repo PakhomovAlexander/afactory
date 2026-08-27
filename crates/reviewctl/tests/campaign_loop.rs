@@ -147,6 +147,74 @@ gate = "major"
     .unwrap();
 }
 
+fn write_disposition_config(repo: &Path) {
+    let reviewer = repo.join("disposition-reviewer.sh");
+    std::fs::write(
+        &reviewer,
+        r#"#!/bin/sh
+input=$(cat)
+if [ -f OMIT ]; then
+  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}'
+elif grep -q 'loop {}' src/main.rs; then
+  printf '%s' '{"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
+else
+  finding_id=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\([^"]*\)".*/\1/p')
+  printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
+fi
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&reviewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        repo.join(".review/pipelines/heavy.toml"),
+        format!(
+            r#"version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+inputs = [{{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+runner = {{ program = "{}" }}
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{{ name = "correctness", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "correctness", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "correctness", port = "result" }}
+to = {{ node = "gather", port = "correctness" }}
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 3
+gate = "major"
+"#,
+            reviewer.display()
+        ),
+    )
+    .unwrap();
+}
+
 fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
     let repo = dir.join("repo");
     let home = dir.join("home");
@@ -197,6 +265,174 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     assert!(stderr.contains("authority sha256:"));
     assert!(Path::new(&state).join("events.sqlite").exists());
     assert!(!repo.join(".af/runs").exists());
+}
+
+#[test]
+fn exact_prior_set_requires_and_persists_explicit_disposition() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_disposition_config(&repo);
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "use explicit dispositions"],
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "dispositions", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "round 1 must retain the major Finding\n{stdout}\n{stderr}"
+    );
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "dispositions", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "a Drop is not trusted fixed authority\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("round    2"), "{stdout}");
+    assert!(!stdout.contains("Incomplete"), "{stdout}");
+
+    let state = Path::new(&state);
+    let cas = review_store::Cas::open(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let events = store.replay("campaign-dispositions").unwrap();
+    let ledger_receipt = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeOutputReceiptV1
+                && event.node_id.as_deref() == Some("ledger")
+        })
+        .expect("Round 2 ledger receipt");
+    let receipt: review_core::NodeOutputReceiptPayloadV1 =
+        serde_json::from_value(ledger_receipt.payload.clone()).unwrap();
+    let set_record_id = &receipt.outputs[0].artifact_ids[0];
+    let set_envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(set_record_id).unwrap()).unwrap();
+    let set: review_core::FindingSetV1 =
+        serde_json::from_value(set_envelope.payload.clone()).unwrap();
+    assert_eq!(set.round, 2);
+    assert_eq!(set.reducer_version, review_core::FINDING_REDUCER_VERSION_V2);
+    assert_eq!(set.relation_ids.len(), 1);
+    assert_eq!(set.findings[0].status, "open");
+
+    let disposition_envelope = set_envelope
+        .input_artifacts
+        .iter()
+        .filter_map(|id| cas.get_json(id).ok())
+        .filter_map(|value| serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok())
+        .find(|envelope| envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1)
+        .expect("immutable disposition reducer input");
+    assert_eq!(disposition_envelope.artifact_id, set.relation_ids[0]);
+    let disposition: review_core::FindingDispositionV1 =
+        serde_json::from_value(disposition_envelope.payload).unwrap();
+    assert_eq!(
+        disposition.position,
+        review_core::FindingDispositionPosition::NotReproduced
+    );
+    assert_eq!(disposition.round, 2);
+    assert_eq!(disposition.subject_id, set.subject_id);
+
+    let invocation = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeInvocationV1
+                && event.node_id.as_deref() == Some("correctness")
+        })
+        .expect("Round 2 reviewer invocation");
+    let invocation: review_core::NodeInvocationPayloadV1 =
+        serde_json::from_value(invocation.payload.clone()).unwrap();
+    let assigned = invocation
+        .inputs
+        .iter()
+        .find(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+        .expect("exact prior FindingSet@1 input");
+    assert_eq!(assigned.artifact_ids, vec![set.prior_finding_set_id]);
+}
+
+#[test]
+fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_disposition_config(&repo);
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "use explicit dispositions"],
+    );
+
+    let (code, ..) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "missing-disposition",
+            "--state",
+            &state,
+        ],
+    );
+    assert_eq!(code, 3);
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    std::fs::write(repo.join("OMIT"), "force silence\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "omit required disposition"],
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "missing-disposition",
+            "--state",
+            &state,
+        ],
+    );
+    assert_eq!(
+        code, 4,
+        "missing semantic output must be incomplete\n{stdout}\n{stderr}"
+    );
+
+    let state = Path::new(&state);
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let report = store
+        .replay("campaign-missing-disposition")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.event_type == review_core::EventType::RunReportV3)
+        .expect("durable incomplete RunReport@3");
+    let report: review_core::RunReportPayloadV3 = serde_json::from_value(report.payload).unwrap();
+    let review_core::RunVerdictV3::Incomplete { missing_nodes } = report.verdict else {
+        panic!("missing dispositions did not produce an incomplete verdict");
+    };
+    let correctness = missing_nodes
+        .iter()
+        .find(|missing| missing.node == "correctness")
+        .expect("structured missing correctness output");
+    assert!(
+        correctness.reason.contains("missing_disposition_coverage"),
+        "{}",
+        correctness.reason
+    );
 }
 
 #[test]

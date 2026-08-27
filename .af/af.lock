@@ -14,7 +14,7 @@ digest = "sha256:cec369961c685997a857c7b7ea206163178cdb72eea568bfdcc0b35daef73ec
 
 [pipelines.review]
 version = "1.0.0"
-digest = "sha256:7eda000bd5da04c3bda66a56bcd9e0e807d84c3b54b9f5d61091dbd0c347c2b1"
+digest = "sha256:55694532d8c03e5d1d6a34229d529eb8ec62f7082a2192dc3f36fd797f5945be"
 
 [pipelines.implement]
 version = "1.0.0"

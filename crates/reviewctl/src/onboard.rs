@@ -637,7 +637,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         kind: NodeKindSpec::Generation,
         inputs: Vec::new(),
         outputs: vec![
-            typed_port("findings", contract::PRIOR_FINDINGS_V1),
+            prior_finding_set_port("findings"),
             typed_port("change_set", contract::CHANGE_SET_V1),
         ],
         gated_by: None,
@@ -651,10 +651,10 @@ fn build_definition(gates: &[Gate]) -> Definition {
             kind: NodeKindSpec::Reviewer,
             inputs: vec![
                 typed_port("gate", contract::GATE_DECISION_V1),
-                typed_port("prior_findings", contract::PRIOR_FINDINGS_V1),
+                prior_finding_set_port("prior_findings"),
                 typed_port("change_set", contract::CHANGE_SET_V1),
             ],
-            outputs: vec![typed_port("result", contract::REVIEWER_RESULT_V1)],
+            outputs: vec![typed_port("result", contract::REVIEWER_RESULT_V2)],
             gated_by: Some("gate".into()),
             runner: None,
             package: Some(id.into()),
@@ -664,8 +664,8 @@ fn build_definition(gates: &[Gate]) -> Definition {
         id: "gather".into(),
         kind: NodeKindSpec::Gather,
         inputs: vec![
-            typed_port("correctness", contract::REVIEWER_RESULT_V1),
-            typed_port("architecture", contract::REVIEWER_RESULT_V1),
+            typed_port("correctness", contract::REVIEWER_RESULT_V2),
+            typed_port("architecture", contract::REVIEWER_RESULT_V2),
         ],
         outputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
         gated_by: None,
@@ -725,6 +725,16 @@ fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {
         cardinality: PortCardinality::One,
         optional: false,
         snapshot_affinity: SnapshotAffinity::SameSubject,
+    })
+}
+
+fn prior_finding_set_port(name: &str) -> PortContractSpec {
+    PortContractSpec::Typed(TypedPortSpec {
+        name: name.to_string(),
+        artifact_type: contract::FINDING_SET_V1.to_string(),
+        cardinality: PortCardinality::One,
+        optional: true,
+        snapshot_affinity: SnapshotAffinity::Any,
     })
 }
 

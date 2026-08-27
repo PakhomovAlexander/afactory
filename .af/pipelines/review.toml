@@ -22,7 +22,7 @@ outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinali
 id = "generation"
 kind = "generation"
 outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 
@@ -31,17 +31,17 @@ id = "correctness"
 kind = "reviewer"
 inputs = [
   { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
-outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 package = "correctness"
 
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = [{ name = "correctness", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [{ name = "correctness", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]

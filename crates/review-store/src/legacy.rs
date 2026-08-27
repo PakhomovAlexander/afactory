@@ -10,8 +10,8 @@
 //!   resolution per row, and claims nothing about what happened in between.
 
 use review_core::{
-    CANONICAL_FINDING_IDENTITY_POLICY, FindingReport, LegacyStageOutput, Producer, RunEvent,
-    Severity,
+    CANONICAL_FINDING_IDENTITY_POLICY, FindingDispositionPosition, FindingDispositionV1,
+    FindingReport, LegacyStageOutput, Producer, ReviewerResultContract, RunEvent, Severity,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -124,6 +124,8 @@ pub struct CanonicalStage<'a> {
     pub result_artifact_id: &'a str,
     pub input_artifacts: &'a [String],
     pub subject_snapshot_id: &'a str,
+    pub subject_id: &'a str,
+    pub result_contract: ReviewerResultContract,
 }
 
 /// The exact immutable inputs emitted by one canonical ledger reduction.
@@ -136,6 +138,8 @@ pub struct CanonicalReduction {
     pub relation_ids: Vec<String>,
     /// CAS IDs of all Report and relation envelopes consumed by the Set reducer.
     pub input_artifact_ids: Vec<String>,
+    /// The reducer contract selected by the admitted evidence kind.
+    pub reducer_version: &'static str,
 }
 
 #[derive(Clone)]
@@ -143,6 +147,7 @@ struct ReportProvenance {
     producer: Producer,
     input_artifacts: Vec<String>,
     subject_snapshot_id: String,
+    subject_id: String,
 }
 
 struct PreparedStage {
@@ -150,6 +155,7 @@ struct PreparedStage {
     reports: Vec<FindingReport>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
     provenance: Option<ReportProvenance>,
+    result_contract: ReviewerResultContract,
 }
 
 impl<'a> Ingest<'a> {
@@ -319,6 +325,7 @@ impl<'a> Ingest<'a> {
                 reports,
                 disputes: stage.disputes.clone(),
                 provenance: None,
+                result_contract: ReviewerResultContract::V1,
             });
         }
         self.add_prepared_outputs(&prepared)
@@ -373,7 +380,9 @@ impl<'a> Ingest<'a> {
                     },
                     input_artifacts,
                     subject_snapshot_id: stage.subject_snapshot_id.to_string(),
+                    subject_id: stage.subject_id.to_string(),
                 }),
+                result_contract: stage.result_contract,
             });
         }
         self.add_prepared_outputs(&prepared)
@@ -404,7 +413,7 @@ impl<'a> Ingest<'a> {
             .collect();
         let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
         let mut selected_report_ids = Vec::new();
-        let relation_ids = Vec::new();
+        let mut relation_ids = Vec::new();
         let mut input_artifact_ids = Vec::new();
         let mut pending_occurrences: std::collections::BTreeMap<(String, String), String> =
             std::collections::BTreeMap::new();
@@ -412,7 +421,9 @@ impl<'a> Ingest<'a> {
         for stage in stages {
             let source = stage.source.as_str();
             let mut reports = stage.reports.clone();
-            if let Some(provenance) = &stage.provenance {
+            if stage.result_contract == ReviewerResultContract::V1
+                && let Some(provenance) = &stage.provenance
+            {
                 for dispute in &stage.disputes {
                     if dispute.position.trim() != "confirm" {
                         continue;
@@ -618,7 +629,77 @@ impl<'a> Ingest<'a> {
                 }
             }
 
-            // Reviewer disputes are part of the contract the model is asked to answer. A
+            if stage.result_contract == ReviewerResultContract::V2 {
+                let provenance = stage.provenance.as_ref().ok_or_else(|| {
+                    StoreError::Conflict(
+                        "ReviewerResult@2 dispositions require canonical Attempt provenance".into(),
+                    )
+                })?;
+                for disposition in &stage.disputes {
+                    let finding_id = disposition.fp.trim();
+                    if self.ledger.get(finding_id).is_none() {
+                        return Err(StoreError::Conflict(format!(
+                            "{source} disposition names Finding `{finding_id}` outside its assigned prior Finding Set"
+                        )));
+                    }
+                    let position = match disposition.position.trim() {
+                        "corroborate" => FindingDispositionPosition::Corroborate,
+                        "not_reproduced" => FindingDispositionPosition::NotReproduced,
+                        "dispute" => FindingDispositionPosition::Dispute,
+                        _ => {
+                            return Err(StoreError::Conflict(format!(
+                                "{source} disposition has an invalid position"
+                            )));
+                        }
+                    };
+                    let payload = FindingDispositionV1 {
+                        finding_id: finding_id.to_string(),
+                        source: source.to_string(),
+                        position,
+                        reason: disposition.reason.clone(),
+                        round,
+                        subject_id: provenance.subject_id.clone(),
+                    };
+                    payload.validate().map_err(StoreError::Conflict)?;
+                    let (record_id, envelope) = self
+                        .cas
+                        .put_artifact(
+                            review_core::contract::FINDING_DISPOSITION_V1,
+                            provenance.producer.clone(),
+                            provenance.input_artifacts.clone(),
+                            Some(provenance.subject_snapshot_id.clone()),
+                            serde_json::to_value(payload)?,
+                        )
+                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                    relation_ids.push(envelope.artifact_id);
+                    input_artifact_ids.push(record_id.clone());
+
+                    if position != FindingDispositionPosition::Dispute {
+                        continue;
+                    }
+                    let contestable = matches!(
+                        projected.get(finding_id).map(|finding| finding.status),
+                        Some(Status::Open | Status::Fixed)
+                    );
+                    if !contestable {
+                        continue;
+                    }
+                    let payload = json!({
+                        "key": finding_id,
+                        "status": Status::Contested.as_str(),
+                        "note": format!("contested by {source}: {}", disposition.reason),
+                        "round": round,
+                    });
+                    let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
+                        .correlating(finding_id.to_string())
+                        .referencing(vec![record_id]);
+                    apply_candidate(&mut projected, &event, self.cas)?;
+                    events.push(event);
+                    summary.contested += 1;
+                }
+            }
+
+            // Reviewer disputes are part of the legacy contract the model is asked to answer. A
             // `confirm` above becomes a current, provenance-carrying Report with an explicit
             // corroborates relation. A `refute` on a prior claim's `claim_id` says "I think this
             // is wrong". Fold it:
@@ -626,6 +707,9 @@ impl<'a> Ingest<'a> {
             // and flags the claim for human adjudication rather than leaving the dispute inert in
             // raw CAS output.
             for dispute in &stage.disputes {
+                if stage.result_contract != ReviewerResultContract::V1 {
+                    continue;
+                }
                 if dispute.position.trim() != "refute" {
                     continue;
                 }
@@ -670,6 +754,14 @@ impl<'a> Ingest<'a> {
             selected_report_ids,
             relation_ids,
             input_artifact_ids,
+            reducer_version: if stages
+                .iter()
+                .any(|stage| stage.result_contract == ReviewerResultContract::V2)
+            {
+                review_core::FINDING_REDUCER_VERSION_V2
+            } else {
+                review_core::FINDING_REDUCER_VERSION
+            },
         })
     }
 

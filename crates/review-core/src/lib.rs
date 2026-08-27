@@ -13,6 +13,7 @@
 
 pub mod campaign;
 pub mod change_set;
+pub mod disposition;
 pub mod envelope;
 pub mod event;
 pub mod exec;
@@ -32,6 +33,7 @@ pub use campaign::{
     RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
+pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
@@ -43,11 +45,14 @@ pub use event::{
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
-pub use finding_set::{FINDING_REDUCER_VERSION, FindingSetEntryV1, FindingSetV1};
+pub use finding_set::{
+    FINDING_REDUCER_VERSION, FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1,
+};
 pub use json::{NumericDomainError, admit};
 pub use legacy::{
-    LegacyImportError, LegacyStageOutput, ReviewerResultRejection, validate_reviewer_result,
-    validate_reviewer_result_classified,
+    LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
+    validate_reviewer_result, validate_reviewer_result_classified, validate_reviewer_result_v2,
+    validate_reviewer_result_v2_classified,
 };
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
@@ -74,6 +79,7 @@ pub mod contract {
     pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
     pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
+    pub const FINDING_DISPOSITION_V1: &str = "review.kernel/FindingDisposition@1";
     pub const FINDING_SET_V1: &str = "review.kernel/FindingSet@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
@@ -82,6 +88,7 @@ pub mod contract {
     pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
+    pub const REVIEWER_RESULT_V2: &str = "review.kernel/ReviewerResult@2";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
     pub const SUBJECT_V1: &str = "review.kernel/Subject@1";
     pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";

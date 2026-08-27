@@ -168,6 +168,8 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
                 result_artifact_id: &result_a,
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
+                subject_id: &authority.subject,
+                result_contract: review_core::ReviewerResultContract::V1,
             },
             CanonicalStage {
                 source: "correctness",
@@ -176,6 +178,8 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
                 result_artifact_id: &result_b,
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
+                subject_id: &authority.subject,
+                result_contract: review_core::ReviewerResultContract::V1,
             },
         ])
         .unwrap();
@@ -281,6 +285,8 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
             result_artifact_id: &result_a,
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
@@ -309,6 +315,8 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
             result_artifact_id: &result_b,
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
 
@@ -353,6 +361,8 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
             result_artifact_id: &seed_result,
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
@@ -375,6 +385,8 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
         result_artifact_id: &confirmation_result,
         input_artifacts: &[],
         subject_snapshot_id: &authority.head,
+        subject_id: &authority.subject,
+        result_contract: review_core::ReviewerResultContract::V1,
     }];
     let first = ingest.add_canonical_stage_outputs(&stages).unwrap();
     assert_eq!(ingest.ledger().get(&key).unwrap().reports.len(), 2);
@@ -450,4 +462,113 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
     assert_eq!(resumed.ledger().get(&key).unwrap().reports.len(), 3);
     drop(resumed);
     assert_eq!(store.replay(run_id).unwrap().len(), event_count);
+}
+
+#[test]
+fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "01jd8m4qz9k7v3n2p6r8t0w1xz";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let seed_result = cas.put_json(&serde_json::json!({"wire": "seed"})).unwrap();
+    let disposition_result = cas
+        .put_json(&serde_json::json!({"wire": "dispositions"}))
+        .unwrap();
+    let mut seed = stage();
+    seed.findings.push({
+        let mut finding = seed.findings[0].clone();
+        finding.file = "src/drop.rs".into();
+        finding.title = "Drop candidate".into();
+        finding
+    });
+    seed.findings.push({
+        let mut finding = seed.findings[0].clone();
+        finding.file = "src/dispute.rs".into();
+        finding.title = "Dispute candidate".into();
+        finding
+    });
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "seed",
+            stage: &seed,
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
+            result_artifact_id: &seed_result,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
+        }])
+        .unwrap();
+    let ids: Vec<_> = ingest
+        .ledger()
+        .findings()
+        .iter()
+        .map(|finding| finding.key.clone())
+        .collect();
+    let dispositions: LegacyStageOutput = serde_json::from_value(serde_json::json!({
+        "verdict": "request-changes",
+        "summary": "explicit coverage",
+        "findings": [],
+        "benchmark_demands": [],
+        "disputes": [
+            {"claim_id": ids[0], "position": "corroborate", "reason": "reproduced"},
+            {"claim_id": ids[1], "position": "not_reproduced", "reason": "branch removed"},
+            {"claim_id": ids[2], "position": "dispute", "reason": "branch unreachable"}
+        ]
+    }))
+    .unwrap();
+    let reduction = ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "correctness",
+            stage: &dispositions,
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
+            result_artifact_id: &disposition_result,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V2,
+        }])
+        .unwrap();
+
+    assert_eq!(
+        reduction.reducer_version,
+        review_core::FINDING_REDUCER_VERSION_V2
+    );
+    assert_eq!(reduction.relation_ids.len(), 3);
+    assert_eq!(reduction.input_artifact_ids.len(), 3);
+    for (semantic_id, record_id) in reduction
+        .relation_ids
+        .iter()
+        .zip(&reduction.input_artifact_ids)
+    {
+        let envelope: review_core::ArtifactEnvelope =
+            serde_json::from_value(cas.get_json(record_id).unwrap()).unwrap();
+        assert_eq!(envelope.artifact_id, *semantic_id);
+        assert_eq!(
+            envelope.artifact_type,
+            review_core::contract::FINDING_DISPOSITION_V1
+        );
+        let payload: review_core::FindingDispositionV1 =
+            serde_json::from_value(envelope.payload).unwrap();
+        assert_eq!(payload.source, "correctness");
+        assert_eq!(payload.round, 1);
+        assert_eq!(payload.subject_id, authority.subject);
+    }
+    assert_eq!(
+        ingest.ledger().get(&ids[0]).unwrap().status,
+        review_store::Status::Open
+    );
+    assert_eq!(
+        ingest.ledger().get(&ids[1]).unwrap().status,
+        review_store::Status::Open,
+        "not_reproduced is evidence, not trusted fixed authority"
+    );
+    assert_eq!(
+        ingest.ledger().get(&ids[2]).unwrap().status,
+        review_store::Status::Contested
+    );
 }

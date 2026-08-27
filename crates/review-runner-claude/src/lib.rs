@@ -28,8 +28,8 @@ use std::time::Duration;
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
-    ContextManifest, ModelRunner, RESULT_CONTRACT, ReceiptedReviewerReturn, ReviewerAdapter,
-    ReviewerInputs, ReviewerReturn, RunnerError, TokenUsage, parse_stage_output,
+    ContextManifest, ModelRunner, ReceiptedReviewerReturn, ReviewerAdapter, ReviewerInputs,
+    ReviewerReturn, RunnerError, TokenUsage, parse_stage_output_for, result_contract,
 };
 use review_store::Cas;
 
@@ -76,7 +76,7 @@ impl ClaudeAdapter {
         Ok(ClaudeAdapter {
             program: package.runner.program.clone(),
             model_flags,
-            prompt: format!("{prompt}{RESULT_CONTRACT}"),
+            prompt,
             timeout,
             grants: Vec::new(),
         })
@@ -150,6 +150,7 @@ impl ReviewerAdapter for ClaudeAdapter {
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
         // rendered under an explicit heading rather than woven into the instructions.
         let mut prompt = self.prompt.clone();
+        prompt.push_str(result_contract(inputs.result_contract));
         let instruction_bytes = prompt.len();
         inputs
             .render_into(&mut prompt)
@@ -194,9 +195,11 @@ impl ReviewerAdapter for ClaudeAdapter {
                     raw_artifact: capture.raw_artifact.clone(),
                     why: "claude -p succeeded but returned no result text".into(),
                 })?;
-            let output = parse_stage_output(&text).map_err(|e| RunnerError::MalformedOutput {
-                raw_artifact: capture.raw_artifact.clone(),
-                why: e.to_string(),
+            let output = parse_stage_output_for(inputs.result_contract, &text).map_err(|e| {
+                RunnerError::MalformedOutput {
+                    raw_artifact: capture.raw_artifact.clone(),
+                    why: e.to_string(),
+                }
             })?;
             return Ok(ReceiptedReviewerReturn {
                 returned: ReviewerReturn {

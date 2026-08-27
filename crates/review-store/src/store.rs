@@ -1036,6 +1036,35 @@ fn validate_artifact_payload(
             }
         }
         review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
+        review_core::contract::REVIEWER_RESULT_V2 => {
+            review_core::validate_reviewer_result_v2(value).map_err(StoreError::Conflict)?
+        }
+        review_core::contract::FINDING_DISPOSITION_V1 => {
+            if value.get("type").is_none() {
+                return Err(StoreError::Conflict(
+                    "FindingDisposition@1 artifact is not an envelope".into(),
+                ));
+            }
+            let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingDisposition@1 artifact is not an envelope: {error}"
+                    ))
+                })?;
+            crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+            if envelope.artifact_type != review_core::contract::FINDING_DISPOSITION_V1 {
+                return Err(StoreError::Conflict(
+                    "FindingDisposition@1 envelope carries the wrong type".into(),
+                ));
+            }
+            let payload: review_core::FindingDispositionV1 =
+                serde_json::from_value(envelope.payload).map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingDisposition@1 envelope has an invalid payload: {error}"
+                    ))
+                })?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
         review_core::contract::REPORT_SET_V1 => {
             if object.is_empty()
                 || object.values().any(|ids| {
