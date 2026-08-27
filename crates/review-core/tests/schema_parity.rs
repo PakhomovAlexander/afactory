@@ -41,10 +41,14 @@ const SCHEMAS: [&str; 18] = [
     "subject-v1.json",
 ];
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn schema(name: &str) -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas")
-        .join(name);
+    let path = workspace_root().join("schemas").join(name);
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}")))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -135,8 +139,7 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
 
 #[test]
 fn reviewer_result_legacy_conformance_corpus_matches_schema() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/reviewer-result-v1-conformance.json");
+    let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
     let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         assert_valid("reviewer-result-v1.json", &case["payload"]);
@@ -218,8 +221,7 @@ fn finding_report_rejects_what_the_design_forbids() {
 
 #[test]
 fn finding_report_semantic_conformance_corpus_matches_schema_and_reader() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/finding-report-v1-conformance.json");
+    let path = workspace_root().join("schemas/finding-report-v1-conformance.json");
     let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         assert_valid("finding-report-v1.json", &case["payload"]);
@@ -420,8 +422,7 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
 
 #[test]
 fn change_set_semantic_conformance_corpus_matches_the_permanent_reader() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/change-set-v1-conformance.json");
+    let path = workspace_root().join("schemas/change-set-v1-conformance.json");
     let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
         let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();

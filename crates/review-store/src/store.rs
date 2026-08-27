@@ -2212,6 +2212,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn workspace_root() -> std::path::PathBuf {
+        std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+    }
+
     fn fixture() -> (tempfile::TempDir, EventStore, Cas) {
         let dir = tempfile::tempdir().unwrap();
         let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
@@ -2342,8 +2348,7 @@ mod tests {
 
     #[test]
     fn reviewer_result_legacy_conformance_corpus_matches_durable_reader() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../schemas/reviewer-result-v1-conformance.json");
+        let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
         let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for case in corpus["valid"].as_array().unwrap() {
             assert!(

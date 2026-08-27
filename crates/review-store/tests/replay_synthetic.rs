@@ -19,8 +19,14 @@ use review_store::{
     Cas, ConvergencePolicy, EventStore, Ingest, LegacyRow, Status, legacy::legacy_fingerprint,
 };
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn corpus() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/synthetic")
+    workspace_root().join("fixtures/synthetic")
 }
 
 /// One recorded harness invocation.

@@ -5,6 +5,12 @@ mod common;
 use common::{Fixture, cas_of, repo_of};
 use review_source_git::{Capture, CaptureError, CaptureObserver, materialize, worktree_state};
 
+fn workspace_root() -> std::path::PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 #[test]
 fn a_committed_capture_is_stable_and_content_identified() {
     let fixture = Fixture::new();
@@ -329,11 +335,7 @@ fn the_snapshot_payload_matches_source_snapshot_v1() {
     let capture = Capture::new(&repo, &cas);
 
     let schema: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../schemas/source-snapshot-v1.json"),
-        )
-        .unwrap(),
+        &std::fs::read_to_string(workspace_root().join("schemas/source-snapshot-v1.json")).unwrap(),
     )
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();

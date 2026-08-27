@@ -10,8 +10,14 @@ use review_check::{CheckResult, CheckStatus};
 use review_core::{Arg, Command};
 use serde_json::{Value, json};
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn validator() -> jsonschema::Validator {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas/check-result-v1.json");
+    let path = workspace_root().join("schemas/check-result-v1.json");
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     jsonschema::validator_for(&schema).unwrap()
 }

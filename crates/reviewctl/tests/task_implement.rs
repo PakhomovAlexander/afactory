@@ -8,6 +8,12 @@ use review_config::lock::package_digest;
 use review_source_git::Manifest;
 use review_store::Cas;
 
+fn workspace_root() -> PathBuf {
+    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(repo)
@@ -822,7 +828,7 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
 
 #[test]
 fn checked_in_task_authority_is_fully_pinned() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = workspace_root();
     let implementer = package_digest("implementer", &root.join(".af/workers/implementer")).unwrap();
     let evaluator = package_digest("evaluator", &root.join(".af/workers/evaluator")).unwrap();
     let pipeline = review_store::canonical::blob_content_id(
