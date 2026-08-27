@@ -134,6 +134,8 @@ fn run_af(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(repo)
         .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(args)
         .output()
         .unwrap();
