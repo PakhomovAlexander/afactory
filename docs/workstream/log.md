@@ -1054,3 +1054,17 @@ and `GIT_CONFIG_GLOBAL` while every mutating Git command stays sanitized. The ru
 lossless receipt paths to raw filesystem bytes before `git add -f`. Eleven focused pilot tests,
 the full workspace gate, fixture reproduction, and markdown lint pass. All seven Campaign Findings
 are fixed and its Ledger has zero open; a fresh pinned Campaign must return Pass before V3.1 closes.
+
+## 2026-08-27 — V3.1 fresh review gate cache corrected
+
+Fresh Campaign `v3-1-client-pilot-v3` captured exact candidate `05490dd` against Base `9d8e0e0`,
+then stopped at `GateBlocked` before any reviewer ran or any model tokens were spent. The captured
+Snapshot contained the required fixtures; the failure came from `scripts/verify.sh` reusing a
+global Cargo target whose cached test binaries embedded the compile-time path of an earlier,
+already-destroyed review sandbox.
+
+Commit `94f7bad` preserves the external shared build cache but gives every workspace-artifact test
+the current gate root at runtime. The full `scripts/verify.sh` gate passes against the same global
+cache that produced the failure, fixture reproduction remains byte-identical, and all eleven
+client-pilot tests pass. Restart the incomplete zero-token Round on this expanded exact candidate;
+a fresh pinned Pass remains the V3.1 handoff gate.
