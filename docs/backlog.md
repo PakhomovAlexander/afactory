@@ -298,6 +298,21 @@ Delivery/write-back, dynamic fan-out and parallel graphs, shared/distributed sto
 MCP/hooks/connections, direct API Providers, richer Envs, hosted integrations, and physical
 internal renaming are v3 work after this dogfood produces evidence.
 
+### V3.1 — Deliver a verified Snapshot to a new local worktree
+
+**Status: accepted and in progress (2026-08-27).** The first v3 slice delivers only an exact
+verified Task result to a new local branch and linked worktree after explicit Task-ID confirmation.
+The target must be a clean repository at the Task's recorded source Snapshot; both branch and path
+must be absent. The transition is durable, idempotent, recoverable, and locally verified before it
+is reported complete. It never mutates the current checkout, commits, pushes, opens a pull
+request, or invokes a remote. See
+[ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md).
+
+This slice also adds the minimum local operator surface needed for trusted design-partner pilots:
+enumerable Task history and spend, inspectable delivery receipts, installation/update guidance,
+and a deterministic end-to-end smoke. Scale, hosted integrations, arbitrary client credentials,
+and automatic Integration remain later v3/M4-M9 work.
+
 ---
 
 ## M3 · Canonical claims and explicit dispositions

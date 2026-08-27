@@ -3,7 +3,8 @@
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
 v4/v5 exhausted with seventeen fixed Findings; v6 exhausted with six more, all fixed and verified.
-A fresh pinned Campaign must still establish convergence. v3 remains deferred.
+A fresh pinned Campaign must still establish convergence. The accepted V3.1 local-delivery slice
+is in progress for trusted design-partner pilots; broader v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -121,6 +122,8 @@ and verification prerequisites exist.
       Gates and a separate evaluator yield a sealed verified/unverified result with no delivery.
 - [x] Candidate dogfood — v2 implements one real kernel change and records complete context,
       token, Gate, evaluator, Snapshot, and outcome evidence beside green `make check`.
+- [ ] Product V3.1 — an explicitly confirmed verified Task can be delivered only to a new local
+      branch/worktree, with durable history, rollback/recovery, and no commit, push, PR, or remote.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
@@ -286,7 +289,9 @@ legacy replay remains frozen. Pinned Campaigns `m3-1-canonical-identity-v4` and
 them are fixed. Fresh v6 opened six more Findings across two Rounds; commits `517e0f8` and
 `93cef0d` fix all six, the v6 Ledger has zero open, and the full local `make check` gate passes.
 Because v6 exhausted rather than passed, open a fresh pinned Campaign and require its clean Round
-before starting M3.2; do not pull v3 delivery forward merely to write the dogfood Snapshot back.
+before starting M3.2. ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
+design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
+work forward.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not

@@ -52,6 +52,11 @@ budget, or sandbox boundary to make a test or review pass.
   implementation ending at a verified internal Snapshot with no working-tree, branch, or PR
   delivery. Scale and optional integrations are v3; `make check` remains independent
   ([ADR-0030](docs/adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
+- V3.1 delivery accepts only a verified Task whose target is clean and exactly matches its source
+  Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
+  persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
+  an existing branch or path
+  ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
