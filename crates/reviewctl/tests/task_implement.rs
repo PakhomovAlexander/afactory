@@ -233,6 +233,10 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(receipt["schema"], "af/task-delivery@1");
     assert_eq!(receipt["outcome"]["kind"], "delivered");
+    assert_eq!(
+        receipt["ignored_paths"],
+        serde_json::json!(["proof.generated"])
+    );
     assert_eq!(receipt["remote_actions"], serde_json::json!([]));
     assert_eq!(
         std::fs::read_to_string(worktree.join("implemented.txt")).unwrap(),
@@ -287,6 +291,17 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     let repeated: serde_json::Value = serde_json::from_str(repeated.trim()).unwrap();
     assert_eq!(repeated, recovered, "exact repeat must be idempotent");
 
+    // Once sealed, the receipt remains inspectable after the operator changes bytes and moves
+    // the branch. The repeat authenticates delivery identity; it does not re-attest current bytes.
+    std::fs::write(worktree.join("operator-note.txt"), "post-delivery\n").unwrap();
+    git(&worktree, &home, &["add", "implemented.txt"]);
+    git(&worktree, &home, &["commit", "-q", "-m", "operator commit"]);
+    let (code, repeated_after_use, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let repeated_after_use: serde_json::Value =
+        serde_json::from_str(repeated_after_use.trim()).unwrap();
+    assert_eq!(repeated_after_use, recovered);
+
     let (code, listed, stderr) = run_af(
         &repo,
         &home,
@@ -328,6 +343,69 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     assert_eq!(shown["schema"], "af/task-inspection@1");
     assert_eq!(shown["outcome"]["outcome"]["kind"], "verified");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
+}
+
+#[test]
+fn crash_before_index_population_recovers_the_empty_owned_worktree() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let worktree = directory.path().join("empty-index");
+    let delivery_args = [
+        "task",
+        "deliver",
+        task_id,
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "af/empty-index",
+        "--worktree",
+        worktree.to_str().unwrap(),
+        "--confirm",
+        task_id,
+        "--state",
+        state.to_str().unwrap(),
+    ];
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
+            [task_id],
+        )
+        .unwrap();
+    git(&worktree, &home, &["read-tree", "--empty"]);
+    for child in std::fs::read_dir(&worktree).unwrap() {
+        let child = child.unwrap();
+        if child.file_name() == ".git" {
+            continue;
+        }
+        if child.file_type().unwrap().is_dir() {
+            std::fs::remove_dir_all(child.path()).unwrap();
+        } else {
+            std::fs::remove_file(child.path()).unwrap();
+        }
+    }
+
+    let (code, stdout, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("ignored  proof.generated"), "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("implemented.txt")).unwrap(),
+        "derived\n"
+    );
+    let index = Command::new("git")
+        .current_dir(&worktree)
+        .args(["ls-files", "-z"])
+        .output()
+        .unwrap();
+    assert!(index.status.success());
+    assert!(!index.stdout.is_empty(), "re-delivery left the index empty");
 }
 
 #[test]

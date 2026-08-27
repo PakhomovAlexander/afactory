@@ -464,6 +464,10 @@ struct DeliveryReceipt {
     derived_snapshot_id: String,
     target: DeliveryTarget,
     outcome: DeliveryOutcome,
+    /// Losslessly encoded Snapshot paths that ordinary `git add` will ignore in the delivered
+    /// worktree. Old pilot receipts predate this advisory field and deserialize as an empty set.
+    #[serde(default)]
+    ignored_paths: Vec<String>,
     remote_actions: Vec<String>,
 }
 
@@ -672,7 +676,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
 
     if let Some(receipt) = latest_delivery_receipt(&cas, &events, "TaskDelivered@1")? {
         ensure_same_delivery(&prepared, &receipt)?;
-        verify_existing_delivery(&git, &git_home, &assets, &prepared)?;
+        verify_sealed_delivery_identity(&git, &git_home, &prepared)?;
         print_delivery(&options, &receipt)?;
         return Ok(());
     }
@@ -682,7 +686,11 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         ensure_same_preparation(&prepared, &existing)?;
         match verify_existing_delivery(&git, &git_home, &assets, &existing) {
             Ok(()) => {
-                let receipt = delivered_receipt(&existing);
+                let ignored_paths = ignored_delivery_paths(
+                    &DeliveryGit::new(&existing.target.worktree, &git_home),
+                    &assets.derived_manifest,
+                )?;
+                let receipt = delivered_receipt(&existing, ignored_paths);
                 append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
                 print_delivery(&options, &receipt)?;
                 return Ok(());
@@ -709,8 +717,8 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     )?;
 
     match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
-        Ok(()) => {
-            let receipt = delivered_receipt(&prepared);
+        Ok(ignored_paths) => {
+            let receipt = delivered_receipt(&prepared, ignored_paths);
             append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
             print_delivery(&options, &receipt)
         }
@@ -1176,7 +1184,7 @@ fn execute_delivery(
     cas: &Cas,
     assets: &DeliveryAssets,
     prepared: &DeliveryPrepared,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     create_delivery_refs(git, prepared)?;
     git.require(
         [
@@ -1197,7 +1205,11 @@ fn execute_delivery(
     DeliveryGit::new(worktree, git_home).require(["read-tree", "HEAD"], None)?;
     review_source_git::materialize(&assets.derived_manifest, cas, worktree)
         .map_err(|error| format!("materializing verified Snapshot: {error}"))?;
-    verify_existing_delivery(git, git_home, assets, prepared)
+    verify_existing_delivery(git, git_home, assets, prepared)?;
+    ignored_delivery_paths(
+        &DeliveryGit::new(&prepared.target.worktree, git_home),
+        &assets.derived_manifest,
+    )
 }
 
 fn create_delivery_refs(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Result<(), String> {
@@ -1235,33 +1247,15 @@ fn verify_existing_delivery(
     assets: &DeliveryAssets,
     prepared: &DeliveryPrepared,
 ) -> Result<(), String> {
+    let git = verify_sealed_delivery_identity(source_git, git_home, prepared)?;
     if source_git
-        .ref_oid(&owner_ref(&prepared.task_id))?
+        .ref_oid(&branch_ref(&prepared.target.branch))?
         .as_deref()
         != Some(prepared.source_revision.as_str())
-        || source_git
-            .ref_oid(&branch_ref(&prepared.target.branch))?
-            .as_deref()
-            != Some(prepared.source_revision.as_str())
     {
-        return Err("delivery ownership or branch ref is absent or has moved".into());
+        return Err("delivery branch ref is absent or has moved".into());
     }
     let worktree = Path::new(&prepared.target.worktree);
-    let metadata = std::fs::symlink_metadata(worktree)
-        .map_err(|error| format!("opening delivered worktree: {error}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() || !worktree.join(".git").is_file() {
-        return Err("delivered worktree path is not the expected linked worktree".into());
-    }
-    let git = DeliveryGit::new(worktree, git_home);
-    if git_common_dir(&git)? != git_common_dir(source_git)? {
-        return Err("delivered worktree is attached to a different Git repository".into());
-    }
-    let top = git.require(["rev-parse", "--show-toplevel"], None)?;
-    let top = String::from_utf8(top).map_err(|_| "delivered Git root is not UTF-8".to_string())?;
-    let top = std::fs::canonicalize(top.trim()).map_err(|error| error.to_string())?;
-    if top != worktree {
-        return Err("delivered path resolves to a different Git worktree".into());
-    }
     let branch = git.require(["symbolic-ref", "--quiet", "--short", "HEAD"], None)?;
     if String::from_utf8(branch)
         .map_err(|_| "delivered branch is not UTF-8".to_string())?
@@ -1281,14 +1275,6 @@ fn verify_existing_delivery(
     if !index_matches_head(&git)? {
         return Err("delivered worktree index no longer equals the Task source tree".into());
     }
-    let delivered_repo = Repo::open(worktree, git_home);
-    if delivered_repo
-        .repository_id()
-        .map_err(|error| error.to_string())?
-        != prepared.target.repository_id
-    {
-        return Err("delivered worktree belongs to a different repository".into());
-    }
     let first = scan_delivery_manifest(worktree, assets.derived_manifest.path_encoding)?;
     let actual = scan_delivery_manifest(worktree, assets.derived_manifest.path_encoding)?;
     if first != actual
@@ -1298,6 +1284,45 @@ fn verify_existing_delivery(
         return Err("delivered worktree bytes do not equal the verified Snapshot".into());
     }
     Ok(())
+}
+
+fn verify_sealed_delivery_identity(
+    source_git: &DeliveryGit,
+    git_home: &Path,
+    prepared: &DeliveryPrepared,
+) -> Result<DeliveryGit, String> {
+    if source_git
+        .ref_oid(&owner_ref(&prepared.task_id))?
+        .as_deref()
+        != Some(prepared.source_revision.as_str())
+    {
+        return Err("delivery ownership ref is absent or has moved".into());
+    }
+    let worktree = Path::new(&prepared.target.worktree);
+    let metadata = std::fs::symlink_metadata(worktree)
+        .map_err(|error| format!("opening delivered worktree: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || !worktree.join(".git").is_file() {
+        return Err("delivered worktree path is not the expected linked worktree".into());
+    }
+    let git = DeliveryGit::new(worktree, git_home);
+    if git_common_dir(&git)? != git_common_dir(source_git)? {
+        return Err("delivered worktree is attached to a different Git repository".into());
+    }
+    let top = git.require(["rev-parse", "--show-toplevel"], None)?;
+    let top = String::from_utf8(top).map_err(|_| "delivered Git root is not UTF-8".to_string())?;
+    let top = std::fs::canonicalize(top.trim()).map_err(|error| error.to_string())?;
+    if top != worktree {
+        return Err("delivered path resolves to a different Git worktree".into());
+    }
+    let delivered_repo = Repo::open(worktree, git_home);
+    if delivered_repo
+        .repository_id()
+        .map_err(|error| error.to_string())?
+        != prepared.target.repository_id
+    {
+        return Err("delivered worktree belongs to a different repository".into());
+    }
+    Ok(git)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1352,7 +1377,7 @@ fn rollback_owned_delivery(
             {
                 return Err("worktree ownership changed; refusing rollback".into());
             }
-            if !index_matches_head(&target_git)? {
+            if !index_matches_head(&target_git)? && !index_is_empty(&target_git)? {
                 return Err("delivered worktree index changed; refusing rollback".into());
             }
             let actual = scan_delivery_manifest(worktree, derived_manifest.path_encoding)?;
@@ -1443,6 +1468,41 @@ fn index_matches_head(git: &DeliveryGit) -> Result<bool, String> {
     ))
 }
 
+fn index_is_empty(git: &DeliveryGit) -> Result<bool, String> {
+    Ok(git.require(["ls-files", "-z"], None)?.is_empty())
+}
+
+fn ignored_delivery_paths(git: &DeliveryGit, manifest: &Manifest) -> Result<Vec<String>, String> {
+    let mut input = Vec::new();
+    let mut paths = BTreeMap::new();
+    for entry in &manifest.entries {
+        let raw = decode_path(&entry.path);
+        input.extend_from_slice(&raw);
+        input.push(0);
+        paths.insert(raw, entry.path.clone());
+    }
+    let output = git.run(["check-ignore", "-z", "--stdin"], Some(input))?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(format!(
+            "classifying ignored delivered paths: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut ignored = Vec::new();
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let path = paths.get(raw).ok_or_else(|| {
+            "git check-ignore returned a path outside the verified Snapshot".to_string()
+        })?;
+        ignored.push(path.clone());
+    }
+    ignored.sort();
+    ignored.dedup();
+    Ok(ignored)
+}
+
 fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {
     let bytes = git.require(["rev-parse", "--git-common-dir"], None)?;
     let value =
@@ -1457,7 +1517,7 @@ fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {
         .map_err(|error| format!("opening Git common directory {}: {error}", path.display()))
 }
 
-fn delivered_receipt(prepared: &DeliveryPrepared) -> DeliveryReceipt {
+fn delivered_receipt(prepared: &DeliveryPrepared, ignored_paths: Vec<String>) -> DeliveryReceipt {
     DeliveryReceipt {
         schema: "af/task-delivery@1".into(),
         delivery_id: prepared.delivery_id.clone(),
@@ -1466,6 +1526,7 @@ fn delivered_receipt(prepared: &DeliveryPrepared) -> DeliveryReceipt {
         derived_snapshot_id: prepared.derived_snapshot_id.clone(),
         target: prepared.target.clone(),
         outcome: DeliveryOutcome::Delivered,
+        ignored_paths,
         remote_actions: Vec::new(),
     }
 }
@@ -1475,7 +1536,7 @@ fn failed_receipt(prepared: &DeliveryPrepared, reason: &str) -> DeliveryReceipt 
         outcome: DeliveryOutcome::Failed {
             reason: reason.to_string(),
         },
-        ..delivered_receipt(prepared)
+        ..delivered_receipt(prepared, Vec::new())
     }
 }
 
@@ -1502,6 +1563,9 @@ fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Resul
             "task     {}\ndelivery {}\nbranch   {}\nworktree {}\nremote   none",
             receipt.task_id, receipt.delivery_id, receipt.target.branch, receipt.target.worktree,
         );
+        for path in &receipt.ignored_paths {
+            println!("ignored  {path}");
+        }
     }
     Ok(())
 }

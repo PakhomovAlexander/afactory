@@ -19,11 +19,15 @@ request, invokes a remote, or exports credentials. The resulting worktree intent
 the verified change as uncommitted local work for a human to inspect and commit.
 
 Persist a prepared delivery record before the first Git mutation and a terminal receipt after
-verification or rollback. An exact repeated request is inspectable and idempotent. A different
-target for an already delivered Task conflicts. If creation fails, remove only the branch and
-worktree created by that prepared transition; on restart, reconcile the prepared record with the
-local repository before retrying or sealing the terminal receipt. Never remove a pre-existing
-path or branch.
+verification or rollback. The terminal receipt records any delivered Snapshot paths that Git
+ignore rules would omit from an ordinary commit. An exact repeated request is inspectable and
+idempotent: before sealing it verifies or safely recovers the exact delivery; after sealing it
+authenticates the ownership ref and linked-worktree repository identity and returns the immutable
+receipt without claiming the operator's current bytes are unchanged. A different target for an
+already delivered Task conflicts. If creation fails, remove only the branch and worktree created
+by that prepared transition; on restart, reconcile the prepared record with the local repository
+before retrying or sealing the terminal receipt. An empty per-worktree index is a recoverable
+pre-population state, not operator staging. Never remove a pre-existing path or branch.
 
 This decision extends, but does not supersede, [ADR-0030](0030-complete-minimal-v1-and-v2-before-dogfood.md):
 v2 still ends at an internal Snapshot, while this deliberately small delivery capability is the

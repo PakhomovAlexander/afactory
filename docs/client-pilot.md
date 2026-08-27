@@ -43,6 +43,7 @@ Use a fresh staging directory and substitute the exact pilot tag and release hos
 by the pilot owner:
 
 ```sh
+set -eu
 pilot_version=vX.Y.Z
 pilot_host=aarch64-apple-darwin
 pilot_stage="$(mktemp -d)"
@@ -96,13 +97,19 @@ af task deliver task-0123456789abcdef0123 \
   --json
 ```
 
-Inspect and test the delivered worktree. It is deliberately uncommitted. Committing, pushing, and
-opening a pull request remain separate human actions using the client's normal Git controls.
+Inspect `ignored_paths` in the JSON delivery receipt before testing creates more files. These are
+verified Snapshot paths that ordinary `git add` omits; preserve the exact reviewed result by
+adding each intentionally with `git add -f -- <path>`, or explicitly accept that the resulting
+commit differs from the verified Snapshot. Then inspect and test the delivered worktree. It is
+deliberately uncommitted. Committing, pushing, and opening a pull request remain separate human
+actions using the client's normal Git controls.
 
-An exact repeat is safe: it verifies the existing branch/worktree and returns the same receipt.
-If the process stopped after preparation, rerun the exact command; Afactory either seals the
-already exact delivery or removes only its unchanged owned branch/worktree and retries. If an
-operator moved the branch or changed the worktree, recovery refuses to delete that work.
+An exact repeat is safe. Before sealing, it verifies exact bytes or recovers only an unchanged
+owned branch/worktree. After sealing, it verifies the durable delivery identity and returns the
+same receipt even if the operator has since built, edited, or committed; that receipt attests to
+the original delivery, not the worktree's current bytes. If the process stopped after
+preparation, rerun the exact command. If an operator changed an unsealed worktree, recovery
+refuses to delete that work.
 
 ## Troubleshooting
 
