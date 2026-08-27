@@ -938,3 +938,18 @@ Set inputs.
 The v6 Ledger has four fixed Findings and zero open. Formatting, warnings-denied Clippy, all
 workspace tests and doc tests, and byte-identical fixture reproduction pass. Round 1 is honestly
 `Fail(NotConverged)`; Round 2 still must confirm the fixes and supply the required clean Round.
+
+## 2026-08-27 — M3.1 v6 Round 2 corrections locally verified
+
+Round 2 reviewed candidate `e4247a4` against Base `e792399`, retained all four Round 1 fixes,
+spent 285,501 chargeable tokens, and opened one major and one minor Finding. Commit `93cef0d`
+anchors canonical lineage to a superseded epoch's exact FindingSet when that epoch reached its
+ledger barrier, and makes confirm synthesis reuse the exact previously published corroborating
+Report when a canonical barrier resumes. Regression tests pin both event-sequence lineage and
+byte-stable Report inputs with no duplicate event append.
+
+Campaign v6 spent 631,587 tokens in total. Its Ledger has six fixed Findings and zero open, and
+the complete formatting, warnings-denied Clippy, workspace tests, doc tests, and byte-identical
+fixture gate passes via `make check`. The verdict remains honestly `Fail(Exhausted)`: fixes made
+after the immutable two-Round ceiling cannot retroactively create a clean Round. M3.1 therefore
+remains open until a fresh pinned Campaign returns Pass.

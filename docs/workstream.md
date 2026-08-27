@@ -2,8 +2,8 @@
 
 **Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
-v4/v5 exhausted with seventeen fixed Findings; v6 Round 1 opened four more, all fixed and verified.
-v6 Round 2 must still establish convergence. v3 remains deferred.
+v4/v5 exhausted with seventeen fixed Findings; v6 exhausted with six more, all fixed and verified.
+A fresh pinned Campaign must still establish convergence. v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -283,10 +283,10 @@ M3.1 is implemented in `agent/m3-1`: canonical new Campaigns now persist envelop
 derive path-independent Findings, and pass exact immutable `FindingSet@1` IDs across barriers;
 legacy replay remains frozen. Pinned Campaigns `m3-1-canonical-identity-v4` and
 `m3-1-canonical-identity-v5` each exhausted their two-Round ceiling. All seventeen Findings across
-them are fixed. Fresh v6 Round 1 opened four more Findings; commit `517e0f8` fixes all four, the v6
-Ledger has zero open, and the full local `make check` gate passes. Run v6 Round 2 and require its
-clean confirmation before starting M3.2; do not pull v3 delivery forward merely to write the
-dogfood Snapshot back.
+them are fixed. Fresh v6 opened six more Findings across two Rounds; commits `517e0f8` and
+`93cef0d` fix all six, the v6 Ledger has zero open, and the full local `make check` gate passes.
+Because v6 exhausted rather than passed, open a fresh pinned Campaign and require its clean Round
+before starting M3.2; do not pull v3 delivery forward merely to write the dogfood Snapshot back.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
