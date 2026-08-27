@@ -1,0 +1,1303 @@
+//! Deterministic, token-free review-authority onboarding.
+//!
+//! The binary owns one small scaffold so an agent can discover and reproduce a supported setup
+//! without pasting a prompt or hand-writing a digest. Once emitted, every byte is ordinary
+//! project-owned authority: `af onboard` validates it, but never silently overwrites it.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use review_config::lock::{Lockfile, Pin, Registry};
+use review_config::{
+    ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
+    NodeKindSpec, NodeSpec, PortContractSpec, PortSpec, ProvenanceSpec, SeveritySpec, SubjectSpec,
+    TypedPortSpec,
+};
+use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
+use serde::Serialize;
+
+const MAX_DISCOVERY_FILE_BYTES: u64 = 1024 * 1024;
+const PROFILE: &str = "multi-review@1";
+const PIPELINE_NAME: &str = "review";
+const PIPELINE_VERSION: &str = "1.0.0";
+const WORKER_VERSION: &str = "1.0.0";
+
+const HELP: &str = r#"Set up or inspect trusted local review authority.
+
+Usage:
+  af onboard [--repo DIR] [--runner mixed|claude|codex]
+             [--gate NAME=COMMAND]... [--apply] [--json]
+  af onboard [--repo DIR] --refresh-lock [--json]
+  af onboard --help
+
+Behavior:
+  * Without .af/: preview a deterministic two-reviewer scaffold. --apply atomically creates it.
+  * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.
+  * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.
+
+The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
+fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
+
+Runner profiles:
+  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)
+  claude  both Workers = Claude Opus/high
+  codex   both Workers = machine-configured Codex
+
+Gate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test
+script. If none is unambiguous, pass a trusted literal, for example:
+  af onboard --gate 'check=make check' --apply
+"#;
+
+const CORRECTNESS_PROMPT: &str = r#"# Correctness reviewer
+
+Review the exact kernel-selected Subject for concrete correctness defects at high depth. The
+materialized working directory is the head Snapshot and is yours alone to explore. For a Diff
+Subject, review the Base-to-head behavior named by the supplied exact Change Set and trace changed
+contracts through their immediate producers and consumers.
+
+Look for, in order of importance:
+
+1. Behavior that contradicts the stated requirement, public contract, schema, or durable state.
+2. State-transition, replay, concurrency, and crash-consistency paths that can disagree.
+3. Error, timeout, budget, and isolation paths that silently pass or lose evidence.
+4. Compatibility gaps where a changed interface leaves a caller, fixture, or persisted version.
+5. Missing tests only when they expose one specific unverified failure path.
+
+Report only concrete correctness defects with a reproducible path to the wrong result. Do not
+report style, naming, speculative refactors, or performance-only optimization. Every Finding needs
+a concrete fix.
+"#;
+
+const ARCHITECTURE_PROMPT: &str = r#"# Architecture reviewer
+
+Review the exact kernel-selected Subject for architectural defects at high depth. The materialized
+working directory is the head Snapshot and is yours alone to explore. For a Diff Subject, review
+the Base-to-head behavior named by the supplied exact Change Set.
+
+Look for, in order of importance:
+
+1. Responsibilities leaking across module or service boundaries and inverted dependencies.
+2. Invariants or state that multiple components believe they own.
+3. A second implementation shape that duplicates an established concept and will drift.
+4. Public contracts changed without every immediate producer and consumer.
+5. Security or operability consequences caused specifically by the changed boundary.
+
+Do not report style, formatting, naming, or general redesign wishes. Report only a concrete defect
+introduced or exposed by this Subject, explain the failure path, and give a bounded fix.
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerProfile {
+    Mixed,
+    Claude,
+    Codex,
+}
+
+impl RunnerProfile {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "mixed" => Ok(Self::Mixed),
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            _ => Err(format!(
+                "unknown runner profile `{value}`; expected mixed, claude, or codex"
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mixed => "mixed",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn runner(self, worker: &str) -> RunnerKind {
+        match (self, worker) {
+            (Self::Mixed, "correctness") | (Self::Claude, _) => RunnerKind::Claude,
+            (Self::Mixed, _) | (Self::Codex, _) => RunnerKind::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerKind {
+    Claude,
+    Codex,
+}
+
+impl RunnerKind {
+    fn program(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn model(self) -> &'static str {
+        match self {
+            Self::Claude => "opus (high effort)",
+            Self::Codex => "machine-configured Codex model",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Gate {
+    name: String,
+    program: String,
+    args: Vec<String>,
+    source: String,
+}
+
+impl Gate {
+    fn detected(name: &str, program: &str, args: &[&str], source: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            program: program.to_string(),
+            args: args.iter().map(|value| (*value).to_string()).collect(),
+            source: source.to_string(),
+        }
+    }
+
+    fn command_line(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .map(shell_words::quote)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Options {
+    repo: PathBuf,
+    profile: RunnerProfile,
+    gates: Vec<Gate>,
+    apply: bool,
+    refresh_lock: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReviewerSummary {
+    node: String,
+    package: String,
+    runner: String,
+    model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Report {
+    status: String,
+    profile: String,
+    repository: String,
+    pipeline: String,
+    reviewers: Vec<ReviewerSummary>,
+    gates: Vec<Gate>,
+    attempt_tokens: Option<u64>,
+    run_tokens: Option<u64>,
+    clean_rounds: u32,
+    max_rounds: u32,
+    files: Vec<String>,
+    next_steps: Vec<String>,
+}
+
+struct Bundle {
+    files: BTreeMap<String, Vec<u8>>,
+    worker_files: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    report: Report,
+}
+
+pub(super) fn command(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let Some(options) = parse(args)? else {
+        print!("{HELP}");
+        return Ok(());
+    };
+    let report = execute(&options)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
+        );
+    } else {
+        print_human(&report);
+    }
+    Ok(())
+}
+
+fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, String> {
+    let mut options = Options {
+        repo: PathBuf::from("."),
+        profile: RunnerProfile::Mixed,
+        gates: Vec::new(),
+        apply: false,
+        refresh_lock: false,
+        json: false,
+    };
+    let mut gate_names = BTreeSet::new();
+    while let Some(flag) = args.next() {
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match flag.as_str() {
+            "--help" | "-h" => return Ok(None),
+            "--repo" => options.repo = PathBuf::from(value()?),
+            "--runner" => options.profile = RunnerProfile::parse(&value()?)?,
+            "--gate" => {
+                let gate = parse_gate(&value()?)?;
+                if !gate_names.insert(gate.name.clone()) {
+                    return Err(format!("duplicate Gate name `{}`", gate.name));
+                }
+                options.gates.push(gate);
+            }
+            "--apply" => options.apply = true,
+            "--refresh-lock" => options.refresh_lock = true,
+            "--json" => options.json = true,
+            _ => return Err(format!("unknown option `{flag}`; run `af onboard --help`")),
+        }
+    }
+    if options.apply && options.refresh_lock {
+        return Err("--apply and --refresh-lock are mutually exclusive".to_string());
+    }
+    if options.refresh_lock && !options.gates.is_empty() {
+        return Err(
+            "--gate cannot be combined with --refresh-lock; edit the pipeline first".into(),
+        );
+    }
+    if options.refresh_lock && options.profile != RunnerProfile::Mixed {
+        return Err(
+            "--runner cannot be combined with --refresh-lock; edit Worker manifests first".into(),
+        );
+    }
+    Ok(Some(options))
+}
+
+fn parse_gate(value: &str) -> Result<Gate, String> {
+    let (name, command) = value
+        .split_once('=')
+        .ok_or("a Gate must be NAME=COMMAND, for example `check=make check`")?;
+    if !safe_name(name) {
+        return Err(format!("Gate name `{name}` is not one safe identifier"));
+    }
+    let words = shell_words::split(command)
+        .map_err(|error| format!("parsing Gate `{name}` command: {error}"))?;
+    let (program, args) = words
+        .split_first()
+        .ok_or_else(|| format!("Gate `{name}` has an empty command"))?;
+    Ok(Gate {
+        name: name.to_string(),
+        program: program.clone(),
+        args: args.to_vec(),
+        source: "explicit --gate".to_string(),
+    })
+}
+
+fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+fn execute(options: &Options) -> Result<Report, String> {
+    let repo = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    if !repo.join(".git").exists() {
+        return Err(format!(
+            "{} is not a Git repository root (no .git entry)",
+            repo.display()
+        ));
+    }
+    let authority = repo.join(".af");
+    match std::fs::symlink_metadata(&authority) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("refusing symlinked review authority `.af`".to_string())
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            Err("review authority `.af` exists but is not a directory".to_string())
+        }
+        Ok(_) => {
+            if options.apply {
+                return Err(
+                    "`.af/` already exists; plain `af onboard` validates it and never overwrites it"
+                        .to_string(),
+                );
+            }
+            if options.refresh_lock {
+                return refresh_lock(&repo);
+            }
+            if !options.gates.is_empty() || options.profile != RunnerProfile::Mixed {
+                return Err(
+                    "--gate and --runner configure only a new bundle; existing authority is never silently changed"
+                        .into(),
+                );
+            }
+            inspect_existing(&repo, "onboarded")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if options.refresh_lock {
+                return Err("cannot refresh a lock before `.af/` exists".to_string());
+            }
+            let gates = if options.gates.is_empty() {
+                discover_gates(&repo)?
+            } else {
+                options.gates.clone()
+            };
+            if gates.is_empty() {
+                return Err(
+                    "no unambiguous acceptance Gate found; supply a trusted literal such as `--gate 'check=make check'`"
+                        .to_string(),
+                );
+            }
+            let mut bundle = build_bundle(&repo, options.profile, gates)?;
+            validate_bundle(&bundle)?;
+            if options.apply {
+                apply_bundle(&repo, &bundle)?;
+                bundle.report.status = "created".to_string();
+                bundle.report.next_steps = created_next_steps();
+            }
+            Ok(bundle.report)
+        }
+        Err(error) => Err(format!("inspecting {}: {error}", authority.display())),
+    }
+}
+
+fn print_human(report: &Report) {
+    println!("af onboard: {}", report.status);
+    println!("repository  {}", report.repository);
+    println!("profile     {}", report.profile);
+    println!("pipeline    {}", report.pipeline);
+    println!("topology    gate + exact ChangeSet");
+    println!("              +--> correctness --+");
+    println!("              +--> architecture -+--> gather --> Ledger");
+    println!("reviewers");
+    for reviewer in &report.reviewers {
+        println!(
+            "  {}: {} / {} ({})",
+            reviewer.node, reviewer.package, reviewer.runner, reviewer.model
+        );
+    }
+    println!("gates");
+    for gate in &report.gates {
+        println!("  {}: {} [{}]", gate.name, gate.command_line(), gate.source);
+    }
+    match (report.attempt_tokens, report.run_tokens) {
+        (Some(attempt), Some(run)) => {
+            println!("budget      {attempt} tokens/Attempt; {run} tokens/Campaign")
+        }
+        _ => println!("budget      uncapped by pipeline authority"),
+    }
+    println!(
+        "convergence {} clean Round; {} Round maximum",
+        report.clean_rounds, report.max_rounds
+    );
+    if !report.files.is_empty() {
+        println!("files");
+        for path in &report.files {
+            println!("  {path}");
+        }
+    }
+    println!("next");
+    for (index, step) in report.next_steps.iter().enumerate() {
+        println!("  {}. {step}", index + 1);
+    }
+}
+
+fn discover_gates(repo: &Path) -> Result<Vec<Gate>, String> {
+    for makefile in ["GNUmakefile", "Makefile", "makefile"] {
+        let path = repo.join(makefile);
+        if path.is_file() {
+            let text = read_bounded_text(&path)?;
+            if has_make_target(&text, "check") {
+                return Ok(vec![Gate::detected(
+                    "check",
+                    "make",
+                    &["check"],
+                    &format!("detected {makefile} target"),
+                )]);
+            }
+        }
+    }
+    if repo.join("scripts/verify.sh").is_file() {
+        return Ok(vec![Gate::detected(
+            "verify",
+            "bash",
+            &["scripts/verify.sh"],
+            "detected scripts/verify.sh",
+        )]);
+    }
+    if repo.join("Cargo.toml").is_file() {
+        let args = if repo.join("Cargo.lock").is_file() {
+            vec!["test", "--locked"]
+        } else {
+            vec!["test"]
+        };
+        return Ok(vec![Gate::detected(
+            "cargo-test",
+            "cargo",
+            &args,
+            "detected Cargo.toml",
+        )]);
+    }
+    if repo.join("go.mod").is_file() {
+        return Ok(vec![Gate::detected(
+            "go-test",
+            "go",
+            &["test", "./..."],
+            "detected go.mod",
+        )]);
+    }
+    let package_json = repo.join("package.json");
+    if package_json.is_file() {
+        let value: serde_json::Value = serde_json::from_str(&read_bounded_text(&package_json)?)
+            .map_err(|error| format!("parsing {}: {error}", package_json.display()))?;
+        let test_script = value
+            .get("scripts")
+            .and_then(|scripts| scripts.get("test"))
+            .and_then(serde_json::Value::as_str);
+        if test_script.is_some_and(|script| {
+            let script = script.trim();
+            !(script.is_empty()
+                || script.contains("Error: no test specified") && script.contains("exit 1"))
+        }) {
+            let (name, program, args, source) = if repo.join("pnpm-lock.yaml").is_file() {
+                (
+                    "pnpm-test",
+                    "pnpm",
+                    vec!["test"],
+                    "detected pnpm test script",
+                )
+            } else if repo.join("yarn.lock").is_file() {
+                (
+                    "yarn-test",
+                    "yarn",
+                    vec!["test"],
+                    "detected yarn test script",
+                )
+            } else if repo.join("bun.lock").is_file() || repo.join("bun.lockb").is_file() {
+                ("bun-test", "bun", vec!["test"], "detected Bun test script")
+            } else {
+                ("npm-test", "npm", vec!["test"], "detected npm test script")
+            };
+            return Ok(vec![Gate::detected(name, program, &args, source)]);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn has_make_target(text: &str, target: &str) -> bool {
+    text.lines().any(|line| {
+        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+            return false;
+        }
+        let Some((targets, _)) = line.split_once(':') else {
+            return false;
+        };
+        targets.split_whitespace().any(|name| name == target)
+    })
+}
+
+fn read_bounded_text(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("reading {} metadata: {error}", path.display()))?;
+    if metadata.len() > MAX_DISCOVERY_FILE_BYTES {
+        return Err(format!(
+            "{} is {} bytes; onboarding reads at most {} bytes from one discovery file",
+            path.display(),
+            metadata.len(),
+            MAX_DISCOVERY_FILE_BYTES
+        ));
+    }
+    std::fs::read_to_string(path).map_err(|error| format!("reading {}: {error}", path.display()))
+}
+
+fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result<Bundle, String> {
+    let project_name = repo
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("project");
+    let definition = build_definition(&gates);
+    let pipeline = toml::to_string_pretty(&definition).map_err(|error| error.to_string())?;
+
+    let mut worker_files = BTreeMap::new();
+    for (name, prompt) in [
+        ("correctness", CORRECTNESS_PROMPT),
+        ("architecture", ARCHITECTURE_PROMPT),
+    ] {
+        worker_files.insert(
+            name.to_string(),
+            BTreeMap::from([
+                (
+                    "reviewer.toml".to_string(),
+                    worker_manifest(name, profile.runner(name)).into_bytes(),
+                ),
+                ("reviewer.md".to_string(), prompt.as_bytes().to_vec()),
+            ]),
+        );
+    }
+
+    let mut lockfile = Lockfile::empty();
+    for (name, files) in &worker_files {
+        lockfile.workers.insert(
+            name.clone(),
+            Lockfile::pin_package_files(name, files).map_err(|error| error.to_string())?,
+        );
+    }
+    lockfile.pipelines.insert(
+        PIPELINE_NAME.to_string(),
+        Pin {
+            version: PIPELINE_VERSION.to_string(),
+            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+        },
+    );
+
+    let af_toml = project_file(project_name);
+    let guide = guide_file(project_name, profile, &gates);
+    let mut files = BTreeMap::from([
+        (".af/README.md".to_string(), guide.into_bytes()),
+        (".af/af.lock".to_string(), lockfile.to_toml().into_bytes()),
+        (".af/af.toml".to_string(), af_toml.into_bytes()),
+        (
+            ".af/pipelines/review.toml".to_string(),
+            pipeline.into_bytes(),
+        ),
+    ]);
+    for (name, package) in &worker_files {
+        for (path, bytes) in package {
+            files.insert(format!(".af/workers/{name}/{path}"), bytes.clone());
+        }
+    }
+
+    let reviewers = reviewer_summaries(profile);
+    let report = Report {
+        status: "preview".to_string(),
+        profile: PROFILE.to_string(),
+        repository: repo.display().to_string(),
+        pipeline: ".af/pipelines/review.toml".to_string(),
+        reviewers,
+        gates,
+        attempt_tokens: Some(300_000),
+        run_tokens: Some(1_000_000),
+        clean_rounds: 1,
+        max_rounds: 2,
+        files: files.keys().cloned().collect(),
+        next_steps: vec![
+            format!(
+                "Review this plan, then run `af onboard --repo {} --runner {} --apply`.",
+                shell_words::quote(&repo.to_string_lossy()),
+                profile.name()
+            ),
+            "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
+            "Run `af onboard` again to validate authority and print the operating workflow.".into(),
+        ],
+    };
+    Ok(Bundle {
+        files,
+        worker_files,
+        report,
+    })
+}
+
+fn build_definition(gates: &[Gate]) -> Definition {
+    let checks = gates
+        .iter()
+        .map(|gate| CheckSpec {
+            name: gate.name.clone(),
+            command: CommandSpec {
+                program: gate.program.clone(),
+                args: gate
+                    .args
+                    .iter()
+                    .map(|value| ArgSpec {
+                        value: value.clone(),
+                        provenance: ProvenanceSpec::Literal,
+                    })
+                    .collect(),
+            },
+            required: true,
+        })
+        .collect();
+
+    let gate = NodeSpec {
+        id: "gate".into(),
+        kind: NodeKindSpec::Gate,
+        inputs: Vec::new(),
+        outputs: vec![typed_port("decision", contract::GATE_DECISION_V1)],
+        gated_by: None,
+        runner: None,
+        package: None,
+    };
+    let generation = NodeSpec {
+        id: "generation".into(),
+        kind: NodeKindSpec::Generation,
+        inputs: Vec::new(),
+        outputs: vec![
+            typed_port("findings", contract::PRIOR_FINDINGS_V1),
+            typed_port("change_set", contract::CHANGE_SET_V1),
+        ],
+        gated_by: None,
+        runner: None,
+        package: None,
+    };
+    let reviewers: Vec<NodeSpec> = ["correctness", "architecture"]
+        .into_iter()
+        .map(|id| NodeSpec {
+            id: id.into(),
+            kind: NodeKindSpec::Reviewer,
+            inputs: vec![
+                typed_port("gate", contract::GATE_DECISION_V1),
+                typed_port("prior_findings", contract::PRIOR_FINDINGS_V1),
+                typed_port("change_set", contract::CHANGE_SET_V1),
+            ],
+            outputs: vec![typed_port("result", contract::REVIEWER_RESULT_V1)],
+            gated_by: Some("gate".into()),
+            runner: None,
+            package: Some(id.into()),
+        })
+        .collect();
+    let gather = NodeSpec {
+        id: "gather".into(),
+        kind: NodeKindSpec::Gather,
+        inputs: vec![
+            typed_port("correctness", contract::REVIEWER_RESULT_V1),
+            typed_port("architecture", contract::REVIEWER_RESULT_V1),
+        ],
+        outputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
+        gated_by: None,
+        runner: None,
+        package: None,
+    };
+    let ledger = NodeSpec {
+        id: "ledger".into(),
+        kind: NodeKindSpec::Ledger,
+        inputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
+        outputs: vec![typed_port("findings", contract::FINDING_SET_V1)],
+        gated_by: None,
+        runner: None,
+        package: None,
+    };
+
+    let mut nodes = vec![gate, generation];
+    nodes.extend(reviewers);
+    nodes.extend([gather, ledger]);
+    let mut edges = Vec::new();
+    for reviewer in ["correctness", "architecture"] {
+        edges.extend([
+            edge("generation", "findings", reviewer, "prior_findings"),
+            edge("generation", "change_set", reviewer, "change_set"),
+            edge("gate", "decision", reviewer, "gate"),
+            edge(reviewer, "result", "gather", reviewer),
+        ]);
+    }
+    edges.push(edge("gather", "reports", "ledger", "reports"));
+
+    Definition {
+        version: 2,
+        subject: Some(SubjectSpec {
+            kind: SubjectKind::Diff,
+        }),
+        checks,
+        check_timeout_seconds: Some(3600),
+        nodes,
+        edges,
+        convergence: ConvergenceSpec {
+            clean_rounds: 1,
+            max_rounds: 2,
+            gate: SeveritySpec::Major,
+        },
+        budgets: Some(BudgetSpec {
+            unit: BudgetUnit::Tokens,
+            attempt: 300_000,
+            run: 1_000_000,
+        }),
+    }
+}
+
+fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {
+    PortContractSpec::Typed(TypedPortSpec {
+        name: name.to_string(),
+        artifact_type: artifact_type.to_string(),
+        cardinality: PortCardinality::One,
+        optional: false,
+        snapshot_affinity: SnapshotAffinity::SameSubject,
+    })
+}
+
+fn edge(from_node: &str, from_port: &str, to_node: &str, to_port: &str) -> EdgeSpec {
+    EdgeSpec {
+        from: PortSpec {
+            node: from_node.to_string(),
+            port: from_port.to_string(),
+        },
+        to: PortSpec {
+            node: to_node.to_string(),
+            port: to_port.to_string(),
+        },
+    }
+}
+
+fn worker_manifest(name: &str, runner: RunnerKind) -> String {
+    #[derive(Serialize)]
+    struct Manifest<'a> {
+        name: &'a str,
+        version: &'a str,
+        subjects: [&'a str; 1],
+        runner: ManifestRunner,
+    }
+
+    #[derive(Serialize)]
+    struct ManifestRunner {
+        program: String,
+        args: Vec<ManifestArg>,
+    }
+
+    #[derive(Serialize)]
+    struct ManifestArg {
+        value: String,
+    }
+
+    let values: &[&str] = match runner {
+        RunnerKind::Claude => &["--model", "opus", "--effort", "high"],
+        RunnerKind::Codex => &[
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--json",
+            "-s",
+            "read-only",
+            "-",
+        ],
+    };
+    let manifest = Manifest {
+        name,
+        version: WORKER_VERSION,
+        subjects: ["diff"],
+        runner: ManifestRunner {
+            program: runner.program().to_string(),
+            args: values
+                .iter()
+                .map(|value| ManifestArg {
+                    value: (*value).to_string(),
+                })
+                .collect(),
+        },
+    };
+    toml::to_string_pretty(&manifest).expect("the built-in Worker manifest serializes")
+}
+
+fn project_file(project_name: &str) -> String {
+    #[derive(Serialize)]
+    struct ProjectFile<'a> {
+        version: u32,
+        project: Project<'a>,
+        defaults: Defaults<'a>,
+        worker: BTreeMap<&'a str, Worker<'a>>,
+    }
+
+    #[derive(Serialize)]
+    struct Project<'a> {
+        name: &'a str,
+        min_af: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct Defaults<'a> {
+        pipeline: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct Worker<'a> {
+        package: &'a str,
+    }
+
+    let mut workers = BTreeMap::new();
+    workers.insert(
+        "architecture",
+        Worker {
+            package: "architecture",
+        },
+    );
+    workers.insert(
+        "correctness",
+        Worker {
+            package: "correctness",
+        },
+    );
+    toml::to_string_pretty(&ProjectFile {
+        version: 1,
+        project: Project {
+            name: project_name,
+            min_af: "0.3",
+        },
+        defaults: Defaults {
+            pipeline: PIPELINE_NAME,
+        },
+        worker: workers,
+    })
+    .expect("the built-in project file serializes")
+}
+
+fn guide_file(project_name: &str, profile: RunnerProfile, gates: &[Gate]) -> String {
+    let gate_lines = gates
+        .iter()
+        .map(|gate| format!("- `{}`: `{}`", gate.name, gate.command_line()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reviewer_lines = reviewer_summaries(profile)
+        .into_iter()
+        .map(|reviewer| {
+            format!(
+                "- `{}` uses package `{}` through {} ({})",
+                reviewer.node, reviewer.package, reviewer.runner, reviewer.model
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"# Afactory review authority
+
+This directory is the committed, project-owned review authority for `{project_name}`. It was
+generated by `af onboard`; the binary does not own it after creation and never silently rewrites
+it. Review every change here like executable policy.
+
+## What runs
+
+```text
+exact Base..head Change Set + prior Findings       required acceptance Gate
+                    |                                       |
+                    +-------------------+-------------------+
+                                        |
+                         +--------------+--------------+
+                         |                             |
+                  correctness                     architecture
+                         |                             |
+                         +----------- gather ----------+
+                                        |
+                                      Ledger
+```
+
+{reviewer_lines}
+
+The reviewers receive the exact Diff Subject, bounded kernel artifacts, and their own package.
+They do not receive one another's transcript. Results meet at the deterministic gather barrier.
+The Campaign stops after one clean Round or two Rounds total, with caps of 300,000 tokens per
+Attempt and 1,000,000 tokens per Campaign.
+
+Required Gate commands (declared as literal trusted argv; onboarding does not execute them):
+
+{gate_lines}
+
+## Agent workflow for an existing pull request
+
+1. Run `af onboard` at the trusted base checkout. It validates the graph and every exact digest.
+2. Run `af provider status`; fix machine-local Provider authentication without writing a token
+   into this repository.
+3. Fetch the pull request with the normal repository tooling, create a disposable worktree at its
+   head, and identify the trusted base revision.
+4. From that worktree run:
+
+   ```sh
+   af review run --campaign pr-<number> --authority <trusted-base-revision> --uncommitted --json
+   af review ledger --campaign pr-<number> --long
+   af review report --campaign pr-<number> --format md
+   ```
+
+5. Read the Ledger and report. Do not comment on the pull request, commit, push, merge, or mutate
+   external state unless a human explicitly authorizes that separate action.
+
+`--authority` must name a trusted committed revision containing this `.af/` directory. The review
+command captures authority immutably; uncommitted pull-request content cannot alter its Gate,
+Worker prompts, models, topology, budgets, or pins.
+
+## Changing authority
+
+Edit the ordinary files under `.af/`, then explicitly run `af onboard --refresh-lock`. That
+command recomputes only the selected pipeline pin and the Worker packages it references. Review
+the authority and lock diff together, run `af onboard` again, then commit through the project's
+normal controls. Never weaken a Gate or boundary merely to obtain a passing review.
+"#
+    )
+}
+
+fn reviewer_summaries(profile: RunnerProfile) -> Vec<ReviewerSummary> {
+    ["correctness", "architecture"]
+        .into_iter()
+        .map(|name| {
+            let runner = profile.runner(name);
+            ReviewerSummary {
+                node: name.to_string(),
+                package: name.to_string(),
+                runner: runner.program().to_string(),
+                model: runner.model().to_string(),
+            }
+        })
+        .collect()
+}
+
+fn validate_bundle(bundle: &Bundle) -> Result<(), String> {
+    let lock_text = bundle_text(&bundle.files, ".af/af.lock")?;
+    let pipeline_text = bundle_text(&bundle.files, ".af/pipelines/review.toml")?;
+    let project_text = bundle_text(&bundle.files, ".af/af.toml")?;
+    let selected = selected_pipeline(project_text)?;
+    if selected != PIPELINE_NAME {
+        return Err(format!(
+            "generated project selected pipeline `{selected}` instead of `{PIPELINE_NAME}`"
+        ));
+    }
+    let lock = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
+    validate_pipeline_pin(&lock, PIPELINE_NAME, pipeline_text.as_bytes())?;
+    let registry = Registry::captured(bundle.worker_files.clone());
+    let loaded = Definition::from_toml(pipeline_text)
+        .map_err(|error| error.to_string())?
+        .load_with(&lock, &registry)
+        .map_err(|error| error.to_string())?;
+    if loaded.packages().len() != 2 || loaded.checks().is_empty() {
+        return Err("generated authority did not bind two Workers and at least one Gate".into());
+    }
+    Ok(())
+}
+
+fn bundle_text<'a>(files: &'a BTreeMap<String, Vec<u8>>, path: &str) -> Result<&'a str, String> {
+    std::str::from_utf8(
+        files
+            .get(path)
+            .ok_or_else(|| format!("generated bundle omitted `{path}`"))?,
+    )
+    .map_err(|error| format!("generated `{path}` is not UTF-8: {error}"))
+}
+
+fn apply_bundle(repo: &Path, bundle: &Bundle) -> Result<(), String> {
+    let temporary = tempfile::Builder::new()
+        .prefix(".af-onboard-")
+        .tempdir_in(repo)
+        .map_err(|error| format!("staging review authority: {error}"))?;
+    for (path, bytes) in &bundle.files {
+        let relative = Path::new(path)
+            .strip_prefix(".af")
+            .map_err(|_| format!("generated path `{path}` does not live under `.af/`"))?;
+        let target = temporary.path().join(relative);
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("generated path `{path}` has no parent"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map_err(|error| format!("creating {}: {error}", target.display()))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("writing {}: {error}", target.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("syncing {}: {error}", target.display()))?;
+    }
+    std::fs::File::open(temporary.path())
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("syncing staged review authority: {error}"))?;
+    let staged = temporary.keep();
+    let authority = repo.join(".af");
+    match rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        &staged,
+        rustix::fs::CWD,
+        &authority,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => {
+            std::fs::File::open(repo)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| format!("syncing repository after onboarding: {error}"))?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staged);
+            if authority.exists() {
+                Err("`.af/` appeared during onboarding; no authority was overwritten".into())
+            } else {
+                Err(format!("installing review authority atomically: {error}"))
+            }
+        }
+    }
+}
+
+fn created_next_steps() -> Vec<String> {
+    vec![
+        "Review and commit the generated `.af/` authority on the trusted base branch.".into(),
+        "Run `af onboard` again; it must validate every selected pipeline and Worker pin.".into(),
+        "Run `af provider status`, then follow `.af/README.md` to review a pull request.".into(),
+    ]
+}
+
+struct ExistingAuthority {
+    selected: String,
+    pipeline_path: PathBuf,
+    pipeline_text: String,
+    definition: Definition,
+    lock: Lockfile,
+}
+
+fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
+    let project_path = repo.join(".af/af.toml");
+    let project_text = read_authority_text(&project_path)?;
+    let selected = selected_pipeline(&project_text)?;
+    let pipeline_path = repo.join(format!(".af/pipelines/{selected}.toml"));
+    let pipeline_text = read_authority_text(&pipeline_path)?;
+    let definition = Definition::from_toml(&pipeline_text).map_err(|error| error.to_string())?;
+    let lock_path = repo.join(".af/af.lock");
+    let lock = Lockfile::from_toml(&read_authority_text(&lock_path)?)
+        .map_err(|error| error.to_string())?;
+    Ok(ExistingAuthority {
+        selected,
+        pipeline_path,
+        pipeline_text,
+        definition,
+        lock,
+    })
+}
+
+fn selected_pipeline(text: &str) -> Result<String, String> {
+    let project: toml::Value = toml::from_str(text)
+        .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
+    if project.get("version").and_then(toml::Value::as_integer) != Some(1) {
+        return Err("authority project `.af/af.toml` must declare `version = 1`".into());
+    }
+    let selected = project
+        .get("defaults")
+        .and_then(|value| value.get("pipeline"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(PIPELINE_NAME);
+    if selected.is_empty()
+        || !selected.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+        })
+    {
+        return Err("authority project default pipeline must be one safe name".into());
+    }
+    Ok(selected.to_string())
+}
+
+fn read_authority_text(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("reading authority {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "authority {} must be a regular file, not a symlink or special file",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_DISCOVERY_FILE_BYTES {
+        return Err(format!(
+            "authority {} is {} bytes; onboarding reads at most {} bytes",
+            path.display(),
+            metadata.len(),
+            MAX_DISCOVERY_FILE_BYTES
+        ));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("reading authority {}: {error}", path.display()))
+}
+
+fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<(), String> {
+    let pin = lock
+        .pipelines
+        .get(name)
+        .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
+    let found = review_store::canonical::blob_content_id(bytes);
+    if pin.digest != found {
+        return Err(format!(
+            "pipeline `{name}` does not match `.af/af.lock`: locked {}, found {found}",
+            pin.digest
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
+    let authority = parse_existing(repo)?;
+    validate_pipeline_pin(
+        &authority.lock,
+        &authority.selected,
+        authority.pipeline_text.as_bytes(),
+    )?;
+    let registry = Registry::new([repo.join(".af/workers")]);
+    let loaded = authority
+        .definition
+        .clone()
+        .load_with(&authority.lock, &registry)
+        .map_err(|error| error.to_string())?;
+
+    let gates = authority
+        .definition
+        .checks
+        .iter()
+        .map(|check| Gate {
+            name: check.name.clone(),
+            program: check.command.program.clone(),
+            args: check
+                .command
+                .args
+                .iter()
+                .map(|argument| argument.value.clone())
+                .collect(),
+            source: "project authority".into(),
+        })
+        .collect();
+    let reviewers = loaded
+        .packages()
+        .iter()
+        .map(|(node, package)| ReviewerSummary {
+            node: node.clone(),
+            package: package.name.clone(),
+            runner: package.runner.program.clone(),
+            model: runner_model(&package.runner),
+        })
+        .collect();
+    let (attempt_tokens, run_tokens) = authority
+        .definition
+        .budgets
+        .as_ref()
+        .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
+        .unwrap_or((None, None));
+    let mut files = vec![
+        ".af/af.lock".to_string(),
+        ".af/af.toml".to_string(),
+        authority
+            .pipeline_path
+            .strip_prefix(repo)
+            .unwrap_or(&authority.pipeline_path)
+            .display()
+            .to_string(),
+    ];
+    if repo.join(".af/README.md").is_file() {
+        files.push(".af/README.md".to_string());
+    }
+    for package in loaded.packages().values() {
+        for path in package.files().keys() {
+            files.push(format!(".af/workers/{}/{path}", package.name));
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(Report {
+        status: status.to_string(),
+        profile: "project-owned authority".into(),
+        repository: repo.display().to_string(),
+        pipeline: format!(".af/pipelines/{}.toml", authority.selected),
+        reviewers,
+        gates,
+        attempt_tokens,
+        run_tokens,
+        clean_rounds: authority.definition.convergence.clean_rounds,
+        max_rounds: authority.definition.convergence.max_rounds,
+        files,
+        next_steps: vec![
+            "Run `af provider status`; Provider credentials remain machine-local.".into(),
+            "Follow `.af/README.md` to capture a pull request in a disposable worktree.".into(),
+            "Run `af review ledger` and `af review report`; publish nothing without human authorization."
+                .into(),
+        ],
+    })
+}
+
+fn runner_model(command: &review_core::Command) -> String {
+    let values = command
+        .args
+        .iter()
+        .map(|argument| argument.value.as_str())
+        .collect::<Vec<_>>();
+    let model = values
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--model").then_some(pair[1]));
+    let effort = values
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--effort").then_some(pair[1]));
+    let codex_effort = values.windows(2).find_map(|pair| {
+        (pair[0] == "-c")
+            .then(|| pair[1].strip_prefix("model_reasoning_effort="))
+            .flatten()
+            .map(|value| value.trim_matches(['\'', '"']))
+    });
+    match (model, effort.or(codex_effort)) {
+        (Some(model), Some(effort)) => format!("{model} ({effort} effort)"),
+        (Some(model), None) => model.to_string(),
+        (None, _) => "machine-configured model".into(),
+    }
+}
+
+fn refresh_lock(repo: &Path) -> Result<Report, String> {
+    let authority = parse_existing(repo)?;
+    let referenced: BTreeSet<String> = authority
+        .definition
+        .nodes
+        .iter()
+        .filter_map(|node| node.package.clone())
+        .collect();
+    if referenced.is_empty() {
+        return Err("selected pipeline references no Worker package".into());
+    }
+    let registry = Registry::new([repo.join(".af/workers")]);
+    let mut refreshed = authority.lock.clone();
+    for name in referenced {
+        let pin = Lockfile::pin(&name, &registry).map_err(|error| error.to_string())?;
+        refreshed.workers.insert(name.clone(), pin);
+        refreshed.reviewers.remove(&name);
+    }
+    let version = refreshed
+        .pipelines
+        .get(&authority.selected)
+        .map(|pin| pin.version.clone())
+        .unwrap_or_else(|| PIPELINE_VERSION.to_string());
+    refreshed.pipelines.insert(
+        authority.selected.clone(),
+        Pin {
+            version,
+            digest: review_store::canonical::blob_content_id(authority.pipeline_text.as_bytes()),
+        },
+    );
+    authority
+        .definition
+        .clone()
+        .load_with(&refreshed, &registry)
+        .map_err(|error| error.to_string())?;
+    atomic_replace_lock(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
+    inspect_existing(repo, "lock_refreshed")
+}
+
+fn atomic_replace_lock(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("inspecting {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "refusing to replace authority lock {} because it is not a regular file",
+            path.display()
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("authority lock {} has no parent", path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("staging authority lock: {error}"))?;
+    temporary
+        .as_file()
+        .set_permissions(metadata.permissions())
+        .map_err(|error| format!("preserving authority lock permissions: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .map_err(|error| format!("writing staged authority lock: {error}"))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("syncing staged authority lock: {error}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("replacing authority lock atomically: {}", error.error))?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("syncing authority directory: {error}"))?;
+    Ok(())
+}

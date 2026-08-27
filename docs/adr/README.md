@@ -72,3 +72,5 @@ options you rejected and why — that is the part future-you needs.
   dogfood](0030-complete-minimal-v1-and-v2-before-dogfood.md)
 - [0031 — Deliver verified Tasks only to new local
   worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)
+- [0032 — Generate review authority with
+  `af onboard`](0032-generate-review-authority-with-af-onboard.md)
