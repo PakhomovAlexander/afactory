@@ -301,7 +301,8 @@ internal renaming are v3 work after this dogfood produces evidence.
 ### V3.1 — Deliver a verified Snapshot to a new local worktree
 
 **Status: implementation, local verification, and the real trusted-repository pilot are complete
-(2026-08-27). External Round 1 Findings are fixed and locally green; a confirming Round remains.**
+(2026-08-27). The external two-Round Campaign's seven Findings are fixed and locally green; the
+Campaign exhausted, so a fresh pinned Campaign must return Pass.**
 The first v3 slice delivers only an exact verified Task result to a new local branch and linked
 worktree after explicit Task-ID confirmation.
 The target must be a clean repository at the Task's recorded source Snapshot; both branch and path

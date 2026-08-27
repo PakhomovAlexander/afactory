@@ -1036,3 +1036,21 @@ All four Findings are fixed and the Campaign Ledger has zero open. The integrate
 contains the verified M3.1 corrections. Formatting, warnings-denied Clippy, all workspace and doc
 tests, byte-identical fixture reproduction, the full nine-test pilot suite, and markdown lint pass.
 A confirming external Round remains required before V3.1 closes.
+
+## 2026-08-27 — V3.1 Round 2 exhausted; all Findings fixed
+
+Round 2 of pinned Campaign `v3-1-client-pilot-v2` reviewed integrated candidate `f0c13e7`, carried
+all four fixed Round 1 Findings, spent 167,787 chargeable tokens, and opened one major plus two
+minor Findings before the immutable two-Round ceiling exhausted. It found that a crash during
+materialization could leave an ambiguous partial worktree permanently prepared, ignore
+classification omitted the operator's global excludes, and the runbook passed percent-encoded
+receipt identifiers to `git add` as literal paths.
+
+Commit `63ccf57` fixes all three without weakening operator-work preservation. Ambiguous partial
+content becomes a failed terminal while the original branch/worktree remains untouched; a later
+explicitly confirmed attempt releases only Afactory's internal ownership ref and can deliver to a
+new absent target. Read-only ignore classification uses the operator's `HOME`, `XDG_CONFIG_HOME`,
+and `GIT_CONFIG_GLOBAL` while every mutating Git command stays sanitized. The runbook decodes
+lossless receipt paths to raw filesystem bytes before `git add -f`. Eleven focused pilot tests,
+the full workspace gate, fixture reproduction, and markdown lint pass. All seven Campaign Findings
+are fixed and its Ledger has zero open; a fresh pinned Campaign must return Pass before V3.1 closes.

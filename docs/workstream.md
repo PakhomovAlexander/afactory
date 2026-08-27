@@ -4,8 +4,8 @@
 implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
 v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
 local-delivery slice is implemented and proven against the real v2 dogfood Task; its external
-Round 1 Findings are fixed and locally green, with a confirming Round still required. Broader v3
-remains deferred.
+two-Round Campaign opened seven Findings, all fixed and locally green. Because that Campaign
+exhausted, a fresh pinned Campaign must still return Pass. Broader v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -309,8 +309,13 @@ filesystem edits, deletions, and staged changes are regression-tested and preser
 Campaign `v3-1-client-pilot-v2` Round 1 then spent 213,903 tokens and opened one major and three
 minor Findings. Commit `f11a09f` fixes all four: empty-index recovery no longer wedges, sealed
 repeat remains inspectable after operator use, checksum failure aborts installation, and ignored
-Snapshot paths are explicit in the receipt and runbook. The Ledger has zero open and both
-`make check` and `make pilot-check` pass; run the confirming Round on this integrated candidate.
+Snapshot paths are explicit in the receipt and runbook. Round 2 spent 167,787 tokens and opened
+one major plus two minor Findings before exhausting the Campaign. Commit `63ccf57` makes ambiguous
+partial-materialization recovery terminal and retryable without deleting operator work, applies
+the operator's global Git excludes to the advisory receipt, and gives the runbook a byte-safe
+decoder for encoded paths. All seven Findings are fixed, the Ledger has zero open, and both
+`make check` and `make pilot-check` pass. Open a fresh pinned Campaign and require Pass before
+partner handoff.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
