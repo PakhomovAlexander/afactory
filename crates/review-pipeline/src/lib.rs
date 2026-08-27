@@ -236,6 +236,7 @@ impl RoundAuthority {
                 store,
                 cas,
                 run_id,
+                round.sequence,
                 payload.round,
                 &opened.campaign_manifest_id,
                 &campaign_manifest,
@@ -354,26 +355,30 @@ fn canonical_prior_finding_set_id(
     store: &EventStore,
     cas: &Cas,
     run_id: &str,
+    round_sequence: u64,
     round: u32,
     campaign_manifest_id: &str,
     campaign: &CampaignManifestV1,
 ) -> Result<String, String> {
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
-    canonical_prior_finding_set_id_from_events(cas, &events, round, campaign_manifest_id, campaign)
+    canonical_prior_finding_set_id_from_events(
+        cas,
+        &events,
+        round_sequence,
+        round,
+        campaign_manifest_id,
+        campaign,
+    )
 }
 
 fn canonical_prior_finding_set_id_from_events(
     cas: &Cas,
     events: &[review_core::RunEvent],
+    active_sequence: u64,
     round: u32,
     campaign_manifest_id: &str,
     campaign: &CampaignManifestV1,
 ) -> Result<String, String> {
-    if round == 1 {
-        cas.verify(&campaign.finding_genesis_id)
-            .map_err(|error| error.to_string())?;
-        return Ok(campaign.finding_genesis_id.clone());
-    }
     let pipeline = cas
         .get(&campaign.pipeline.artifact_id)
         .map_err(|error| format!("canonical pipeline authority is unreadable: {error}"))?;
@@ -399,7 +404,9 @@ fn canonical_prior_finding_set_id_from_events(
             }
             let payload: RoundStartedPayloadV1 =
                 serde_json::from_value(event.payload.clone()).ok()?;
-            (payload.round < round && payload.campaign_manifest_id == campaign_manifest_id)
+            (payload.campaign_manifest_id == campaign_manifest_id
+                && (payload.round < round
+                    || (payload.round == round && event.sequence < active_sequence)))
                 .then_some((event.event_id.as_str(), payload.round))
         })
         .collect();
@@ -414,7 +421,7 @@ fn canonical_prior_finding_set_id_from_events(
                 .map(|value| closed || value.unwrap_or(false))
                 .map_err(|error| error.to_string())
         })?;
-        if !closed {
+        if prior_round < round && !closed {
             continue;
         }
         let mut ids = Vec::new();
@@ -478,7 +485,7 @@ fn canonical_prior_finding_set_id_from_events(
             .map_err(|error| format!("prior Finding Set {id} is invalid: {error}"))?;
         set.validate()?;
         if set.round != prior_round
-            || set.round >= round
+            || set.round > round
             || set.identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
         {
             return Err(format!(
@@ -3074,11 +3081,156 @@ outputs = ["findings"]
                 &cas,
                 &[round, terminal],
                 2,
+                2,
                 &campaign_manifest_id,
                 &campaign,
             )
             .unwrap(),
             campaign.finding_genesis_id
+        );
+    }
+
+    #[test]
+    fn canonical_lineage_anchors_a_superseded_epoch_of_the_active_round() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let genesis = cas.put(b"genesis").unwrap();
+        let subject = cas.put(b"subject").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: genesis.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: genesis.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![genesis.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: Some(3600),
+            git_timeout_seconds: Some(300),
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: genesis.clone(),
+            demand_genesis_id: genesis.clone(),
+        };
+        let set = review_core::FindingSetV1 {
+            subject_id: subject.clone(),
+            round: 1,
+            prior_finding_set_id: genesis.clone(),
+            reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: Vec::new(),
+        };
+        let (set_id, _) = cas
+            .put_artifact(
+                review_core::contract::FINDING_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: "run".into(),
+                    node_id: Some("ledger".into()),
+                    operation_id: "superseded-epoch-test".into(),
+                },
+                vec![genesis.clone()],
+                Some(subject.clone()),
+                serde_json::to_value(set).unwrap(),
+            )
+            .unwrap();
+        let round_payload = |epoch| RoundStartedPayloadV1 {
+            round: 1,
+            epoch,
+            campaign_manifest_id: campaign_manifest_id.clone(),
+            subject_id: subject.clone(),
+            prior_finding_set_id: genesis.clone(),
+            prior_demand_set_id: genesis.clone(),
+        };
+        let superseded_round = review_core::RunEvent {
+            event_id: "round-1-epoch-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(round_payload(1)).unwrap(),
+        };
+        let receipt = review_core::RunEvent {
+            event_id: "receipt-1-epoch-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::NodeOutputReceiptV1,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: Some("ledger".into()),
+            attempt_id: None,
+            causation_id: Some(superseded_round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: vec![set_id.clone()],
+            payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                node: "ledger".into(),
+                outputs: vec![PortArtifactsV1 {
+                    port: "set".into(),
+                    artifact_type: review_core::contract::FINDING_SET_V1.into(),
+                    cardinality: review_core::PortCardinality::One,
+                    optional: false,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                    artifact_ids: vec![set_id.clone()],
+                    subject_snapshot_id: None,
+                }],
+            })
+            .unwrap(),
+        };
+        let active_round = review_core::RunEvent {
+            event_id: "round-1-epoch-2".into(),
+            run_id: "run".into(),
+            sequence: 2,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:02Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(round_payload(2)).unwrap(),
+        };
+
+        assert_eq!(
+            canonical_prior_finding_set_id_from_events(
+                &cas,
+                &[superseded_round, receipt, active_round],
+                2,
+                1,
+                &campaign_manifest_id,
+                &campaign,
+            )
+            .unwrap(),
+            set_id
         );
     }
 
@@ -3212,6 +3364,7 @@ outputs = ["findings"]
         let error = canonical_prior_finding_set_id_from_events(
             &cas,
             &[round, receipt, terminal],
+            3,
             2,
             &campaign_manifest_id,
             &campaign,

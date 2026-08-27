@@ -412,7 +412,7 @@ impl<'a> Ingest<'a> {
         for stage in stages {
             let source = stage.source.as_str();
             let mut reports = stage.reports.clone();
-            if stage.provenance.is_some() {
+            if let Some(provenance) = &stage.provenance {
                 for dispute in &stage.disputes {
                     if dispute.position.trim() != "confirm" {
                         continue;
@@ -424,6 +424,63 @@ impl<'a> Ingest<'a> {
                         // reviewers' evidence.
                         continue;
                     };
+                    let mut replayed = false;
+                    for existing in finding.reports.iter().filter(|report| {
+                        report.source == source
+                            && report.round == round
+                            && report.relations.iter().any(|relation| {
+                                relation.kind == review_core::RelationKind::Corroborates
+                                    && relation.target.kind
+                                        == review_core::finding::ClaimTargetKind::Finding
+                                    && relation.target.id == key
+                            })
+                    }) {
+                        let value = self.cas.get_json(&existing.report_id).map_err(|error| {
+                            StoreError::Artifact(format!(
+                                "corroborating Report {} is unreadable during replay: {error}",
+                                existing.report_id
+                            ))
+                        })?;
+                        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value)
+                            .map_err(|error| {
+                                StoreError::Artifact(format!(
+                                    "corroborating Report {} is not an ArtifactEnvelope: {error}",
+                                    existing.report_id
+                                ))
+                            })?;
+                        crate::canonical::validate_envelope(&envelope).map_err(|error| {
+                            StoreError::Artifact(format!(
+                                "corroborating Report {}: {error}",
+                                existing.report_id
+                            ))
+                        })?;
+                        if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
+                            return Err(StoreError::Artifact(format!(
+                                "corroborating Report {} has type {}",
+                                existing.report_id, envelope.artifact_type
+                            )));
+                        }
+                        if envelope.producer != provenance.producer
+                            || envelope.input_artifacts != provenance.input_artifacts
+                            || envelope.subject_snapshot_id.as_deref()
+                                != Some(provenance.subject_snapshot_id.as_str())
+                        {
+                            continue;
+                        }
+                        reports.push(serde_json::from_value(envelope.payload).map_err(
+                            |error| {
+                                StoreError::Artifact(format!(
+                                    "corroborating Report {} is not FindingReport@1: {error}",
+                                    existing.report_id
+                                ))
+                            },
+                        )?);
+                        replayed = true;
+                        break;
+                    }
+                    if replayed {
+                        continue;
+                    }
                     let (Some(fix), Some(confidence)) = (finding.fix.clone(), finding.confidence)
                     else {
                         continue;

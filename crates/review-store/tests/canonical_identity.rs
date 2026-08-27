@@ -326,3 +326,128 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
     );
     assert_eq!(report.relations[0].target.id, key);
 }
+
+#[test]
+fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "01jd8m4qz9k7v3n2p6r8t0w1xz";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let seed_result = cas.put_json(&serde_json::json!({"wire": "seed"})).unwrap();
+    let escalation_result = cas
+        .put_json(&serde_json::json!({"wire": "escalation"}))
+        .unwrap();
+    let confirmation_result = cas
+        .put_json(&serde_json::json!({"wire": "confirmation"}))
+        .unwrap();
+    let seed = stage();
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "seed",
+            stage: &seed,
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
+            result_artifact_id: &seed_result,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+        }])
+        .unwrap();
+    let key = ingest.ledger().findings()[0].key.clone();
+    let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
+        "verdict": "approve",
+        "summary": "still present",
+        "findings": [],
+        "benchmark_demands": [],
+        "disputes": [{
+            "claim_id": key,
+            "position": "confirm",
+            "reason": "verified against the current snapshot"
+        }]
+    }))
+    .unwrap();
+    let stages = [CanonicalStage {
+        source: "correctness",
+        stage: &confirmation,
+        attempt_id: "01jd8m4qz9k7v3n2p6r8t0w204",
+        result_artifact_id: &confirmation_result,
+        input_artifacts: &[],
+        subject_snapshot_id: &authority.head,
+    }];
+    let first = ingest.add_canonical_stage_outputs(&stages).unwrap();
+    assert_eq!(ingest.ledger().get(&key).unwrap().reports.len(), 2);
+    drop(ingest);
+
+    let escalation = review_core::FindingReport {
+        title: "Same presentation".into(),
+        severity: review_core::Severity::Blocker,
+        locations: vec![review_core::Location {
+            path: "src/lib.rs".into(),
+            line: Some(7),
+            end_line: None,
+        }],
+        body: "same body".into(),
+        fix: "same fix".into(),
+        confidence: 0.9,
+        failure_trace: None,
+        rule_id: None,
+        occurrence_key: None,
+        relations: vec![review_core::Relation {
+            kind: review_core::RelationKind::Corroborates,
+            target: review_core::finding::RelationTarget {
+                kind: review_core::finding::ClaimTargetKind::Finding,
+                id: key.clone(),
+            },
+            reason: Some("same claim, higher severity".into()),
+        }],
+    };
+    let (escalation_id, _) = cas
+        .put_artifact(
+            review_core::contract::FINDING_REPORT_V1,
+            review_core::Producer::Attempt {
+                run_id: run_id.into(),
+                node_id: "architecture".into(),
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203".into(),
+            },
+            vec![escalation_result],
+            Some(authority.head.clone()),
+            serde_json::to_value(escalation).unwrap(),
+        )
+        .unwrap();
+    store
+        .append(
+            run_id,
+            &cas,
+            NewEvent::new(
+                EventType::FindingReportedV1,
+                serde_json::json!({
+                    "key": key.clone(),
+                    "round": 1,
+                    "source": "architecture",
+                    "report_id": escalation_id.clone(),
+                }),
+            )
+            .node("architecture")
+            .caused_by(authority.round_event_id.clone())
+            .correlating(key.clone())
+            .referencing(vec![escalation_id]),
+        )
+        .unwrap();
+    let event_count = store.replay(run_id).unwrap().len();
+
+    let mut resumed = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    assert_eq!(
+        resumed.ledger().get(&key).unwrap().severity,
+        review_core::Severity::Blocker
+    );
+    let second = resumed.add_canonical_stage_outputs(&stages).unwrap();
+    assert_eq!(second.selected_report_ids, first.selected_report_ids);
+    assert_eq!(second.input_artifact_ids, first.input_artifact_ids);
+    assert_eq!(resumed.ledger().get(&key).unwrap().reports.len(), 3);
+    drop(resumed);
+    assert_eq!(store.replay(run_id).unwrap().len(), event_count);
+}
