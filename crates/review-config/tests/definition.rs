@@ -380,7 +380,7 @@ fn the_checked_in_pipeline_loads() {
 
 #[test]
 fn the_template_repository_self_review_pipeline_loads_when_present() {
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../..");
+    let repo = workspace_root().join("../../..");
     if !repo.join("template/.review").is_dir() {
         return;
     }

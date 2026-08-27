@@ -101,8 +101,10 @@ af task deliver task-0123456789abcdef0123 \
 
 Inspect `ignored_paths` in the JSON delivery receipt before testing creates more files. These are
 losslessly percent-encoded verified Snapshot paths that ordinary `git add` omits under the
-operator's repository and global ignore rules. They are identifiers, not literal pathspecs. Stage
-their decoded filesystem bytes before testing creates more files:
+operator's repository and global ignore rules. They are identifiers, not literal pathspecs. Decode
+their filesystem bytes, then prefix Git's literal pathspec magic so names containing glob or
+pathspec-magic characters still identify only themselves. Stage them before testing creates more
+files:
 
 ```sh
 python3 - "$pilot_receipt" "$pilot_worktree" <<'PY'
@@ -116,8 +118,9 @@ with open(sys.argv[1], encoding="utf-8") as receipt_file:
     encoded = json.load(receipt_file)["ignored_paths"]
 paths = [urllib.parse.unquote_to_bytes(path) for path in encoded]
 if paths:
+    pathspecs = [b":(literal)" + path for path in paths]
     subprocess.run(
-        [b"git", b"-C", os.fsencode(sys.argv[2]), b"add", b"-f", b"--", *paths],
+        [b"git", b"-C", os.fsencode(sys.argv[2]), b"add", b"-f", b"--", *pathspecs],
         check=True,
     )
 PY
