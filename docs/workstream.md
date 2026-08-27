@@ -45,7 +45,8 @@ The findings that now drive the roadmap, all verified in code or the recovered d
    enveloped Reports while retaining the frozen legacy reader for old Campaigns.
 3. **Explicit dispositions remain M3.2.** Flat `refute` answers project directly to contested
    status, but disputes and Drops are not immutable attached artifacts; reviewer silence still
-   stands in for an explicit disposition.
+   stands in for an explicit disposition. Reviewer/gate inputs retain the `PriorFindings@1`
+   compatibility projection until those post-Set resolutions can be immutable Set inputs.
 4. **A Rust `Debug` impl is load-bearing for convergence.** `publish_report` persists
    `format!("{verdict:?}")`, and the round counter reads it back with
    `.starts_with("Incomplete")`. Renaming `RunVerdict::Incomplete` makes incomplete rounds start

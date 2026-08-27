@@ -75,12 +75,20 @@ impl FindingSetV1 {
         }
         if self.findings.iter().any(|finding| {
             finding.finding_id.trim().is_empty()
-                || finding.status.trim().is_empty()
-                || finding.scope.trim().is_empty()
+                || !matches!(
+                    finding.status.as_str(),
+                    "open" | "fixed" | "rejected" | "wontfix" | "contested"
+                )
+                || !matches!(finding.scope.as_str(), "in" | "out" | "unknown")
                 || finding.title.trim().is_empty()
                 || finding.body.trim().is_empty()
                 || finding.source.trim().is_empty()
                 || finding.file.as_deref().is_some_and(str::is_empty)
+                || finding.line.is_some_and(|line| line < 1)
+                || finding.fix.as_deref().is_some_and(str::is_empty)
+                || finding
+                    .confidence
+                    .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
                 || finding.last_seen_round == 0
                 || finding.report_ids.iter().any(|id| !is_digest(id))
         }) {

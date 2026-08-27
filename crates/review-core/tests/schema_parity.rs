@@ -372,6 +372,11 @@ fn subject_and_campaign_authority_roundtrip() {
             .unwrap_err()
             .contains("unknown finding identity policy")
     );
+    assert_invalid(
+        "campaign-manifest-v1.json",
+        &serde_json::to_value(&unknown_policy).unwrap(),
+        "unknown finding identity policy",
+    );
     let value = serde_json::to_value(&manifest).unwrap();
     assert_valid("campaign-manifest-v1.json", &value);
     assert_eq!(
@@ -926,4 +931,39 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
     let mut empty_file = set.clone();
     empty_file.findings[0].file = Some(String::new());
     assert!(empty_file.validate().is_err());
+
+    for invalid in [
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].status = "triaged".into();
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].scope = "maybe".into();
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].line = Some(0);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].confidence = Some(1.1);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].fix = Some(String::new());
+            invalid
+        },
+    ] {
+        assert!(invalid.validate().is_err());
+        assert_invalid(
+            "finding-set-v1.json",
+            &serde_json::to_value(invalid).unwrap(),
+            "invalid Finding projection",
+        );
+    }
 }

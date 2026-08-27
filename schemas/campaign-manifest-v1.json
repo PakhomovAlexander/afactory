@@ -51,7 +51,7 @@
       }
     },
     "focus": { "type": "string", "minLength": 1 },
-    "finding_identity_policy": { "type": "string", "minLength": 1 },
+    "finding_identity_policy": { "enum": ["legacy-path-title@1", "report-derived@1"] },
     "finding_genesis_id": { "$ref": "#/$defs/digest" },
     "demand_genesis_id": { "$ref": "#/$defs/digest" }
   },

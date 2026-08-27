@@ -418,6 +418,7 @@ fn canonical_prior_finding_set_id_from_events(
             continue;
         }
         let mut ids = Vec::new();
+        let mut saw_ledger_receipt = false;
         for event in events {
             if event.event_type != EventType::NodeOutputReceiptV1
                 || event.causation_id.as_deref() != Some(prior_round_event_id)
@@ -429,12 +430,10 @@ fn canonical_prior_finding_set_id_from_events(
             if !ledger_nodes.contains(receipt.node.as_str()) {
                 continue;
             }
+            saw_ledger_receipt = true;
             for port in receipt.outputs {
                 if port.artifact_type == review_core::contract::FINDING_SET_V1 {
                     ids.extend(port.artifact_ids);
-                    continue;
-                }
-                if port.port != "findings" {
                     continue;
                 }
                 for id in port.artifact_ids {
@@ -453,6 +452,11 @@ fn canonical_prior_finding_set_id_from_events(
             }
         }
         if ids.is_empty() {
+            if saw_ledger_receipt {
+                return Err(format!(
+                    "canonical Finding Set lineage round {prior_round} has a ledger receipt but no FindingSet@1 output"
+                ));
+            }
             continue;
         }
         if ids.len() != 1 {
@@ -3167,7 +3171,7 @@ outputs = ["findings"]
             payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
                 node: "ledger".into(),
                 outputs: vec![PortArtifactsV1 {
-                    port: "findings".into(),
+                    port: "set".into(),
                     artifact_type: review_core::contract::OPAQUE_V1.into(),
                     cardinality: review_core::PortCardinality::One,
                     optional: false,

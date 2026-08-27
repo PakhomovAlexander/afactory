@@ -46,7 +46,7 @@ outputs = ["reports"]
 id = "ledger"
 kind = "ledger"
 inputs = ["reports"]
-outputs = ["findings"]
+outputs = ["set"]
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "architecture", port = "gate" }
@@ -225,7 +225,7 @@ fn heavy_pipeline() -> Pipeline {
         .node(
             Node::new("ledger", NodeKind::Ledger)
                 .accepting(&["reports"])
-                .emitting(&["findings"]),
+                .emitting(&["set"]),
         );
     for reviewer in ["architecture", "performance"] {
         pipeline = pipeline
@@ -408,7 +408,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     let NodeOutcome::Completed { outputs } = report.outcome("ledger").unwrap() else {
         panic!("canonical ledger did not complete")
     };
-    let set_id = outputs["findings"][0].clone();
+    let set_id = outputs["set"][0].clone();
     let envelope: review_core::ArtifactEnvelope =
         serde_json::from_value(cas.get_json(&set_id).unwrap()).unwrap();
     assert_eq!(set_id, envelope.artifact_id, "the edge carries the Set ID");
@@ -464,7 +464,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     let NodeOutcome::Completed { outputs } = replayed.outcome("ledger").unwrap() else {
         panic!("canonical ledger replay did not complete")
     };
-    assert_eq!(outputs["findings"], [set_id.clone()]);
+    assert_eq!(outputs["set"], [set_id.clone()]);
     drop(replay);
 
     let prior_prompt = cas
@@ -550,7 +550,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         panic!("round two canonical ledger did not complete")
     };
     let round_two_envelope: review_core::ArtifactEnvelope =
-        serde_json::from_value(cas.get_json(&outputs["findings"][0]).unwrap()).unwrap();
+        serde_json::from_value(cas.get_json(&outputs["set"][0]).unwrap()).unwrap();
     let round_two_set: review_core::FindingSetV1 =
         serde_json::from_value(round_two_envelope.payload).unwrap();
     assert_eq!(round_two_set.round, 2);

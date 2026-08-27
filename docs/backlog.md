@@ -332,13 +332,17 @@ reviewer/round provenance does not leak back into the `FindingReport@1` payload.
 
 Each ledger barrier emits an immutable, Subject-bound `FindingSet@1` from the prior Set plus
 canonical selected Report/relation/resolution artifact IDs. Its deterministic reduction ID
-includes reducer and policy versions; graph edges pass that exact Set ID to reviewers, gates, and
-later reducers instead of querying ambient Ledger state.
+includes reducer and policy versions; reducer barriers and later reducers pass that exact Set ID
+instead of querying ambient Ledger state.
 
 The minimal M3.1 boundary publishes canonical Report and FindingSet artifacts. `FindingSet@1`
 reserves relation and resolution artifact-ID lists, but they remain empty until M3.2 makes
 dispositions immutable inputs; flat `refute` compatibility continues to project its legacy status
-event in the meantime.
+event in the meantime. Reviewer and gate inputs therefore retain the Subject-bound
+`PriorFindings@1` compatibility projection through M3.1: an exact Set published before an operator
+resolution cannot yet carry that later resolution, so wiring it back to reviewers now would
+resurrect fixed/rejected claims. M3.2 replaces that projection only after immutable dispositions
+make the exact Set a complete assignment view.
 
 ### M3.2 — Prior-Finding dispositions become explicit
 
