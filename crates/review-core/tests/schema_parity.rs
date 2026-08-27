@@ -915,7 +915,21 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
     set.validate().unwrap();
     let value = serde_json::to_value(&set).unwrap();
     assert_valid("finding-set-v1.json", &value);
-    assert_eq!(serde_json::from_value::<FindingSetV1>(value).unwrap(), set);
+    assert_eq!(
+        serde_json::from_value::<FindingSetV1>(value.clone()).unwrap(),
+        set
+    );
+    let mut missing_effective_severity = value;
+    missing_effective_severity["findings"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_severity");
+    assert!(serde_json::from_value::<FindingSetV1>(missing_effective_severity.clone()).is_err());
+    assert_invalid(
+        "finding-set-v1.json",
+        &missing_effective_severity,
+        "effective severity is required",
+    );
 
     let mut out_of_scope = set.clone();
     out_of_scope.findings[0].scope = "out".into();
@@ -946,6 +960,22 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
         {
             let mut invalid = set.clone();
             invalid.findings[0].line = Some(0);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].file = Some("../../etc/passwd".into());
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].file = None;
+            invalid.findings[0].line = Some(1);
+            invalid
+        },
+        {
+            let mut invalid = set.clone();
+            invalid.findings[0].location_unrecorded = true;
             invalid
         },
         {

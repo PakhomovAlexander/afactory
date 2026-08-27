@@ -923,8 +923,12 @@ pub struct Kernel<'a> {
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
     reviewer_selections: Mutex<BTreeMap<String, SelectedReviewer>>,
     reviewer_input_artifacts: Mutex<BTreeMap<String, Vec<String>>>,
-    /// Validated graph provenance: downstream node -> input port -> exact upstream nodes.
-    input_sources: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// Validated graph provenance: downstream node -> input port -> exact upstream node, output
+    /// port, and kind. The kind distinguishes reviewer selection from deterministic node output.
+    input_bindings: review_config::InputBindings,
+    /// Outputs made durable in this scheduler run, keyed by their producing node. Downstream
+    /// canonical reducers consult only this map plus the validated graph when binding artifacts.
+    node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
     replayed_spent: u64,
 }
 
@@ -1055,7 +1059,8 @@ impl<'a> Kernel<'a> {
             replayed_refusal_histories: replayed.refusal_histories,
             reviewer_selections: Mutex::new(replayed.selected_reviewers),
             reviewer_input_artifacts: Mutex::new(reviewer_input_artifacts),
-            input_sources: BTreeMap::new(),
+            input_bindings: BTreeMap::new(),
+            node_outputs: Mutex::new(BTreeMap::new()),
             replayed_spent: replayed.committed_tokens,
         })
     }
@@ -1101,7 +1106,7 @@ impl<'a> Kernel<'a> {
             loaded.version(),
             authority,
         )?;
-        kernel.input_sources = loaded.input_sources();
+        kernel.input_bindings = loaded.input_bindings();
         Ok(kernel)
     }
 
@@ -2251,37 +2256,56 @@ impl<'a> Kernel<'a> {
         self.flush_reviewer_events()?;
         if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
         {
-            let sources = self.input_sources.get(&node.id).ok_or_else(|| {
+            let sources = self.input_bindings.get(&node.id).ok_or_else(|| {
                 format!("canonical gather `{}` has no pinned input graph", node.id)
             })?;
             let selections = self
                 .reviewer_selections
                 .lock()
                 .expect("reviewer selections");
+            let node_outputs = self.node_outputs.lock().expect("node outputs");
             let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for (port, artifacts) in inputs {
                 let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
                 let mut remaining = artifacts.clone();
-                for source in upstream {
-                    let selected = selections.get(source).ok_or_else(|| {
-                        format!(
-                            "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
-                            node.id
-                        )
-                    })?;
-                    let Some(index) = remaining
-                        .iter()
-                        .position(|artifact| artifact == &selected.result_artifact)
-                    else {
-                        return Err(format!(
-                            "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
-                            node.id
-                        ));
-                    };
-                    manifest
-                        .entry(source.clone())
-                        .or_default()
-                        .push(remaining.remove(index));
+                for (source, source_port, kind) in upstream {
+                    let produced = node_outputs
+                        .get(source)
+                        .and_then(|outputs| outputs.get(source_port))
+                        .ok_or_else(|| {
+                            format!(
+                                "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
+                                node.id
+                            )
+                        })?;
+                    if *kind == NodeKind::Reviewer {
+                        let selected = selections.get(source).ok_or_else(|| {
+                            format!(
+                                "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
+                                node.id
+                            )
+                        })?;
+                        if produced.as_slice() != [selected.result_artifact.as_str()] {
+                            return Err(format!(
+                                "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
+                                node.id
+                            ));
+                        }
+                    }
+                    for artifact in produced {
+                        let Some(index) =
+                            remaining.iter().position(|delivered| delivered == artifact)
+                        else {
+                            return Err(format!(
+                                "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
+                                node.id
+                            ));
+                        };
+                        manifest
+                            .entry(source.clone())
+                            .or_default()
+                            .push(remaining.remove(index));
+                    }
                 }
                 if !remaining.is_empty() {
                     return Err(format!(
@@ -2323,7 +2347,7 @@ impl<'a> Kernel<'a> {
                 if value.get("verdict").is_some() && value.get("reports").is_some() {
                     let source = if canonical {
                         let upstream = self
-                            .input_sources
+                            .input_bindings
                             .get(&node.id)
                             .and_then(|ports| ports.get(input_port))
                             .ok_or_else(|| {
@@ -2336,13 +2360,14 @@ impl<'a> Kernel<'a> {
                             .reviewer_selections
                             .lock()
                             .expect("reviewer selections");
-                        let source = upstream.iter().find(|source| {
-                            !direct_sources_used.contains(*source)
+                        let source = upstream.iter().find(|(source, _, kind)| {
+                            *kind == NodeKind::Reviewer
+                                && !direct_sources_used.contains(source)
                                 && selections
-                                    .get(*source)
+                                    .get(source)
                                     .is_some_and(|selection| selection.result_artifact == *input)
                         });
-                        source.cloned().ok_or_else(|| {
+                        source.map(|(source, _, _)| source.clone()).ok_or_else(|| {
                             format!(
                                 "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
                                 node.id
@@ -2908,6 +2933,10 @@ impl Dispatch for Kernel<'_> {
                 outputs: port_artifacts(&node.outputs, outputs, &self.authority.head_snapshot_id),
             };
             return if recorded.payload == expected {
+                self.node_outputs
+                    .lock()
+                    .expect("node outputs")
+                    .insert(node.id.clone(), outputs.clone());
                 Ok(())
             } else {
                 Err(format!(
@@ -2951,6 +2980,10 @@ impl Dispatch for Kernel<'_> {
         events.push(event);
         self.append_batch(&events)?;
         pending.retain(|((id, _), _)| id != &node.id);
+        self.node_outputs
+            .lock()
+            .expect("node outputs")
+            .insert(node.id.clone(), outputs.clone());
         Ok(())
     }
 

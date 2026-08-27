@@ -32,8 +32,15 @@
             ]
           },
           "scope": { "enum": ["in", "out", "unknown"] },
-          "file": { "type": "string", "minLength": 1 },
-          "line": { "type": "integer", "minimum": 1 },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "allOf": [
+              { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+              { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+            ]
+          },
+          "line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
           "location_unrecorded": { "type": "boolean" },
           "title": { "type": "string", "minLength": 1 },
           "body": { "type": "string", "minLength": 1 },
@@ -42,7 +49,20 @@
           "source": { "type": "string", "minLength": 1 },
           "last_seen_round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
           "report_ids": { "$ref": "#/$defs/digests" }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["line"] },
+            "then": { "required": ["file"] }
+          },
+          {
+            "if": {
+              "required": ["location_unrecorded"],
+              "properties": { "location_unrecorded": { "const": true } }
+            },
+            "then": { "not": { "required": ["file"] } }
+          }
+        ]
       }
     }
   },

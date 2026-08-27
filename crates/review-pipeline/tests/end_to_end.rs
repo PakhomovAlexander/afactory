@@ -149,6 +149,50 @@ from = { node = "gather", port = "reports" }
 to = { node = "ledger", port = "reports" }
 "#;
 
+const NON_REVIEWER_GATHER_AUTHORITY: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "evidence-gather"
+kind = "gather"
+inputs = ["decision"]
+outputs = ["reports"]
+[[nodes]]
+id = "reviewer-gather"
+kind = "gather"
+inputs = ["reviewer"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["set"]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "reviewer", port = "gate" }
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "evidence-gather", port = "decision" }
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "reviewer-gather", port = "reviewer" }
+[[edges]]
+from = { node = "reviewer-gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
 /// A repository with a defect to find.
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -283,6 +327,45 @@ fn unwired_pipeline() -> Pipeline {
         )
         .edge(
             Port::new("gather", "reports"),
+            Port::new("ledger", "reports"),
+        )
+}
+
+fn non_reviewer_gather_pipeline() -> Pipeline {
+    Pipeline::default()
+        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
+        .node(
+            Node::new("reviewer", NodeKind::Reviewer)
+                .accepting(&["gate"])
+                .emitting(&["result"])
+                .gated_by("gate"),
+        )
+        .node(
+            Node::new("evidence-gather", NodeKind::Gather)
+                .accepting(&["decision"])
+                .emitting(&["reports"]),
+        )
+        .node(
+            Node::new("reviewer-gather", NodeKind::Gather)
+                .accepting(&["reviewer"])
+                .emitting(&["reports"]),
+        )
+        .node(
+            Node::new("ledger", NodeKind::Ledger)
+                .accepting(&["reports"])
+                .emitting(&["set"]),
+        )
+        .edge(Port::new("gate", "decision"), Port::new("reviewer", "gate"))
+        .edge(
+            Port::new("gate", "decision"),
+            Port::new("evidence-gather", "decision"),
+        )
+        .edge(
+            Port::new("reviewer", "result"),
+            Port::new("reviewer-gather", "reviewer"),
+        )
+        .edge(
+            Port::new("reviewer-gather", "reports"),
             Port::new("ledger", "reports"),
         )
 }
@@ -612,6 +695,46 @@ fn an_unwired_identical_result_does_not_confuse_canonical_provenance() {
 
     assert!(report.complete(), "{:?}", report.outcomes);
     assert!(kernel.ledger().is_empty());
+}
+
+#[test]
+fn canonical_gather_binds_non_reviewer_inputs_to_their_pinned_node_output() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        NON_REVIEWER_GATHER_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("reviewer", clean_reviewer());
+
+    let report = Scheduler::new(&non_reviewer_gather_pipeline().plan().unwrap()).run(&kernel);
+
+    assert!(report.complete(), "{:?}", report.outcomes);
+    let NodeOutcome::Completed {
+        outputs: gate_outputs,
+    } = report.outcome("gate").unwrap()
+    else {
+        panic!("gate did not complete")
+    };
+    let NodeOutcome::Completed {
+        outputs: gather_outputs,
+    } = report.outcome("evidence-gather").unwrap()
+    else {
+        panic!("gather did not complete")
+    };
+    assert_eq!(
+        cas.get_json(&gather_outputs["reports"][0]).unwrap(),
+        serde_json::json!({"gate": gate_outputs["decision"]}),
+        "the manifest labels a deterministic artifact with its pinned upstream node"
+    );
 }
 
 /// The property the gate exists for, end to end: a change that does not build produces **no

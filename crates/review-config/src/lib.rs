@@ -28,6 +28,9 @@ use review_graph::{
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
 
+pub type InputBinding = (String, String, NodeKind);
+pub type InputBindings = BTreeMap<String, BTreeMap<String, Vec<InputBinding>>>;
+
 #[derive(Debug)]
 pub enum ConfigError {
     Parse(String),
@@ -532,6 +535,27 @@ impl Loaded {
             }
         }
         sources
+    }
+
+    /// Exact upstream node, output port, and kind for every input port. Canonical reducers use
+    /// this validated provenance instead of guessing an artifact's producer from its contents.
+    pub fn input_bindings(&self) -> InputBindings {
+        let mut bindings = InputBindings::new();
+        for edge in &self.plan.edges {
+            let kind = self.plan.nodes[&edge.from.node].kind;
+            bindings
+                .entry(edge.to.node.clone())
+                .or_default()
+                .entry(edge.to.name.clone())
+                .or_default()
+                .push((edge.from.node.clone(), edge.from.name.clone(), kind));
+        }
+        for ports in bindings.values_mut() {
+            for sources in ports.values_mut() {
+                sources.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+            }
+        }
+        bindings
     }
 
     /// Schedule only through a dispatcher whose execution semantics match this definition.

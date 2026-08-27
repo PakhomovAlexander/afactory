@@ -1,6 +1,6 @@
 //! `FindingSet@1` — one immutable, Subject-bound reducer projection.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Severity, is_digest};
 
@@ -14,7 +14,7 @@ pub struct FindingSetEntryV1 {
     pub finding_id: String,
     pub status: String,
     pub severity: Severity,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub effective_severity: Option<Severity>,
     pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,6 +32,14 @@ pub struct FindingSetEntryV1 {
     pub source: String,
     pub last_seen_round: u32,
     pub report_ids: Vec<String>,
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 fn is_false(value: &bool) -> bool {
@@ -83,8 +91,15 @@ impl FindingSetV1 {
                 || finding.title.trim().is_empty()
                 || finding.body.trim().is_empty()
                 || finding.source.trim().is_empty()
-                || finding.file.as_deref().is_some_and(str::is_empty)
-                || finding.line.is_some_and(|line| line < 1)
+                || finding
+                    .file
+                    .as_deref()
+                    .is_some_and(|file| !crate::is_valid_repo_path(file))
+                || finding
+                    .line
+                    .is_some_and(|line| !(1..=u32::MAX as i64).contains(&line))
+                || finding.line.is_some() && finding.file.is_none()
+                || finding.location_unrecorded && finding.file.is_some()
                 || finding.fix.as_deref().is_some_and(str::is_empty)
                 || finding
                     .confidence
