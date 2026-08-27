@@ -972,3 +972,27 @@ and `make pilot-check` pass. The pilot runbook covers checksummed private instal
 Provider and authority setup, operator inspection, recovery, troubleshooting, and binary rollback.
 Pinned external review and one real trusted-repository pilot remain required before design-partner
 handoff.
+
+## 2026-08-27 — Real V3.1 delivery pilot passed after index correction
+
+The release candidate delivered the existing verified v2 dogfood Task
+`task-8732de714edb4550a628` from source Snapshot
+`sha256:9fd9d7e79c1b9c82ab4b7830b8ac579c924d3a46d0faaad7d87603b13b042854` to derived Snapshot
+`sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f`. The first real
+delivery exposed that `git worktree add --no-checkout` also creates an empty per-worktree index:
+the filesystem bytes were exact, but ordinary Git status presented the source as staged deleted
+and the derived tree as untracked.
+
+Commit `41c085d` preserves the filter-free boundary while populating that index from immutable
+`HEAD` with plumbing-only `git read-tree`. Exact-delivery verification now also rejects an index
+that differs from the source tree, and the integration suite pins ordinary unstaged presentation.
+The complete `make check` gate passes, including formatting, warnings-denied Clippy, workspace
+and doc tests, and byte-identical fixture reproduction.
+
+After repairing only the disposable pilot index with that same plumbing step, the rebuilt
+candidate replayed the exact request idempotently. It returned receipt
+`delivery-b6ba56b39cac1793e7c96f160b82f265e4630eac6e497bfb64a1211fd5365aa6`, named the exact
+source and derived Snapshots, and recorded `remote_actions: []`. Git status showed only the two
+modified files and one new script produced by the verified Task; no source deletion was staged.
+The delivered worktree's `make dogfood-contract` passed. Pinned external correctness review is
+the only remaining V3.1 handoff gate.
