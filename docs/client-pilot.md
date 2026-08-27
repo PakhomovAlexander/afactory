@@ -37,6 +37,11 @@ The `.af/af.lock` digests must match the committed pipeline and Worker bytes. Pi
 produces this bundle per repository because acceptance Gates are project-specific; changing any
 of those bytes requires a newly generated and reviewed lock.
 
+`af onboard` now provides the self-contained binary workflow for a repository's two-Worker pull
+request review authority. It deliberately does not invent the implementer/evaluator authority
+used by this v2 implementation-Task pilot; that pipeline remains maintainer-reviewed until a
+separate product slice defines its safe generator.
+
 ## Install or update
 
 Use a fresh staging directory and substitute the exact pilot tag and release host triple supplied

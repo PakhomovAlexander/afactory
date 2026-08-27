@@ -1251,9 +1251,11 @@ dependencies = [
  "review-source-git",
  "review-store",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
+ "shell-words",
  "tempfile",
  "toml",
 ]

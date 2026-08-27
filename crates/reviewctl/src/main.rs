@@ -37,6 +37,7 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Ve
 use sha2::{Digest, Sha256};
 
 mod authority;
+mod onboard;
 mod providers;
 mod task;
 mod tui;
@@ -233,6 +234,7 @@ fn usage() -> ! {
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
         \x20      af provider status\n\
+        \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock] [--json]\n\
         \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
         \x20      af task deliver TASK_ID --repo DIR --branch NAME --worktree DIR --confirm TASK_ID [--state DIR] [--json]\n\
         \x20      af task list [--repo DIR] [--state DIR] [--json]\n\
@@ -435,6 +437,15 @@ fn main() {
         }
         providers::print_status();
         return;
+    }
+    if namespace.as_deref() == Some("onboard") {
+        match onboard::command(args) {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("af onboard: {error}");
+                std::process::exit(1);
+            }
+        }
     }
     if namespace.as_deref() == Some("task") {
         let result = match args.next().as_deref() {

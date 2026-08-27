@@ -712,6 +712,18 @@ impl Lockfile {
         Self::pin_from_files(name, &root, &files)
     }
 
+    /// Compute one exact package pin from already captured bytes.
+    ///
+    /// Generators use this path before anything exists on disk. It applies the same manifest,
+    /// name, version, path, and digest validation as registry-backed locking; callers cannot
+    /// mint a syntactically plausible pin around malformed package bytes.
+    pub fn pin_package_files(
+        name: &str,
+        files: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Pin, LockError> {
+        Self::pin_from_files(name, Path::new("<generated-package>"), files)
+    }
+
     /// Compute a prospective pin by replacing one package file in the same byte map used to
     /// verify the package's opening digest. This supports proposal generation without writing
     /// or silently blessing concurrent package changes.

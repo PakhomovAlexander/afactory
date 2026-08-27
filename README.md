@@ -28,6 +28,7 @@ the synthetic fixture corpus, gated in CI.
 make check       # fmt + clippy + tests + fixture reproduction
 make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
+cargo run -p reviewctl --bin af -- onboard --help
 cargo run -p reviewctl --bin af -- review tui
 cargo run -p reviewctl --bin af -- provider status
 cargo run -p reviewctl --bin af -- task start --kind implement --goal "describe the change" --authority HEAD --json
@@ -35,6 +36,28 @@ cargo run -p reviewctl --bin af -- task list --json
 cargo run -p reviewctl --bin af -- task show TASK_ID --json
 cargo run -p reviewctl --bin af -- task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID --json
 ```
+
+## Onboard a repository for multi-agent review
+
+`af onboard` is the binary-owned entry point for agents and operators. In a Git repository with
+no `.af/`, plain invocation previews a deterministic `multi-review@1` authority and writes
+nothing. `--apply` creates the absent directory atomically with a diff pipeline, exact lock,
+correctness and architecture Worker packages, and `.af/README.md`: a standalone explanation and
+pull-request operating workflow, so an agent does not need a pasted setup prompt.
+
+```sh
+af onboard                                      # inspect or preview
+af onboard --gate 'check=make check' --apply   # apply when discovery cannot choose a Gate
+af onboard --runner mixed --apply              # Claude correctness + Codex architecture
+af onboard --refresh-lock                      # explicit repin after reviewed authority edits
+```
+
+The command is deterministic and token-free. It never executes a Gate or model, reads a
+credential, fetches a pull request, creates Campaign state, commits, pushes, comments, or
+overwrites existing authority. Once created, `.af/` is ordinary trusted project policy; plain
+`af onboard` validates it, while lock refresh is explicit and changes only the selected pipeline
+and its referenced Worker pins. See
+[`ADR-0032`](docs/adr/0032-generate-review-authority-with-af-onboard.md) for the boundary.
 
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
 authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,

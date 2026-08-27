@@ -1099,3 +1099,23 @@ published both supported archives. Their downloaded checksum sidecars passed: ma
 archive `sha256:954b303c6749797b329213a00b9dbaceecb319c3a638e86be0c7e7afa936e816`. The extracted
 macOS release binary reports `af 0.3.0`. The bounded client runbook is now ready for trusted
 design-partner handoff; broader delivery and automatic publication remain outside V3.1.
+
+## 2026-08-27 — V3.2 binary-owned review onboarding locally verified
+
+Branch `agent/onboard-command` adds deterministic, token-free `af onboard` under ADR-0032. A new
+Git repository receives a read-only preview by default; explicit `--apply` installs one absent
+`.af/` directory with a version-2 Diff pipeline, required Gate, independently prompted correctness
+and architecture Workers, exact pipeline/package pins, bounded budgets and convergence, and a
+standalone agent runbook. Existing authority is validated without mutation; explicit
+`--refresh-lock` validates current bytes and atomically replaces only the selected pipeline and
+referenced Worker pins. The command never runs a Gate or model, accesses credentials, creates
+Campaign state, fetches a PR, commits, pushes, comments, or overwrites authority.
+
+Four integration tests prove preview writes nothing, apply creates and repeat-apply refuses,
+tampering fails exact validation, explicit refresh repairs referenced pins while preserving an
+unrelated pin, and missing Gate discovery fails closed. The candidate binary previewed the real
+hub and selected its shipped `scripts/verify.sh` Gate without writing; it then created and
+revalidated the complete eight-file authority in a disposable Git repository. The full
+`make check` gate passes: formatting, warnings-denied Clippy, all workspace and doc tests, and
+byte-identical fixture reproduction. Integration to `main` and a checksummed release remain
+explicit human publication actions.

@@ -21,6 +21,8 @@ Product rebranding must not rename
 domain terms until a separate accepted migration ADR supersedes this rule. v1 adds the final
 user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
 reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
+V3.2 `af onboard` is implemented and locally verified on `agent/onboard-command`; it is not a
+released capability until that branch is integrated and a new binary is published.
 
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
 budget, or sandbox boundary to make a test or review pass.
@@ -59,6 +61,11 @@ budget, or sandbox boundary to make a test or review pass.
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
   an existing branch or path
   ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
+- `af onboard` is deterministic and token-free. It may atomically create only an absent `.af/`
+  authority bundle; it never overwrites existing policy, invents or hand-types lock digests,
+  executes Gates, accesses credentials, or publishes repository changes. Emitted authority is
+  project-owned and becomes trusted only after review and commit on an Authority Snapshot
+  ([ADR-0032](docs/adr/0032-generate-review-authority-with-af-onboard.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
