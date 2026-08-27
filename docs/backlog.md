@@ -300,8 +300,9 @@ internal renaming are v3 work after this dogfood produces evidence.
 
 ### V3.1 — Deliver a verified Snapshot to a new local worktree
 
-**Status: accepted and in progress (2026-08-27).** The first v3 slice delivers only an exact
-verified Task result to a new local branch and linked worktree after explicit Task-ID confirmation.
+**Status: implementation and local verification complete (2026-08-27); external correctness
+review and a real trusted-repository pilot remain required.** The first v3 slice delivers only an
+exact verified Task result to a new local branch and linked worktree after explicit Task-ID confirmation.
 The target must be a clean repository at the Task's recorded source Snapshot; both branch and path
 must be absent. The transition is durable, idempotent, recoverable, and locally verified before it
 is reported complete. It never mutates the current checkout, commits, pushes, opens a pull

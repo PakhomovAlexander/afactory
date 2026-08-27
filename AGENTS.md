@@ -11,7 +11,8 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1 in `docs/backlog.md` is next. New Campaigns use the bounded
+verified. M3.1 is locally implemented and awaits a fresh convergence Campaign; V3.1 local delivery
+is also locally implemented and awaits external review plus a real trusted-repository pilot. New Campaigns use the bounded
 correctness-review policy in ADR-0027 rather than extending the retired two-specialist clean-window
 Campaign.
 Product rebranding must not rename

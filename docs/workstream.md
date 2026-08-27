@@ -4,7 +4,8 @@
 implementation dogfood are complete and fully verified. M3.1 is implemented and locally green;
 v4/v5 exhausted with seventeen fixed Findings; v6 exhausted with six more, all fixed and verified.
 A fresh pinned Campaign must still establish convergence. The accepted V3.1 local-delivery slice
-is in progress for trusted design-partner pilots; broader v3 remains deferred.
+is implemented and locally green for trusted design-partner pilots; its external review and real
+repository pilot remain open, and broader v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -124,6 +125,8 @@ and verification prerequisites exist.
       token, Gate, evaluator, Snapshot, and outcome evidence beside green `make check`.
 - [ ] Product V3.1 — an explicitly confirmed verified Task can be delivered only to a new local
       branch/worktree, with durable history, rollback/recovery, and no commit, push, PR, or remote.
+  - [x] Local implementation, full kernel gate, and deterministic pilot smoke.
+  - [ ] Pinned external correctness review and real trusted-repository pilot.
 - [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
@@ -291,7 +294,10 @@ them are fixed. Fresh v6 opened six more Findings across two Rounds; commits `51
 Because v6 exhausted rather than passed, open a fresh pinned Campaign and require its clean Round
 before starting M3.2. ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
-work forward.
+work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,
+prepared and terminal delivery records, process serialization, owned-ref rollback/recovery,
+`task list`/`task show`, and the client-pilot runbook all pass `make check` and `make pilot-check`.
+External review and one real trusted-repository pilot remain before partner handoff.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not

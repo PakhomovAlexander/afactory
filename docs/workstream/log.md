@@ -953,3 +953,22 @@ the complete formatting, warnings-denied Clippy, workspace tests, doc tests, and
 fixture gate passes via `make check`. The verdict remains honestly `Fail(Exhausted)`: fixes made
 after the immutable two-Round ceiling cannot retroactively create a clean Round. M3.1 therefore
 remains open until a fresh pinned Campaign returns Pass.
+
+## 2026-08-27 — Verified local Task delivery implemented and locally green
+
+ADR-0031 accepts the first narrow v3 slice: a verified Task may be delivered only after exact
+Task-ID confirmation to a new local branch and linked worktree. Commit `fdaf37f` implements the
+transition without checkout filters or remote operations. It revalidates the clean target against
+the Task's committed source Snapshot, verifies every derived CAS object, reserves an atomic
+ownership ref and branch, creates a no-checkout worktree, materializes and re-reads the exact
+derived Manifest, and persists prepared plus terminal delivery artifacts. A separate SQLite
+process lock serializes delivery while leaving prepared recovery state durable across a crash.
+
+The deterministic pilot suite proves verified and unverified terminals, source-checkout
+isolation, ignored-file delivery, explicit no-remote receipts, list/show spend and history,
+idempotent exact repeat, crash reconciliation after materialization, concurrent-command refusal,
+dirty-source refusal, and owned-ref rollback on local creation failure. The full `make check` gate
+and `make pilot-check` pass. The pilot runbook covers checksummed private installation/update,
+Provider and authority setup, operator inspection, recovery, troubleshooting, and binary rollback.
+Pinned external review and one real trusted-repository pilot remain required before design-partner
+handoff.
