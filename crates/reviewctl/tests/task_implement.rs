@@ -57,7 +57,7 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     write_package(
         &repo.join(".af/workers"),
         "implementer",
-        "printf 'derived\\n' > implemented.txt; printf 'ignored but delivered\\n' > proof.generated; printf 'done'",
+        "printf 'derived\\n' > implemented.txt; printf 'ignored but delivered\\n' > proof.generated; printf 'encoded ignored\\n' > '50%-off.generated'; printf 'done'",
         "Implement the exact goal in the sandbox.",
     );
     write_package(
@@ -235,7 +235,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     assert_eq!(receipt["outcome"]["kind"], "delivered");
     assert_eq!(
         receipt["ignored_paths"],
-        serde_json::json!(["proof.generated"])
+        serde_json::json!(["50%25-off.generated", "proof.generated"])
     );
     assert_eq!(receipt["remote_actions"], serde_json::json!([]));
     assert_eq!(
@@ -346,6 +346,46 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
 }
 
 #[test]
+fn delivery_ignored_paths_include_operator_global_excludes() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    std::fs::create_dir_all(home.join(".config/git")).unwrap();
+    std::fs::write(home.join(".config/git/ignore"), "implemented.txt\n").unwrap();
+    let worktree = directory.path().join("global-ignore");
+    let (code, stdout, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/global-ignore",
+            "--worktree",
+            worktree.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        receipt["ignored_paths"],
+        serde_json::json!(["50%25-off.generated", "implemented.txt", "proof.generated"])
+    );
+    git(&worktree, &home, &["add", "-f", "--", "50%-off.generated"]);
+}
+
+#[test]
 fn crash_before_index_population_recovers_the_empty_owned_worktree() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
@@ -409,6 +449,86 @@ fn crash_before_index_population_recovers_the_empty_owned_worktree() {
 }
 
 #[test]
+fn crash_during_materialization_becomes_terminal_and_can_redeliver() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let worktree = directory.path().join("partial-materialization");
+    let delivery_args = [
+        "task",
+        "deliver",
+        task_id,
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "af/partial-materialization",
+        "--worktree",
+        worktree.to_str().unwrap(),
+        "--confirm",
+        task_id,
+        "--state",
+        state.to_str().unwrap(),
+    ];
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
+            [task_id],
+        )
+        .unwrap();
+    std::fs::remove_file(worktree.join("proof.generated")).unwrap();
+    std::fs::write(worktree.join(".materialize-interrupted"), "partial\n").unwrap();
+
+    let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("recovery stopped and preserved"),
+        "{stderr}"
+    );
+    assert!(worktree.join("implemented.txt").is_file());
+    let terminal: String = connection
+        .query_row(
+            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(terminal, "TaskDeliveryFailed@1");
+
+    let replacement = directory.path().join("replacement-delivery");
+    let (code, _, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/replacement-delivery",
+            "--worktree",
+            replacement.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(worktree.join(".materialize-interrupted").is_file());
+    assert_eq!(
+        std::fs::read_to_string(replacement.join("implemented.txt")).unwrap(),
+        "derived\n"
+    );
+}
+
+#[test]
 fn crash_recovery_preserves_operator_modified_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
@@ -437,7 +557,7 @@ fn crash_recovery_preserves_operator_modified_delivery() {
     assert_eq!(code, 0, "{stderr}");
 
     // Simulate a crash after materialization but before the terminal receipt, followed by a human
-    // editing the delivered worktree. Recovery must preserve those bytes and remain prepared.
+    // editing the delivered worktree. Recovery must preserve those bytes and end explicitly.
     let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
     connection
         .execute(
@@ -449,19 +569,22 @@ fn crash_recovery_preserves_operator_modified_delivery() {
 
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains("refusing rollback"), "{stderr}");
+    assert!(
+        stderr.contains("recovery stopped and preserved"),
+        "{stderr}"
+    );
     assert_eq!(
         std::fs::read_to_string(worktree.join("implemented.txt")).unwrap(),
         "operator work\n"
     );
 
-    // A deletion is operator work too. Once the remaining bytes are restored to an exact subset
-    // of the Snapshot, recovery must still refuse because it did not observe the prior process.
+    // A deletion is operator work too. The failed terminal leaves this original target outside
+    // future automatic recovery; reusing it remains refused even if its bytes become a subset.
     std::fs::write(worktree.join("implemented.txt"), "derived\n").unwrap();
     std::fs::remove_file(worktree.join("proof.generated")).unwrap();
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains("refusing rollback"), "{stderr}");
+    assert!(stderr.contains("worktree path already exists"), "{stderr}");
     assert!(!worktree.join("proof.generated").exists());
     let branch = Command::new("git")
         .current_dir(&repo)
@@ -481,7 +604,7 @@ fn crash_recovery_preserves_operator_modified_delivery() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(terminal, "TaskDeliveryPrepared@1");
+    assert_eq!(terminal, "TaskDeliveryFailed@1");
 }
 
 #[test]

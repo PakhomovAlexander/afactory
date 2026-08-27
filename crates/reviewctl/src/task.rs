@@ -464,8 +464,9 @@ struct DeliveryReceipt {
     derived_snapshot_id: String,
     target: DeliveryTarget,
     outcome: DeliveryOutcome,
-    /// Losslessly encoded Snapshot paths that ordinary `git add` will ignore in the delivered
-    /// worktree. Old pilot receipts predate this advisory field and deserialize as an empty set.
+    /// Losslessly encoded Snapshot paths that the operator's ordinary `git add` will ignore in
+    /// the delivered worktree. Old pilot receipts predate this advisory field and deserialize as
+    /// an empty set.
     #[serde(default)]
     ignored_paths: Vec<String>,
     remote_actions: Vec<String>,
@@ -601,6 +602,31 @@ impl DeliveryGit {
         Ok(output.stdout)
     }
 
+    fn check_ignore(&self, input: Vec<u8>) -> Result<SupervisedOutput, String> {
+        let mut command = self.command();
+        command.env_remove("GIT_CONFIG_GLOBAL");
+        command.env_remove("XDG_CONFIG_HOME");
+        if let Some(home) = std::env::var_os("HOME") {
+            command.env("HOME", home);
+        } else {
+            command.env_remove("HOME");
+        }
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            command.env("XDG_CONFIG_HOME", xdg);
+        }
+        if let Some(global) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+            command.env("GIT_CONFIG_GLOBAL", global);
+        }
+        command.args(["check-ignore", "-z", "--stdin"]);
+        run_supervised_with_policy(
+            &mut command,
+            Some(input),
+            DELIVERY_GIT_TIMEOUT,
+            ExitPolicy::KillProcessGroup,
+        )
+        .map_err(|error| format!("git check-ignore -z --stdin: {error}"))
+    }
+
     fn ref_oid(&self, reference: &str) -> Result<Option<String>, String> {
         let commit = format!("{reference}^{{commit}}");
         let output = self.run(["rev-parse", "--verify", "--quiet", &commit], None)?;
@@ -695,13 +721,28 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                 print_delivery(&options, &receipt)?;
                 return Ok(());
             }
-            Err(_) => rollback_owned_delivery(
+            Err(verification) => match rollback_owned_delivery(
                 &git,
                 &existing,
                 &assets.derived_manifest,
                 RollbackContext::Recovery,
-            )?,
+            ) {
+                Ok(()) => {}
+                Err(rollback) => {
+                    let reason = format!(
+                        "delivery recovery preserved the unsealed branch/worktree because it could not prove the content was delivery-owned: verification failed: {verification}; rollback refused: {rollback}"
+                    );
+                    let receipt = failed_receipt(&existing, &reason);
+                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                    return Err(format!(
+                        "delivery recovery stopped and preserved branch `{}` at `{}`; retry this Task with a new absent branch and worktree (or remove the preserved target with normal Git controls before reusing it): {rollback}",
+                        existing.target.branch, existing.target.worktree
+                    ));
+                }
+            },
         }
+    } else if let Some(failed) = latest_terminal_delivery_failure(&cas, &events)? {
+        release_failed_delivery_owner(&git, &prepared, &failed)?;
     }
 
     verify_source_authority(&repository, &git_home, &git, &cas, &assets)?;
@@ -1052,6 +1093,54 @@ fn latest_delivery_transition(
     )
     .map(Some)
     .map_err(|error| error.to_string())
+}
+
+fn latest_terminal_delivery_failure(
+    cas: &Cas,
+    events: &[TaskEvent],
+) -> Result<Option<DeliveryReceipt>, String> {
+    let latest = events.iter().rev().find(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+        )
+    });
+    let Some(event) = latest.filter(|event| event.event_type == "TaskDeliveryFailed@1") else {
+        return Ok(None);
+    };
+    let receipt: DeliveryReceipt = serde_json::from_value(
+        cas.get_json(&event.artifact_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !matches!(&receipt.outcome, DeliveryOutcome::Failed { .. }) {
+        return Err("TaskDeliveryFailed@1 does not carry a failed delivery receipt".into());
+    }
+    Ok(Some(receipt))
+}
+
+fn release_failed_delivery_owner(
+    git: &DeliveryGit,
+    requested: &DeliveryPrepared,
+    failed: &DeliveryReceipt,
+) -> Result<(), String> {
+    if failed.task_id != requested.task_id
+        || failed.source_snapshot_id != requested.source_snapshot_id
+        || failed.derived_snapshot_id != requested.derived_snapshot_id
+        || failed.target.repository != requested.target.repository
+        || failed.target.repository_id != requested.target.repository_id
+    {
+        return Err("terminal failed delivery disagrees with the requested Task authority".into());
+    }
+    let reference = owner_ref(&requested.task_id);
+    let Some(oid) = git.ref_oid(&reference)? else {
+        return Ok(());
+    };
+    if oid != requested.source_revision {
+        return Err("failed delivery ownership ref moved; refusing to release it".into());
+    }
+    git.require(["update-ref", "-d", &reference, &oid], None)?;
+    Ok(())
 }
 
 fn latest_delivery_value(
@@ -1481,7 +1570,7 @@ fn ignored_delivery_paths(git: &DeliveryGit, manifest: &Manifest) -> Result<Vec<
         input.push(0);
         paths.insert(raw, entry.path.clone());
     }
-    let output = git.run(["check-ignore", "-z", "--stdin"], Some(input))?;
+    let output = git.check_ignore(input)?;
     if !output.status.success() && output.status.code() != Some(1) {
         return Err(format!(
             "classifying ignored delivered paths: {}",

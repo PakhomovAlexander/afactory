@@ -89,27 +89,53 @@ Choose an absent branch and an absent sibling path. The source checkout must sti
 the exact Task source commit.
 
 ```sh
+pilot_worktree=../client-task-0123456789abcdef0123
+pilot_receipt="${pilot_worktree}.delivery.json"
 af task deliver task-0123456789abcdef0123 \
   --repo . \
   --branch af/task-0123456789abcdef0123 \
-  --worktree ../client-task-0123456789abcdef0123 \
+  --worktree "$pilot_worktree" \
   --confirm task-0123456789abcdef0123 \
-  --json
+  --json > "$pilot_receipt"
 ```
 
 Inspect `ignored_paths` in the JSON delivery receipt before testing creates more files. These are
-verified Snapshot paths that ordinary `git add` omits; preserve the exact reviewed result by
-adding each intentionally with `git add -f -- <path>`, or explicitly accept that the resulting
-commit differs from the verified Snapshot. Then inspect and test the delivered worktree. It is
-deliberately uncommitted. Committing, pushing, and opening a pull request remain separate human
-actions using the client's normal Git controls.
+losslessly percent-encoded verified Snapshot paths that ordinary `git add` omits under the
+operator's repository and global ignore rules. They are identifiers, not literal pathspecs. Stage
+their decoded filesystem bytes before testing creates more files:
+
+```sh
+python3 - "$pilot_receipt" "$pilot_worktree" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+
+with open(sys.argv[1], encoding="utf-8") as receipt_file:
+    encoded = json.load(receipt_file)["ignored_paths"]
+paths = [urllib.parse.unquote_to_bytes(path) for path in encoded]
+if paths:
+    subprocess.run(
+        [b"git", b"-C", os.fsencode(sys.argv[2]), b"add", b"-f", b"--", *paths],
+        check=True,
+    )
+PY
+```
+
+Alternatively, explicitly accept that the resulting commit differs from the verified Snapshot.
+Then inspect and test the delivered worktree. It is deliberately uncommitted. Committing, pushing,
+and opening a pull request remain separate human actions using the client's normal Git controls.
 
 An exact repeat is safe. Before sealing, it verifies exact bytes or recovers only an unchanged
 owned branch/worktree. After sealing, it verifies the durable delivery identity and returns the
 same receipt even if the operator has since built, edited, or committed; that receipt attests to
 the original delivery, not the worktree's current bytes. If the process stopped after
-preparation, rerun the exact command. If an operator changed an unsealed worktree, recovery
-refuses to delete that work.
+preparation, rerun the exact command. If recovery cannot prove that partial content is
+delivery-owned, it records a terminal failure and preserves the original branch/worktree. Retry
+the same explicitly confirmed Task with a new absent branch and worktree; the next attempt releases
+only Afactory's internal ownership ref and never removes the preserved target. Operator changes to
+an unsealed worktree are therefore not deleted.
 
 ## Troubleshooting
 
@@ -119,7 +145,7 @@ refuses to delete that work.
 | `HEAD no longer equals the Task source revision` | Return the source checkout to the recorded commit or start a Task from the new commit. |
 | `worktree is not clean` or `staged changes` | Preserve or commit the operator's work elsewhere, then retry from an exact clean source. |
 | branch/path already exists | Choose a new absent target; Afactory never overwrites either one. |
-| incomplete rollback/recovery | Do not delete refs manually. Rerun the exact delivery command and retain its error plus `task show --json`. |
+| incomplete rollback/recovery | Rerun the exact command once. If it reports a preserved terminal failure, retain the original branch/worktree and retry the confirmed Task with a new absent target. |
 | Worker authentication failure | Re-establish the named machine-local Provider login and confirm with `af provider status`. |
 | missing Gate tool | Install the repository-approved toolchain; never remove or weaken the Gate. |
 | state or disk error | Preserve the external Task state directory, restore disk capacity/permissions, and retry the exact inspection or delivery command. |
