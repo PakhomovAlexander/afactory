@@ -96,12 +96,11 @@ fn tampering_fails_closed_and_explicit_refresh_preserves_unrelated_pins() {
     };
     lock.workers.insert("unused".into(), unrelated.clone());
     std::fs::write(&lock_path, lock.to_toml()).unwrap();
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(repo.join(".af/pipelines/review.toml"))
-        .unwrap()
-        .write_all(b"\n")
-        .unwrap();
+    let pipeline_path = repo.join(".af/pipelines/review.toml");
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
+    pipeline.as_table_mut().unwrap().remove("budgets");
+    std::fs::write(&pipeline_path, toml::to_string_pretty(&pipeline).unwrap()).unwrap();
     std::fs::OpenOptions::new()
         .append(true)
         .open(repo.join(".af/workers/correctness/reviewer.md"))
@@ -117,6 +116,8 @@ fn tampering_fails_closed_and_explicit_refresh_preserves_unrelated_pins() {
     assert!(refresh.status.success(), "{}", stderr(&refresh));
     let report: serde_json::Value = serde_json::from_slice(&refresh.stdout).unwrap();
     assert_eq!(report["status"], "lock_refreshed");
+    assert!(report["attempt_tokens"].is_null());
+    assert!(report["run_tokens"].is_null());
     let refreshed = Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     assert_eq!(refreshed.workers.get("unused"), Some(&unrelated));
 

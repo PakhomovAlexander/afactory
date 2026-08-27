@@ -197,8 +197,8 @@ struct Report {
     pipeline: String,
     reviewers: Vec<ReviewerSummary>,
     gates: Vec<Gate>,
-    attempt_tokens: u64,
-    run_tokens: u64,
+    attempt_tokens: Option<u64>,
+    run_tokens: Option<u64>,
     clean_rounds: u32,
     max_rounds: u32,
     files: Vec<String>,
@@ -385,10 +385,12 @@ fn print_human(report: &Report) {
     for gate in &report.gates {
         println!("  {}: {} [{}]", gate.name, gate.command_line(), gate.source);
     }
-    println!(
-        "budget      {} tokens/Attempt; {} tokens/Campaign",
-        report.attempt_tokens, report.run_tokens
-    );
+    match (report.attempt_tokens, report.run_tokens) {
+        (Some(attempt), Some(run)) => {
+            println!("budget      {attempt} tokens/Attempt; {run} tokens/Campaign")
+        }
+        _ => println!("budget      uncapped by pipeline authority"),
+    }
     println!(
         "convergence {} clean Round; {} Round maximum",
         report.clean_rounds, report.max_rounds
@@ -579,8 +581,8 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         pipeline: ".af/pipelines/review.toml".to_string(),
         reviewers,
         gates,
-        attempt_tokens: 300_000,
-        run_tokens: 1_000_000,
+        attempt_tokens: Some(300_000),
+        run_tokens: Some(1_000_000),
         clean_rounds: 1,
         max_rounds: 2,
         files: files.keys().cloned().collect(),
@@ -1159,8 +1161,8 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         .definition
         .budgets
         .as_ref()
-        .map(|budgets| (budgets.attempt, budgets.run))
-        .unwrap_or((0, 0));
+        .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
+        .unwrap_or((None, None));
     let mut files = vec![
         ".af/af.lock".to_string(),
         ".af/af.toml".to_string(),
@@ -1214,7 +1216,13 @@ fn runner_model(command: &review_core::Command) -> String {
     let effort = values
         .windows(2)
         .find_map(|pair| (pair[0] == "--effort").then_some(pair[1]));
-    match (model, effort) {
+    let codex_effort = values.windows(2).find_map(|pair| {
+        (pair[0] == "-c")
+            .then(|| pair[1].strip_prefix("model_reasoning_effort="))
+            .flatten()
+            .map(|value| value.trim_matches(['\'', '"']))
+    });
+    match (model, effort.or(codex_effort)) {
         (Some(model), Some(effort)) => format!("{model} ({effort} effort)"),
         (Some(model), None) => model.to_string(),
         (None, _) => "machine-configured model".into(),

@@ -1113,9 +1113,10 @@ Campaign state, fetches a PR, commits, pushes, comments, or overwrites authority
 
 Four integration tests prove preview writes nothing, apply creates and repeat-apply refuses,
 tampering fails exact validation, explicit refresh repairs referenced pins while preserving an
-unrelated pin, and missing Gate discovery fails closed. The candidate binary previewed the real
-hub and selected its shipped `scripts/verify.sh` Gate without writing; it then created and
-revalidated the complete eight-file authority in a disposable Git repository. The full
+unrelated pin, uncapped existing authority reports an honest absent budget instead of zero, and
+missing Gate discovery fails closed. The candidate binary previewed the real hub and selected its
+shipped `scripts/verify.sh` Gate without writing; it then created and revalidated the complete
+eight-file authority in a disposable Git repository. The full
 `make check` gate passes: formatting, warnings-denied Clippy, all workspace and doc tests, and
 byte-identical fixture reproduction. Integration to `main` and a checksummed release remain
 explicit human publication actions.
