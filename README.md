@@ -6,10 +6,12 @@ findings ledger with convergence. The boundary it enforces:
 reviewers only ever mutate a private sandbox; they return typed findings, and only the
 kernel integrates anything. Publishing to a branch or PR stays an explicit human action.
 
-Minimal v2 also provides `af task start --kind implement`: one implementer edits a private
+Minimal v2 provides `af task start --kind implement`: one implementer edits a private
 sandbox, read-only acceptance gates inspect the sealed result, and an independent evaluator may
-approve a content-addressed internal Snapshot. v2 never writes that Snapshot back to the caller's
-working tree, branch, or PR.
+approve a content-addressed internal Snapshot. V3.1 adds an explicitly confirmed local delivery:
+only a verified Task may create a new branch and linked worktree, and it still never commits,
+pushes, opens a PR, invokes a remote, or changes the source checkout. The operating boundary for
+trusted design partners is in [`docs/client-pilot.md`](docs/client-pilot.md).
 
 The kernel's own vocabulary is defined in [`CONTEXT.md`](CONTEXT.md) — read it before
 arguing about what a Finding, a Report, a Subject or a Scope is. Queued work lives in
@@ -24,10 +26,14 @@ the synthetic fixture corpus, gated in CI.
 
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction
+make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
 cargo run -p reviewctl --bin af -- review tui
 cargo run -p reviewctl --bin af -- provider status
 cargo run -p reviewctl --bin af -- task start --kind implement --goal "describe the change" --authority HEAD --json
+cargo run -p reviewctl --bin af -- task list --json
+cargo run -p reviewctl --bin af -- task show TASK_ID --json
+cargo run -p reviewctl --bin af -- task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID --json
 ```
 
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex

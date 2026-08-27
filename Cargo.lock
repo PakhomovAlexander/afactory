@@ -1243,6 +1243,7 @@ dependencies = [
  "review-graph",
  "review-parallel",
  "review-pipeline",
+ "review-process",
  "review-runner",
  "review-runner-claude",
  "review-runner-codex",

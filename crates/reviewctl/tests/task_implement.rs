@@ -48,6 +48,7 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(repo.join(".af/workers")).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(repo.join("seed.txt"), "source\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "*.generated\n").unwrap();
     std::fs::write(
         repo.join(".af/af.toml"),
         "version = 1\n[defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n",
@@ -56,7 +57,7 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     write_package(
         &repo.join(".af/workers"),
         "implementer",
-        "printf 'derived\\n' > implemented.txt; printf 'done'",
+        "printf 'derived\\n' > implemented.txt; printf 'ignored but delivered\\n' > proof.generated; printf 'done'",
         "Implement the exact goal in the sandbox.",
     );
     write_package(
@@ -114,6 +115,20 @@ fn run_task(repo: &Path, home: &Path, state: &Path) -> (i32, String, String) {
             state.to_str().unwrap(),
             "--json",
         ])
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+fn run_af(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(repo)
+        .env("HOME", home)
+        .args(args)
         .output()
         .unwrap();
     (
@@ -186,6 +201,275 @@ fn failed_gate_is_typed_unverified_and_skips_the_evaluator() {
     assert_eq!(outcome["workers"].as_array().unwrap().len(), 1);
     assert_eq!(outcome["gates"][0]["status"], "failed");
     assert!(!repo.join("implemented.txt").exists());
+}
+
+#[test]
+fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let worktree = directory.path().join("delivered");
+    let delivery_args = [
+        "task",
+        "deliver",
+        task_id,
+        "--repo",
+        repo.to_str().unwrap(),
+        "--branch",
+        "af/pilot",
+        "--worktree",
+        worktree.to_str().unwrap(),
+        "--confirm",
+        task_id,
+        "--state",
+        state.to_str().unwrap(),
+        "--json",
+    ];
+    let (code, stdout, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(receipt["schema"], "af/task-delivery@1");
+    assert_eq!(receipt["outcome"]["kind"], "delivered");
+    assert_eq!(receipt["remote_actions"], serde_json::json!([]));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("implemented.txt")).unwrap(),
+        "derived\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("proof.generated")).unwrap(),
+        "ignored but delivered\n"
+    );
+    assert!(!repo.join("implemented.txt").exists());
+    let source_status = Command::new("git")
+        .current_dir(&repo)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(source_status.status.success());
+    assert!(source_status.stdout.is_empty(), "source checkout changed");
+
+    // Simulate a crash after exact materialization but before the terminal receipt. The durable
+    // prepared record must let the exact repeat reconcile and seal the delivery without rewriting.
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    connection
+        .execute(
+            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
+            [task_id],
+        )
+        .unwrap();
+    let (code, recovered, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let recovered: serde_json::Value = serde_json::from_str(recovered.trim()).unwrap();
+    assert_eq!(recovered["delivery_id"], receipt["delivery_id"]);
+
+    let (code, repeated, stderr) = run_af(&repo, &home, &delivery_args);
+    assert_eq!(code, 0, "{stderr}");
+    let repeated: serde_json::Value = serde_json::from_str(repeated.trim()).unwrap();
+    assert_eq!(repeated, recovered, "exact repeat must be idempotent");
+
+    let (code, listed, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "list",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let listed: serde_json::Value = serde_json::from_str(listed.trim()).unwrap();
+    assert_eq!(listed["tasks"][0]["task_id"], task_id);
+    assert_eq!(listed["tasks"][0]["outcome"], "verified");
+    assert_eq!(
+        listed["tasks"][0]["delivery"]["outcome"]["kind"],
+        "delivered"
+    );
+
+    let (code, shown, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "show",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
+    assert_eq!(shown["schema"], "af/task-inspection@1");
+    assert_eq!(shown["outcome"]["outcome"]["kind"], "verified");
+    assert!(shown["history"].as_array().unwrap().len() >= 8);
+}
+
+#[test]
+fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), false);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 3, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let refused = directory.path().join("refused");
+    let (code, _, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/refused",
+            "--worktree",
+            refused.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("only a verified Task"), "{stderr}");
+    assert!(!refused.exists());
+
+    let clean = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(clean.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let lock = rusqlite::Connection::open(state.join("task-delivery-lock.sqlite")).unwrap();
+    lock.busy_timeout(std::time::Duration::from_millis(10))
+        .unwrap();
+    lock.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE IF NOT EXISTS delivery_lock (singleton INTEGER PRIMARY KEY);
+         BEGIN IMMEDIATE;",
+    )
+    .unwrap();
+    let busy = clean.path().join("busy-refused");
+    let (code, _, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/busy-refused",
+            "--worktree",
+            busy.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("another Task delivery is active"),
+        "{stderr}"
+    );
+    assert!(!busy.exists());
+    drop(lock);
+
+    std::fs::write(repo.join("local.txt"), "operator work\n").unwrap();
+    let refused = clean.path().join("dirty-refused");
+    let (code, _, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/dirty-refused",
+            "--worktree",
+            refused.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("not clean"), "{stderr}");
+    assert!(!refused.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_local_creation_rolls_back_only_its_owned_refs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let locked = directory.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let worktree = locked.join("delivery");
+    let (code, _, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/rollback",
+            "--worktree",
+            worktree.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(code, 1);
+    assert!(stderr.contains("was rolled back"), "{stderr}");
+    assert!(!worktree.exists());
+    let branch = Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/af/rollback"])
+        .output()
+        .unwrap();
+    assert!(
+        !branch.status.success(),
+        "delivery branch survived rollback"
+    );
+    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
+    let terminal: String = connection
+        .query_row(
+            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(terminal, "TaskDeliveryFailed@1");
 }
 
 #[test]

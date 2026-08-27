@@ -20,6 +20,7 @@ review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
 review-parallel = { path = "../review-parallel" }
 review-pipeline = { path = "../review-pipeline" }
+review-process = { path = "../review-process" }
 review-runner = { path = "../review-runner" }
 review-runner-claude = { path = "../review-runner-claude" }
 review-runner-codex = { path = "../review-runner-codex" }

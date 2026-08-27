@@ -234,6 +234,9 @@ fn usage() -> ! {
         \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
         \x20      af provider status\n\
         \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
+        \x20      af task deliver TASK_ID --repo DIR --branch NAME --worktree DIR --confirm TASK_ID [--state DIR] [--json]\n\
+        \x20      af task list [--repo DIR] [--state DIR] [--json]\n\
+        \x20      af task show TASK_ID [--repo DIR] [--state DIR] [--json]\n\
         \x20      af --version\n\
          \n\
          STATUS is one of: open fixed rejected wontfix contested"
@@ -434,13 +437,26 @@ fn main() {
         return;
     }
     if namespace.as_deref() == Some("task") {
-        if args.next().as_deref() != Some("start") {
-            usage();
-        }
-        init_review_workers();
-        match task::start(task::parse(args).unwrap_or_else(|_| usage())) {
-            Ok(true) => return,
-            Ok(false) => std::process::exit(3),
+        let result = match args.next().as_deref() {
+            Some("start") => {
+                init_review_workers();
+                task::start(task::parse(args).unwrap_or_else(|_| usage())).map(|verified| {
+                    if !verified {
+                        std::process::exit(3);
+                    }
+                })
+            }
+            Some("deliver") => {
+                task::deliver(task::parse_delivery(args).unwrap_or_else(|_| usage()))
+            }
+            Some("list") => {
+                task::list(task::parse_inspect(args, false).unwrap_or_else(|_| usage()))
+            }
+            Some("show") => task::show(task::parse_inspect(args, true).unwrap_or_else(|_| usage())),
+            _ => usage(),
+        };
+        match result {
+            Ok(()) => return,
             Err(error) => {
                 eprintln!("af task: {error}");
                 std::process::exit(1);
