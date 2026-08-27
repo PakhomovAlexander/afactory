@@ -1,11 +1,11 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M2, private release `v0.2.0`, minimal product v1/v2, and the first candidate
+**Status:** M0–M2, private releases through `v0.3.0`, minimal product v1/v2, and the first candidate
 implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
 v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
-fixed with zero open. Publishing remains a human action; broader v3 remains deferred.
+fixed with zero open. PR #11 merged and private `v0.3.0` is published; broader v3 remains deferred.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -316,7 +316,8 @@ the operator's global Git excludes to the advisory receipt, and gives the runboo
 decoder for encoded paths. All seven Findings are fixed, the Ledger has zero open, and both
 `make check` and `make pilot-check` pass. Fresh Campaign `v3-1-client-pilot-v3` subsequently
 returned Pass. Commit `d061d27` fixes its three minor Findings, the Ledger has zero open, and the
-full gate remains green. V3.1 is complete for trusted design-partner pilots; resume M3 at M3.2.
+full gate remains green. V3.1 shipped for trusted design-partner pilots in private `v0.3.0` from
+`main` commit `1412847`; resume M3 at M3.2 while pilot evidence accumulates.
 After v4, the owner retired the two-specialist clean-window policy after roughly four million
 tokens in that Campaign. ADR-0027 makes one high-effort correctness reviewer, one clean Round, a
 two-Round ceiling, and a one-million-token run cap the policy for new Campaign authority. Do not
