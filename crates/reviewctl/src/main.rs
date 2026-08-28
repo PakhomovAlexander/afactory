@@ -106,7 +106,40 @@ fn xdg_state_root() -> Result<PathBuf, String> {
 
 fn default_campaign_state(campaign: &str) -> Result<PathBuf, String> {
     validate_campaign_name(campaign)?;
-    Ok(xdg_state_root()?.join("af/review/campaigns").join(campaign))
+    campaign_state_beneath(&xdg_state_root()?.join("af/review/campaigns"), campaign)
+}
+
+fn campaign_id(campaign: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"af/campaign-id@1\0");
+    digest.update(campaign.as_bytes());
+    let digest = digest.finalize();
+    format!("c-{digest:x}")
+}
+
+fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
+    validate_campaign_name(campaign)?;
+    let root = resolve_filesystem_path(root)?;
+    let encoded = root.join(campaign_id(campaign));
+    let legacy = root.join(campaign);
+    let encoded_exists = encoded.exists();
+    let legacy_exists = legacy.exists();
+    if encoded_exists && legacy_exists {
+        return Err(format!(
+            "campaign `{campaign}` has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+            root.display()
+        ));
+    }
+    let selected = if legacy_exists { legacy } else { encoded };
+    let selected = resolve_filesystem_path(&selected)?;
+    if !selected.starts_with(&root) {
+        return Err(format!(
+            "campaign state {} escapes configured review-state root {}",
+            selected.display(),
+            root.display()
+        ));
+    }
+    Ok(selected)
 }
 
 fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
@@ -119,12 +152,23 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
+    if campaign.trim() != campaign
+        || campaign.is_empty()
+        || matches!(campaign, "." | "..")
+        || campaign
+            .chars()
+            .any(|character| matches!(character, '/' | '\\') || character.is_control())
+    {
+        return Err(format!(
+            "campaign name {campaign:?} must be a trimmed, non-empty label without separators or traversal forms"
+        ));
+    }
     let mut components = Path::new(campaign).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(format!(
-            "campaign name `{campaign}` must be one safe path component"
+            "campaign name {campaign:?} must be one safe path component"
         ));
     }
     Ok(())
@@ -214,6 +258,17 @@ struct ReportOptions {
     state: Option<PathBuf>,
     campaign: String,
     format: ReportFormat,
+}
+
+struct CampaignsOptions {
+    state_root: Option<PathBuf>,
+    format: CampaignsFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CampaignsFormat {
+    Text,
+    Json,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -322,6 +377,7 @@ fn usage() -> ! {
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
+        \x20      af review campaigns [--state-root DIR] [--format text|json]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review attest-change --campaign NAME [--state DIR] FINDING --region PATH[:START-END] --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review verify-fix --campaign NAME [--state DIR] FINDING ATTESTATION --policy REV --reason TEXT (--positive|--negative) [--verifier ACTOR] [--evidence ID]...\n\
@@ -497,6 +553,26 @@ fn parse_report(mut args: std::env::Args) -> ReportOptions {
         campaign: campaign.unwrap_or_else(|| usage()),
         format,
     }
+}
+
+fn parse_campaigns(mut args: std::env::Args) -> CampaignsOptions {
+    let mut state_root = None;
+    let mut format = CampaignsFormat::Text;
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state-root" => state_root = Some(PathBuf::from(value())),
+            "--format" => {
+                format = match value().as_str() {
+                    "text" => CampaignsFormat::Text,
+                    "json" => CampaignsFormat::Json,
+                    _ => usage(),
+                }
+            }
+            _ => usage(),
+        }
+    }
+    CampaignsOptions { state_root, format }
 }
 
 fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
@@ -901,6 +977,7 @@ fn main() {
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
+        Some("campaigns") => print_campaigns(&parse_campaigns(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
         Some("attest-change") => attest_change(&parse_attest_change(args)),
         Some("verify-fix") => verify_fix(&parse_verify_fix(args)),
@@ -960,6 +1037,16 @@ fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
         ));
     }
     EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())
+}
+
+fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
+    if !state.join("events.sqlite").exists() {
+        return Err(format!(
+            "no campaign state at {}; a campaign starts with `af review run --campaign`",
+            state.display()
+        ));
+    }
+    EventStore::open_read_only(state.join("events.sqlite")).map_err(|error| error.to_string())
 }
 
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
@@ -1145,6 +1232,254 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         finding.current_note().unwrap_or("(none)")
     );
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct CampaignListView {
+    schema: &'static str,
+    campaigns: Vec<CampaignView>,
+}
+
+#[derive(serde::Serialize)]
+struct CampaignView {
+    id: String,
+    label: String,
+    authority_snapshot_id: String,
+    campaign_manifest_id: String,
+    subject_kind: review_core::SubjectKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_subject_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_closed_round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_closed_epoch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<String>,
+    rounds: Vec<ReportRoundView>,
+}
+
+fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
+    let root = resolve_filesystem_path(
+        options
+            .state_root
+            .as_deref()
+            .unwrap_or(&xdg_state_root()?.join("af/review/campaigns")),
+    )?;
+    let view = CampaignListView {
+        schema: "af/review-campaigns@1",
+        campaigns: enumerate_campaigns(&root)?,
+    };
+    match options.format {
+        CampaignsFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+        CampaignsFormat::Text => print_campaigns_text(&view),
+    }
+    Ok(())
+}
+
+fn enumerate_campaigns(root: &Path) -> Result<Vec<CampaignView>, String> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    if !root.is_dir() {
+        return Err(format!(
+            "campaign state root {} is not a directory",
+            root.display()
+        ));
+    }
+    let mut paths = std::fs::read_dir(root)
+        .map_err(|error| format!("reading campaign state root {}: {error}", root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("reading campaign state root {}: {error}", root.display()))?;
+    paths.sort_by_key(std::fs::DirEntry::file_name);
+
+    let mut campaigns = Vec::new();
+    let mut seen = BTreeSet::new();
+    for entry in paths {
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
+            format!("reading campaign state {}: {error}", entry.path().display())
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "campaign state {} is a symlink; campaign enumeration does not follow state outside its configured root",
+                entry.path().display()
+            ));
+        }
+        if !metadata.is_dir() || !entry.path().join("events.sqlite").is_file() {
+            continue;
+        }
+        let state = resolve_filesystem_path(&entry.path())?;
+        if !state.starts_with(root) {
+            return Err(format!(
+                "campaign state {} escapes configured review-state root {}",
+                state.display(),
+                root.display()
+            ));
+        }
+        let store = open_campaign_store_read_only(&state)?;
+        let run_ids = store
+            .run_ids()
+            .map_err(|error| format!("enumerating {}: {error}", state.display()))?
+            .into_iter()
+            .filter(|run_id| run_id.starts_with("campaign-"))
+            .collect::<Vec<_>>();
+        if run_ids.is_empty() {
+            continue;
+        }
+        if run_ids.len() != 1 {
+            return Err(format!(
+                "campaign state {} contains {} campaign runs; each enumerated directory must contain exactly one",
+                state.display(),
+                run_ids.len()
+            ));
+        }
+        let run_id = &run_ids[0];
+        let label = run_id
+            .strip_prefix("campaign-")
+            .expect("campaign run prefix was filtered")
+            .to_string();
+        validate_campaign_name(&label)?;
+        let id = campaign_id(&label);
+        let directory = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| format!("campaign state {} is not valid UTF-8", state.display()))?;
+        if directory != id && directory != label {
+            return Err(format!(
+                "campaign `{label}` state directory must be its opaque ID `{id}` or legacy label, not `{directory}`"
+            ));
+        }
+        if !seen.insert(id.clone()) {
+            return Err(format!(
+                "campaign `{label}` is present in both encoded and legacy state directories beneath {}",
+                root.display()
+            ));
+        }
+        campaigns.push(read_campaign_view(&state, run_id, label, id, &store)?);
+    }
+    campaigns.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(campaigns)
+}
+
+fn read_campaign_view(
+    state: &Path,
+    run_id: &str,
+    label: String,
+    id: String,
+    store: &EventStore,
+) -> Result<CampaignView, String> {
+    let opened = store
+        .campaign_opened(run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("campaign `{label}` has no CampaignOpened event"))?;
+    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_value(opened.payload)
+        .map_err(|error| format!("reading campaign `{label}` opening: {error}"))?;
+    opened.validate()?;
+    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+        cas.get_json(&opened.campaign_manifest_id)
+            .map_err(|error| format!("reading campaign `{label}` manifest: {error}"))?,
+    )
+    .map_err(|error| format!("reading campaign `{label}` manifest: {error}"))?;
+    manifest.validate()?;
+    if manifest.authority_snapshot_id != opened.authority_snapshot_id {
+        return Err(format!(
+            "campaign `{label}` opening and manifest disagree on authority Snapshot ID"
+        ));
+    }
+
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let mut last_subject_id = None;
+    for event in events
+        .iter()
+        .filter(|event| event.event_type == EventType::RoundStartedV1)
+    {
+        let started: review_core::RoundStartedPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        if started.campaign_manifest_id != opened.campaign_manifest_id {
+            return Err(format!(
+                "campaign `{label}` Round {} epoch {} refers to a different manifest",
+                started.round, started.epoch
+            ));
+        }
+        last_subject_id = Some(started.subject_id);
+    }
+    let round_authority = report_round_authority(&events)?;
+    let reports = events
+        .iter()
+        .filter(|event| event.event_type.is_run_report())
+        .collect::<Vec<_>>();
+    let rounds = report_rounds(&reports, &round_authority)?;
+    let last = rounds.last();
+    Ok(CampaignView {
+        id,
+        label,
+        authority_snapshot_id: opened.authority_snapshot_id,
+        campaign_manifest_id: opened.campaign_manifest_id,
+        subject_kind: manifest.subject_kind,
+        base_snapshot_id: manifest.base_snapshot_id,
+        last_subject_id,
+        last_closed_round: last.and_then(|round| round.round),
+        last_closed_epoch: last.and_then(|round| round.epoch),
+        verdict: last.map(|round| round.verdict.clone()),
+        rounds,
+    })
+}
+
+fn print_campaigns_text(view: &CampaignListView) {
+    println!("Campaigns: {}", view.campaigns.len());
+    for campaign in &view.campaigns {
+        println!("{} ({})", campaign.label, campaign.id);
+        println!(
+            "  authority: snapshot {}; manifest {}",
+            campaign.authority_snapshot_id, campaign.campaign_manifest_id
+        );
+        println!(
+            "  subject: {}{}",
+            campaign.subject_kind,
+            campaign
+                .base_snapshot_id
+                .as_deref()
+                .map(|base| format!("; base {base}"))
+                .unwrap_or_default()
+        );
+        println!(
+            "  last subject: {}",
+            campaign.last_subject_id.as_deref().unwrap_or("not started")
+        );
+        match (
+            campaign.last_closed_round,
+            campaign.last_closed_epoch,
+            campaign.verdict.as_deref(),
+        ) {
+            (Some(round), Some(epoch), Some(verdict)) => {
+                println!("  last closed: round {round} epoch {epoch}; {verdict}")
+            }
+            _ => println!("  last closed: none"),
+        }
+        println!("  history:");
+        if campaign.rounds.is_empty() {
+            println!("    none");
+        }
+        for round in &campaign.rounds {
+            println!(
+                "    run {}: round {} epoch {}; {}; reported tokens {}",
+                round.run,
+                optional_number(round.round),
+                optional_number(round.epoch),
+                round.verdict,
+                optional_tokens(round.reported_tokens)
+            );
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -3018,8 +3353,9 @@ mod option_tests {
     use std::ffi::OsStr;
 
     use super::{
-        Options, latest_round_evidence, report_round_authority, report_rounds, report_spend,
-        resolve_codex_home, validate_campaign_name,
+        Options, campaign_id, campaign_state_beneath, enumerate_campaigns, latest_round_evidence,
+        report_round_authority, report_rounds, report_spend, resolve_codex_home,
+        validate_campaign_name,
     };
 
     fn event(
@@ -3107,12 +3443,66 @@ mod option_tests {
 
     #[test]
     fn campaign_names_cannot_redirect_state() {
-        for invalid in ["", "../reviewers/architecture", "nested/name", "."] {
+        for invalid in [
+            "",
+            "../reviewers/architecture",
+            "nested/name",
+            "nested\\name",
+            ".",
+            "..",
+            "control\nname",
+            " padded",
+            "padded ",
+        ] {
             assert!(validate_campaign_name(invalid).is_err());
         }
         for valid in ["heavy", "reviewctl-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    #[test]
+    fn campaign_state_uses_an_opaque_contained_id_and_legacy_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        std::fs::create_dir_all(&root).unwrap();
+        let id = campaign_id("heavy");
+        assert_eq!(id.len(), 66);
+        assert!(id.starts_with("c-"));
+        assert!(id[2..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let encoded = campaign_state_beneath(&root, "heavy").unwrap();
+        assert_eq!(encoded.file_name().unwrap(), id.as_str());
+        assert!(encoded.starts_with(std::fs::canonicalize(&root).unwrap()));
+
+        let legacy = root.join("heavy");
+        std::fs::create_dir(&legacy).unwrap();
+        assert_eq!(
+            campaign_state_beneath(&root, "heavy").unwrap(),
+            std::fs::canonicalize(&legacy).unwrap()
+        );
+
+        std::fs::create_dir(&encoded).unwrap();
+        assert!(
+            campaign_state_beneath(&root, "heavy")
+                .unwrap_err()
+                .contains("both encoded and legacy")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn campaign_enumeration_refuses_symlinked_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+        let Err(error) = enumerate_campaigns(&root) else {
+            panic!("symlinked campaign state was accepted");
+        };
+        assert!(error.contains("does not follow state outside"));
     }
 
     #[test]

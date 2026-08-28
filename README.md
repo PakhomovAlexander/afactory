@@ -65,6 +65,25 @@ and later Rounds. Afactory does not ask for separate per-call confirmation; chan
 publishing, delivery, and other remote side effects remain separate operations. See
 [`ADR-0033`](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md).
 
+## Inspect Campaign history
+
+`af review campaigns` lists the Campaigns under the default XDG review-state root without running
+a Worker. Each entry includes its opaque ID and human label, pinned Subject/authority summary,
+last closed Round and verdict, and the complete closed-Round history. Use `--format json` for the
+versioned `af/review-campaigns@1` projection. `--state-root DIR` inspects an explicit root, including
+legacy label-named state such as a repository's gitignored `.review/runs/` directory.
+
+```sh
+af review campaigns
+af review campaigns --format json
+af review campaigns --state-root .review/runs --format text
+```
+
+New default state uses a deterministic opaque Campaign ID beneath the configured root; the label
+is never interpolated into a new filesystem path. Existing label-named directories remain readable,
+while ambiguous or escaping layouts fail closed. See
+[`ADR-0035`](docs/adr/0035-address-campaign-state-by-opaque-id.md).
+
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
 authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
 quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude

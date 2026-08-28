@@ -243,6 +243,55 @@ fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
 }
 
 #[test]
+fn campaign_enumeration_reads_legacy_state_and_round_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, _) = fixture(dir.path());
+    let root = dir.path().join("campaigns");
+    let state = root.join("loop").to_string_lossy().into_owned();
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "loop", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 must close as fail\n{stdout}\n{stderr}");
+
+    let root = root.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "json"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let campaigns: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(campaigns["schema"], "af/review-campaigns@1");
+    assert_eq!(campaigns["campaigns"][0]["label"], "loop");
+    assert_eq!(campaigns["campaigns"][0]["subject_kind"], "whole-tree");
+    assert_eq!(campaigns["campaigns"][0]["last_closed_round"], 1);
+    assert_eq!(campaigns["campaigns"][0]["last_closed_epoch"], 1);
+    assert_eq!(campaigns["campaigns"][0]["verdict"], "fail (not_converged)");
+    assert_eq!(campaigns["campaigns"][0]["rounds"][0]["round"], 1);
+    let id = campaigns["campaigns"][0]["id"].as_str().unwrap();
+    assert!(id.starts_with("c-") && id.len() == 66, "{id}");
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "text"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("Campaigns: 1"), "{stdout}");
+    assert!(
+        stdout.contains("last closed: round 1 epoch 1; fail (not_converged)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("run 1: round 1 epoch 1; fail (not_converged)"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn final_local_review_uses_af_authority_and_one_json_result() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());

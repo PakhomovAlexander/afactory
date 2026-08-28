@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use review_core::{EventType, RunEvent};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::cas::{Cas, CasError};
@@ -177,6 +177,14 @@ impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
         Self::init(conn)
+    }
+
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn,
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -554,6 +562,16 @@ impl EventStore {
             .and_then(|value| value.checked_add(provider_charges))
             .and_then(|value| value.checked_add(outstanding_providers))
             .ok_or_else(|| StoreError::Conflict("replayed token charge overflow".into()))
+    }
+
+    /// Stable identifiers for every run that has at least one event.
+    pub fn run_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT run_id FROM events ORDER BY run_id")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::Sqlite)
     }
 
     /// Every event of a run, in sequence order. This is the only read replay needs.
