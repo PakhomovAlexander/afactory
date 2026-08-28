@@ -375,6 +375,9 @@ make the exact Set a complete assignment view.
 
 ### M3.2 — Prior-Finding dispositions become explicit
 
+**Status: complete (2026-08-28). `ReviewerResult@2` and `FindingDisposition@1` are live, exact
+coverage fails closed, the candidate dogfood's four Findings are fixed, and `make check` passes.**
+
 The flat compatibility adapter currently turns `refute` directly into a
 `FindingResolved(contested)` event. The rendered status therefore exists, but the dispute itself
 is not an immutable attached artifact and the reviewer cannot express complete explicit coverage

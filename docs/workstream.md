@@ -1,13 +1,15 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M2, private releases through `v0.4.0`, minimal product v1/v2, and the first candidate
-implementation dogfood are complete and fully verified. M3.1 is complete: fresh pinned Campaign
-v7 returned Pass and its three minor Findings are fixed and verified. The accepted V3.1
+**Status:** M0–M2, private releases through `v0.4.0`, minimal product v1/v2, and their first
+candidate implementation dogfood are complete. M3.1 and M3.2 are complete: typed canonical
+Findings now carry explicit, immutable, coverage-checked prior-Finding dispositions. The M3.2
+candidate dogfood found four issues; commit `1fb9569` fixes them and the full gate passes. The
+accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
 binary-owned review-onboarding slice shipped through PR #13 in private `v0.4.0`; exact-main CI,
-downloaded checksums, and the extracted macOS binary passed. Broader v3 resumes at M3.2.
+downloaded checksums, and the extracted macOS binary passed. The kernel roadmap resumes at M3.3.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -23,7 +25,8 @@ after four Rounds opened 45 Findings while retaining every prior correction. The
 migration, Project Hub external cutover, bounded Provider Operation dogfood slice, and first v2
 implementation dogfood are also complete. M2 converged under the recorded correctness-only review
 policy. Product v1/v2 establish the final local review and verified implementation boundaries.
-M3.1 now builds canonical Report identity and immutable Finding Sets on that evidence.
+M3.1 builds canonical Report identity and immutable Finding Sets; M3.2 makes every assigned
+prior-Finding disposition explicit and durable without treating reviewer silence as a Drop.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -47,10 +50,10 @@ The findings that now drive the roadmap, all verified in code or the recovered d
    open with *"Read the change in the working directory you were given."*
 2. **Canonical Report authority is now projected for new Campaigns.** M3.1 reads validated,
    enveloped Reports while retaining the frozen legacy reader for old Campaigns.
-3. **Explicit dispositions remain M3.2.** Flat `refute` answers project directly to contested
-   status, but disputes and Drops are not immutable attached artifacts; reviewer silence still
-   stands in for an explicit disposition. Reviewer/gate inputs retain the `PriorFindings@1`
-   compatibility projection until those post-Set resolutions can be immutable Set inputs.
+3. **Explicit dispositions are now authoritative.** New pipelines pair exact `FindingSet@1`
+   inputs with `ReviewerResult@2`; every assigned Finding requires one immutable corroborate,
+   `not_reproduced`, or dispute artifact. Missing, duplicate, and unassigned coverage fails closed;
+   permanent `ReviewerResult@1` replay is unchanged.
 4. **A Rust `Debug` impl is load-bearing for convergence.** `publish_report` persists
    `format!("{verdict:?}")`, and the round counter reads it back with
    `.starts_with("Incomplete")`. Renaming `RunVerdict::Incomplete` makes incomplete rounds start
@@ -141,6 +144,7 @@ and verification prerequisites exist.
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
   - [x] M3.1 pinned external convergence review.
+  - [x] M3.2 implementation, full local gate, and lightweight candidate dogfood.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views.
@@ -297,9 +301,13 @@ first real implementation dogfood: the kernel Gate passed, the evaluator approve
 `sha256:46fd82a719d67341d4ddd95b32fd1dbd38fa94fd1ccd1a141020e061d4c2dc8f` remained internal.
 M3.1 is complete: canonical new Campaigns persist enveloped Reports, derive path-independent
 Findings, and pass exact immutable `FindingSet@1` IDs across barriers; legacy replay remains
-frozen. Campaigns v4/v5 exhausted with seventeen fixed Findings, v6 exhausted with six more, and
-fresh Campaign `m3-1-canonical-identity-v7` returned Pass in Round 1. Commit `bff36f4` fixes its
-three minor Findings, its Ledger has zero open, and the full local gate passes. Resume M3 at M3.2.
+frozen. M3.2 adds `ReviewerResult@2` plus immutable `FindingDisposition@1`, exact assignment
+coverage, reducer@2 replay, corroboration reopening, and permanent @1 compatibility. Campaign
+`m3-2-dispositions-v1` spent 286,400 chargeable tokens over 118,706 rendered context bytes and
+found one blocker, two majors, and one minor. Commits `e930ea1` and `1fb9569` implement the slice
+and fix all four; the focused regressions and full local gate pass. A follow-up external Round was
+refused before egress because changed private code needs distinct disclosure approval; it spent
+no tokens and is optional confirmation, not deterministic acceptance. Resume M3 at M3.3.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,
