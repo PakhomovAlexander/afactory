@@ -707,7 +707,11 @@ impl Ledger {
 
         let higher = severity.rank() > existing.severity.rank();
         let kind = if resolution_challenge.is_some() {
-            TransitionKind::Escalated
+            if higher {
+                TransitionKind::Escalated
+            } else {
+                TransitionKind::Challenged
+            }
         } else if existing.status.is_declined() {
             if higher {
                 TransitionKind::AdoptedWhileDeclined
@@ -737,6 +741,10 @@ impl Ledger {
                     existing.status = Status::Contested;
                 }
             }
+            TransitionKind::Challenged => {
+                existing.status = Status::Contested;
+                existing.news_round = round;
+            }
             _ => {}
         }
 
@@ -753,6 +761,11 @@ impl Ledger {
                 format!(
                     "escalated: re-reported as {} by {source} in round {round}",
                     severity_name(severity)
+                )
+            }),
+            TransitionKind::Challenged => resolution_challenge.map(|challenge| {
+                format!(
+                    "resolution challenge {challenge:?}: re-reported by {source} in round {round}"
                 )
             }),
             _ => None,
@@ -1391,6 +1404,15 @@ impl Ledger {
                                 "tracked-wontfix severity ceiling is below the current Finding severity",
                             ));
                         }
+                        if resolution
+                            .expires_at_policy_time
+                            .is_some_and(|expiry| expiry <= self.policy_time)
+                        {
+                            return Err(malformed(
+                                event_type.as_str(),
+                                "tracked-wontfix expiry is not later than current persisted policy time",
+                            ));
+                        }
                         Status::Wontfix
                     }
                 };
@@ -1544,6 +1566,19 @@ impl Ledger {
             return Err(crate::store::StoreError::Conflict(format!(
                 "Findings `{from}` and `{into}` do not have that active grouping"
             )));
+        }
+        let root = self.group_root(from).ok_or_else(|| {
+            crate::store::StoreError::Conflict(format!("unknown Finding `{from}`"))
+        })?;
+        if self.resolutions.contains_key(root)
+            && self
+                .finding_view(root)
+                .is_some_and(|finding| !finding.status.is_active())
+        {
+            return Err(crate::store::StoreError::Conflict(
+                "cannot ungroup a terminally resolved Finding group; challenge the Resolution first"
+                    .into(),
+            ));
         }
         Ok(())
     }

@@ -135,6 +135,7 @@ fn open_new(
         .map_err(|error| error.to_string())?
         .load_with(&lockfile, &registry)
         .map_err(|error| error.to_string())?;
+    require_demand_set_output(&loaded, pipeline_path)?;
 
     let pipeline_artifact_id = cas
         .put(&pipeline_bytes)
@@ -433,6 +434,9 @@ fn validate_manifest_authority(
     loaded: &review_config::Loaded,
     captured: &BTreeMap<String, (ReviewerPackageV1, BTreeMap<String, Vec<u8>>)>,
 ) -> Result<(), String> {
+    if manifest.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY {
+        require_demand_set_output(loaded, &manifest.pipeline.path)?;
+    }
     let convergence = loaded.convergence();
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds
@@ -542,6 +546,22 @@ fn validate_manifest_authority(
         }
     }
     Ok(())
+}
+
+fn require_demand_set_output(
+    loaded: &review_config::Loaded,
+    pipeline_path: &str,
+) -> Result<(), String> {
+    if loaded.node_kind_has_output_type(
+        review_graph::NodeKind::Ledger,
+        review_core::contract::DEMAND_SET_V1,
+    ) {
+        Ok(())
+    } else {
+        Err(format!(
+            "canonical pipeline `{pipeline_path}` Ledger node must declare a review.kernel/DemandSet@1 output"
+        ))
+    }
 }
 
 fn prepare_round(

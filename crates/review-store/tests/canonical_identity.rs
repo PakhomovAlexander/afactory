@@ -427,11 +427,93 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
         ledger.resolution(&keys[0]).unwrap().artifact_id,
         ledger.resolution(&root).unwrap().artifact_id
     );
+    assert!(
+        ledger
+            .validate_ungroup(&keys[0], &keys[1])
+            .unwrap_err()
+            .to_string()
+            .contains("challenge the Resolution first"),
+        "ungroup must not detach a terminal status from its group Resolution"
+    );
+
+    let next_head = cas.put(b"next whole-tree head").unwrap();
+    let next_subject = cas
+        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&next_head)).unwrap())
+        .unwrap();
+    ledger
+        .apply_event(
+            &RunEvent {
+                event_id: "group-round-2".into(),
+                run_id: run_id.into(),
+                sequence: 101,
+                event_type: EventType::RoundStartedV1,
+                occurred_at: "2026-08-28T00:00:00Z".into(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: Some(next_subject.clone()),
+                artifact_refs: Vec::new(),
+                payload: serde_json::to_value(RoundStartedPayloadV1 {
+                    round: 2,
+                    epoch: 1,
+                    campaign_manifest_id: authority.manifest.clone(),
+                    subject_id: next_subject.clone(),
+                    prior_finding_set_id: authority.findings.clone(),
+                    prior_demand_set_id: authority.demands.clone(),
+                })
+                .unwrap(),
+            },
+            &cas,
+        )
+        .unwrap();
+    let mut lower_report = stage().into_reports().unwrap().remove(0);
+    lower_report.severity = review_core::Severity::Minor;
+    lower_report.body = "lower-severity evidence from a different Subject".into();
+    let (lower_record, _) = cas
+        .put_artifact(
+            review_core::contract::FINDING_REPORT_V1,
+            Producer::Attempt {
+                run_id: run_id.into(),
+                node_id: "correctness".into(),
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w211".into(),
+            },
+            Vec::new(),
+            Some(next_head),
+            serde_json::to_value(lower_report).unwrap(),
+        )
+        .unwrap();
+    ledger
+        .apply_event(
+            &RunEvent {
+                event_id: "group-lower-report".into(),
+                run_id: run_id.into(),
+                sequence: 102,
+                event_type: EventType::FindingReportedV1,
+                occurred_at: "2026-08-28T00:00:00Z".into(),
+                node_id: Some("correctness".into()),
+                attempt_id: Some("01jd8m4qz9k7v3n2p6r8t0w211".into()),
+                causation_id: Some("group-round-2".into()),
+                correlation_id: Some(keys[0].clone()),
+                artifact_refs: vec![lower_record.clone()],
+                payload: serde_json::json!({
+                    "key": keys[0],
+                    "round": 2,
+                    "source": "correctness",
+                    "report_id": lower_record,
+                }),
+            },
+            &cas,
+        )
+        .unwrap();
+    let challenged = ledger.finding_view(&keys[0]).unwrap();
+    assert_eq!(challenged.status, review_store::Status::Contested);
+    assert_eq!(challenged.severity, review_core::Severity::Major);
+    assert_eq!(challenged.body, "same body");
 
     let challenge = review_core::ResolutionChallengeV1 {
         finding_id: root.clone(),
         resolution_id: resolution_envelope.artifact_id,
-        subject_id: authority.subject.clone(),
+        subject_id: next_subject,
         kind: review_core::ResolutionChallengeKind::NewEvidence,
         actor: "operator".into(),
         reason: "new evidence contests the grouped decision".into(),
@@ -1090,6 +1172,35 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
             &cas,
         )
         .unwrap();
+    let already_expired = review_core::FindingResolutionV1 {
+        finding_id: finding_id.clone(),
+        expected_finding_view_id: ledger.finding_view_id(&finding_id).unwrap(),
+        subject_id: subject_id.clone(),
+        outcome: review_core::FindingResolutionOutcome::WontfixTracked,
+        actor: "operator".into(),
+        policy_revision: "risk-policy@2".into(),
+        reason: "already expired exception".into(),
+        evidence_ids: vec![],
+        verification_id: None,
+        max_accepted_severity: Some(review_core::Severity::Major),
+        tracking_reference: Some("ISSUE-EXPIRED".into()),
+        expires_at_policy_time: Some(3),
+    };
+    let (expired_record, _) = publish(
+        review_core::contract::FINDING_RESOLUTION_V1,
+        "already-expired-wontfix-resolution",
+        serde_json::to_value(already_expired).unwrap(),
+    );
+    assert!(
+        ledger
+            .apply_event(
+                &recorded_event(EventType::FindingResolutionRecordedV1, expired_record),
+                &cas,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("persisted policy time")
+    );
     assert_eq!(ledger.expiring_resolutions(3).len(), 1);
     let challenge = review_core::ResolutionChallengeV1 {
         finding_id: finding_id.clone(),

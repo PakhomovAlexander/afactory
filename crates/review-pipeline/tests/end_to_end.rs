@@ -193,6 +193,28 @@ from = { node = "reviewer-gather", port = "reports" }
 to = { node = "ledger", port = "reports" }
 "#;
 
+fn canonical_authority(authority: &str) -> String {
+    for finding_port in ["set", "findings"] {
+        let original =
+            format!("kind = \"ledger\"\ninputs = [\"reports\"]\noutputs = [\"{finding_port}\"]");
+        if authority.contains(&original) {
+            return authority.replacen(
+                &original,
+                &format!(
+                    "kind = \"ledger\"\ninputs = [\"reports\"]\noutputs = [\n  \
+                     {{ name = \"{finding_port}\", type = \"review.kernel/FindingSet@1\", \
+                     cardinality = \"one\", optional = false, snapshot_affinity = \
+                     \"same_subject\" }},\n  {{ name = \"demands\", type = \
+                     \"review.kernel/DemandSet@1\", cardinality = \"one\", optional = false, \
+                     snapshot_affinity = \"same_subject\" }},\n]"
+                ),
+                1,
+            );
+        }
+    }
+    panic!("test authority has no recognized Ledger finding output")
+}
+
 /// A repository with a defect to find.
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -258,7 +280,19 @@ fn clean_reviewer() -> Command {
     )
 }
 
-fn heavy_pipeline() -> Pipeline {
+fn ledger_node(finding_port: &str, canonical: bool) -> Node {
+    let node = Node::new("ledger", NodeKind::Ledger).accepting(&["reports"]);
+    if canonical {
+        node.emitting_contracts(vec![
+            PortContract::new(finding_port, review_core::contract::FINDING_SET_V1),
+            PortContract::new("demands", review_core::contract::DEMAND_SET_V1),
+        ])
+    } else {
+        node.emitting(&[finding_port])
+    }
+}
+
+fn heavy_pipeline(canonical: bool) -> Pipeline {
     let mut pipeline = Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
         .node(
@@ -266,11 +300,7 @@ fn heavy_pipeline() -> Pipeline {
                 .accepting(&["architecture", "performance"])
                 .emitting(&["reports"]),
         )
-        .node(
-            Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["set"]),
-        );
+        .node(ledger_node("set", canonical));
     for reviewer in ["architecture", "performance"] {
         pipeline = pipeline
             .node(
@@ -288,7 +318,7 @@ fn heavy_pipeline() -> Pipeline {
     )
 }
 
-fn unwired_pipeline() -> Pipeline {
+fn unwired_pipeline(canonical: bool) -> Pipeline {
     Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
         .node(
@@ -311,11 +341,7 @@ fn unwired_pipeline() -> Pipeline {
                 ])
                 .emitting(&["reports"]),
         )
-        .node(
-            Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["findings"]),
-        )
+        .node(ledger_node("findings", canonical))
         .edge(
             Port::new("gate", "decision"),
             Port::new("architecture", "gate"),
@@ -331,7 +357,7 @@ fn unwired_pipeline() -> Pipeline {
         )
 }
 
-fn non_reviewer_gather_pipeline() -> Pipeline {
+fn non_reviewer_gather_pipeline(canonical: bool) -> Pipeline {
     Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
         .node(
@@ -350,11 +376,7 @@ fn non_reviewer_gather_pipeline() -> Pipeline {
                 .accepting(&["reviewer"])
                 .emitting(&["reports"]),
         )
-        .node(
-            Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["set"]),
-        )
+        .node(ledger_node("set", canonical))
         .edge(Port::new("gate", "decision"), Port::new("reviewer", "gate"))
         .edge(
             Port::new("gate", "decision"),
@@ -419,7 +441,7 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
         reviewer("performance", "Unbounded loop never yields", "blocker"),
     );
 
-    let plan = heavy_pipeline().plan().unwrap();
+    let plan = heavy_pipeline(false).plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);
@@ -468,12 +490,13 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority_definition = canonical_authority(HEAVY_AUTHORITY);
     let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest.clone(),
-        HEAVY_AUTHORITY,
+        &authority_definition,
     )
     .with_checks(vec![passing_check()])
     .with_reviewer(
@@ -485,7 +508,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         reviewer("performance", "Same presentation", "major"),
     );
 
-    let report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&kernel);
+    let report = Scheduler::new(&heavy_pipeline(true).plan().unwrap()).run(&kernel);
     assert!(report.complete(), "{:?}", report.outcomes);
     assert_eq!(kernel.ledger().len(), 2, "path and title are not identity");
     let NodeOutcome::Completed { outputs } = report.outcome("ledger").unwrap() else {
@@ -530,7 +553,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     let round = store.latest_round_started("run").unwrap().unwrap();
     let authority =
         review_pipeline::RoundAuthority::load(&store, &cas, "run", &round.event_id).unwrap();
-    let loaded = review_config::Definition::from_toml(HEAVY_AUTHORITY)
+    let loaded = review_config::Definition::from_toml(&authority_definition)
         .unwrap()
         .load()
         .unwrap();
@@ -543,7 +566,7 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         authority,
     )
     .unwrap();
-    let replayed = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&replay);
+    let replayed = Scheduler::new(&heavy_pipeline(true).plan().unwrap()).run(&replay);
     let NodeOutcome::Completed { outputs } = replayed.outcome("ledger").unwrap() else {
         panic!("canonical ledger replay did not complete")
     };
@@ -628,7 +651,8 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
         "performance",
         reviewer("performance", "Round two performance", "major"),
     );
-    let round_two_report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&round_two_kernel);
+    let round_two_report =
+        Scheduler::new(&heavy_pipeline(true).plan().unwrap()).run(&round_two_kernel);
     let NodeOutcome::Completed { outputs } = round_two_report.outcome("ledger").unwrap() else {
         panic!("round two canonical ledger did not complete")
     };
@@ -651,18 +675,19 @@ fn canonical_barrier_assigns_identical_clean_results_to_distinct_attempts() {
     let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = canonical_authority(HEAVY_AUTHORITY);
     let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest,
-        HEAVY_AUTHORITY,
+        &authority,
     )
     .with_checks(vec![passing_check()])
     .with_reviewer("architecture", clean_reviewer())
     .with_reviewer("performance", clean_reviewer());
 
-    let report = Scheduler::new(&heavy_pipeline().plan().unwrap()).run(&kernel);
+    let report = Scheduler::new(&heavy_pipeline(true).plan().unwrap()).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);
     assert!(kernel.ledger().is_empty());
@@ -680,18 +705,19 @@ fn an_unwired_identical_result_does_not_confuse_canonical_provenance() {
     let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = canonical_authority(UNWIRED_AUTHORITY);
     let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest,
-        UNWIRED_AUTHORITY,
+        &authority,
     )
     .with_checks(vec![passing_check()])
     .with_reviewer("architecture", clean_reviewer())
     .with_reviewer("sidecar", clean_reviewer());
 
-    let report = Scheduler::new(&unwired_pipeline().plan().unwrap()).run(&kernel);
+    let report = Scheduler::new(&unwired_pipeline(true).plan().unwrap()).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);
     assert!(kernel.ledger().is_empty());
@@ -705,17 +731,18 @@ fn canonical_gather_binds_non_reviewer_inputs_to_their_pinned_node_output() {
     let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = canonical_authority(NON_REVIEWER_GATHER_AUTHORITY);
     let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest,
-        NON_REVIEWER_GATHER_AUTHORITY,
+        &authority,
     )
     .with_checks(vec![passing_check()])
     .with_reviewer("reviewer", clean_reviewer());
 
-    let report = Scheduler::new(&non_reviewer_gather_pipeline().plan().unwrap()).run(&kernel);
+    let report = Scheduler::new(&non_reviewer_gather_pipeline(true).plan().unwrap()).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);
     let NodeOutcome::Completed {
@@ -767,7 +794,7 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
         reviewer("performance", "should never be reported", "major"),
     );
 
-    let plan = heavy_pipeline().plan().unwrap();
+    let plan = heavy_pipeline(false).plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
 
     assert!(!report.complete());
@@ -827,7 +854,7 @@ fn two_runs_of_the_same_review_agree() {
         .with_checks(vec![passing_check()])
         .with_reviewer("architecture", reviewer("architecture", "A", "major"))
         .with_reviewer("performance", reviewer("performance", "B", "minor"));
-        let plan = heavy_pipeline().plan().unwrap();
+        let plan = heavy_pipeline(false).plan().unwrap();
         Scheduler::new(&plan).run(&kernel);
 
         let rows: Vec<String> = kernel
@@ -967,12 +994,13 @@ fn a_reviewer_named_gather_still_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
+    let authority = canonical_authority(AWKWARD_AUTHORITY);
     let kernel = support::canonical_whole_tree_kernel_for_pipeline(
         &cas,
         &mut store,
         "run",
         snapshot.manifest.clone(),
-        AWKWARD_AUTHORITY,
+        &authority,
     )
     .with_checks(vec![passing_check()])
     .with_reviewer(
@@ -993,11 +1021,7 @@ fn a_reviewer_named_gather_still_runs() {
                 .accepting(&["reports"])
                 .emitting(&["reports"]),
         )
-        .node(
-            Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["findings"]),
-        )
+        .node(ledger_node("findings", true))
         .edge(Port::new("gate", "decision"), Port::new("gather", "gate"))
         .edge(
             Port::new("gather", "result"),
@@ -1051,7 +1075,7 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
 
     // `sidecar` runs (it is a planned node) but nothing consumes its result port.
-    let plan = unwired_pipeline().plan().unwrap();
+    let plan = unwired_pipeline(false).plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
 
     assert!(report.complete(), "{:?}", report.outcomes);
@@ -1086,7 +1110,7 @@ fn the_event_log_tells_the_whole_story() {
     .with_reviewer("architecture", reviewer("architecture", "A", "major"))
     .with_reviewer("performance", reviewer("performance", "B", "minor"));
 
-    let plan = heavy_pipeline().plan().unwrap();
+    let plan = heavy_pipeline(false).plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
     kernel
         .publish_report(&report, ConvergencePolicy::default())
@@ -1226,7 +1250,7 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
     )
     .with_reviewer("performance", boom);
 
-    let plan = heavy_pipeline().plan().unwrap();
+    let plan = heavy_pipeline(false).plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
     // Gather (and ledger) are suppressed because `performance` failed.
     assert!(matches!(

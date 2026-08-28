@@ -594,6 +594,16 @@ impl Loaded {
             .any(|edge| edge.to.name == port)
     }
 
+    pub fn node_kind_has_output_type(&self, kind: NodeKind, artifact_type: &str) -> bool {
+        self.plan.nodes.values().any(|node| {
+            node.kind == kind
+                && node
+                    .outputs
+                    .iter()
+                    .any(|output| output.artifact_type == artifact_type)
+        })
+    }
+
     /// Exact upstream node ids for every input port, captured from the validated graph.
     pub fn input_sources(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
         let mut sources: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();

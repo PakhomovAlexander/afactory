@@ -60,12 +60,14 @@ fn write_review_config(repo: &Path) {
     std::fs::write(repo.join(".review/review.lock"), "version = 1\n").unwrap();
     let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
     let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"disputes\":[]}"#;
     let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
     let script = format!(
         "if [ -f FAIL ]; then exit 7; fi; \
-         if [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
+         if [ -f DEMAND ]; then printf '%s' \"{demand}\"; \
+         elif [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
          elif grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
          else printf '%s' \"{clean}\"; fi"
     );
@@ -105,7 +107,10 @@ outputs = ["reports"]
 id = "ledger"
 kind = "ledger"
 inputs = ["reports"]
-outputs = ["findings"]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
 
 [[edges]]
 from = {{ node = "gate", port = "decision" }}
@@ -196,7 +201,10 @@ outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality 
 id = "ledger"
 kind = "ledger"
 inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
-outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
 [[edges]]
 from = {{ node = "generation", port = "findings" }}
 to = {{ node = "correctness", port = "prior_findings" }}
@@ -267,6 +275,88 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     assert!(stderr.contains("authority sha256:"));
     assert!(Path::new(&state).join("events.sqlite").exists());
     assert!(!repo.join(".af/runs").exists());
+}
+
+#[test]
+fn required_demands_are_visible_in_run_ledger_and_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
+    git(&repo, &home, &["add", "DEMAND"]);
+    git(&repo, &home, &["commit", "-qm", "request evidence"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "demand-human", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("demands  1 open/stale (required)"),
+        "{stdout}"
+    );
+    let (code, _, ledger_err) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "demand-human", "--state", &state],
+    );
+    assert_eq!(code, 0, "{ledger_err}");
+    assert!(
+        ledger_err.contains("1 required demands open/stale"),
+        "{ledger_err}"
+    );
+
+    let json_state = dir.path().join("json-state");
+    let json_state = json_state.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "demand-json",
+            "--state",
+            &json_state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["totals"]["open_required_demands"], 1);
+    assert_eq!(
+        outcome["totals"]["open_or_stale_demand_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
+    let demand_port = "  { name = \"demands\", type = \"review.kernel/DemandSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"same_subject\" },\n";
+    let without_demand = pipeline.replace(demand_port, "");
+    assert_ne!(without_demand, pipeline, "fixture must declare DemandSet");
+    std::fs::write(&pipeline_path, without_demand).unwrap();
+    git(&repo, &home, &["add", ".review/pipelines/heavy.toml"]);
+    git(&repo, &home, &["commit", "-qm", "remove demand output"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "missing-demand", "--state", &state],
+    );
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(
+            "canonical pipeline `.review/pipelines/heavy.toml` Ledger node must declare a review.kernel/DemandSet@1 output"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -721,6 +811,50 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
         &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
     );
     let key = ledger_out.split('\t').next().unwrap().to_string();
+    let (code, policy_out, policy_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "policy-time",
+            "advance",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            "50",
+            "--reason",
+            "set the deterministic test clock",
+        ],
+    );
+    assert_eq!(code, 0, "{policy_out}\n{policy_err}");
+    let (code, _, expired_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            &key,
+            "wontfix-tracked",
+            "--policy",
+            "risk-policy@1",
+            "--reason",
+            "already expired exception",
+            "--max-severity",
+            "major",
+            "--tracking",
+            "ISSUE-EXPIRED",
+            "--expires-at-policy-time",
+            "50",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(
+        expired_err.contains("persisted policy time 50"),
+        "{expired_err}"
+    );
     let (code, resolve_out, resolve_err) = reviewctl(
         &repo,
         &home,
@@ -1039,7 +1173,10 @@ outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality =
 id = "ledger"
 kind = "ledger"
 inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
 [[edges]]
 from = { node = "generation", port = "change_set" }
 to = { node = "reviewer", port = "change_set" }

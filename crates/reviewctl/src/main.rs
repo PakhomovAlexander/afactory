@@ -1011,11 +1011,23 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
             );
         }
     }
+    let open_required_demands = ledger
+        .demand_views()
+        .into_iter()
+        .filter(|demand| {
+            demand.requirement == review_core::DemandRequirement::Required
+                && matches!(
+                    demand.status,
+                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                )
+        })
+        .count();
     eprintln!(
-        "round {}; {} findings, {} open",
+        "round {}; {} findings, {} open; {} required demands open/stale",
         ledger.round,
         findings.len(),
-        findings.iter().filter(|f| f.status == Status::Open).count()
+        findings.iter().filter(|f| f.status == Status::Open).count(),
+        open_required_demands
     );
     Ok(())
 }
@@ -2142,6 +2154,25 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             ),
         );
     }
+    let open_or_stale_demand_ids = ledger
+        .demand_views()
+        .into_iter()
+        .filter(|demand| {
+            demand.requirement == review_core::DemandRequirement::Required
+                && matches!(
+                    demand.status,
+                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                )
+        })
+        .map(|demand| demand.demand_id)
+        .collect::<Vec<_>>();
+    run_progress(
+        options,
+        format_args!(
+            "demands  {} open/stale (required)",
+            open_or_stale_demand_ids.len()
+        ),
+    );
     let spent_tokens = kernel.spent();
     if let Some(spent) = spent_tokens {
         run_progress(options, format_args!("spent    {spent} tokens"));
@@ -2276,6 +2307,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                 },
                 "usage": usage,
                 "spent_tokens": spent_tokens,
+                "open_required_demands": open_or_stale_demand_ids.len(),
+                "open_or_stale_demand_ids": open_or_stale_demand_ids,
             },
             "findings": findings,
             "outcome": verdict_value(&verdict),

@@ -1215,6 +1215,14 @@ impl<'a> Ingest<'a> {
         {
             return Ok(existing.artifact_id.clone());
         }
+        if outcome == review_core::FindingResolutionOutcome::WontfixTracked
+            && expires_at_policy_time.is_some_and(|expiry| expiry <= self.ledger.policy_time())
+        {
+            return Err(StoreError::Conflict(format!(
+                "tracked-wontfix expiry must be later than current persisted policy time {}",
+                self.ledger.policy_time()
+            )));
+        }
         let payload = review_core::FindingResolutionV1 {
             finding_id: finding_id.to_string(),
             expected_finding_view_id: self.ledger.finding_view_id(finding_id).ok_or_else(|| {
