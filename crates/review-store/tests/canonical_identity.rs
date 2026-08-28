@@ -1,6 +1,7 @@
 use review_core::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, RoundStartedPayloadV1, SubjectKind,
+    CampaignOpenedPayloadV1, EventType, FindingGroupingAction, FindingGroupingEventPayloadV1,
+    FindingGroupingV1, LegacyStageOutput, Producer, RoundStartedPayloadV1, RunEvent, SubjectKind,
     SubjectV1,
 };
 use review_store::{
@@ -261,6 +262,133 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
             .authority_failures_recent
             > 0,
         "unreadable Campaign policy must remain replayable but block convergence"
+    );
+}
+
+#[test]
+fn grouping_is_reversible_and_preserves_each_report_obligation() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "01jd8m4qz9k7v3n2p6r8t0w1gy";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let result_a = cas.put_json(&serde_json::json!({"wire": "a"})).unwrap();
+    let result_b = cas.put_json(&serde_json::json!({"wire": "b"})).unwrap();
+    let input = cas.put(b"exact reviewer input").unwrap();
+    let output = stage();
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_canonical_stage_outputs(&[
+            CanonicalStage {
+                source: "architecture",
+                stage: &output,
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w204",
+                result_artifact_id: &result_a,
+                input_artifacts: std::slice::from_ref(&input),
+                subject_snapshot_id: &authority.head,
+                subject_id: &authority.subject,
+                result_contract: review_core::ReviewerResultContract::V1,
+            },
+            CanonicalStage {
+                source: "correctness",
+                stage: &output,
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w205",
+                result_artifact_id: &result_b,
+                input_artifacts: std::slice::from_ref(&input),
+                subject_snapshot_id: &authority.head,
+                subject_id: &authority.subject,
+                result_contract: review_core::ReviewerResultContract::V1,
+            },
+        ])
+        .unwrap();
+    let mut ledger = ingest.into_projection().into_ledger();
+    let keys: Vec<_> = ledger
+        .findings()
+        .iter()
+        .map(|finding| finding.key.clone())
+        .collect();
+    assert_eq!(keys.len(), 2);
+
+    let transition = |action, record_id: String| RunEvent {
+        event_id: "01jd8m4qz9k7v3n2p6r8t0w206".into(),
+        run_id: run_id.into(),
+        sequence: 99,
+        event_type: match action {
+            FindingGroupingAction::Group => EventType::FindingsGroupedV1,
+            FindingGroupingAction::Ungroup => EventType::FindingsUngroupedV1,
+        },
+        occurred_at: "2026-08-28T00:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: Some(keys[0].clone()),
+        artifact_refs: vec![record_id.clone()],
+        payload: serde_json::to_value(FindingGroupingEventPayloadV1 {
+            from: keys[0].clone(),
+            into: keys[1].clone(),
+            grouping_artifact_id: record_id,
+        })
+        .unwrap(),
+    };
+    let publish = |action| {
+        cas.put_artifact(
+            review_core::contract::FINDING_GROUPING_V1,
+            Producer::KernelOperation {
+                run_id: run_id.into(),
+                node_id: None,
+                operation_id: format!("test-{action:?}"),
+            },
+            Vec::new(),
+            None,
+            serde_json::to_value(FindingGroupingV1 {
+                from: keys[0].clone(),
+                into: keys[1].clone(),
+                action,
+                round: 1,
+            })
+            .unwrap(),
+        )
+        .unwrap()
+        .0
+    };
+
+    ledger
+        .apply_event(
+            &transition(
+                FindingGroupingAction::Group,
+                publish(FindingGroupingAction::Group),
+            ),
+            &cas,
+        )
+        .unwrap();
+    let views = ledger.finding_views();
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].aliases, vec![keys[0].clone()]);
+    assert_eq!(views[0].reports.len(), 2);
+    assert_eq!(
+        ledger
+            .convergence(ConvergencePolicy::default())
+            .open_blocking,
+        1
+    );
+
+    ledger
+        .apply_event(
+            &transition(
+                FindingGroupingAction::Ungroup,
+                publish(FindingGroupingAction::Ungroup),
+            ),
+            &cas,
+        )
+        .unwrap();
+    assert_eq!(ledger.finding_views().len(), 2);
+    assert_eq!(
+        ledger
+            .convergence(ConvergencePolicy::default())
+            .open_blocking,
+        2
     );
 }
 
@@ -586,6 +714,273 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
     );
     assert_eq!(
         ingest.ledger().get(&ids[2]).unwrap().status,
+        review_store::Status::Contested
+    );
+}
+
+#[test]
+fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expire() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "01jd8m4qz9k7v3n2p6r8t0w1rv";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let result = cas.put_json(&serde_json::json!({"wire": "seed"})).unwrap();
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_canonical_stage_outputs(&[CanonicalStage {
+            source: "correctness",
+            stage: &stage(),
+            attempt_id: "01jd8m4qz9k7v3n2p6r8t0w210",
+            result_artifact_id: &result,
+            input_artifacts: &[],
+            subject_snapshot_id: &authority.head,
+            subject_id: &authority.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
+        }])
+        .unwrap();
+    let mut ledger = ingest.into_projection().into_ledger();
+    let finding_id = ledger.findings()[0].key.clone();
+
+    let base = cas.put(b"base").unwrap();
+    let head = cas.put(b"changed head").unwrap();
+    let change_set = review_core::ChangeSetV1::new(
+        &base,
+        &head,
+        vec!["src/lib.rs".into()],
+        vec![],
+        b"diff --git a/src/lib.rs b/src/lib.rs\n",
+        "git version test",
+        "review.kernel/git-diff@1",
+    )
+    .unwrap();
+    let change_set_id = cas
+        .put_json(&serde_json::to_value(change_set).unwrap())
+        .unwrap();
+    let subject_id = cas
+        .put_json(&serde_json::to_value(SubjectV1::diff(&head, &base, &change_set_id)).unwrap())
+        .unwrap();
+    let round = RunEvent {
+        event_id: "round-2".into(),
+        run_id: run_id.into(),
+        sequence: 100,
+        event_type: EventType::RoundStartedV1,
+        occurred_at: "2026-08-28T00:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: Some(subject_id.clone()),
+        artifact_refs: vec![],
+        payload: serde_json::to_value(RoundStartedPayloadV1 {
+            round: 2,
+            epoch: 1,
+            campaign_manifest_id: authority.manifest,
+            subject_id: subject_id.clone(),
+            prior_finding_set_id: authority.findings,
+            prior_demand_set_id: authority.demands,
+        })
+        .unwrap(),
+    };
+    ledger.apply_event(&round, &cas).unwrap();
+
+    let recorded_event = |event_type, record_id: String| RunEvent {
+        event_id: format!("{event_type}-{record_id}"),
+        run_id: run_id.into(),
+        sequence: 101,
+        event_type,
+        occurred_at: "2026-08-28T00:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: Some(finding_id.clone()),
+        artifact_refs: vec![record_id.clone()],
+        payload: serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+            artifact_id: record_id,
+        })
+        .unwrap(),
+    };
+    let publish = |artifact_type: &str, operation: &str, payload: serde_json::Value| {
+        cas.put_artifact(
+            artifact_type,
+            Producer::KernelOperation {
+                run_id: run_id.into(),
+                node_id: None,
+                operation_id: operation.into(),
+            },
+            vec![],
+            Some(head.clone()),
+            payload,
+        )
+        .unwrap()
+    };
+
+    let initial_view = ledger.finding_view_id(&finding_id).unwrap();
+    let attestation = review_core::ChangeAttestationV1 {
+        finding_id: finding_id.clone(),
+        expected_finding_view_id: initial_view.clone(),
+        subject_id: subject_id.clone(),
+        change_set_id: change_set_id.clone(),
+        changed_regions: vec![review_core::ChangedRegionV1 {
+            path: "src/lib.rs".into(),
+            start_line: Some(7),
+            end_line: Some(9),
+        }],
+        actor: "implementer".into(),
+        reason: "changed the guarded path".into(),
+        evidence_ids: vec![],
+    };
+    let (attestation_record, attestation_envelope) = publish(
+        review_core::contract::CHANGE_ATTESTATION_V1,
+        "attest",
+        serde_json::to_value(attestation).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::ChangeAttestedV1, attestation_record.clone()),
+            &cas,
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.finding_view(&finding_id).unwrap().status,
+        review_store::Status::PendingVerification
+    );
+    assert!(
+        ledger
+            .apply_event(
+                &recorded_event(EventType::ChangeAttestedV1, attestation_record),
+                &cas,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("stale"),
+        "the optimistic current-view binding must make replayed stale requests fail closed"
+    );
+
+    let pending_view = ledger.finding_view_id(&finding_id).unwrap();
+    let verification = review_core::FixVerificationV1 {
+        finding_id: finding_id.clone(),
+        attestation_id: attestation_envelope.artifact_id,
+        expected_finding_view_id: pending_view.clone(),
+        subject_id: subject_id.clone(),
+        verifier: "trusted-verifier".into(),
+        policy_revision: "fix-policy@1".into(),
+        positive: true,
+        reason: "current claim and checks pass".into(),
+        evidence_ids: vec![],
+    };
+    let (verification_record, verification_envelope) = publish(
+        review_core::contract::FIX_VERIFICATION_V1,
+        "verify",
+        serde_json::to_value(verification).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::FixVerifiedV1, verification_record),
+            &cas,
+        )
+        .unwrap();
+    assert_ne!(
+        ledger.finding_view(&finding_id).unwrap().status,
+        review_store::Status::Fixed,
+        "verification evidence alone is not a Resolution"
+    );
+
+    let fixed = review_core::FindingResolutionV1 {
+        finding_id: finding_id.clone(),
+        expected_finding_view_id: pending_view,
+        subject_id: subject_id.clone(),
+        outcome: review_core::FindingResolutionOutcome::Fixed,
+        actor: "trusted-verifier".into(),
+        policy_revision: "fix-policy@1".into(),
+        reason: "positive current-Subject verification".into(),
+        evidence_ids: vec![],
+        verification_id: Some(verification_envelope.artifact_id),
+        max_accepted_severity: None,
+        tracking_reference: None,
+        expires_at_policy_time: None,
+    };
+    let (fixed_record, _) = publish(
+        review_core::contract::FINDING_RESOLUTION_V1,
+        "fixed-resolution",
+        serde_json::to_value(fixed).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::FindingResolutionRecordedV1, fixed_record),
+            &cas,
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.finding_view(&finding_id).unwrap().status,
+        review_store::Status::Fixed
+    );
+
+    let wontfix = review_core::FindingResolutionV1 {
+        finding_id: finding_id.clone(),
+        expected_finding_view_id: ledger.finding_view_id(&finding_id).unwrap(),
+        subject_id: subject_id.clone(),
+        outcome: review_core::FindingResolutionOutcome::WontfixTracked,
+        actor: "operator".into(),
+        policy_revision: "risk-policy@1".into(),
+        reason: "tracked temporary exception".into(),
+        evidence_ids: vec![],
+        verification_id: None,
+        max_accepted_severity: Some(review_core::Severity::Major),
+        tracking_reference: Some("ISSUE-42".into()),
+        expires_at_policy_time: Some(3),
+    };
+    let (wontfix_record, wontfix_envelope) = publish(
+        review_core::contract::FINDING_RESOLUTION_V1,
+        "wontfix-resolution",
+        serde_json::to_value(wontfix).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::FindingResolutionRecordedV1, wontfix_record),
+            &cas,
+        )
+        .unwrap();
+    let policy_time = review_core::PolicyTimeV1 {
+        tick: 3,
+        actor: "policy".into(),
+        reason: "evaluate expiry".into(),
+    };
+    let (time_record, _) = publish(
+        review_core::contract::POLICY_TIME_V1,
+        "policy-time",
+        serde_json::to_value(policy_time).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::PolicyTimeAdvancedV1, time_record),
+            &cas,
+        )
+        .unwrap();
+    assert_eq!(ledger.expiring_resolutions(3).len(), 1);
+    let challenge = review_core::ResolutionChallengeV1 {
+        finding_id: finding_id.clone(),
+        resolution_id: wontfix_envelope.artifact_id,
+        subject_id,
+        kind: review_core::ResolutionChallengeKind::Expired,
+        actor: "policy".into(),
+        reason: "persisted policy-time expiry".into(),
+        evidence_ids: vec![],
+    };
+    let (challenge_record, _) = publish(
+        review_core::contract::RESOLUTION_CHALLENGE_V1,
+        "challenge",
+        serde_json::to_value(challenge).unwrap(),
+    );
+    ledger
+        .apply_event(
+            &recorded_event(EventType::FindingResolutionChallengedV1, challenge_record),
+            &cas,
+        )
+        .unwrap();
+    assert_eq!(
+        ledger.finding_view(&finding_id).unwrap().status,
         review_store::Status::Contested
     );
 }

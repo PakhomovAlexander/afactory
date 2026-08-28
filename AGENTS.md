@@ -71,6 +71,9 @@ budget, or sandbox boundary to make a test or review pass.
   Round or stage in that Campaign or Task. Do not ask for per-call confirmation; undeclared
   context, changed bindings, delivery, publication, and remote side effects remain unauthorized
   ([ADR-0033](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md)).
+- Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
+  output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
+  convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

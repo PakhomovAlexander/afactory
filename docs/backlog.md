@@ -473,6 +473,14 @@ Demand, and the configured clean-Round window over the exact final `FindingSet@1
 incomplete/needs-human and does not consume a closed Round. Reaching the hard Round cap with
 obligations open is exhausted, never pass.
 
+Issue [#15](https://github.com/PakhomovAlexander/afactory/issues/15) is included here. If a
+reviewer result is admitted but a required sibling failure suppresses gather and Ledger, reports
+surface that result as recorded, not gathered evidence with node, Attempt, artifact, severity,
+and spend provenance. The verdict remains incomplete, partial evidence never becomes a Ledger or
+convergence input, `af review ledger` distinguishes an absent latest-Round Ledger from a produced
+clean one, and fully gathered Campaign output remains unchanged. See
+[ADR-0034](adr/0034-surface-partial-results-without-ledger-authority.md).
+
 Any head-Snapshot advancement or materially new/challenged claim resets the clean window. A
 fixed claim remains News until a later complete Round verifies the same current head without
 reopening it.

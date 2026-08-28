@@ -90,7 +90,12 @@ impl FindingSetV1 {
             finding.finding_id.trim().is_empty()
                 || !matches!(
                     finding.status.as_str(),
-                    "open" | "fixed" | "rejected" | "wontfix" | "contested"
+                    "open"
+                        | "pending-verification"
+                        | "fixed"
+                        | "rejected"
+                        | "wontfix"
+                        | "contested"
                 )
                 || !matches!(finding.scope.as_str(), "in" | "out" | "unknown")
                 || finding.title.trim().is_empty()

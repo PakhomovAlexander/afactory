@@ -13,16 +13,19 @@
 
 pub mod campaign;
 pub mod change_set;
+pub mod demand;
 pub mod disposition;
 pub mod envelope;
 pub mod event;
 pub mod exec;
 pub mod finding;
 pub mod finding_set;
+pub mod grouping;
 pub mod json;
 pub mod legacy;
 pub mod patch;
 pub mod path;
+pub mod resolution;
 pub mod snapshot;
 pub mod subject;
 
@@ -33,6 +36,10 @@ pub use campaign::{
     RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
+pub use demand::{
+    DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
+    DemandV1, DemandWaiverV1, EvidenceSatisfactionV1, EvidenceV1, RecordedArtifactPayloadV1,
+};
 pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
@@ -48,6 +55,7 @@ pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
 pub use finding_set::{
     FINDING_REDUCER_VERSION, FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1,
 };
+pub use grouping::{FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1};
 pub use json::{NumericDomainError, admit};
 pub use legacy::{
     LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
@@ -56,6 +64,10 @@ pub use legacy::{
 };
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
+pub use resolution::{
+    ChangeAttestationV1, ChangedRegionV1, FindingResolutionOutcome, FindingResolutionV1,
+    FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,
+};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};
 
@@ -80,7 +92,18 @@ pub mod contract {
     pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
     pub const FINDING_DISPOSITION_V1: &str = "review.kernel/FindingDisposition@1";
+    pub const FINDING_GROUPING_V1: &str = "review.kernel/FindingGrouping@1";
     pub const FINDING_SET_V1: &str = "review.kernel/FindingSet@1";
+    pub const DEMAND_V1: &str = "review.kernel/Demand@1";
+    pub const DEMAND_SET_V1: &str = "review.kernel/DemandSet@1";
+    pub const DEMAND_WAIVER_V1: &str = "review.kernel/DemandWaiver@1";
+    pub const EVIDENCE_V1: &str = "review.kernel/Evidence@1";
+    pub const EVIDENCE_SATISFACTION_V1: &str = "review.kernel/EvidenceSatisfaction@1";
+    pub const CHANGE_ATTESTATION_V1: &str = "review.kernel/ChangeAttestation@1";
+    pub const FIX_VERIFICATION_V1: &str = "review.kernel/FixVerification@1";
+    pub const FINDING_RESOLUTION_V1: &str = "review.kernel/FindingResolution@1";
+    pub const RESOLUTION_CHALLENGE_V1: &str = "review.kernel/ResolutionChallenge@1";
+    pub const POLICY_TIME_V1: &str = "review.kernel/PolicyTime@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";

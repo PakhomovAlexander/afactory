@@ -140,14 +140,16 @@ and verification prerequisites exist.
         and disposable-repository apply/validate dogfood.
   - [x] Integrated to exact `main` commit `bb9e5a3`; PR and main CI passed; private `v0.4.0`
         checksummed release assets were downloaded and verified.
-- [ ] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
+- [x] M3 — the live reducer consumes typed Reports; new Findings have path-independent IDs;
       every assigned prior Finding has an explicit disposition; Grouping is reversible.
   - [x] M3.1 implementation and local `make check`.
   - [x] M3.1 pinned external convergence review.
   - [x] M3.2 implementation, full local gate, and lightweight candidate dogfood.
+  - [x] M3.3 reversible Grouping implementation and full local gate.
 - [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
-      challengeable; convergence reads exact final Finding/Demand views.
+      challengeable; convergence reads exact final Finding/Demand views; admitted partial reviewer
+      results remain visible without acquiring Ledger or convergence authority (issue #15).
 - [ ] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
       Round history are enumerable.
 - [ ] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
@@ -306,8 +308,10 @@ coverage, reducer@2 replay, corroboration reopening, and permanent @1 compatibil
 `m3-2-dispositions-v1` spent 286,400 chargeable tokens over 118,706 rendered context bytes and
 found one blocker, two majors, and one minor. Commits `e930ea1` and `1fb9569` implement the slice
 and fix all four; the focused regressions and full local gate pass. A follow-up external Round was
-refused before egress because changed private code needs distinct disclosure approval; it spent
-no tokens and is optional confirmation, not deterministic acceptance. Resume M3 at M3.3.
+not required for deterministic acceptance. ADR-0033 now records that trusted Worker authority plus
+intentional Campaign execution authorizes declared input delivery without per-call confirmation;
+commit `179bb71` implements the agent-facing guidance. Resume M3 at M3.3, with issue #15 included
+in the M4.5 boundary under ADR-0034.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

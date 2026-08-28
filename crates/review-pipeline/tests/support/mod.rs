@@ -188,7 +188,7 @@ fn test_round_authority_with_subject(
                 focus: None,
                 finding_identity_policy: identity_policy.into(),
                 finding_genesis_id,
-                demand_genesis_id,
+                demand_genesis_id: demand_genesis_id.clone(),
             })
             .unwrap(),
         )
@@ -242,7 +242,7 @@ fn test_round_authority_with_subject(
         }))
         .unwrap()
     });
-    let prior_demand_set_id = cas.put(b"test prior demand set").unwrap();
+    let prior_demand_set_id = demand_genesis_id;
     let opened = store
         .append(
             run_id,

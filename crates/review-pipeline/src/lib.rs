@@ -68,6 +68,10 @@ fn is_generation_finding_set_output(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::FINDING_SET_V1
 }
 
+fn is_demand_set_port(port: &PortContract) -> bool {
+    port.artifact_type == review_core::contract::DEMAND_SET_V1
+}
+
 fn is_reviewer_prior_findings_input(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
         || pipeline_version == 1
@@ -190,6 +194,7 @@ pub struct AttemptEvidence {
     pub usage: TokenUsage,
     pub context_manifest: ContextManifest,
     pub raw_artifact: String,
+    pub result_artifact: String,
 }
 
 /// The immutable publication boundary every event emitted by one Round execution inherits.
@@ -206,7 +211,9 @@ pub struct RoundAuthority {
     head_content_digest: String,
     prior_finding_set_id: String,
     prior_reduction_finding_set_id: String,
+    prior_demand_set_id: String,
     finding_genesis_id: String,
+    demand_genesis_id: String,
     finding_identity_policy: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
@@ -352,7 +359,9 @@ impl RoundAuthority {
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
             prior_reduction_finding_set_id,
+            prior_demand_set_id: payload.prior_demand_set_id,
             finding_genesis_id: campaign_manifest.finding_genesis_id,
+            demand_genesis_id: campaign_manifest.demand_genesis_id,
             finding_identity_policy: campaign_manifest.finding_identity_policy,
             subject_kind: subject.kind,
             change_set_id,
@@ -1265,6 +1274,9 @@ impl<'a> Kernel<'a> {
                     .as_str()
                     .ok_or("selected Attempt provenance has no raw artifact")?
                     .to_string(),
+                result_artifact: payload
+                    .result_artifact
+                    .ok_or("selected Attempt has no result artifact")?,
             });
         }
         evidence.sort_by(|left, right| {
@@ -2527,7 +2539,7 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
         let canonical = self.authority.finding_identity_policy
@@ -2723,7 +2735,20 @@ impl<'a> Kernel<'a> {
         };
 
         let projection = self.take_ledger_projection();
-        let (round, finding_count, finding_entries, reduction, projection) = {
+        let (
+            round,
+            finding_count,
+            finding_entries,
+            grouping_relation_ids,
+            grouping_input_artifact_ids,
+            resolution_ids,
+            resolution_input_artifact_ids,
+            demand_entries,
+            demand_artifact_ids,
+            demand_input_artifact_ids,
+            reduction,
+            projection,
+        ) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =
                 Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
@@ -2781,14 +2806,23 @@ impl<'a> Kernel<'a> {
             };
             (
                 reduction_round,
-                ingest.ledger().len(),
+                ingest.ledger().finding_views().len(),
                 canonical.then(|| finding_set_entries(ingest.ledger())),
+                ingest.ledger().grouping_relation_ids(),
+                ingest.ledger().grouping_input_artifact_ids(),
+                ingest.ledger().resolution_artifact_ids(),
+                ingest.ledger().resolution_input_artifact_ids(),
+                canonical.then(|| ingest.ledger().demand_views()),
+                ingest.ledger().demand_reduction_artifact_ids(),
+                ingest.ledger().demand_reduction_input_ids(),
                 reduction,
                 ingest.into_projection(),
             )
         };
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        if let (Some(entries), Some(reduction)) = (finding_entries, reduction) {
+        let findings_artifact = if let (Some(entries), Some(reduction)) =
+            (finding_entries, reduction)
+        {
             let reducer_version = reduction.reducer_version;
             let payload = review_core::FindingSetV1 {
                 subject_id: self.authority.subject_id.clone(),
@@ -2797,13 +2831,19 @@ impl<'a> Kernel<'a> {
                 reducer_version: reducer_version.to_string(),
                 identity_policy: self.authority.finding_identity_policy.clone(),
                 selected_report_ids: reduction.selected_report_ids,
-                relation_ids: reduction.relation_ids,
-                resolution_ids: Vec::new(),
+                relation_ids: reduction
+                    .relation_ids
+                    .into_iter()
+                    .chain(grouping_relation_ids)
+                    .collect(),
+                resolution_ids,
                 findings: entries,
             };
             payload.validate()?;
             let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
             reduction_inputs.extend(reduction.input_artifact_ids);
+            reduction_inputs.extend(grouping_input_artifact_ids);
+            reduction_inputs.extend(resolution_input_artifact_ids);
             let operation_digest = review_store::content_id(&serde_json::json!({
                 "reducer_version": reducer_version,
                 "identity_policy": self.authority.finding_identity_policy,
@@ -2829,20 +2869,96 @@ impl<'a> Kernel<'a> {
                     serde_json::to_value(payload).map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
-            return Ok(vec![record_id]);
-        }
-        // The `findings` port must carry a real artifact, not a label: the scheduler delivers
-        // exactly this string to whatever consumes the port, and a downstream event referencing
-        // a non-CAS string would be rejected as a dangling artifact far from its cause.
-        let artifact = self
-            .cas
-            .put_json(&serde_json::json!({
-                "round": round,
-                "sources": results.iter().map(|(node, _, _, _)| node).collect::<Vec<_>>(),
-                "findings": finding_count,
+            record_id
+        } else {
+            // The `findings` port must carry a real artifact, not a label: the scheduler delivers
+            // exactly this string to whatever consumes the port, and a downstream event referencing
+            // a non-CAS string would be rejected as a dangling artifact far from its cause.
+            self.cas
+                .put_json(&serde_json::json!({
+                    "round": round,
+                    "sources": results.iter().map(|(node, _, _, _)| node).collect::<Vec<_>>(),
+                    "findings": finding_count,
+                }))
+                .map_err(|e| e.to_string())?
+        };
+
+        let finding_port = node
+            .outputs
+            .iter()
+            .find(|port| is_generation_finding_set_output(port))
+            .or_else(|| (node.outputs.len() == 1).then(|| &node.outputs[0]))
+            .ok_or_else(|| "ledger node has no Finding Set output".to_string())?;
+        let mut outputs = ArtifactMap::from([(finding_port.name.clone(), vec![findings_artifact])]);
+
+        if let Some(demands) = demand_entries {
+            if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id
+            {
+                return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
+            }
+            let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
+                demand_artifact_ids;
+            let payload = review_core::DemandSetV1 {
+                subject_id: self.authority.subject_id.clone(),
+                round,
+                prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
+                reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
+                selected_demand_artifact_ids,
+                satisfaction_artifact_ids,
+                waiver_artifact_ids,
+                demands,
+            };
+            payload.validate()?;
+            let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
+            reduction_inputs.extend(demand_input_artifact_ids);
+            let mut unique = BTreeSet::new();
+            reduction_inputs.retain(|id| unique.insert(id.clone()));
+            let operation_digest = review_store::content_id(&serde_json::json!({
+                "reducer_version": review_core::DEMAND_REDUCER_VERSION,
+                "inputs": reduction_inputs,
             }))
-            .map_err(|e| e.to_string())?;
-        Ok(vec![artifact])
+            .map_err(|error| error.to_string())?;
+            let (record_id, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::DEMAND_SET_V1,
+                    review_core::Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: Some("ledger".into()),
+                        operation_id: format!(
+                            "{}:{}",
+                            review_core::DEMAND_REDUCER_VERSION,
+                            operation_digest
+                        ),
+                    },
+                    reduction_inputs,
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            match node.outputs.iter().find(|port| is_demand_set_port(port)) {
+                Some(port) => {
+                    outputs.insert(port.name.clone(), vec![record_id]);
+                }
+                None if !outputs.is_empty()
+                    && self
+                        .ledger_cache
+                        .lock()
+                        .expect("ledger cache")
+                        .as_ref()
+                        .is_some_and(|projection| {
+                            !projection.ledger().demand_views().is_empty()
+                        }) =>
+                {
+                    return Err(
+                        "ledger selected Demands but declares no review.kernel/DemandSet@1 output"
+                            .into(),
+                    );
+                }
+                None => {}
+            }
+        }
+        Ok(outputs)
     }
 }
 
@@ -2989,7 +3105,7 @@ fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<
 
 fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::FindingSetEntryV1> {
     ledger
-        .findings()
+        .finding_views()
         .iter()
         .map(|finding| {
             let (file, line, location_unrecorded) =
@@ -3253,7 +3369,7 @@ impl Dispatch for Kernel<'_> {
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.run_gather(node, inputs),
-            NodeKind::Ledger => self.run_ledger(node, inputs),
+            NodeKind::Ledger => return self.run_ledger(node, inputs),
             NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
@@ -3831,6 +3947,7 @@ outputs = ["findings"]
         let mut convergence = Convergence {
             round: 2,
             open_blocking: 1,
+            open_required_demands: 0,
             new_recent: 1,
             authority_failures_recent: 1,
             verdict: Verdict::NotConverged,

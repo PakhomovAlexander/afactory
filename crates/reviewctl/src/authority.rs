@@ -861,19 +861,7 @@ fn capture_round(
         .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
-    let (prior_findings, demands) = if let Some((_, old)) = superseded {
-        let findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-        let demands = cas
-            .get_json(&old.prior_demand_set_id)
-            .map_err(|error| error.to_string())?["demands"]
-            .clone();
-        (findings, demands)
-    } else {
-        (
-            serde_json::Value::Array(prior_rows(ledger_projection.ledger())),
-            serde_json::Value::Array(Vec::new()),
-        )
-    };
+    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
     let prior_count = prior_findings.as_array().map_or(0, Vec::len);
     let prior_finding_set = serde_json::json!({
         "subject_id": subject_id,
@@ -891,13 +879,20 @@ fn capture_round(
     let prior_finding_set_id = cas
         .put_json(&prior_finding_set)
         .map_err(|error| error.to_string())?;
-    let prior_demand_set_id = cas
-        .put_json(&serde_json::json!({
+    let prior_demand_set_id = if let Some((_, old)) = superseded {
+        old.prior_demand_set_id.clone()
+    } else if campaign.manifest.finding_identity_policy
+        == review_core::CANONICAL_FINDING_IDENTITY_POLICY
+    {
+        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?
+    } else {
+        cas.put_json(&serde_json::json!({
             "subject_id": subject_id,
             "round": round,
-            "demands": demands,
+            "demands": ledger_projection.ledger().demand_views(),
         }))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+    };
     let payload = RoundStartedPayloadV1 {
         round,
         epoch: superseded.map_or(1, |(_, old)| old.epoch + 1),
@@ -1122,6 +1117,25 @@ fn validate_round_set(
     let value = cas
         .get_json(artifact_id)
         .map_err(|error| error.to_string())?;
+    if items_field == "demands" {
+        if let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value.clone())
+        {
+            envelope.validate().map_err(|error| error.to_string())?;
+            if envelope.artifact_type != review_core::contract::DEMAND_SET_V1 {
+                return Err("Round demands set is not a DemandSet@1 artifact".into());
+            }
+            let payload: review_core::DemandSetV1 =
+                serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+            payload.validate()?;
+            return Ok(payload.demands.len());
+        }
+        if value["kind"].as_str() == Some("demand-set-genesis@1") {
+            return value["demands"]
+                .as_array()
+                .map(Vec::len)
+                .ok_or_else(|| "Demand Set genesis does not contain an array".to_string());
+        }
+    }
     let object = value
         .as_object()
         .ok_or_else(|| format!("Round {items_field} set is not an object"))?;
@@ -1141,9 +1155,50 @@ fn validate_round_set(
         .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
 }
 
+fn latest_demand_set_id(
+    store: &EventStore,
+    cas: &Cas,
+    run_id: &str,
+    genesis_id: &str,
+) -> Result<String, String> {
+    for event in store
+        .replay(run_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .rev()
+    {
+        if event.event_type != EventType::NodeOutputReceiptV1 {
+            continue;
+        }
+        let receipt: review_core::NodeOutputReceiptPayloadV1 =
+            serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+        for port in receipt.outputs.into_iter().rev() {
+            for artifact_id in port.artifact_ids.into_iter().rev() {
+                let value = cas
+                    .get_json(&artifact_id)
+                    .map_err(|error| error.to_string())?;
+                let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
+                else {
+                    continue;
+                };
+                if envelope.artifact_type != review_core::contract::DEMAND_SET_V1 {
+                    continue;
+                }
+                envelope.validate().map_err(|error| error.to_string())?;
+                let payload: review_core::DemandSetV1 =
+                    serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+                payload.validate()?;
+                return Ok(artifact_id);
+            }
+        }
+    }
+    cas.verify(genesis_id).map_err(|error| error.to_string())?;
+    Ok(genesis_id.to_string())
+}
+
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
     ledger
-        .findings()
+        .finding_views()
         .iter()
         .filter(|finding| {
             !finding.authority_diagnostic

@@ -27,10 +27,30 @@ pub enum EventType {
     CheckCompletedV1,
     #[serde(rename = "CampaignOpened@1")]
     CampaignOpenedV1,
+    #[serde(rename = "ChangeAttested@1")]
+    ChangeAttestedV1,
+    #[serde(rename = "DemandRecorded@1")]
+    DemandRecordedV1,
+    #[serde(rename = "DemandWaived@1")]
+    DemandWaivedV1,
+    #[serde(rename = "EvidenceAdded@1")]
+    EvidenceAddedV1,
+    #[serde(rename = "EvidenceSatisfied@1")]
+    EvidenceSatisfiedV1,
     #[serde(rename = "FindingReported@1")]
     FindingReportedV1,
+    #[serde(rename = "FindingResolutionChallenged@1")]
+    FindingResolutionChallengedV1,
+    #[serde(rename = "FindingResolutionRecorded@1")]
+    FindingResolutionRecordedV1,
     #[serde(rename = "FindingResolved@1")]
     FindingResolvedV1,
+    #[serde(rename = "FindingsGrouped@1")]
+    FindingsGroupedV1,
+    #[serde(rename = "FindingsUngrouped@1")]
+    FindingsUngroupedV1,
+    #[serde(rename = "FixVerified@1")]
+    FixVerifiedV1,
     #[serde(rename = "GateDecision@1")]
     GateDecisionV1,
     #[serde(rename = "GenerationAdvanced@1")]
@@ -39,6 +59,8 @@ pub enum EventType {
     NodeInvocationV1,
     #[serde(rename = "NodeOutputReceipt@1")]
     NodeOutputReceiptV1,
+    #[serde(rename = "PolicyTimeAdvanced@1")]
+    PolicyTimeAdvancedV1,
     #[serde(rename = "ProviderOperationTransition@1")]
     ProviderOperationTransitionV1,
     #[serde(rename = "RunReport@1")]
@@ -56,7 +78,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 33] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -66,12 +88,23 @@ impl EventType {
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
+        Self::ChangeAttestedV1,
+        Self::DemandRecordedV1,
+        Self::DemandWaivedV1,
+        Self::EvidenceAddedV1,
+        Self::EvidenceSatisfiedV1,
         Self::FindingReportedV1,
+        Self::FindingResolutionChallengedV1,
+        Self::FindingResolutionRecordedV1,
         Self::FindingResolvedV1,
+        Self::FindingsGroupedV1,
+        Self::FindingsUngroupedV1,
+        Self::FixVerifiedV1,
         Self::GateDecisionV1,
         Self::GenerationAdvancedV1,
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
+        Self::PolicyTimeAdvancedV1,
         Self::ProviderOperationTransitionV1,
         Self::RunReportV1,
         Self::RunReportV2,
@@ -92,12 +125,23 @@ impl EventType {
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
+            Self::ChangeAttestedV1 => "ChangeAttested@1",
+            Self::DemandRecordedV1 => "DemandRecorded@1",
+            Self::DemandWaivedV1 => "DemandWaived@1",
+            Self::EvidenceAddedV1 => "EvidenceAdded@1",
+            Self::EvidenceSatisfiedV1 => "EvidenceSatisfied@1",
             Self::FindingReportedV1 => "FindingReported@1",
+            Self::FindingResolutionChallengedV1 => "FindingResolutionChallenged@1",
+            Self::FindingResolutionRecordedV1 => "FindingResolutionRecorded@1",
+            Self::FindingsGroupedV1 => "FindingsGrouped@1",
+            Self::FindingsUngroupedV1 => "FindingsUngrouped@1",
+            Self::FixVerifiedV1 => "FixVerified@1",
             Self::FindingResolvedV1 => "FindingResolved@1",
             Self::GateDecisionV1 => "GateDecision@1",
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
+            Self::PolicyTimeAdvancedV1 => "PolicyTimeAdvanced@1",
             Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
@@ -132,12 +176,23 @@ impl EventType {
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
+            Self::ChangeAttestedV1 => ("ChangeAttested", 1),
+            Self::DemandRecordedV1 => ("DemandRecorded", 1),
+            Self::DemandWaivedV1 => ("DemandWaived", 1),
+            Self::EvidenceAddedV1 => ("EvidenceAdded", 1),
+            Self::EvidenceSatisfiedV1 => ("EvidenceSatisfied", 1),
             Self::FindingReportedV1 => ("FindingReported", 1),
+            Self::FindingResolutionChallengedV1 => ("FindingResolutionChallenged", 1),
+            Self::FindingResolutionRecordedV1 => ("FindingResolutionRecorded", 1),
+            Self::FindingsGroupedV1 => ("FindingsGrouped", 1),
+            Self::FindingsUngroupedV1 => ("FindingsUngrouped", 1),
+            Self::FixVerifiedV1 => ("FixVerified", 1),
             Self::FindingResolvedV1 => ("FindingResolved", 1),
             Self::GateDecisionV1 => ("GateDecision", 1),
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
+            Self::PolicyTimeAdvancedV1 => ("PolicyTimeAdvanced", 1),
             Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
@@ -192,12 +247,23 @@ impl std::str::FromStr for EventType {
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
+            "ChangeAttested@1" => Ok(Self::ChangeAttestedV1),
+            "DemandRecorded@1" => Ok(Self::DemandRecordedV1),
+            "DemandWaived@1" => Ok(Self::DemandWaivedV1),
+            "EvidenceAdded@1" => Ok(Self::EvidenceAddedV1),
+            "EvidenceSatisfied@1" => Ok(Self::EvidenceSatisfiedV1),
             "FindingReported@1" => Ok(Self::FindingReportedV1),
+            "FindingResolutionChallenged@1" => Ok(Self::FindingResolutionChallengedV1),
+            "FindingResolutionRecorded@1" => Ok(Self::FindingResolutionRecordedV1),
+            "FindingsGrouped@1" => Ok(Self::FindingsGroupedV1),
+            "FindingsUngrouped@1" => Ok(Self::FindingsUngroupedV1),
+            "FixVerified@1" => Ok(Self::FixVerifiedV1),
             "FindingResolved@1" => Ok(Self::FindingResolvedV1),
             "GateDecision@1" => Ok(Self::GateDecisionV1),
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
+            "PolicyTimeAdvanced@1" => Ok(Self::PolicyTimeAdvancedV1),
             "ProviderOperationTransition@1" => Ok(Self::ProviderOperationTransitionV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
@@ -1011,6 +1077,14 @@ pub fn validate_event_payload(
         }
         EventType::FindingReportedV1 => validate_finding_reported(payload),
         EventType::FindingResolvedV1 => validate_finding_resolved(payload),
+        EventType::FindingsGroupedV1 | EventType::FindingsUngroupedV1 => {
+            let grouping =
+                serde_json::from_value::<crate::FindingGroupingEventPayloadV1>(payload.clone())
+                    .map_err(|error| format!("{event_type}: {error}"))?;
+            grouping
+                .validate()
+                .map_err(|error| format!("{event_type}: {error}"))
+        }
         EventType::GenerationAdvancedV1 => {
             let value: GenerationAdvancedPayloadV1 = serde_json::from_value(payload.clone())
                 .map_err(|error| format!("GenerationAdvanced@1: {error}"))?;
@@ -1025,6 +1099,22 @@ pub fn validate_event_payload(
             opened
                 .validate()
                 .map_err(|error| format!("CampaignOpened@1: {error}"))
+        }
+        EventType::DemandRecordedV1
+        | EventType::DemandWaivedV1
+        | EventType::EvidenceAddedV1
+        | EventType::EvidenceSatisfiedV1
+        | EventType::ChangeAttestedV1
+        | EventType::FixVerifiedV1
+        | EventType::FindingResolutionRecordedV1
+        | EventType::FindingResolutionChallengedV1
+        | EventType::PolicyTimeAdvancedV1 => {
+            let recorded =
+                serde_json::from_value::<crate::RecordedArtifactPayloadV1>(payload.clone())
+                    .map_err(|error| format!("{event_type}: {error}"))?;
+            recorded
+                .validate()
+                .map_err(|error| format!("{event_type}: {error}"))
         }
         EventType::RoundStartedV1 => {
             let started = serde_json::from_value::<crate::RoundStartedPayloadV1>(payload.clone())

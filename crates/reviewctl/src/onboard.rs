@@ -680,7 +680,10 @@ fn build_definition(gates: &[Gate]) -> Definition {
         id: "ledger".into(),
         kind: NodeKindSpec::Ledger,
         inputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
-        outputs: vec![typed_port("findings", contract::FINDING_SET_V1)],
+        outputs: vec![
+            typed_port("findings", contract::FINDING_SET_V1),
+            typed_port("demands", contract::DEMAND_SET_V1),
+        ],
         gated_by: None,
         runner: None,
         package: None,

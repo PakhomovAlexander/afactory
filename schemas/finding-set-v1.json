@@ -23,7 +23,7 @@
         "required": ["finding_id", "status", "severity", "effective_severity", "scope", "title", "body", "source", "last_seen_round", "report_ids"],
         "properties": {
           "finding_id": { "type": "string", "minLength": 1 },
-          "status": { "enum": ["open", "fixed", "rejected", "wontfix", "contested"] },
+          "status": { "enum": ["open", "pending-verification", "fixed", "rejected", "wontfix", "contested"] },
           "severity": { "enum": ["minor", "major", "blocker"] },
           "effective_severity": {
             "oneOf": [

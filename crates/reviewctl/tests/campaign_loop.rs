@@ -458,7 +458,7 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
 }
 
 #[test]
-fn a_campaign_converges_after_the_fix_survives_review() {
+fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
@@ -528,7 +528,8 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
 
-    // Fix, commit, record the disposition.
+    // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
+    // attestation/verification path is covered by the canonical projection tests.
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
     let (code, resolve_out, resolve_err) = reviewctl(
@@ -541,13 +542,34 @@ fn a_campaign_converges_after_the_fix_survives_review() {
             "--state",
             &state,
             &key,
-            "fixed",
-            "--note",
-            "bounded in src/main.rs",
+            "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejected the original claim after inspecting src/main.rs",
         ],
     );
     assert_eq!(code, 0, "{resolve_out}\n{resolve_err}");
-    assert!(resolve_out.contains("-> fixed"), "{resolve_out}");
+    assert!(resolve_out.contains("-> rejected"), "{resolve_out}");
+    let (code, duplicate_out, duplicate_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            &key,
+            "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejected the original claim after inspecting src/main.rs",
+        ],
+    );
+    assert_eq!(code, 0, "{duplicate_out}\n{duplicate_err}");
+    assert_eq!(duplicate_out, resolve_out, "exact duplicate is idempotent");
 
     // Round 2: prior findings travel to the reviewer; the clean round converges.
     let (code, stdout, stderr) = reviewctl(
@@ -557,16 +579,16 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert_eq!(code, 0, "round 2 must converge\n{stdout}\n{stderr}");
     assert!(stdout.contains("round    2"), "{stdout}");
-    assert!(stdout.contains("prior    1 findings carried"), "{stdout}");
+    assert!(!stdout.contains("findings carried"), "{stdout}");
     assert!(stdout.contains("verdict  Pass"), "{stdout}");
 
-    // The ledger's final state: the finding stayed fixed, nothing reopened.
+    // The Ledger's final state remains the exact scoped operator decision.
     let (_, ledger_out, ledger_err) = reviewctl(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
     );
-    assert!(ledger_out.contains("\tfixed\t"), "{ledger_out}");
+    assert!(ledger_out.contains("\trejected\t"), "{ledger_out}");
     assert!(ledger_err.contains("0 open"), "{ledger_err}");
 
     let (_, report_out, report_err) = reviewctl(
@@ -576,7 +598,7 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert!(report_out.contains("Final verdict: pass"), "{report_out}");
     assert!(
-        report_out.contains("bounded in src/main.rs"),
+        report_out.contains("operator rejected the original claim"),
         "{report_out}"
     );
     assert!(report_err.is_empty(), "{report_err}");
@@ -584,7 +606,7 @@ fn a_campaign_converges_after_the_fix_survives_review() {
 
 /// A "fix" that does not actually fix reopens the finding, and the campaign refuses to pass.
 #[test]
-fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
+fn a_direct_fixed_assertion_is_refused_and_the_claim_remains_blocking() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
@@ -601,8 +623,8 @@ fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
     );
     let key = ledger_out.split('\t').next().unwrap().to_string();
 
-    // Claim it is fixed without touching the code.
-    let (code, ..) = reviewctl(
+    // A bare operator assertion cannot make the Finding fixed.
+    let (code, _, stderr) = reviewctl(
         &repo,
         &home,
         &[
@@ -613,9 +635,14 @@ fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
             &state,
             &key,
             "fixed",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "unsupported bare assertion",
         ],
     );
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("attest-change"), "{stderr}");
 
     // Round 2 re-finds it: reopened, and the run must not pass.
     let (code, stdout, _) = reviewctl(
@@ -735,6 +762,10 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
             &state,
             &key,
             "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejects the claim",
         ],
     );
     assert_eq!(code, 0);

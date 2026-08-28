@@ -9,9 +9,11 @@
 //!   history — and the import is honest about it: it produces one report and at most one
 //!   resolution per row, and claims nothing about what happened in between.
 
+use review_core::legacy::LegacyBenchmarkDemand;
 use review_core::{
-    CANONICAL_FINDING_IDENTITY_POLICY, FindingDispositionPosition, FindingDispositionV1,
-    FindingReport, LegacyStageOutput, Producer, ReviewerResultContract, RunEvent, Severity,
+    CANONICAL_FINDING_IDENTITY_POLICY, EventType, FindingDispositionPosition, FindingDispositionV1,
+    FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, FindingReport,
+    LegacyStageOutput, Producer, ReviewerResultContract, RunEvent, Severity,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,8 +22,9 @@ use std::collections::BTreeSet;
 
 use crate::cas::Cas;
 use crate::ledger::{
-    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_GENERATION_ADVANCED, Ledger,
-    LedgerProjection, Status, TransitionKind,
+    EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_FINDINGS_GROUPED,
+    EVENT_FINDINGS_UNGROUPED, EVENT_GENERATION_ADVANCED, Ledger, LedgerProjection, Status,
+    TransitionKind,
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
@@ -136,8 +139,12 @@ pub struct CanonicalReduction {
     pub selected_report_ids: Vec<String>,
     /// Domain-separated relation IDs recorded in `FindingSet@1`.
     pub relation_ids: Vec<String>,
+    /// Domain-separated typed Demand artifacts selected by this reduction.
+    pub selected_demand_artifact_ids: Vec<String>,
     /// CAS IDs of all Report and relation envelopes consumed by the Set reducer.
     pub input_artifact_ids: Vec<String>,
+    /// CAS records for selected Demand envelopes.
+    pub demand_input_artifact_ids: Vec<String>,
     /// The reducer contract selected by the admitted evidence kind.
     pub reducer_version: &'static str,
 }
@@ -153,6 +160,7 @@ struct ReportProvenance {
 struct PreparedStage {
     source: String,
     reports: Vec<FindingReport>,
+    demands: Vec<LegacyBenchmarkDemand>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
     provenance: Option<ReportProvenance>,
     result_contract: ReviewerResultContract,
@@ -323,6 +331,7 @@ impl<'a> Ingest<'a> {
             prepared.push(PreparedStage {
                 source: (*source).to_string(),
                 reports,
+                demands: stage.benchmark_demands.clone(),
                 disputes: stage.disputes.clone(),
                 provenance: None,
                 result_contract: ReviewerResultContract::V1,
@@ -371,6 +380,7 @@ impl<'a> Ingest<'a> {
             prepared.push(PreparedStage {
                 source: stage.source.to_string(),
                 reports,
+                demands: stage.stage.benchmark_demands.clone(),
                 disputes: stage.stage.disputes.clone(),
                 provenance: Some(ReportProvenance {
                     producer: Producer::Attempt {
@@ -415,11 +425,57 @@ impl<'a> Ingest<'a> {
         let mut selected_report_ids = Vec::new();
         let mut relation_ids = Vec::new();
         let mut input_artifact_ids = Vec::new();
+        let mut selected_demand_artifact_ids = Vec::new();
+        let mut demand_input_artifact_ids = Vec::new();
+        let mut pending_demands = BTreeSet::new();
         let mut pending_occurrences: std::collections::BTreeMap<(String, String), String> =
             std::collections::BTreeMap::new();
 
         for stage in stages {
             let source = stage.source.as_str();
+            if let Some(provenance) = &stage.provenance {
+                for demand in &stage.demands {
+                    let demand_id = canonical_demand_id(source, demand);
+                    if self.ledger.demand(&demand_id).is_some()
+                        || !pending_demands.insert(demand_id.clone())
+                    {
+                        continue;
+                    }
+                    let payload = review_core::DemandV1 {
+                        demand_id: demand_id.clone(),
+                        claim: demand.claim.clone(),
+                        why: demand.why.clone(),
+                        suggested_method: demand.suggested_method.clone(),
+                        source: source.to_string(),
+                        requirement: review_core::DemandRequirement::Required,
+                        round,
+                        subject_id: provenance.subject_id.clone(),
+                    };
+                    payload.validate().map_err(StoreError::Conflict)?;
+                    let (record_id, envelope) = self
+                        .cas
+                        .put_artifact(
+                            review_core::contract::DEMAND_V1,
+                            provenance.producer.clone(),
+                            provenance.input_artifacts.clone(),
+                            Some(provenance.subject_snapshot_id.clone()),
+                            serde_json::to_value(payload)?,
+                        )
+                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                    let event = NewEvent::new(
+                        crate::ledger::EVENT_DEMAND_RECORDED,
+                        serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                            artifact_id: record_id.clone(),
+                        })?,
+                    )
+                    .correlating(demand_id)
+                    .referencing(vec![record_id.clone()]);
+                    apply_candidate(&mut projected, &event, self.cas)?;
+                    events.push(event);
+                    selected_demand_artifact_ids.push(envelope.artifact_id);
+                    demand_input_artifact_ids.push(record_id);
+                }
+            }
             let mut reports = stage.reports.clone();
             if let Some(provenance) = &stage.provenance {
                 for dispute in &stage.disputes {
@@ -755,7 +811,9 @@ impl<'a> Ingest<'a> {
             summary,
             selected_report_ids,
             relation_ids,
+            selected_demand_artifact_ids,
             input_artifact_ids,
+            demand_input_artifact_ids,
             reducer_version: if stages
                 .iter()
                 .any(|stage| stage.result_contract == ReviewerResultContract::V2)
@@ -798,6 +856,510 @@ impl<'a> Ingest<'a> {
         Ok(())
     }
 
+    pub fn group(&mut self, from: &str, into: &str) -> Result<(), StoreError> {
+        self.grouping_transition(from, into, FindingGroupingAction::Group)
+    }
+
+    pub fn add_evidence(
+        &mut self,
+        demand_id: &str,
+        content_artifact_id: &str,
+        actor: &str,
+    ) -> Result<String, StoreError> {
+        self.cas
+            .verify(content_artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let demand = self.ledger.demand(demand_id).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "cannot add Evidence for unknown Demand `{demand_id}`"
+            ))
+        })?;
+        let demand_record_id = demand
+            .record_ids
+            .last()
+            .cloned()
+            .ok_or_else(|| StoreError::Conflict("Demand has no artifact record".into()))?;
+        let subject_id = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        let payload = review_core::EvidenceV1 {
+            demand_id: demand_id.to_string(),
+            subject_id,
+            content_artifact_id: content_artifact_id.to_string(),
+            actor: actor.to_string(),
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::EVIDENCE_V1,
+            EventType::EvidenceAddedV1,
+            demand_id,
+            vec![demand_record_id, content_artifact_id.to_string()],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn satisfy_demand(
+        &mut self,
+        demand_id: &str,
+        evidence_id: &str,
+        policy_revision: &str,
+        reason: &str,
+    ) -> Result<String, StoreError> {
+        let demand = self.ledger.demand(demand_id).ok_or_else(|| {
+            StoreError::Conflict(format!("cannot satisfy unknown Demand `{demand_id}`"))
+        })?;
+        let evidence = demand
+            .evidence
+            .iter()
+            .find(|evidence| evidence.artifact_id == evidence_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "Evidence `{evidence_id}` is not linked to Demand `{demand_id}`"
+                ))
+            })?;
+        let subject_id = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        if evidence.evidence.subject_id != subject_id {
+            return Err(StoreError::Conflict(
+                "Evidence is stale for the active Subject".into(),
+            ));
+        }
+        let payload = review_core::EvidenceSatisfactionV1 {
+            demand_id: demand_id.to_string(),
+            evidence_id: evidence_id.to_string(),
+            subject_id,
+            policy_revision: policy_revision.to_string(),
+            reason: reason.to_string(),
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::EVIDENCE_SATISFACTION_V1,
+            EventType::EvidenceSatisfiedV1,
+            demand_id,
+            vec![evidence.record_id.clone()],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn waive_demand(
+        &mut self,
+        demand_id: &str,
+        actor: &str,
+        policy_revision: &str,
+        reason: &str,
+    ) -> Result<String, StoreError> {
+        let demand = self.ledger.demand(demand_id).ok_or_else(|| {
+            StoreError::Conflict(format!("cannot waive unknown Demand `{demand_id}`"))
+        })?;
+        let demand_record_id = demand
+            .record_ids
+            .last()
+            .cloned()
+            .ok_or_else(|| StoreError::Conflict("Demand has no artifact record".into()))?;
+        let subject_id = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        let payload = review_core::DemandWaiverV1 {
+            demand_id: demand_id.to_string(),
+            subject_id,
+            actor: actor.to_string(),
+            policy_revision: policy_revision.to_string(),
+            reason: reason.to_string(),
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::DEMAND_WAIVER_V1,
+            EventType::DemandWaivedV1,
+            demand_id,
+            vec![demand_record_id],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn attest_change(
+        &mut self,
+        finding_id: &str,
+        changed_regions: Vec<review_core::ChangedRegionV1>,
+        actor: &str,
+        reason: &str,
+        evidence_ids: Vec<String>,
+    ) -> Result<String, StoreError> {
+        let expected_finding_view_id =
+            self.ledger.finding_view_id(finding_id).ok_or_else(|| {
+                StoreError::Conflict(format!("cannot attest unknown Finding `{finding_id}`"))
+            })?;
+        let subject_id = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        let change_set_id = self
+            .ledger
+            .active_change_set_id()
+            .ok_or_else(|| {
+                StoreError::Conflict("Change Attestation requires a diff Subject Change Set".into())
+            })?
+            .to_string();
+        let payload = review_core::ChangeAttestationV1 {
+            finding_id: finding_id.to_string(),
+            expected_finding_view_id,
+            subject_id,
+            change_set_id: change_set_id.clone(),
+            changed_regions,
+            actor: actor.to_string(),
+            reason: reason.to_string(),
+            evidence_ids,
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::CHANGE_ATTESTATION_V1,
+            EventType::ChangeAttestedV1,
+            finding_id,
+            vec![change_set_id],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_fix(
+        &mut self,
+        finding_id: &str,
+        attestation_id: &str,
+        verifier: &str,
+        policy_revision: &str,
+        positive: bool,
+        reason: &str,
+        evidence_ids: Vec<String>,
+    ) -> Result<(String, Option<String>), StoreError> {
+        let attestation = self.ledger.attestation(attestation_id).ok_or_else(|| {
+            StoreError::Conflict(format!("unknown Change Attestation `{attestation_id}`"))
+        })?;
+        if attestation.attestation.finding_id != finding_id {
+            return Err(StoreError::Conflict(
+                "Fix Verification Finding disagrees with its Attestation".into(),
+            ));
+        }
+        let attestation_record_id = attestation.record_id.clone();
+        let expected_finding_view_id =
+            self.ledger.finding_view_id(finding_id).ok_or_else(|| {
+                StoreError::Conflict(format!("cannot verify unknown Finding `{finding_id}`"))
+            })?;
+        let subject_id = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        let verification = review_core::FixVerificationV1 {
+            finding_id: finding_id.to_string(),
+            attestation_id: attestation_id.to_string(),
+            expected_finding_view_id,
+            subject_id: subject_id.clone(),
+            verifier: verifier.to_string(),
+            policy_revision: policy_revision.to_string(),
+            positive,
+            reason: reason.to_string(),
+            evidence_ids: evidence_ids.clone(),
+        };
+        verification.validate().map_err(StoreError::Conflict)?;
+        let verification_id = self.publish_operator_artifact(
+            review_core::contract::FIX_VERIFICATION_V1,
+            EventType::FixVerifiedV1,
+            finding_id,
+            vec![attestation_record_id],
+            serde_json::to_value(verification)?,
+        )?;
+        if !positive {
+            return Ok((verification_id, None));
+        }
+        let verification_record_id = self
+            .ledger
+            .verification(&verification_id)
+            .expect("published verification is projected")
+            .record_id
+            .clone();
+        let resolution = review_core::FindingResolutionV1 {
+            finding_id: finding_id.to_string(),
+            expected_finding_view_id: self
+                .ledger
+                .finding_view_id(finding_id)
+                .expect("verified Finding still exists"),
+            subject_id,
+            outcome: review_core::FindingResolutionOutcome::Fixed,
+            actor: verifier.to_string(),
+            policy_revision: policy_revision.to_string(),
+            reason: reason.to_string(),
+            evidence_ids,
+            verification_id: Some(verification_id.clone()),
+            max_accepted_severity: None,
+            tracking_reference: None,
+            expires_at_policy_time: None,
+        };
+        resolution.validate().map_err(StoreError::Conflict)?;
+        let resolution_id = self.publish_operator_artifact(
+            review_core::contract::FINDING_RESOLUTION_V1,
+            EventType::FindingResolutionRecordedV1,
+            finding_id,
+            vec![verification_record_id],
+            serde_json::to_value(resolution)?,
+        )?;
+        Ok((verification_id, Some(resolution_id)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_nonfixed(
+        &mut self,
+        finding_id: &str,
+        outcome: review_core::FindingResolutionOutcome,
+        actor: &str,
+        policy_revision: &str,
+        reason: &str,
+        evidence_ids: Vec<String>,
+        max_accepted_severity: Option<Severity>,
+        tracking_reference: Option<String>,
+        expires_at_policy_time: Option<u64>,
+    ) -> Result<String, StoreError> {
+        if outcome == review_core::FindingResolutionOutcome::Fixed {
+            return Err(StoreError::Conflict(
+                "fixed requires Change Attestation and Fix Verification".into(),
+            ));
+        }
+        let active_subject = self
+            .ledger
+            .active_subject_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+            .to_string();
+        if let Some(existing) = self.ledger.resolution(finding_id)
+            && existing.resolution.subject_id == active_subject
+            && existing.resolution.outcome == outcome
+            && existing.resolution.actor == actor
+            && existing.resolution.policy_revision == policy_revision
+            && existing.resolution.reason == reason
+            && existing.resolution.evidence_ids == evidence_ids
+            && existing.resolution.max_accepted_severity == max_accepted_severity
+            && existing.resolution.tracking_reference == tracking_reference
+            && existing.resolution.expires_at_policy_time == expires_at_policy_time
+        {
+            return Ok(existing.artifact_id.clone());
+        }
+        let payload = review_core::FindingResolutionV1 {
+            finding_id: finding_id.to_string(),
+            expected_finding_view_id: self.ledger.finding_view_id(finding_id).ok_or_else(|| {
+                StoreError::Conflict(format!("cannot resolve unknown Finding `{finding_id}`"))
+            })?,
+            subject_id: active_subject,
+            outcome,
+            actor: actor.to_string(),
+            policy_revision: policy_revision.to_string(),
+            reason: reason.to_string(),
+            evidence_ids,
+            verification_id: None,
+            max_accepted_severity,
+            tracking_reference,
+            expires_at_policy_time,
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::FINDING_RESOLUTION_V1,
+            EventType::FindingResolutionRecordedV1,
+            finding_id,
+            Vec::new(),
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn challenge_resolution(
+        &mut self,
+        finding_id: &str,
+        kind: review_core::ResolutionChallengeKind,
+        actor: &str,
+        reason: &str,
+        evidence_ids: Vec<String>,
+    ) -> Result<String, StoreError> {
+        let resolution = self.ledger.resolution(finding_id).ok_or_else(|| {
+            StoreError::Conflict(format!("Finding `{finding_id}` has no active Resolution"))
+        })?;
+        let resolution_id = resolution.artifact_id.clone();
+        let resolution_record_id = resolution.record_id.clone();
+        let payload = review_core::ResolutionChallengeV1 {
+            finding_id: finding_id.to_string(),
+            resolution_id,
+            subject_id: self
+                .ledger
+                .active_subject_id()
+                .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
+                .to_string(),
+            kind,
+            actor: actor.to_string(),
+            reason: reason.to_string(),
+            evidence_ids,
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::RESOLUTION_CHALLENGE_V1,
+            EventType::FindingResolutionChallengedV1,
+            finding_id,
+            vec![resolution_record_id],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn advance_policy_time(
+        &mut self,
+        tick: u64,
+        actor: &str,
+        reason: &str,
+    ) -> Result<(String, Vec<String>), StoreError> {
+        if tick <= self.ledger.policy_time() {
+            return Err(StoreError::Conflict(
+                "policy time must advance monotonically".into(),
+            ));
+        }
+        let payload = review_core::PolicyTimeV1 {
+            tick,
+            actor: actor.to_string(),
+            reason: reason.to_string(),
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        let time_id = self.publish_operator_artifact(
+            review_core::contract::POLICY_TIME_V1,
+            EventType::PolicyTimeAdvancedV1,
+            "policy-time",
+            Vec::new(),
+            serde_json::to_value(payload)?,
+        )?;
+        let expired: Vec<String> = self
+            .ledger
+            .expiring_resolutions(tick)
+            .iter()
+            .map(|resolution| resolution.resolution.finding_id.clone())
+            .collect();
+        let mut challenges = Vec::new();
+        for finding_id in expired {
+            challenges.push(self.challenge_resolution(
+                &finding_id,
+                review_core::ResolutionChallengeKind::Expired,
+                actor,
+                "tracked wontfix expired at persisted policy time",
+                Vec::new(),
+            )?);
+        }
+        Ok((time_id, challenges))
+    }
+
+    fn publish_operator_artifact(
+        &mut self,
+        artifact_type: &str,
+        event_type: EventType,
+        correlation_id: &str,
+        input_artifacts: Vec<String>,
+        payload: serde_json::Value,
+    ) -> Result<String, StoreError> {
+        let operation_id = format!(
+            "{artifact_type}:{}",
+            crate::content_id(&payload).map_err(|error| StoreError::Conflict(error.to_string()))?
+        );
+        let subject_snapshot_id = self
+            .ledger
+            .active_head_snapshot_id()
+            .ok_or_else(|| {
+                StoreError::Conflict("Campaign has no readable Subject Snapshot".into())
+            })?
+            .to_string();
+        let (record_id, envelope) = self
+            .cas
+            .put_artifact(
+                artifact_type,
+                Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: None,
+                    operation_id,
+                },
+                input_artifacts,
+                Some(subject_snapshot_id),
+                payload,
+            )
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let event = NewEvent::new(
+            event_type,
+            serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                artifact_id: record_id.clone(),
+            })?,
+        )
+        .correlating(correlation_id.to_string())
+        .referencing(vec![record_id]);
+        let event = self.store.append(&self.run_id, self.cas, event)?;
+        self.validate_watermark(&event)?;
+        self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
+        Ok(envelope.artifact_id)
+    }
+
+    pub fn ungroup(&mut self, from: &str, into: &str) -> Result<(), StoreError> {
+        self.grouping_transition(from, into, FindingGroupingAction::Ungroup)
+    }
+
+    fn grouping_transition(
+        &mut self,
+        from: &str,
+        into: &str,
+        action: FindingGroupingAction,
+    ) -> Result<(), StoreError> {
+        match action {
+            FindingGroupingAction::Group => self.ledger.validate_group(from, into)?,
+            FindingGroupingAction::Ungroup => self.ledger.validate_ungroup(from, into)?,
+        }
+        let grouping = FindingGroupingV1 {
+            from: from.to_string(),
+            into: into.to_string(),
+            action,
+            round: self.ledger.round,
+        };
+        grouping.validate().map_err(StoreError::Conflict)?;
+        let operation_id = format!(
+            "review.kernel/finding-grouping@1:{}",
+            crate::content_id(&serde_json::to_value(&grouping)?)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?
+        );
+        let (record_id, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::FINDING_GROUPING_V1,
+                Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: None,
+                    operation_id,
+                },
+                Vec::new(),
+                None,
+                serde_json::to_value(&grouping)?,
+            )
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let payload = FindingGroupingEventPayloadV1 {
+            from: from.to_string(),
+            into: into.to_string(),
+            grouping_artifact_id: record_id.clone(),
+        };
+        let event_type = match action {
+            FindingGroupingAction::Group => EVENT_FINDINGS_GROUPED,
+            FindingGroupingAction::Ungroup => EVENT_FINDINGS_UNGROUPED,
+        };
+        let event = NewEvent::new(event_type, serde_json::to_value(payload)?)
+            .correlating(from.to_string())
+            .referencing(vec![record_id]);
+        let event = self.store.append(&self.run_id, self.cas, event)?;
+        self.validate_watermark(&event)?;
+        self.ledger.apply_event(&event, self.cas)?;
+        self.event_count += 1;
+        Ok(())
+    }
+
     fn advance_watermark(&mut self, event: &RunEvent) -> Result<(), StoreError> {
         self.validate_watermark(event)?;
         self.event_count += 1;
@@ -820,6 +1382,22 @@ pub fn canonical_finding_id(report_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"review.kernel/finding-id/v1\0");
     hasher.update(report_id.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+/// A reviewer re-stating the exact same obligation keeps one Demand identity across Rounds.
+pub fn canonical_demand_id(source: &str, demand: &LegacyBenchmarkDemand) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"review.kernel/demand-id/v1\0");
+    for field in [
+        source,
+        demand.claim.as_str(),
+        demand.why.as_str(),
+        demand.suggested_method.as_str(),
+    ] {
+        hasher.update(field.as_bytes());
+        hasher.update([0]);
+    }
     format!("sha256:{:x}", hasher.finalize())
 }
 
