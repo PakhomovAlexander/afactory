@@ -14,11 +14,14 @@ remains durably recoverable from the existing `campaign-<label>` run ID; Campaig
 the existing `CampaignOpened@1` event and referenced `CampaignManifest@1`. No persisted Review
 Kernel event or artifact shape changes.
 
-Labels are trimmed, non-empty single components and reject control characters, platform
-separators, and reserved traversal forms. The state root and selected directory are resolved before
-use, and the selected directory must remain beneath that root. Existing label-named directories
-remain readable as a permanent compatibility path. If both legacy and opaque directories exist for
-one label, Afactory refuses the ambiguity. Enumeration does not follow symlinked Campaign entries.
+New labels are trimmed, non-empty single components and reject control characters, platform
+separators, reserved traversal forms, and the opaque-ID shape itself. The state root and selected
+directory are resolved before use, and the selected directory must remain beneath that root.
+Existing label-named directories remain readable as a permanent compatibility path, including
+labels accepted by the older validator, only when their event store identifies the exact Campaign
+run. If both legacy and opaque directories exist for one label, Afactory refuses the ambiguity.
+Enumeration does not follow symlinked Campaign entries and opens both SQLite and CAS state without
+creating storage.
 
 ## Considered options
 
@@ -42,6 +45,8 @@ one label, Afactory refuses the ambiguity. Enumeration does not follow symlinked
 - Operators see both ID and label; IDs are stable but deliberately not reversible without Campaign
   state.
 - Legacy state remains readable but is not silently migrated or duplicated.
+- A label copied from the displayed opaque ID is refused for new Campaigns, so the human-label and
+  directory-ID namespaces cannot alias.
 - Moving or hand-copying Campaign databases under arbitrary directory names fails enumeration;
   operators must preserve either the opaque ID or the exact legacy label.
 - The run ID still contains the validated label. Hiding labels from local storage is not a goal of

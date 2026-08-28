@@ -289,6 +289,26 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
         stdout.contains("run 1: round 1 epoch 1; fail (not_converged)"),
         "{stdout}"
     );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "review",
+            "campaigns",
+            "--state-root",
+            &root,
+            "--format",
+            "json",
+        ])
+        .current_dir(&repo)
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "explicit state root unexpectedly required HOME: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
