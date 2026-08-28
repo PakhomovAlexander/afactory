@@ -415,9 +415,9 @@ current `wontfix-tracked` Resolution until an explicit challenge removes that te
 Demands, Evidence, and fixed resolution are snapshot-sensitive, so they follow M2's Subject and
 Change Set rather than being retrofitted onto whole-tree legacy events.
 
-Implementation merged through PR #18. Its exhausted verification Campaign opened three major
-follow-up Findings; their corrections pass the full local gate and must be dispositioned before
-M4 is complete.
+Implementation merged through PR #18. Its exhausted verification Campaign has six fixed Findings
+and zero open; follow-up `0361a7d` passes the full local gate. PR #19 integration and exact-main
+verification remain before M4 is complete.
 
 ### M4.1 — Demands become durable obligations
 

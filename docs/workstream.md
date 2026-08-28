@@ -2,9 +2,9 @@
 
 **Status:** M0–M3, private releases through `v0.4.0`, minimal product v1/v2, and their first
 candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
-exact-main CI passed. Its exhausted verification Campaign opened three major follow-up Findings,
-whose local corrections pass the full gate and await exact Campaign-ledger dispositions before M4
-is complete. The accepted V3.1
+exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
+open; follow-up `0361a7d` passes the full local gate and awaits PR #19 integration before M4 is
+complete. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
@@ -152,7 +152,8 @@ and verification prerequisites exist.
       results remain visible without acquiring Ledger or convergence authority (issue #15).
   - [x] M4.1–M4.5 implementation and issue #15 reporting merged through PR #18.
   - [x] Fix the three exhausted-Campaign follow-up Findings and pass the full local gate.
-  - [ ] Record their exact Campaign-ledger dispositions.
+  - [x] Record their exact Campaign-ledger dispositions; six Findings are fixed, zero open.
+  - [ ] Integrate PR #19 and verify exact `main`.
 - [ ] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
       Round history are enumerable.
 - [ ] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
@@ -317,8 +318,9 @@ commit `179bb71` implements the agent-facing guidance. PR #18 subsequently merge
 implementation at `cea50aa`; exact-main CI passed. Verification Campaign
 `m3-3-m4-verification-v1` exhausted with three major follow-up Findings. Their local corrections
 preserve per-Finding Resolution authority across Grouping, pin reviewer Demand classification,
-and require explicit Evidence reuse admission; the full local gate passes. Resume at their exact
-Campaign-ledger dispositions, then M5.
+and require explicit Evidence reuse admission; the full local gate passes. All six Campaign
+Findings are fixed with zero open, and follow-up PR #19 carries `0361a7d`. Resume at its integration
+and exact-main verification, then M5.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

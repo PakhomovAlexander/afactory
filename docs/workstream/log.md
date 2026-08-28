@@ -1173,4 +1173,9 @@ expiry, pin required/advisory Demand policy in the exact pipeline artifact, and 
 explicit `EvidenceReuseAdmission@1` so reuse can clear a current Demand without mutating the
 frozen `EvidenceSatisfaction@1` contract. The full local gate passed: formatting, clippy with
 warnings denied, all workspace tests and doctests, and byte-identical synthetic fixture
-reproduction. Only the exact Campaign-ledger dispositions remain.
+reproduction. At that checkpoint, only the exact Campaign-ledger dispositions remained.
+
+The owner approved the three exact fixed transitions. Campaign
+`m3-3-m4-verification-v1` now has six fixed Findings and zero open; its historical final verdict
+remains exhausted because immutable completed Rounds are not rewritten. Follow-up PR #19 opened
+from `0361a7d`, and its initial CI passed. Integration and exact-main verification remain.
