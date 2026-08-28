@@ -509,6 +509,14 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         .iter()
         .map(|finding| finding.key.clone())
         .collect();
+    ingest
+        .resolve(&ids[0], review_store::Status::Fixed, Some("candidate fix"))
+        .unwrap();
+    ingest.advance().unwrap();
+    assert_eq!(
+        ingest.ledger().get(&ids[0]).unwrap().status,
+        review_store::Status::Fixed
+    );
     let dispositions: LegacyStageOutput = serde_json::from_value(serde_json::json!({
         "verdict": "request-changes",
         "summary": "explicit coverage",
@@ -539,12 +547,19 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         review_core::FINDING_REDUCER_VERSION_V2
     );
     assert_eq!(reduction.relation_ids.len(), 3);
-    assert_eq!(reduction.input_artifact_ids.len(), 3);
-    for (semantic_id, record_id) in reduction
-        .relation_ids
+    assert_eq!(reduction.selected_report_ids.len(), 1);
+    assert_eq!(reduction.input_artifact_ids.len(), 4);
+    let disposition_records: Vec<_> = reduction
+        .input_artifact_ids
         .iter()
-        .zip(&reduction.input_artifact_ids)
-    {
+        .filter(|record_id| {
+            let envelope: review_core::ArtifactEnvelope =
+                serde_json::from_value(cas.get_json(record_id).unwrap()).unwrap();
+            envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1
+        })
+        .collect();
+    assert_eq!(disposition_records.len(), 3);
+    for (semantic_id, record_id) in reduction.relation_ids.iter().zip(disposition_records) {
         let envelope: review_core::ArtifactEnvelope =
             serde_json::from_value(cas.get_json(record_id).unwrap()).unwrap();
         assert_eq!(envelope.artifact_id, *semantic_id);
@@ -555,13 +570,15 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         let payload: review_core::FindingDispositionV1 =
             serde_json::from_value(envelope.payload).unwrap();
         assert_eq!(payload.source, "correctness");
-        assert_eq!(payload.round, 1);
+        assert_eq!(payload.round, 2);
         assert_eq!(payload.subject_id, authority.subject);
     }
     assert_eq!(
         ingest.ledger().get(&ids[0]).unwrap().status,
-        review_store::Status::Open
+        review_store::Status::Open,
+        "corroboration reopens a Finding fixed in an earlier Round"
     );
+    assert_eq!(ingest.ledger().get(&ids[0]).unwrap().reports.len(), 2);
     assert_eq!(
         ingest.ledger().get(&ids[1]).unwrap().status,
         review_store::Status::Open,

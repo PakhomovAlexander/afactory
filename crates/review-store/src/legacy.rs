@@ -421,11 +421,13 @@ impl<'a> Ingest<'a> {
         for stage in stages {
             let source = stage.source.as_str();
             let mut reports = stage.reports.clone();
-            if stage.result_contract == ReviewerResultContract::V1
-                && let Some(provenance) = &stage.provenance
-            {
+            if let Some(provenance) = &stage.provenance {
                 for dispute in &stage.disputes {
-                    if dispute.position.trim() != "confirm" {
+                    let corroborates = match stage.result_contract {
+                        ReviewerResultContract::V1 => dispute.position.trim() == "confirm",
+                        ReviewerResultContract::V2 => dispute.position.trim() == "corroborate",
+                    };
+                    if !corroborates {
                         continue;
                     }
                     let key = dispute.fp.trim();

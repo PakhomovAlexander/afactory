@@ -640,7 +640,8 @@ impl ReviewerInputs {
                      `dispositions` entry for each `finding_id`: `corroborate` when the defect \
                      persists, `not_reproduced` when the current Subject no longer exhibits it, \
                      or `dispute` when the claim is wrong. Every disposition needs a concrete \
-                     reason. Do not use omission as a disposition."
+                     reason. Do not use omission as a disposition, and do not emit a second flat \
+                     report for a Finding you have dispositioned."
                 }
                 (
                     ReviewerResultContract::V1,
@@ -680,6 +681,17 @@ impl ReviewerInputs {
                      `not_reproduced` disposition."
                 }
             };
+            let location_guidance = match self.result_contract {
+                ReviewerResultContract::V1 => {
+                    "re-locate a surviving claim with a canonical current repository-relative \
+                     `file`, or use an empty `file` only when it is truly change-wide, instead \
+                     of confirming it only in `disputes`"
+                }
+                ReviewerResultContract::V2 => {
+                    "use its `corroborate` disposition and explain any current location in the \
+                     reason; do not emit a duplicate flat report for that Finding"
+                }
+            };
             if rendered.len() > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
                     "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
@@ -693,10 +705,8 @@ impl ReviewerInputs {
                  each one against the current snapshot. {persistence_guidance} The prior claim is \
                  change-wide when the row's \
                  `file` is null and `location_unrecorded` is absent or false. When \
-                 `location_unrecorded` is true, its prior location is unknown: re-locate a \
-                 surviving claim with a canonical current repository-relative `file`, or use an \
-                 empty `file` only when it is truly change-wide, instead of confirming it only \
-                 in `disputes`. A genuinely new defect uses a canonical current \
+                 `location_unrecorded` is true, its prior location is unknown: {location_guidance}. \
+                 A genuinely new defect uses a canonical current \
                  repository-relative `file`; use an empty `file` to report it change-wide. \
                  {absence_guidance} `scope` defaults to `in`; `effective_severity` defaults to `severity`, \
                  while a null effective severity means the finding is recorded and triageable \

@@ -79,6 +79,10 @@ fn is_reviewer_finding_set_input(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::FINDING_SET_V1
 }
 
+fn is_reviewer_prior_set_input(port: &PortContract, pipeline_version: u32) -> bool {
+    is_reviewer_prior_findings_input(port, pipeline_version) || is_reviewer_finding_set_input(port)
+}
+
 fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, String> {
     let [port] = node.outputs.as_slice() else {
         return Err(format!(
@@ -1817,10 +1821,10 @@ impl<'a> Kernel<'a> {
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
         // reviewer that declares no such input receives none; the plan is the delivery.
-        let prior_findings_contract = node.inputs.iter().find(|port| {
-            is_reviewer_prior_findings_input(port, self.pipeline_version)
-                || is_reviewer_finding_set_input(port)
-        });
+        let prior_findings_contract = node
+            .inputs
+            .iter()
+            .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version));
         let exact_finding_set = prior_findings_contract.is_some_and(is_reviewer_finding_set_input);
         if (result_contract == ReviewerResultContract::V2) != exact_finding_set {
             let error = format!(
@@ -1855,9 +1859,7 @@ impl<'a> Kernel<'a> {
                     .ok_or_else(|| {
                         format!("reviewer input port '{port}' has no declared contract")
                     })?;
-                if is_reviewer_prior_findings_input(contract, self.pipeline_version)
-                    || is_reviewer_finding_set_input(contract)
-                {
+                if is_reviewer_prior_set_input(contract, self.pipeline_version) {
                     continue;
                 }
                 let is_change_set = is_change_set_port(contract, self.pipeline_version);
@@ -1988,11 +1990,39 @@ impl<'a> Kernel<'a> {
                     }
                     return Err(error);
                 }
-                let set: review_core::FindingSetV1 = match serde_json::from_value(envelope.payload)
+                let mut set: review_core::FindingSetV1 =
+                    match serde_json::from_value(envelope.payload) {
+                        Ok(set) => set,
+                        Err(error) => {
+                            let error = format!("exact prior FindingSet@1 is invalid: {error}");
+                            if let Some(prepared) = prepared.take() {
+                                self.release_prepared_attempt(
+                                    node_id,
+                                    &prepared.attempt,
+                                    prepared.reservation.as_ref(),
+                                    &error,
+                                )?;
+                            }
+                            return Err(error);
+                        }
+                    };
+                if let Err(error) = set.validate() {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                let round_assignment = match self.cas.get_json(&self.authority.prior_finding_set_id)
                 {
-                    Ok(set) => set,
+                    Ok(assignment) => assignment,
                     Err(error) => {
-                        let error = format!("exact prior FindingSet@1 is invalid: {error}");
+                        let error =
+                            format!("exact Round finding assignment is unreadable: {error}");
                         if let Some(prepared) = prepared.take() {
                             self.release_prepared_attempt(
                                 node_id,
@@ -2004,7 +2034,7 @@ impl<'a> Kernel<'a> {
                         return Err(error);
                     }
                 };
-                if let Err(error) = set.validate() {
+                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
                     if let Some(prepared) = prepared.take() {
                         self.release_prepared_attempt(
                             node_id,
@@ -3004,6 +3034,39 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
         .collect()
 }
 
+fn retain_round_assignment(
+    set: &mut review_core::FindingSetV1,
+    round_assignment: &serde_json::Value,
+) -> Result<(), String> {
+    let rows = round_assignment
+        .get("prior_findings")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Round prior Finding assignment does not contain a prior_findings array")?;
+    let mut assigned = BTreeSet::new();
+    for row in rows {
+        let key = row
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Round prior Finding assignment contains a row without a key")?;
+        if !assigned.insert(key) {
+            return Err("Round prior Finding assignment contains a duplicate key".into());
+        }
+    }
+    let available: BTreeSet<_> = set
+        .findings
+        .iter()
+        .map(|finding| finding.finding_id.as_str())
+        .collect();
+    if !assigned.is_subset(&available) {
+        return Err(
+            "Round prior Finding assignment is not a subset of its exact FindingSet@1".into(),
+        );
+    }
+    set.findings
+        .retain(|finding| assigned.contains(finding.finding_id.as_str()));
+    Ok(())
+}
+
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
 /// CAS digest of the full set. Bounded on purpose — the full list is thousands of entries when
 /// a reviewer built, and it must not be inlined into every event payload.
@@ -3115,7 +3178,7 @@ impl Dispatch for Kernel<'_> {
             let prior_findings = node
                 .inputs
                 .iter()
-                .find(|port| is_reviewer_prior_findings_input(port, self.pipeline_version))
+                .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version))
                 .and_then(|port| inputs.get(&port.name))
                 .and_then(|artifacts| artifacts.first());
             let replayed_failures = self
@@ -3712,6 +3775,55 @@ outputs = ["findings"]
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file, None);
         assert!(entries[0].location_unrecorded);
+    }
+
+    #[test]
+    fn exact_finding_set_is_filtered_by_the_pinned_round_assignment() {
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let entry = |finding_id: String| review_core::FindingSetEntryV1 {
+            finding_id,
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: "correctness".into(),
+            last_seen_round: 1,
+            report_ids: vec![digest('d')],
+        };
+        let keep = digest('a');
+        let declined = digest('b');
+        let diagnostic = digest('c');
+        let mut set = review_core::FindingSetV1 {
+            subject_id: digest('d'),
+            round: 1,
+            prior_finding_set_id: digest('e'),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: vec![entry(keep.clone()), entry(declined), entry(diagnostic)],
+        };
+
+        retain_round_assignment(
+            &mut set,
+            &serde_json::json!({
+                "subject_id": digest('f'),
+                "round": 2,
+                "prior_findings": [{"key": keep}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(set.findings.len(), 1);
+        assert_eq!(set.findings[0].finding_id, keep);
     }
 
     #[test]

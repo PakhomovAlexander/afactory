@@ -359,7 +359,29 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         .iter()
         .find(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
         .expect("exact prior FindingSet@1 input");
-    assert_eq!(assigned.artifact_ids, vec![set.prior_finding_set_id]);
+    assert_eq!(
+        assigned.artifact_ids,
+        vec![set.prior_finding_set_id.clone()]
+    );
+
+    let dispatched = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::AttemptDispatchedV1
+                && event.node_id.as_deref() == Some("correctness")
+        })
+        .expect("Round 2 reviewer dispatch");
+    let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
+        serde_json::from_value(dispatched.payload.clone()).unwrap();
+    assert_eq!(
+        dispatch.prior_findings.as_deref(),
+        Some(set.prior_finding_set_id.as_str())
+    );
+    assert!(
+        dispatched.artifact_refs.contains(&set.prior_finding_set_id),
+        "dispatch must pin the exact assignment Set"
+    );
 }
 
 #[test]
