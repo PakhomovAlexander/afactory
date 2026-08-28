@@ -4,7 +4,7 @@
   "title": "ChangeAttestation@1 payload",
   "type": "object",
   "additionalProperties": false,
-  "required": ["finding_id", "expected_finding_view_id", "subject_id", "change_set_id", "changed_regions", "actor", "reason", "evidence_ids"],
+  "required": ["finding_id", "expected_finding_view_id", "subject_id", "changed_regions", "actor", "reason", "evidence_ids"],
   "properties": {
     "finding_id": {"type": "string", "minLength": 1},
     "expected_finding_view_id": {"$ref": "#/$defs/id"},

@@ -51,7 +51,8 @@ pub struct ChangeAttestationV1 {
     pub finding_id: String,
     pub expected_finding_view_id: String,
     pub subject_id: String,
-    pub change_set_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_set_id: Option<String>,
     pub changed_regions: Vec<ChangedRegionV1>,
     pub actor: String,
     pub reason: String,
@@ -64,7 +65,10 @@ impl ChangeAttestationV1 {
         if self.finding_id.trim().is_empty()
             || !is_digest(&self.expected_finding_view_id)
             || !is_digest(&self.subject_id)
-            || !is_digest(&self.change_set_id)
+            || self
+                .change_set_id
+                .as_deref()
+                .is_some_and(|id| !is_digest(id))
             || self.changed_regions.is_empty()
             || self
                 .changed_regions

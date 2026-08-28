@@ -954,10 +954,11 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         .replay(&campaign_run_id(&options.campaign))
         .map_err(|error| error.to_string())?;
     if let Some(evidence) = latest_round_evidence(&events, &cas)?
-        && evidence.ledger_production == "not_produced_upstream_missing"
+        && evidence.ledger_was_not_produced()
     {
         eprintln!(
-            "latest round Ledger: not produced because upstream output is missing; showing the last gathered projection ({} admitted result(s) remain recorded, not gathered)",
+            "latest round Ledger: not produced because {}; showing the last gathered projection ({} admitted result(s) remain recorded, not gathered)",
+            evidence.absence_reason(),
             evidence.available_node_results.len()
         );
     }
@@ -1182,14 +1183,15 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     }
 
     if let Some(evidence) = latest_round_evidence(&events, &cas)?
-        && evidence.ledger_production == "not_produced_upstream_missing"
+        && evidence.ledger_was_not_produced()
         && !evidence.available_node_results.is_empty()
     {
         println!();
         println!("## Recorded, not gathered");
         println!();
         println!(
-            "The latest Round did not produce a Ledger because required upstream output was missing. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input."
+            "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
+            evidence.absence_reason()
         );
         for result in evidence.available_node_results {
             println!();
@@ -1417,7 +1419,7 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let now = ingest
         .ledger()
-        .get(&options.key)
+        .finding_view(&options.key)
         .map(|f| f.status.as_str())
         .unwrap_or("?");
     println!("resolved {} -> {} ({resolution_id})", options.key, now);
@@ -1690,6 +1692,68 @@ struct LatestRoundEvidence {
     available_node_results: Vec<AvailableNodeResult>,
 }
 
+impl LatestRoundEvidence {
+    fn ledger_was_not_produced(&self) -> bool {
+        self.ledger_production.starts_with("not_produced_")
+    }
+
+    fn absence_reason(&self) -> &'static str {
+        match self.ledger_production {
+            "not_produced_upstream_missing" => "required upstream output was missing",
+            "not_produced_failed" => "the Ledger node failed",
+            "not_produced_gate_blocked" => "the Ledger node was gate-blocked",
+            _ => "the Ledger node did not produce an authoritative output",
+        }
+    }
+}
+
+fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<String, String> {
+    let round: review_core::RoundStartedPayloadV1 =
+        serde_json::from_value(round_event.payload.clone()).map_err(|error| error.to_string())?;
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+        cas.get_json(&round.campaign_manifest_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    manifest.validate()?;
+    let pipeline = cas
+        .get(&manifest.pipeline.artifact_id)
+        .map_err(|error| error.to_string())?;
+    let pipeline = std::str::from_utf8(&pipeline).map_err(|error| error.to_string())?;
+    let definition =
+        review_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())?;
+    let mut ledger_nodes = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == review_config::NodeKindSpec::Ledger);
+    let node = ledger_nodes
+        .next()
+        .ok_or("pinned Campaign pipeline has no Ledger node")?;
+    if ledger_nodes.next().is_some() {
+        return Err("pinned Campaign pipeline has multiple Ledger nodes".into());
+    }
+    Ok(node.id.clone())
+}
+
+fn run_report_outcomes(
+    event: &review_core::RunEvent,
+) -> Result<Option<Vec<review_core::RunNodeReportV2>>, String> {
+    match event.event_type {
+        EventType::RunReportV2 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV2>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV3 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV1 => Ok(None),
+        _ => Err(format!("{} is not a Run Report", event.event_type)),
+    }
+}
+
 fn latest_round_evidence(
     events: &[review_core::RunEvent],
     cas: &Cas,
@@ -1701,9 +1765,10 @@ fn latest_round_evidence(
     else {
         return Ok(None);
     };
+    let ledger_node_id = ledger_node_id(round_event, cas)?;
     let ledger_receipt = events.iter().rev().find(|event| {
         event.event_type == EventType::NodeOutputReceiptV1
-            && event.node_id.as_deref() == Some("ledger")
+            && event.node_id.as_deref() == Some(ledger_node_id.as_str())
             && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
     });
     if let Some(receipt) = ledger_receipt {
@@ -1742,13 +1807,32 @@ fn latest_round_evidence(
         }));
     }
 
-    let has_report = events.iter().any(|event| {
+    let report = events.iter().rev().find(|event| {
         event.event_type.is_run_report()
             && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
     });
-    if !has_report {
+    let Some(report) = report else {
         return Ok(None);
-    }
+    };
+    let Some(outcomes) = run_report_outcomes(report)? else {
+        return Ok(None);
+    };
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.node == ledger_node_id)
+        .ok_or("Run Report has no outcome for the pinned Ledger node")?;
+    let ledger_production = match outcome.outcome {
+        review_core::RunNodeOutcomeV2::Suppressed {
+            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+        } => "not_produced_upstream_missing",
+        review_core::RunNodeOutcomeV2::Suppressed {
+            reason: review_core::RunSuppressionReasonV2::GateBlocked,
+        } => "not_produced_gate_blocked",
+        review_core::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
+        review_core::RunNodeOutcomeV2::Completed { .. } => {
+            return Err("Ledger completed without a NodeOutputReceipt".into());
+        }
+    };
     let mut available = Vec::new();
     for event in events.iter().filter(|event| {
         event.event_type == EventType::AttemptAdmittedV1
@@ -1809,7 +1893,7 @@ fn latest_round_evidence(
         (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
     });
     Ok(Some(LatestRoundEvidence {
-        ledger_production: "not_produced_upstream_missing",
+        ledger_production,
         available_node_results: available,
     }))
 }
@@ -2041,8 +2125,9 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let ledger = kernel.ledger();
     print_scope_authority_warnings(&ledger);
     run_progress(options, format_args!(""));
-    run_progress(options, format_args!("findings {}", ledger.len()));
-    for finding in ledger.finding_views() {
+    let finding_views = ledger.finding_views();
+    run_progress(options, format_args!("findings {}", finding_views.len()));
+    for finding in finding_views {
         run_progress(
             options,
             format_args!(
@@ -2069,7 +2154,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let latest_evidence = latest_round_evidence(&events, &cas)?;
     if !options.json
         && let Some(evidence) = latest_evidence.as_ref()
-        && evidence.ledger_production == "not_produced_upstream_missing"
+        && evidence.ledger_was_not_produced()
         && !evidence.available_node_results.is_empty()
     {
         run_progress(options, format_args!(""));
@@ -2196,7 +2281,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             "outcome": verdict_value(&verdict),
         });
         if let Some(evidence) = latest_evidence
-            && evidence.ledger_production == "not_produced_upstream_missing"
+            && evidence.ledger_was_not_produced()
         {
             let object = outcome_value.as_object_mut().expect("outcome object");
             object.insert(
@@ -2256,6 +2341,50 @@ mod option_tests {
         }
     }
 
+    fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
+        let pipeline = format!(
+            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
+        );
+        let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
+        let opaque = cas.put(b"pinned authority").unwrap();
+        let findings = cas.put(b"finding genesis").unwrap();
+        let demands = cas.put(b"demand genesis").unwrap();
+        let manifest = review_core::CampaignManifestV1 {
+            authority_snapshot_id: opaque.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: ".af/pipelines/review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: ".af/review.lock".into(),
+                artifact_id: opaque,
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: Vec::new(),
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: None,
+            git_timeout_seconds: None,
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: findings.clone(),
+            demand_genesis_id: demands.clone(),
+        };
+        manifest.validate().unwrap();
+        let manifest_id = cas
+            .put_json(&serde_json::to_value(manifest).unwrap())
+            .unwrap();
+        (manifest_id, findings, demands)
+    }
+
     #[test]
     fn codex_runner_uses_the_ambient_auth_context() {
         assert_eq!(
@@ -2308,6 +2437,7 @@ mod option_tests {
     fn admitted_result_is_visible_without_becoming_a_ledger() {
         let temp = tempfile::tempdir().unwrap();
         let cas = review_store::Cas::open(temp.path()).unwrap();
+        let (manifest_id, findings_id, demands_id) = campaign_manifest(&cas, "reduce");
         let result_id = cas
             .put_json(&serde_json::json!({
                 "verdict": "request-changes",
@@ -2332,7 +2462,15 @@ mod option_tests {
                 None,
                 None,
                 None,
-                serde_json::json!({}),
+                serde_json::to_value(review_core::RoundStartedPayloadV1 {
+                    round: 1,
+                    epoch: 1,
+                    campaign_manifest_id: manifest_id,
+                    subject_id: findings_id.clone(),
+                    prior_finding_set_id: findings_id,
+                    prior_demand_set_id: demands_id,
+                })
+                .unwrap(),
             ),
             event(
                 1,
@@ -2353,7 +2491,20 @@ mod option_tests {
                 Some("event-0"),
                 None,
                 None,
-                serde_json::json!({}),
+                serde_json::to_value(review_core::RunReportPayloadV3 {
+                    outcomes: vec![review_core::RunNodeReportV2 {
+                        node: "reduce".into(),
+                        outcome: review_core::RunNodeOutcomeV2::Suppressed {
+                            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+                        },
+                    }],
+                    blocked_gates: Vec::new(),
+                    verdict: review_core::RunVerdictV3::Incomplete {
+                        missing_nodes: Vec::new(),
+                    },
+                    spent_tokens: Some(37),
+                })
+                .unwrap(),
             ),
         ];
         let evidence = latest_round_evidence(&events, &cas).unwrap().unwrap();
@@ -2366,20 +2517,39 @@ mod option_tests {
         assert_eq!(result.severities, ["major"]);
         assert_eq!(result.findings[0]["title"], "partial finding");
 
-        let mut gathered = events;
+        let mut gathered = events.clone();
         gathered.insert(
             2,
             event(
                 2,
                 review_core::EventType::NodeOutputReceiptV1,
                 Some("event-0"),
-                Some("ledger"),
+                Some("reduce"),
                 None,
-                serde_json::json!({"node": "ledger", "outputs": []}),
+                serde_json::json!({"node": "reduce", "outputs": []}),
             ),
         );
         let evidence = latest_round_evidence(&gathered, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "produced_with_findings");
         assert!(evidence.available_node_results.is_empty());
+
+        let mut failed = events;
+        failed.last_mut().unwrap().payload =
+            serde_json::to_value(review_core::RunReportPayloadV3 {
+                outcomes: vec![review_core::RunNodeReportV2 {
+                    node: "reduce".into(),
+                    outcome: review_core::RunNodeOutcomeV2::Failed {
+                        error: "invalid Ledger output".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: review_core::RunVerdictV3::Incomplete {
+                    missing_nodes: Vec::new(),
+                },
+                spent_tokens: Some(37),
+            })
+            .unwrap();
+        let evidence = latest_round_evidence(&failed, &cas).unwrap().unwrap();
+        assert_eq!(evidence.ledger_production, "not_produced_failed");
     }
 }

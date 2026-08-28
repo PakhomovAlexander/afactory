@@ -179,6 +179,8 @@ pub enum TransitionKind {
     AdoptedWhileDeclined,
     /// Readable claim content replaced an authority-failure placeholder for the same key.
     AuthorityRecovered,
+    Attested,
+    Challenged,
     Resolved(Status),
 }
 
@@ -598,6 +600,9 @@ impl Ledger {
             line: report.line,
             scope,
         };
+        let resolution_challenge = (scope != Some(ReportScope::Out))
+            .then(|| self.resolution_challenge_for_report(&key, severity))
+            .flatten();
 
         // Authority failure evidence must not replace readable claim content. If this key has
         // readable history, retain only the diagnostic attachment. A first unreadable Report gets
@@ -701,7 +706,9 @@ impl Ledger {
             && previous_scoped_severity.is_none_or(|previous| severity.rank() > previous.rank());
 
         let higher = severity.rank() > existing.severity.rank();
-        let kind = if existing.status.is_declined() {
+        let kind = if resolution_challenge.is_some() {
+            TransitionKind::Escalated
+        } else if existing.status.is_declined() {
             if higher {
                 TransitionKind::AdoptedWhileDeclined
             } else {
@@ -726,6 +733,9 @@ impl Ledger {
             TransitionKind::Escalated | TransitionKind::AdoptedWhileDeclined => {
                 existing.news_round = round;
                 adopt(existing, &report, &source);
+                if resolution_challenge.is_some() {
+                    existing.status = Status::Contested;
+                }
             }
             _ => {}
         }
@@ -734,10 +744,17 @@ impl Ledger {
             TransitionKind::Reopened => Some(format!(
                 "reopened: re-reported by {source} in round {round}"
             )),
-            TransitionKind::Escalated => Some(format!(
-                "escalated: re-reported as {} by {source} in round {round}",
-                severity_name(severity)
-            )),
+            TransitionKind::Escalated => Some(if let Some(challenge) = resolution_challenge {
+                format!(
+                    "resolution challenge {challenge:?}: re-reported as {} by {source} in round {round}",
+                    severity_name(severity)
+                )
+            } else {
+                format!(
+                    "escalated: re-reported as {} by {source} in round {round}",
+                    severity_name(severity)
+                )
+            }),
             _ => None,
         };
         if kind == TransitionKind::Reopened {
@@ -1240,7 +1257,8 @@ impl Ledger {
                     event_type,
                 )?;
                 if attestation.subject_id != active_subject
-                    || self.active_change_set_id() != Some(attestation.change_set_id.as_str())
+                    || self.active_change_set_id() != attestation.change_set_id.as_deref()
+                    || envelope.subject_snapshot_id.as_deref() != self.active_head_snapshot_id()
                 {
                     return Err(malformed(
                         event_type.as_str(),
@@ -1249,8 +1267,13 @@ impl Ledger {
                 }
                 let keys = self.finding_member_keys(&attestation.finding_id)?;
                 for key in keys {
-                    self.findings.get_mut(&key).expect("member exists").status =
-                        Status::PendingVerification;
+                    let finding = self.findings.get_mut(&key).expect("member exists");
+                    finding.status = Status::PendingVerification;
+                    finding.history.push(Transition {
+                        round: self.round,
+                        kind: TransitionKind::Attested,
+                        note: Some(attestation.reason.clone()),
+                    });
                 }
                 self.attestations.insert(
                     envelope.artifact_id.clone(),
@@ -1328,6 +1351,12 @@ impl Ledger {
                         "Resolution does not cover the active Subject",
                     ));
                 }
+                let resolution_root = self
+                    .group_root(&resolution.finding_id)
+                    .ok_or_else(|| {
+                        malformed(event_type.as_str(), "Resolution names an unknown Finding")
+                    })?
+                    .to_string();
                 let status = match resolution.outcome {
                     FindingResolutionOutcome::Fixed => {
                         let verification = self
@@ -1351,7 +1380,19 @@ impl Ledger {
                         Status::Fixed
                     }
                     FindingResolutionOutcome::Rejected => Status::Rejected,
-                    FindingResolutionOutcome::WontfixTracked => Status::Wontfix,
+                    FindingResolutionOutcome::WontfixTracked => {
+                        let ceiling = resolution.max_accepted_severity.expect("validated");
+                        let current = self
+                            .finding_view(&resolution.finding_id)
+                            .and_then(|finding| finding.convergence_severity);
+                        if current.is_some_and(|severity| severity.rank() > ceiling.rank()) {
+                            return Err(malformed(
+                                event_type.as_str(),
+                                "tracked-wontfix severity ceiling is below the current Finding severity",
+                            ));
+                        }
+                        Status::Wontfix
+                    }
                 };
                 let keys = self.finding_member_keys(&resolution.finding_id)?;
                 for key in keys {
@@ -1368,7 +1409,7 @@ impl Ledger {
                     artifact_id: envelope.artifact_id.clone(),
                 });
                 self.resolutions.insert(
-                    resolution.finding_id.clone(),
+                    resolution_root,
                     RecordedResolution {
                         record_id: recorded.artifact_id,
                         artifact_id: envelope.artifact_id,
@@ -1388,7 +1429,7 @@ impl Ledger {
                 challenge
                     .validate()
                     .map_err(|error| malformed(event_type.as_str(), &error))?;
-                let resolution = self.resolutions.get(&challenge.finding_id).ok_or_else(|| {
+                let resolution = self.resolution(&challenge.finding_id).ok_or_else(|| {
                     malformed(event_type.as_str(), "challenge names no active Resolution")
                 })?;
                 if resolution.artifact_id != challenge.resolution_id
@@ -1401,7 +1442,13 @@ impl Ledger {
                 }
                 let keys = self.finding_member_keys(&challenge.finding_id)?;
                 for key in keys {
-                    self.findings.get_mut(&key).expect("member exists").status = Status::Contested;
+                    let finding = self.findings.get_mut(&key).expect("member exists");
+                    finding.status = Status::Contested;
+                    finding.history.push(Transition {
+                        round: self.round,
+                        kind: TransitionKind::Challenged,
+                        note: Some(format!("{:?}: {}", challenge.kind, challenge.reason)),
+                    });
                 }
                 self.resolution_history.push(ResolutionEvidence {
                     record_id: recorded.artifact_id,
@@ -1675,7 +1722,39 @@ impl Ledger {
     }
 
     pub fn resolution(&self, finding_id: &str) -> Option<&RecordedResolution> {
-        self.resolutions.get(finding_id)
+        self.group_root(finding_id)
+            .and_then(|root| self.resolutions.get(root))
+    }
+
+    pub fn resolution_challenge_for_report(
+        &self,
+        finding_id: &str,
+        severity: Severity,
+    ) -> Option<review_core::ResolutionChallengeKind> {
+        let finding = self.finding_view(finding_id)?;
+        if !finding.status.is_declined() {
+            return None;
+        }
+        let resolution = self.resolution(finding_id)?;
+        if Some(resolution.resolution.subject_id.as_str()) != self.active_subject_id() {
+            return Some(review_core::ResolutionChallengeKind::OutsideScope);
+        }
+        match resolution.resolution.outcome {
+            FindingResolutionOutcome::WontfixTracked
+                if severity.rank()
+                    > resolution
+                        .resolution
+                        .max_accepted_severity
+                        .expect("validated tracked-wontfix")
+                        .rank() =>
+            {
+                Some(review_core::ResolutionChallengeKind::HigherSeverity)
+            }
+            FindingResolutionOutcome::Rejected if severity.rank() > finding.severity.rank() => {
+                Some(review_core::ResolutionChallengeKind::HigherSeverity)
+            }
+            _ => None,
+        }
     }
 
     pub fn policy_time(&self) -> u64 {

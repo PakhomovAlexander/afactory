@@ -23,8 +23,8 @@ use std::collections::BTreeSet;
 use crate::cas::Cas;
 use crate::ledger::{
     EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_FINDINGS_GROUPED,
-    EVENT_FINDINGS_UNGROUPED, EVENT_GENERATION_ADVANCED, Ledger, LedgerProjection, Status,
-    TransitionKind,
+    EVENT_FINDINGS_UNGROUPED, EVENT_GENERATION_ADVANCED, Ledger, LedgerProjection, ReportScope,
+    Status, TransitionKind,
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
@@ -644,7 +644,7 @@ impl<'a> Ingest<'a> {
                 let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
 
                 if stage.provenance.is_some() {
-                    selected_report_ids.push(semantic_id);
+                    selected_report_ids.push(semantic_id.clone());
                     input_artifact_ids.push(report_id.clone());
                 }
 
@@ -662,11 +662,76 @@ impl<'a> Ingest<'a> {
                     "source": source,
                     "report_id": report_id,
                 });
+                let pending_challenge = projected
+                    .resolution_challenge_for_report(&key, report.severity)
+                    .and_then(|kind| {
+                        projected
+                            .resolution(&key)
+                            .cloned()
+                            .map(|resolution| (kind, resolution))
+                    });
                 let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
                     .correlating(key.clone())
-                    .referencing(vec![report_id]);
+                    .referencing(vec![report_id.clone()]);
                 apply_candidate(&mut projected, &event, self.cas)?;
                 events.push(event);
+
+                if let Some((kind, resolution)) = pending_challenge
+                    && projected
+                        .get(&key)
+                        .and_then(|finding| finding.reports.last())
+                        .is_some_and(|attached| attached.scope != Some(ReportScope::Out))
+                {
+                    let subject_id = projected
+                        .active_subject_id()
+                        .ok_or_else(|| {
+                            StoreError::Conflict("Campaign has no active Subject".into())
+                        })?
+                        .to_string();
+                    let root = projected
+                        .finding_view(&key)
+                        .expect("reported Finding has a visible view")
+                        .key;
+                    let challenge = review_core::ResolutionChallengeV1 {
+                        finding_id: root.clone(),
+                        resolution_id: resolution.artifact_id.clone(),
+                        subject_id,
+                        kind,
+                        actor: "review.kernel/resolution-policy@1".into(),
+                        reason: format!(
+                            "in-scope Report {} challenged the scoped {:?} Resolution",
+                            semantic_id, resolution.resolution.outcome
+                        ),
+                        evidence_ids: vec![semantic_id],
+                    };
+                    challenge.validate().map_err(StoreError::Conflict)?;
+                    let (record_id, _) = self
+                        .cas
+                        .put_artifact(
+                            review_core::contract::RESOLUTION_CHALLENGE_V1,
+                            Producer::KernelOperation {
+                                run_id: self.run_id.clone(),
+                                node_id: None,
+                                operation_id: format!(
+                                    "automatic-resolution-challenge:{root}:{kind:?}"
+                                ),
+                            },
+                            vec![resolution.record_id, report_id],
+                            projected.active_head_snapshot_id().map(str::to_string),
+                            serde_json::to_value(challenge)?,
+                        )
+                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                    let challenge_event = NewEvent::new(
+                        EventType::FindingResolutionChallengedV1,
+                        serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                            artifact_id: record_id.clone(),
+                        })?,
+                    )
+                    .correlating(root)
+                    .referencing(vec![record_id]);
+                    apply_candidate(&mut projected, &challenge_event, self.cas)?;
+                    events.push(challenge_event);
+                }
 
                 match projected
                     .get(&key)
@@ -1000,12 +1065,11 @@ impl<'a> Ingest<'a> {
             .active_subject_id()
             .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject".into()))?
             .to_string();
-        let change_set_id = self
+        let change_set_id = self.ledger.active_change_set_id().map(str::to_string);
+        let head_snapshot_id = self
             .ledger
-            .active_change_set_id()
-            .ok_or_else(|| {
-                StoreError::Conflict("Change Attestation requires a diff Subject Change Set".into())
-            })?
+            .active_head_snapshot_id()
+            .ok_or_else(|| StoreError::Conflict("Campaign has no active Subject Snapshot".into()))?
             .to_string();
         let payload = review_core::ChangeAttestationV1 {
             finding_id: finding_id.to_string(),
@@ -1022,7 +1086,10 @@ impl<'a> Ingest<'a> {
             review_core::contract::CHANGE_ATTESTATION_V1,
             EventType::ChangeAttestedV1,
             finding_id,
-            vec![change_set_id],
+            change_set_id
+                .into_iter()
+                .chain([head_snapshot_id])
+                .collect(),
             serde_json::to_value(payload)?,
         )
     }

@@ -205,6 +205,8 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
             "body",
             "fix",
             "confidence",
+            "rule_id",
+            "occurrence_key",
         ],
     );
     keep_each(

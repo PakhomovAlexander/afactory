@@ -323,7 +323,7 @@ fn resolution_authority_roundtrips() {
         finding_id: "finding:one".into(),
         expected_finding_view_id: digest('a'),
         subject_id: digest('b'),
-        change_set_id: digest('c'),
+        change_set_id: Some(digest('c')),
         changed_regions: vec![ChangedRegionV1 {
             path: "src/lib.rs".into(),
             start_line: Some(10),

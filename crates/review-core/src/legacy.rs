@@ -44,6 +44,10 @@ pub struct LegacyFinding {
     pub body: String,
     pub fix: Option<String>,
     pub confidence: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -484,8 +488,8 @@ impl LegacyFinding {
             fix,
             confidence,
             failure_trace: None,
-            rule_id: None,
-            occurrence_key: None,
+            rule_id: self.rule_id,
+            occurrence_key: self.occurrence_key,
             relations: Vec::new(),
         };
         report
@@ -523,6 +527,8 @@ mod tests {
             body: "no backoff, no cap".into(),
             fix: Some("cap the retries".into()),
             confidence: Some(0.9),
+            rule_id: None,
+            occurrence_key: None,
         }
     }
 

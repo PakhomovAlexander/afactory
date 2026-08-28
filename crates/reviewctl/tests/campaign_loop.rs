@@ -58,13 +58,15 @@ fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
 fn write_review_config(repo: &Path) {
     std::fs::create_dir_all(repo.join(".review/pipelines")).unwrap();
     std::fs::write(repo.join(".review/review.lock"), "version = 1\n").unwrap();
-    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
     let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
     let script = format!(
         "if [ -f FAIL ]; then exit 7; fi; \
-         if grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
+         if [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
+         elif grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
          else printf '%s' \"{clean}\"; fi"
     );
     let pipeline = format!(
@@ -602,6 +604,180 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_err.is_empty(), "{report_err}");
+}
+
+#[test]
+fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 must find the defect\n{stdout}\n{stderr}");
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "verified-fix", "--state", &state],
+    );
+    let key = ledger_out.split('\t').next().unwrap().to_string();
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "the clean reviewer result alone cannot fix the prior claim\n{stdout}\n{stderr}"
+    );
+
+    let (code, attestation_out, attestation_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "attest-change",
+            "--campaign",
+            "verified-fix",
+            "--state",
+            &state,
+            &key,
+            "--region",
+            "src/main.rs:1-1",
+            "--reason",
+            "bounded the loop in the active whole-tree Snapshot",
+        ],
+    );
+    assert_eq!(code, 0, "{attestation_out}\n{attestation_err}");
+    assert!(
+        attestation_out.contains("pending-verification"),
+        "{attestation_out}"
+    );
+    let attestation_id = attestation_out
+        .split_once('(')
+        .and_then(|(_, tail)| tail.trim().strip_suffix(')'))
+        .expect("attestation artifact ID");
+
+    let (code, verification_out, verification_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "verify-fix",
+            "--campaign",
+            "verified-fix",
+            "--state",
+            &state,
+            &key,
+            attestation_id,
+            "--positive",
+            "--policy",
+            "fix-policy@1",
+            "--reason",
+            "the current whole-tree Snapshot no longer contains the unbounded loop",
+        ],
+    );
+    assert_eq!(code, 0, "{verification_out}\n{verification_err}");
+    assert!(verification_out.contains("-> fixed"), "{verification_out}");
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(
+        code, 0,
+        "verified fixed state must converge\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("round    3"), "{stdout}");
+    assert!(stdout.contains("verdict  Pass"), "{stdout}");
+
+    let (_, ledger_out, ledger_err) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert!(ledger_out.contains("\tfixed\t"), "{ledger_out}");
+    assert!(ledger_err.contains("0 open"), "{ledger_err}");
+}
+
+#[test]
+fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    let key = ledger_out.split('\t').next().unwrap().to_string();
+    let (code, resolve_out, resolve_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            &key,
+            "wontfix-tracked",
+            "--policy",
+            "risk-policy@1",
+            "--reason",
+            "temporarily accept only the current major risk",
+            "--max-severity",
+            "major",
+            "--tracking",
+            "ISSUE-42",
+            "--expires-at-policy-time",
+            "99",
+        ],
+    );
+    assert_eq!(code, 0, "{resolve_out}\n{resolve_err}");
+    assert!(resolve_out.contains("-> wontfix"), "{resolve_out}");
+
+    std::fs::write(repo.join("BLOCKER"), "escalate the stable occurrence\n").unwrap();
+    git(&repo, &home, &["add", "BLOCKER"]);
+    git(&repo, &home, &["commit", "-qm", "escalate finding"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "an above-ceiling claim must block\n{stdout}\n{stderr}"
+    );
+
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert!(
+        ledger_out.contains("\tblocker\tcontested\t"),
+        "{ledger_out}"
+    );
+    let store = review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .replay("campaign-wontfix-ceiling")
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == review_core::EventType::FindingResolutionChallengedV1),
+        "the higher-severity report must emit an explicit challenge artifact/event"
+    );
 }
 
 /// A "fix" that does not actually fix reopens the finding, and the campaign refuses to pass.

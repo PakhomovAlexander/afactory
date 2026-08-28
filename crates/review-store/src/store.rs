@@ -2286,13 +2286,46 @@ fn validate_campaign_transition(
             | EventType::FindingResolutionRecordedV1
             | EventType::FindingResolutionChallengedV1
             | EventType::PolicyTimeAdvancedV1 => {
-                let Some((_, active_payload)) = &active else {
+                let Some((active_id, active_payload)) = &active else {
                     return Err(StoreError::Conflict(format!(
                         "{} requires an existing Campaign Round",
                         event.event_type
                     )));
                 };
-                if !terminal || event.causation_id.is_some() {
+                let automatic_challenge = if event.event_type
+                    == EventType::FindingResolutionChallengedV1
+                    && event.causation_id.as_deref() == Some(active_id.as_str())
+                {
+                    let challenge: review_core::ResolutionChallengeV1 =
+                        validate_recorded_event_artifact(
+                            prepared,
+                            event,
+                            review_core::contract::RESOLUTION_CHALLENGE_V1,
+                        )?;
+                    let recorded: review_core::RecordedArtifactPayloadV1 =
+                        serde_json::from_value(event.payload.clone())?;
+                    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+                        prepared
+                            .json
+                            .get(&recorded.artifact_id)
+                            .expect("validated recorded artifact")
+                            .clone(),
+                    )?;
+                    challenge.actor == "review.kernel/resolution-policy@1"
+                        && !challenge.evidence_ids.is_empty()
+                        && matches!(
+                            envelope.producer,
+                            review_core::Producer::KernelOperation {
+                                run_id: producer_run,
+                                node_id: None,
+                                operation_id,
+                            } if producer_run == run_id
+                                && operation_id.starts_with("automatic-resolution-challenge:")
+                        )
+                } else {
+                    false
+                };
+                if !automatic_challenge && (!terminal || event.causation_id.is_some()) {
                     return Err(StoreError::Conflict(format!(
                         "{} is an operator transition allowed only after a closed Round",
                         event.event_type
