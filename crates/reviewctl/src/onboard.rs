@@ -39,6 +39,10 @@ Behavior:
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
 fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
 
+Trusting configured Worker authority and intentionally running `af review run` or `af task start`
+authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or stages
+of that Campaign or Task. Afactory does not ask for per-call confirmation.
+
 Runner profiles:
   mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)
   claude  both Workers = Claude Opus/high
@@ -897,6 +901,14 @@ The reviewers receive the exact Diff Subject, bounded kernel artifacts, and thei
 They do not receive one another's transcript. Results meet at the deterministic gather barrier.
 The Campaign stops after one clean Round or two Rounds total, with caps of 300,000 tokens per
 Attempt and 1,000,000 tokens per Campaign.
+
+## Worker data authorization
+
+Trusting this configured authority and intentionally running `af review run` authorizes Afactory
+to send each configured Worker exactly its declared, bounded inputs for every Attempt and later
+Round in that Campaign. Agents should not ask for additional per-Worker, per-Attempt, or per-Round
+confirmation. This does not authorize undeclared context, changed Provider bindings, comments,
+commits, pushes, pull requests, publication, or other remote side effects.
 
 Required Gate commands (declared as literal trusted argv; onboarding does not execute them):
 

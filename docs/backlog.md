@@ -326,7 +326,10 @@ apply, existing-authority validation, explicit lock refresh, and built-in agent 
 bounded static multi-review profile. The command generates exact pins itself and fails closed
 when it cannot identify a real Gate. It does not fetch or publish PRs, execute a review, or pull
 dynamic fan-out ahead of M8. See
-[ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md).
+[ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md). Trusting the configured Worker
+authority and intentionally starting a Campaign authorizes its declared bounded Worker input
+delivery without per-call confirmation; broader context and remote side effects remain separate
+([ADR-0033](adr/0033-configured-workers-authorize-declared-input-delivery.md)).
 
 ---
 

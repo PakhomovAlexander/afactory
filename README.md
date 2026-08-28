@@ -59,6 +59,12 @@ overwrites existing authority. Once created, `.af/` is ordinary trusted project 
 and its referenced Worker pins. See
 [`ADR-0032`](docs/adr/0032-generate-review-authority-with-af-onboard.md) for the boundary.
 
+Trusting configured Worker authority and intentionally starting a review Campaign or Task is the
+authorization for Afactory to deliver each Worker its exact declared inputs, including retries
+and later Rounds. Afactory does not ask for separate per-call confirmation; changing authority,
+publishing, delivery, and other remote side effects remain separate operations. See
+[`ADR-0033`](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md).
+
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
 authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
 quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude

@@ -37,6 +37,11 @@ The `.af/af.lock` digests must match the committed pipeline and Worker bytes. Pi
 produces this bundle per repository because acceptance Gates are project-specific; changing any
 of those bytes requires a newly generated and reviewed lock.
 
+Trusting that configured authority and intentionally running `af task start` authorizes Afactory
+to deliver the implementer and evaluator their exact declared inputs for every stage of the Task.
+There is no additional per-Worker or per-call consent prompt. Delivery, publication, Provider
+rebinding, and any other remote side effect remain separate explicit operations.
+
 `af onboard` now provides the self-contained binary workflow for a repository's two-Worker pull
 request review authority. It deliberately does not invent the implementer/evaluator authority
 used by this v2 implementation-Task pilot; that pipeline remains maintainer-reviewed until a

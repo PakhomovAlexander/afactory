@@ -63,6 +63,9 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "created");
     assert!(repo.join(".af/README.md").is_file());
+    let readme = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
+    assert!(readme.contains("## Worker data authorization"));
+    assert!(readme.contains("should not ask for additional per-Worker"));
     assert!(repo.join(".af/pipelines/review.toml").is_file());
     assert!(repo.join(".af/workers/correctness/reviewer.md").is_file());
     assert!(
@@ -140,5 +143,6 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
         .unwrap();
     assert!(help.status.success(), "{}", stderr(&help));
     assert!(stdout(&help).contains("never calls a model"));
+    assert!(stdout(&help).contains("does not ask for per-call confirmation"));
     assert!(stdout(&help).contains("--refresh-lock"));
 }
