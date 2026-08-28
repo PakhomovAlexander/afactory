@@ -13,10 +13,11 @@ only a verified Task may create a new branch and linked worktree, and it still n
 pushes, opens a PR, invokes a remote, or changes the source checkout. The operating boundary for
 trusted design partners is in [`docs/client-pilot.md`](docs/client-pilot.md).
 
-The kernel's own vocabulary is defined in [`CONTEXT.md`](CONTEXT.md) — read it before
-arguing about what a Finding, a Report, a Subject or a Scope is. Queued work lives in
-[`docs/backlog.md`](docs/backlog.md), and decisions about the kernel's own design in
-[`docs/adr/`](docs/adr/). **Picking up that work cold: start at
+The accepted product model and release sequence live in
+[`docs/product-roadmap.md`](docs/product-roadmap.md). The kernel's own vocabulary is defined in
+[`CONTEXT.md`](CONTEXT.md) — read it before arguing about what a Finding, a Report, a Subject or a
+Scope is. Kernel capability work lives in [`docs/backlog.md`](docs/backlog.md), and durable design
+decisions in [`docs/adr/`](docs/adr/). **Picking up kernel work cold: start at
 [`docs/workstream.md`](docs/workstream.md)**, which carries the status, the resume point, and
 the gotchas that are not obvious from the code.
 

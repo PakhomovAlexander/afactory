@@ -1,6 +1,7 @@
-# Review Kernel — architecture decisions
+# Afactory and Review Kernel — architecture decisions
 
-Decisions about the kernel's own design. These are distinct from
+Decisions about the kernel's own design and its boundary with the Afactory product layer. These
+are distinct from
 [`../../../../docs/adr/`](../../../../docs/adr/), which is a generated hub's own decision log —
 the kernel ships *into* such a hub, so its decisions travel with the code rather than with the
 project using it.
@@ -78,3 +79,5 @@ options you rejected and why — that is the part future-you needs.
   delivery](0033-configured-workers-authorize-declared-input-delivery.md)
 - [0034 — Surface partial results without granting Ledger
   authority](0034-surface-partial-results-without-ledger-authority.md)
+- [0035 — Separate product orchestration from the Review
+  Kernel](0035-separate-product-orchestration-from-review-kernel.md)

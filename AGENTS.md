@@ -5,9 +5,10 @@ is the deterministic Review Kernel exposed as `af review ...`.
 
 Before changing behavior, read:
 
+- [`docs/product-roadmap.md`](docs/product-roadmap.md) for product sequencing and release gates.
 - [`CONTEXT.md`](CONTEXT.md) for canonical domain vocabulary.
 - [`docs/workstream.md`](docs/workstream.md) for current status and resume point.
-- [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
+- [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 Review Kernel backlog.
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
@@ -29,6 +30,10 @@ budget, or sandbox boundary to make a test or review pass.
 
 ## Invariants
 
+- Product orchestration sits above the specialized Review Kernel. Product Runs may invoke review
+  Campaigns, but product entities do not rename or reinterpret Subject, Campaign, Round, Report,
+  Finding, Demand, Ledger, or the kernel's internal typed DAG
+  ([ADR-0035](docs/adr/0035-separate-product-orchestration-from-review-kernel.md)).
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).

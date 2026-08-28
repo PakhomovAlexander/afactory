@@ -32,8 +32,9 @@ Everything decided is written down. **Do not re-derive it; read it.**
 
 | Read this | For |
 |---|---|
+| [`product-roadmap.md`](product-roadmap.md) | Product workflows, sequencing, exit criteria, and the boundary above the Review Kernel. |
 | [`../CONTEXT.md`](../CONTEXT.md) | Canonical vocabulary, including Snapshot vs Tree Digest, Subject vs Review Selector, explicit Drop, Demand, Fix Verification, Cache Snapshot, and Semantic Closure. |
-| [`backlog.md`](backlog.md) | The implementation roadmap, M0–M9, in dependency order. |
+| [`backlog.md`](backlog.md) | The Review Kernel capability backlog, M0–M9, in dependency order. |
 | [`adr/`](adr/) | Durable and security-boundary decisions, including supersession history. |
 
 ## Background / current state

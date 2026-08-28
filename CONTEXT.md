@@ -6,6 +6,11 @@ only expressible because two nearby concepts are kept apart. The mechanism itsel
 documented in [`../../docs/self-review-heavy.md`](../../docs/self-review-heavy.md); this file
 defines only the terms.
 
+This is deliberately not the generic Afactory product glossary. Product-level Reference,
+Artifact, Workflow, Run, Profile, Capability, and Receipt are defined in
+[ADR-0035](docs/adr/0035-separate-product-orchestration-from-review-kernel.md). A product Run may
+invoke a review Campaign; it does not replace or rename one.
+
 ## Language
 
 ### What is reviewed

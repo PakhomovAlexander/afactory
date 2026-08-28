@@ -1,8 +1,12 @@
 # Afactory Review Kernel - backlog
 
-Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity, and M0–M2 are complete. Minimal product v1 and v2 now precede candidate dogfood
-and M3.1; they must not rename frozen persisted Review Kernel contracts.
+Work queued for the Review Kernel, in dependency order. This is not Afactory's product roadmap;
+product sequencing and release gates live in [`product-roadmap.md`](product-roadmap.md). Product
+phases pull kernel capabilities from this backlog only when their exit criteria require them.
+
+Repository migration, private release parity, and M0–M2 are complete. Minimal product v1 and v2
+now precede candidate dogfood and M3.1; they must not rename frozen persisted Review Kernel
+contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
