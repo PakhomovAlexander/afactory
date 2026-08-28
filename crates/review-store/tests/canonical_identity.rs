@@ -146,6 +146,52 @@ fn stage() -> LegacyStageOutput {
     .unwrap()
 }
 
+fn apply_resolution(
+    ledger: &mut review_store::Ledger,
+    cas: &Cas,
+    run_id: &str,
+    head: &str,
+    operation: &str,
+    resolution: review_core::FindingResolutionV1,
+) -> String {
+    let finding_id = resolution.finding_id.clone();
+    let (record_id, envelope) = cas
+        .put_artifact(
+            review_core::contract::FINDING_RESOLUTION_V1,
+            Producer::KernelOperation {
+                run_id: run_id.into(),
+                node_id: None,
+                operation_id: operation.into(),
+            },
+            Vec::new(),
+            Some(head.into()),
+            serde_json::to_value(resolution).unwrap(),
+        )
+        .unwrap();
+    ledger
+        .apply_event(
+            &RunEvent {
+                event_id: format!("{operation}-event"),
+                run_id: run_id.into(),
+                sequence: 98,
+                event_type: EventType::FindingResolutionRecordedV1,
+                occurred_at: "2026-08-28T00:00:00Z".into(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: Some(finding_id),
+                artifact_refs: vec![record_id.clone()],
+                payload: serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                    artifact_id: record_id,
+                })
+                .unwrap(),
+            },
+            cas,
+        )
+        .unwrap();
+    envelope.artifact_id
+}
+
 #[test]
 fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
     let directory = tempfile::tempdir().unwrap();
@@ -164,6 +210,7 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         .add_canonical_stage_outputs(&[
             CanonicalStage {
                 source: "architecture",
+                demand_requirement: review_core::DemandRequirement::Required,
                 stage: &output,
                 attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
                 result_artifact_id: &result_a,
@@ -174,6 +221,7 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
             },
             CanonicalStage {
                 source: "correctness",
+                demand_requirement: review_core::DemandRequirement::Required,
                 stage: &output,
                 attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
                 result_artifact_id: &result_b,
@@ -283,6 +331,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
         .add_canonical_stage_outputs(&[
             CanonicalStage {
                 source: "architecture",
+                demand_requirement: review_core::DemandRequirement::Required,
                 stage: &output,
                 attempt_id: "01jd8m4qz9k7v3n2p6r8t0w204",
                 result_artifact_id: &result_a,
@@ -293,6 +342,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
             },
             CanonicalStage {
                 source: "correctness",
+                demand_requirement: review_core::DemandRequirement::Required,
                 stage: &output,
                 attempt_id: "01jd8m4qz9k7v3n2p6r8t0w205",
                 result_artifact_id: &result_b,
@@ -310,6 +360,59 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
         .map(|finding| finding.key.clone())
         .collect();
     assert_eq!(keys.len(), 2);
+
+    let pre_group_view = ledger.finding_view_id(&keys[0]).unwrap();
+    apply_resolution(
+        &mut ledger,
+        &cas,
+        run_id,
+        &authority.head,
+        "pre-group-wontfix",
+        review_core::FindingResolutionV1 {
+            finding_id: keys[0].clone(),
+            expected_finding_view_id: pre_group_view,
+            subject_id: authority.subject.clone(),
+            outcome: review_core::FindingResolutionOutcome::WontfixTracked,
+            actor: "operator".into(),
+            policy_revision: "risk-policy@1".into(),
+            reason: "temporary tracked exception".into(),
+            evidence_ids: vec![],
+            verification_id: None,
+            max_accepted_severity: Some(review_core::Severity::Major),
+            tracking_reference: Some("ISSUE-42".into()),
+            expires_at_policy_time: Some(10),
+        },
+    );
+    assert!(
+        ledger
+            .validate_group(&keys[0], &keys[1])
+            .unwrap_err()
+            .to_string()
+            .contains("unexpired tracked-wontfix"),
+        "grouping must not detach a live tracked-wontfix expiry"
+    );
+    let rejected_view = ledger.finding_view_id(&keys[0]).unwrap();
+    let rejected_id = apply_resolution(
+        &mut ledger,
+        &cas,
+        run_id,
+        &authority.head,
+        "pre-group-rejected",
+        review_core::FindingResolutionV1 {
+            finding_id: keys[0].clone(),
+            expected_finding_view_id: rejected_view,
+            subject_id: authority.subject.clone(),
+            outcome: review_core::FindingResolutionOutcome::Rejected,
+            actor: "operator".into(),
+            policy_revision: "resolution-policy@1".into(),
+            reason: "supersede the temporary exception".into(),
+            evidence_ids: vec![],
+            verification_id: None,
+            max_accepted_severity: None,
+            tracking_reference: None,
+            expires_at_policy_time: None,
+        },
+    );
 
     let transition = |action, record_id: String| RunEvent {
         event_id: "01jd8m4qz9k7v3n2p6r8t0w206".into(),
@@ -363,6 +466,12 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
             &cas,
         )
         .unwrap();
+    assert_eq!(
+        ledger.resolution(&keys[0]).unwrap().artifact_id,
+        rejected_id,
+        "grouping must retain the member Resolution under its original Finding ID"
+    );
+    assert!(ledger.resolution(&keys[1]).is_none());
     let views = ledger.finding_views();
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].aliases, vec![keys[0].clone()]);
@@ -592,6 +701,7 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
     ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "architecture",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &output,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
             result_artifact_id: &result_a,
@@ -622,6 +732,7 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
     let reduction = ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "correctness",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &confirmation,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
             result_artifact_id: &result_b,
@@ -668,6 +779,7 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
     ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "seed",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &seed,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
             result_artifact_id: &seed_result,
@@ -692,6 +804,7 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
     .unwrap();
     let stages = [CanonicalStage {
         source: "correctness",
+        demand_requirement: review_core::DemandRequirement::Required,
         stage: &confirmation,
         attempt_id: "01jd8m4qz9k7v3n2p6r8t0w204",
         result_artifact_id: &confirmation_result,
@@ -806,6 +919,7 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
     ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "seed",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &seed,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202",
             result_artifact_id: &seed_result,
@@ -844,6 +958,7 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
     let reduction = ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "correctness",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &dispositions,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
             result_artifact_id: &disposition_result,
@@ -916,6 +1031,7 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
     ingest
         .add_canonical_stage_outputs(&[CanonicalStage {
             source: "correctness",
+            demand_requirement: review_core::DemandRequirement::Required,
             stage: &stage(),
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w210",
             result_artifact_id: &result,

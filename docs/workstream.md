@@ -1,15 +1,15 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M2, private releases through `v0.4.0`, minimal product v1/v2, and their first
-candidate implementation dogfood are complete. M3.1 and M3.2 are complete: typed canonical
-Findings now carry explicit, immutable, coverage-checked prior-Finding dispositions. The M3.2
-candidate dogfood found four issues; commit `1fb9569` fixes them and the full gate passes. The
-accepted V3.1
+**Status:** M0–M3, private releases through `v0.4.0`, minimal product v1/v2, and their first
+candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
+exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
+open; follow-up `0361a7d` passes the full local gate and awaits PR #19 integration before M4 is
+complete. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
 binary-owned review-onboarding slice shipped through PR #13 in private `v0.4.0`; exact-main CI,
-downloaded checksums, and the extracted macOS binary passed. The kernel roadmap resumes at M3.3.
+downloaded checksums, and the extracted macOS binary passed. M5 remains gated on verified M4.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -150,6 +150,10 @@ and verification prerequisites exist.
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views; admitted partial reviewer
       results remain visible without acquiring Ledger or convergence authority (issue #15).
+  - [x] M4.1–M4.5 implementation and issue #15 reporting merged through PR #18.
+  - [x] Fix the three exhausted-Campaign follow-up Findings and pass the full local gate.
+  - [x] Record their exact Campaign-ledger dispositions; six Findings are fixed, zero open.
+  - [ ] Integrate PR #19 and verify exact `main`.
 - [ ] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
       Round history are enumerable.
 - [ ] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
@@ -310,8 +314,13 @@ found one blocker, two majors, and one minor. Commits `e930ea1` and `1fb9569` im
 and fix all four; the focused regressions and full local gate pass. A follow-up external Round was
 not required for deterministic acceptance. ADR-0033 now records that trusted Worker authority plus
 intentional Campaign execution authorizes declared input delivery without per-call confirmation;
-commit `179bb71` implements the agent-facing guidance. Resume M3 at M3.3, with issue #15 included
-in the M4.5 boundary under ADR-0034.
+commit `179bb71` implements the agent-facing guidance. PR #18 subsequently merged M3.3 and the M4
+implementation at `cea50aa`; exact-main CI passed. Verification Campaign
+`m3-3-m4-verification-v1` exhausted with three major follow-up Findings. Their local corrections
+preserve per-Finding Resolution authority across Grouping, pin reviewer Demand classification,
+and require explicit Evidence reuse admission; the full local gate passes. All six Campaign
+Findings are fixed with zero open, and follow-up PR #19 carries `0361a7d`. Resume at its integration
+and exact-main verification, then M5.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

@@ -64,10 +64,37 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     );
     assert_eq!(loaded.reviewers().len(), 1);
     assert!(loaded.reviewers().contains_key("architecture"));
+    assert_eq!(
+        loaded.demand_requirements()["architecture"],
+        review_core::DemandRequirement::Required,
+        "old pinned pipelines retain the permanent required default"
+    );
     assert_eq!(loaded.convergence().max_rounds, 3);
     assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
     assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
     assert_eq!(loaded.check_timeout_seconds(), 3600);
+}
+
+#[test]
+fn reviewer_demand_classification_is_pipeline_owned() {
+    let advisory = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\ndemands = \"advisory\"\n",
+    );
+    let loaded = Definition::from_toml(&advisory).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.demand_requirements()["architecture"],
+        review_core::DemandRequirement::Advisory
+    );
+
+    let invalid = MINIMAL.replace(
+        "id = \"gate\"\nkind = \"gate\"\n",
+        "id = \"gate\"\nkind = \"gate\"\ndemands = \"advisory\"\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&invalid).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("not a reviewer")
+    ));
 }
 
 #[test]

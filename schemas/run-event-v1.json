@@ -32,6 +32,7 @@
         "DemandRecorded@1",
         "DemandWaived@1",
         "EvidenceAdded@1",
+        "EvidenceReuseAdmitted@1",
         "EvidenceSatisfied@1",
         "FindingReported@1",
         "FindingResolutionChallenged@1",

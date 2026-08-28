@@ -67,6 +67,8 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert!(readme.contains("## Worker data authorization"));
     assert!(readme.contains("should not ask for additional per-Worker"));
     assert!(repo.join(".af/pipelines/review.toml").is_file());
+    let pipeline = std::fs::read_to_string(repo.join(".af/pipelines/review.toml")).unwrap();
+    assert_eq!(pipeline.matches("demands = \"required\"").count(), 2);
     assert!(repo.join(".af/workers/correctness/reviewer.md").is_file());
     assert!(
         std::fs::read_to_string(repo.join(".af/workers/architecture/reviewer.toml"))

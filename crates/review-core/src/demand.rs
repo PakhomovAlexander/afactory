@@ -96,6 +96,34 @@ impl EvidenceSatisfactionV1 {
     }
 }
 
+/// A trusted policy decision that one exact satisfaction may remain current after the Subject
+/// advances. Kept separate from `EvidenceSatisfaction@1` so its frozen payload remains readable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceReuseAdmissionV1 {
+    pub demand_id: String,
+    pub satisfaction_id: String,
+    pub subject_id: String,
+    pub actor: String,
+    pub policy_revision: String,
+    pub reason: String,
+}
+
+impl EvidenceReuseAdmissionV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if !crate::is_digest(&self.demand_id)
+            || !crate::is_digest(&self.satisfaction_id)
+            || !crate::is_digest(&self.subject_id)
+            || self.actor.trim().is_empty()
+            || self.policy_revision.trim().is_empty()
+            || self.reason.trim().is_empty()
+        {
+            return Err("EvidenceReuseAdmission@1 contains invalid authority or reason".into());
+        }
+        Ok(())
+    }
+}
+
 /// The explicit authenticated escape hatch for one Demand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

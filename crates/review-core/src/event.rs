@@ -35,6 +35,8 @@ pub enum EventType {
     DemandWaivedV1,
     #[serde(rename = "EvidenceAdded@1")]
     EvidenceAddedV1,
+    #[serde(rename = "EvidenceReuseAdmitted@1")]
+    EvidenceReuseAdmittedV1,
     #[serde(rename = "EvidenceSatisfied@1")]
     EvidenceSatisfiedV1,
     #[serde(rename = "FindingReported@1")]
@@ -78,7 +80,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -92,6 +94,7 @@ impl EventType {
         Self::DemandRecordedV1,
         Self::DemandWaivedV1,
         Self::EvidenceAddedV1,
+        Self::EvidenceReuseAdmittedV1,
         Self::EvidenceSatisfiedV1,
         Self::FindingReportedV1,
         Self::FindingResolutionChallengedV1,
@@ -129,6 +132,7 @@ impl EventType {
             Self::DemandRecordedV1 => "DemandRecorded@1",
             Self::DemandWaivedV1 => "DemandWaived@1",
             Self::EvidenceAddedV1 => "EvidenceAdded@1",
+            Self::EvidenceReuseAdmittedV1 => "EvidenceReuseAdmitted@1",
             Self::EvidenceSatisfiedV1 => "EvidenceSatisfied@1",
             Self::FindingReportedV1 => "FindingReported@1",
             Self::FindingResolutionChallengedV1 => "FindingResolutionChallenged@1",
@@ -180,6 +184,7 @@ impl EventType {
             Self::DemandRecordedV1 => ("DemandRecorded", 1),
             Self::DemandWaivedV1 => ("DemandWaived", 1),
             Self::EvidenceAddedV1 => ("EvidenceAdded", 1),
+            Self::EvidenceReuseAdmittedV1 => ("EvidenceReuseAdmitted", 1),
             Self::EvidenceSatisfiedV1 => ("EvidenceSatisfied", 1),
             Self::FindingReportedV1 => ("FindingReported", 1),
             Self::FindingResolutionChallengedV1 => ("FindingResolutionChallenged", 1),
@@ -251,6 +256,7 @@ impl std::str::FromStr for EventType {
             "DemandRecorded@1" => Ok(Self::DemandRecordedV1),
             "DemandWaived@1" => Ok(Self::DemandWaivedV1),
             "EvidenceAdded@1" => Ok(Self::EvidenceAddedV1),
+            "EvidenceReuseAdmitted@1" => Ok(Self::EvidenceReuseAdmittedV1),
             "EvidenceSatisfied@1" => Ok(Self::EvidenceSatisfiedV1),
             "FindingReported@1" => Ok(Self::FindingReportedV1),
             "FindingResolutionChallenged@1" => Ok(Self::FindingResolutionChallengedV1),
@@ -1103,6 +1109,7 @@ pub fn validate_event_payload(
         EventType::DemandRecordedV1
         | EventType::DemandWaivedV1
         | EventType::EvidenceAddedV1
+        | EventType::EvidenceReuseAdmittedV1
         | EventType::EvidenceSatisfiedV1
         | EventType::ChangeAttestedV1
         | EventType::FixVerifiedV1

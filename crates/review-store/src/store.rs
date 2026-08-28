@@ -667,6 +667,8 @@ struct AuthorityNode {
     id: String,
     kind: String,
     #[serde(default)]
+    demands: Option<review_core::DemandRequirement>,
+    #[serde(default)]
     inputs: Vec<AuthorityPort>,
     #[serde(default = "default_authority_outputs")]
     outputs: Vec<AuthorityPort>,
@@ -846,6 +848,7 @@ fn typed_json_artifacts(
             EventType::DemandRecordedV1
             | EventType::DemandWaivedV1
             | EventType::EvidenceAddedV1
+            | EventType::EvidenceReuseAdmittedV1
             | EventType::EvidenceSatisfiedV1
             | EventType::ChangeAttestedV1
             | EventType::FixVerifiedV1
@@ -858,6 +861,9 @@ fn typed_json_artifacts(
                     EventType::DemandRecordedV1 => review_core::contract::DEMAND_V1,
                     EventType::DemandWaivedV1 => review_core::contract::DEMAND_WAIVER_V1,
                     EventType::EvidenceAddedV1 => review_core::contract::EVIDENCE_V1,
+                    EventType::EvidenceReuseAdmittedV1 => {
+                        review_core::contract::EVIDENCE_REUSE_ADMISSION_V1
+                    }
                     EventType::EvidenceSatisfiedV1 => {
                         review_core::contract::EVIDENCE_SATISFACTION_V1
                     }
@@ -1151,6 +1157,13 @@ fn validate_artifact_payload(
         review_core::contract::EVIDENCE_SATISFACTION_V1 => {
             let payload: review_core::EvidenceSatisfactionV1 =
                 validated_envelope_payload(value, review_core::contract::EVIDENCE_SATISFACTION_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::EVIDENCE_REUSE_ADMISSION_V1 => {
+            let payload: review_core::EvidenceReuseAdmissionV1 = validated_envelope_payload(
+                value,
+                review_core::contract::EVIDENCE_REUSE_ADMISSION_V1,
+            )?;
             payload.validate().map_err(StoreError::Conflict)?;
         }
         review_core::contract::DEMAND_WAIVER_V1 => {
@@ -2218,6 +2231,7 @@ fn validate_campaign_transition(
                 }
             }
             EventType::EvidenceAddedV1
+            | EventType::EvidenceReuseAdmittedV1
             | EventType::EvidenceSatisfiedV1
             | EventType::DemandWaivedV1 => {
                 let Some((_, active_payload)) = &active else {
@@ -2247,6 +2261,15 @@ fn validate_campaign_transition(
                                 prepared,
                                 event,
                                 review_core::contract::EVIDENCE_SATISFACTION_V1,
+                            )?;
+                        (value.demand_id, value.subject_id)
+                    }
+                    EventType::EvidenceReuseAdmittedV1 => {
+                        let value: review_core::EvidenceReuseAdmissionV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::EVIDENCE_REUSE_ADMISSION_V1,
                             )?;
                         (value.demand_id, value.subject_id)
                     }

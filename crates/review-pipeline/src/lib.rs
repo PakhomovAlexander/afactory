@@ -929,6 +929,7 @@ pub struct Kernel<'a> {
     checks: Vec<CheckDefinition>,
     check_timeout: Duration,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
+    demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
     /// Retries per node, spent on timeouts or an inadmissible returned result. A retry is a new
@@ -1085,6 +1086,7 @@ impl<'a> Kernel<'a> {
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
             reviewers: BTreeMap::new(),
+            demand_requirements: BTreeMap::new(),
             attempts: Mutex::new(attempts),
             budgets: None,
             timeout_retries: 1,
@@ -1150,6 +1152,7 @@ impl<'a> Kernel<'a> {
             authority,
         )?;
         kernel.input_bindings = loaded.input_bindings();
+        kernel.demand_requirements = loaded.demand_requirements().clone();
         Ok(kernel)
     }
 
@@ -2768,6 +2771,11 @@ impl<'a> Kernel<'a> {
                             )| {
                                 review_store::CanonicalStage {
                                     source: node,
+                                    demand_requirement: self
+                                        .demand_requirements
+                                        .get(node)
+                                        .copied()
+                                        .unwrap_or(review_core::DemandRequirement::Required),
                                     stage,
                                     attempt_id,
                                     result_artifact_id: result_id,

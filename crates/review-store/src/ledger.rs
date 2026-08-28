@@ -17,9 +17,9 @@ use std::{
 
 use review_core::{
     ArtifactEnvelope, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
-    DemandSetEntryV1, DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceSatisfactionV1,
-    EvidenceV1, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
-    FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
+    DemandSetEntryV1, DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
+    EvidenceSatisfactionV1, EvidenceV1, FindingGroupingAction, FindingGroupingEventPayloadV1,
+    FindingGroupingV1, FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
     LEGACY_FINDING_IDENTITY_POLICY, PolicyTimeV1, RecordedArtifactPayloadV1, Relation,
     ResolutionChallengeV1, RoundStartedPayloadV1, Severity, SubjectKind,
 };
@@ -36,6 +36,7 @@ pub const EVENT_FINDINGS_UNGROUPED: EventType = EventType::FindingsUngroupedV1;
 pub const EVENT_DEMAND_RECORDED: EventType = EventType::DemandRecordedV1;
 pub const EVENT_DEMAND_WAIVED: EventType = EventType::DemandWaivedV1;
 pub const EVENT_EVIDENCE_ADDED: EventType = EventType::EvidenceAddedV1;
+pub const EVENT_EVIDENCE_REUSE_ADMITTED: EventType = EventType::EvidenceReuseAdmittedV1;
 pub const EVENT_EVIDENCE_SATISFIED: EventType = EventType::EvidenceSatisfiedV1;
 pub const EVENT_CHANGE_ATTESTED: EventType = EventType::ChangeAttestedV1;
 pub const EVENT_FIX_VERIFIED: EventType = EventType::FixVerifiedV1;
@@ -268,7 +269,11 @@ pub struct Ledger {
     demand_order: Vec<String>,
     attestations: BTreeMap<String, RecordedAttestation>,
     verifications: BTreeMap<String, RecordedVerification>,
+    /// Resolutions retain the Finding ID named by their immutable artifact. Grouping never
+    /// rewrites this map; `resolution_authority` records exactly which member claims a
+    /// Resolution covered when it was admitted.
     resolutions: BTreeMap<String, RecordedResolution>,
+    resolution_authority: BTreeMap<String, String>,
     resolution_history: Vec<ResolutionEvidence>,
     policy_time: u64,
     pub round: u32,
@@ -292,6 +297,7 @@ pub struct DemandRecord {
     pub artifact_ids: Vec<String>,
     pub evidence: Vec<RecordedEvidence>,
     pub satisfactions: Vec<RecordedSatisfaction>,
+    pub reuse_admissions: Vec<RecordedReuseAdmission>,
     pub waivers: Vec<RecordedWaiver>,
 }
 
@@ -307,6 +313,13 @@ pub struct RecordedSatisfaction {
     pub record_id: String,
     pub artifact_id: String,
     pub satisfaction: EvidenceSatisfactionV1,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordedReuseAdmission {
+    pub record_id: String,
+    pub artifact_id: String,
+    pub admission: EvidenceReuseAdmissionV1,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +493,7 @@ impl Ledger {
             EVENT_DEMAND_RECORDED
             | EVENT_DEMAND_WAIVED
             | EVENT_EVIDENCE_ADDED
+            | EVENT_EVIDENCE_REUSE_ADMITTED
             | EVENT_EVIDENCE_SATISFIED => {
                 self.apply_demand_evidence(event_type, payload, artifact_refs, cas)?
             }
@@ -1137,6 +1151,7 @@ impl Ledger {
                                 artifact_ids: vec![envelope.artifact_id],
                                 evidence: Vec::new(),
                                 satisfactions: Vec::new(),
+                                reuse_admissions: Vec::new(),
                                 waivers: Vec::new(),
                             },
                         );
@@ -1193,6 +1208,36 @@ impl Ledger {
                     record_id: recorded.artifact_id,
                     artifact_id: envelope.artifact_id,
                     satisfaction,
+                });
+            }
+            EVENT_EVIDENCE_REUSE_ADMITTED => {
+                if envelope.artifact_type != review_core::contract::EVIDENCE_REUSE_ADMISSION_V1 {
+                    return Err(malformed(
+                        event_type.as_str(),
+                        "artifact is not EvidenceReuseAdmission@1",
+                    ));
+                }
+                let admission: EvidenceReuseAdmissionV1 = serde_json::from_value(envelope.payload)
+                    .map_err(|error| malformed(event_type.as_str(), &error.to_string()))?;
+                admission
+                    .validate()
+                    .map_err(|error| malformed(event_type.as_str(), &error))?;
+                let demand = self.demands.get_mut(&admission.demand_id).ok_or_else(|| {
+                    malformed(event_type.as_str(), "reuse names an unknown Demand")
+                })?;
+                if !demand.satisfactions.iter().any(|satisfaction| {
+                    satisfaction.artifact_id == admission.satisfaction_id
+                        && satisfaction.satisfaction.subject_id == admission.subject_id
+                }) {
+                    return Err(malformed(
+                        event_type.as_str(),
+                        "reuse does not name a satisfaction for its Demand and Subject",
+                    ));
+                }
+                demand.reuse_admissions.push(RecordedReuseAdmission {
+                    record_id: recorded.artifact_id,
+                    artifact_id: envelope.artifact_id,
+                    admission,
                 });
             }
             EVENT_DEMAND_WAIVED => {
@@ -1364,12 +1409,12 @@ impl Ledger {
                         "Resolution does not cover the active Subject",
                     ));
                 }
-                let resolution_root = self
-                    .group_root(&resolution.finding_id)
-                    .ok_or_else(|| {
-                        malformed(event_type.as_str(), "Resolution names an unknown Finding")
-                    })?
-                    .to_string();
+                if self.group_root(&resolution.finding_id).is_none() {
+                    return Err(malformed(
+                        event_type.as_str(),
+                        "Resolution names an unknown Finding",
+                    ));
+                }
                 let status = match resolution.outcome {
                     FindingResolutionOutcome::Fixed => {
                         let verification = self
@@ -1417,21 +1462,24 @@ impl Ledger {
                     }
                 };
                 let keys = self.finding_member_keys(&resolution.finding_id)?;
-                for key in keys {
-                    let finding = self.findings.get_mut(&key).expect("member exists");
+                let resolution_key = resolution.finding_id.clone();
+                for key in &keys {
+                    let finding = self.findings.get_mut(key).expect("member exists");
                     finding.status = status;
                     finding.history.push(Transition {
                         round: self.round,
                         kind: TransitionKind::Resolved(status),
                         note: Some(resolution.reason.clone()),
                     });
+                    self.resolution_authority
+                        .insert(key.clone(), resolution_key.clone());
                 }
                 self.resolution_history.push(ResolutionEvidence {
                     record_id: recorded.artifact_id.clone(),
                     artifact_id: envelope.artifact_id.clone(),
                 });
                 self.resolutions.insert(
-                    resolution_root,
+                    resolution_key,
                     RecordedResolution {
                         record_id: recorded.artifact_id,
                         artifact_id: envelope.artifact_id,
@@ -1554,6 +1602,14 @@ impl Ledger {
                 "group target `{into}` is an alias; name its visible root instead"
             )));
         }
+        if self.group_has_unexpired_tracked_resolution(from)
+            || self.group_has_unexpired_tracked_resolution(into)
+        {
+            return Err(crate::store::StoreError::Conflict(
+                "cannot group a Finding carrying an unexpired tracked-wontfix Resolution; challenge the Resolution first"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -1570,7 +1626,7 @@ impl Ledger {
         let root = self.group_root(from).ok_or_else(|| {
             crate::store::StoreError::Conflict(format!("unknown Finding `{from}`"))
         })?;
-        if self.resolutions.contains_key(root)
+        if self.resolution(root).is_some()
             && self
                 .finding_view(root)
                 .is_some_and(|finding| !finding.status.is_active())
@@ -1604,6 +1660,22 @@ impl Ledger {
                     .flatten()
             })
             .collect()
+    }
+
+    fn group_has_unexpired_tracked_resolution(&self, finding_id: &str) -> bool {
+        let Some(root) = self.group_root(finding_id) else {
+            return false;
+        };
+        self.group_members(root).into_iter().any(|finding| {
+            finding.status == Status::Wontfix
+                && self.resolution(&finding.key).is_some_and(|resolution| {
+                    resolution.resolution.outcome == FindingResolutionOutcome::WontfixTracked
+                        && resolution
+                            .resolution
+                            .expires_at_policy_time
+                            .is_some_and(|expiry| expiry > self.policy_time)
+                })
+        })
     }
 
     fn finding_view_for_root(&self, root: &str) -> Option<Finding> {
@@ -1759,8 +1831,9 @@ impl Ledger {
     }
 
     pub fn resolution(&self, finding_id: &str) -> Option<&RecordedResolution> {
-        self.group_root(finding_id)
-            .and_then(|root| self.resolutions.get(root))
+        self.resolution_authority
+            .get(finding_id)
+            .and_then(|key| self.resolutions.get(key))
     }
 
     pub fn resolution_challenge_for_report(
@@ -1807,7 +1880,8 @@ impl Ledger {
                     .expires_at_policy_time
                     .is_some_and(|expiry| expiry <= tick)
                     && self
-                        .finding_view(&resolution.resolution.finding_id)
+                        .findings
+                        .get(&resolution.resolution.finding_id)
                         .is_some_and(|finding| finding.status == Status::Wontfix)
             })
             .collect()
@@ -1833,16 +1907,15 @@ impl Ledger {
             .iter()
             .filter_map(|id| self.demands.get(id))
             .map(|record| {
-                let current_waivers: Vec<_> = record
-                    .waivers
-                    .iter()
-                    .filter(|waiver| Some(waiver.waiver.subject_id.as_str()) == active_subject)
-                    .collect();
+                let current_waivers: Vec<_> = record.waivers.iter().collect();
                 let current_satisfactions: Vec<_> = record
                     .satisfactions
                     .iter()
                     .filter(|satisfaction| {
                         Some(satisfaction.satisfaction.subject_id.as_str()) == active_subject
+                            || record.reuse_admissions.iter().any(|admission| {
+                                admission.admission.satisfaction_id == satisfaction.artifact_id
+                            })
                     })
                     .collect();
                 let status = if !current_waivers.is_empty() {
@@ -1873,6 +1946,12 @@ impl Ledger {
                     satisfaction_ids: current_satisfactions
                         .iter()
                         .map(|satisfaction| satisfaction.artifact_id.clone())
+                        .chain(
+                            record
+                                .reuse_admissions
+                                .iter()
+                                .map(|admission| admission.artifact_id.clone()),
+                        )
                         .collect(),
                     waiver_ids: current_waivers
                         .iter()
@@ -1897,6 +1976,12 @@ impl Ledger {
                     .satisfactions
                     .iter()
                     .map(|item| item.artifact_id.clone())
+                    .chain(
+                        demand
+                            .reuse_admissions
+                            .iter()
+                            .map(|item| item.artifact_id.clone()),
+                    )
             })
             .collect();
         let waivers = self
@@ -1919,6 +2004,12 @@ impl Ledger {
                     .chain(
                         demand
                             .satisfactions
+                            .iter()
+                            .map(|item| item.record_id.clone()),
+                    )
+                    .chain(
+                        demand
+                            .reuse_admissions
                             .iter()
                             .map(|item| item.record_id.clone()),
                     )

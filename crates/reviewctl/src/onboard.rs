@@ -630,6 +630,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
     let gate = NodeSpec {
         id: "gate".into(),
         kind: NodeKindSpec::Gate,
+        demands: None,
         inputs: Vec::new(),
         outputs: vec![typed_port("decision", contract::GATE_DECISION_V1)],
         gated_by: None,
@@ -639,6 +640,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
     let generation = NodeSpec {
         id: "generation".into(),
         kind: NodeKindSpec::Generation,
+        demands: None,
         inputs: Vec::new(),
         outputs: vec![
             prior_finding_set_port("findings"),
@@ -653,6 +655,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         .map(|id| NodeSpec {
             id: id.into(),
             kind: NodeKindSpec::Reviewer,
+            demands: Some(review_core::DemandRequirement::Required),
             inputs: vec![
                 typed_port("gate", contract::GATE_DECISION_V1),
                 prior_finding_set_port("prior_findings"),
@@ -667,6 +670,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
     let gather = NodeSpec {
         id: "gather".into(),
         kind: NodeKindSpec::Gather,
+        demands: None,
         inputs: vec![
             typed_port("correctness", contract::REVIEWER_RESULT_V2),
             typed_port("architecture", contract::REVIEWER_RESULT_V2),
@@ -679,6 +683,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
     let ledger = NodeSpec {
         id: "ledger".into(),
         kind: NodeKindSpec::Ledger,
+        demands: None,
         inputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
         outputs: vec![
             typed_port("findings", contract::FINDING_SET_V1),
