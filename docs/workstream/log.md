@@ -12,6 +12,10 @@ Pinned Campaign `m5-report-spend-v1` Round 1 spent 149,528 tokens and found one 
 Minor. Their corrections keep the Markdown spend table contiguous, render Attempt detail in a
 separate section, and preserve causation-less frozen `RunReport@1` presentation with an explicit
 run ordinal and absent Round authority. The focused regressions and full kernel gate pass again.
+Round 2 spent 164,893 tokens, confirmed both corrections, and returned Pass. It also opened one
+Minor: the Provider preflight budget seed counted only the active epoch although kernel replay
+charges the entire superseded Round lineage. The query now derives the active Round number and
+Campaign Manifest, includes every matching epoch, and has a two-epoch regression.
 
 ## 2026-08-20 — M0 and M1
 

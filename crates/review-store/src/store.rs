@@ -436,17 +436,29 @@ impl EventStore {
             .map_err(StoreError::from)
     }
 
-    /// Committed and crash-reserved token spend for one exact Round, without replaying
-    /// unrelated Campaign events or re-reading output artifacts from the CAS.
+    /// Committed and crash-reserved token spend for one Round lineage, without replaying
+    /// unrelated Campaign events or re-reading output artifacts from the CAS. Every epoch with
+    /// the active Round's number and Campaign Manifest contributes because supersession never
+    /// refunds already-spent work.
     pub fn round_committed_tokens(
         &self,
         run_id: &str,
         round_event_id: &str,
     ) -> Result<u64, StoreError> {
+        let round_payload: String = self.conn.query_row(
+            "SELECT payload FROM events
+             WHERE run_id = ?1 AND event_id = ?2 AND type = 'RoundStarted@1'",
+            params![run_id, round_event_id],
+            |row| row.get(0),
+        )?;
+        let round: review_core::RoundStartedPayloadV1 = serde_json::from_str(&round_payload)?;
+        let round_number = i64::from(round.round);
         let sum = |query: &str| -> Result<u64, StoreError> {
-            let value: i64 =
-                self.conn
-                    .query_row(query, params![run_id, round_event_id], |row| row.get(0))?;
+            let value: i64 = self.conn.query_row(
+                query,
+                params![run_id, round_number, round.campaign_manifest_id.as_str()],
+                |row| row.get(0),
+            )?;
             u64::try_from(value)
                 .map_err(|_| StoreError::Conflict("replayed token charge overflow".into()))
         };
@@ -458,7 +470,15 @@ impl EventStore {
                        ELSE 0
                      END), 0)
              FROM events AS terminal
-             WHERE terminal.run_id = ?1 AND terminal.causation_id = ?2
+             WHERE terminal.run_id = ?1
+               AND EXISTS (
+                 SELECT 1 FROM events AS round
+                 WHERE round.run_id = terminal.run_id
+                   AND round.event_id = terminal.causation_id
+                   AND round.type = 'RoundStarted@1'
+                   AND json_extract(round.payload, '$.round') = ?2
+                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
+               )
                AND terminal.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
                                      'AttemptFenced@1', 'AttemptReleased@1')
                AND terminal.sequence = (
@@ -473,7 +493,15 @@ impl EventStore {
         let outstanding_attempts = sum(
             "SELECT COALESCE(SUM(CAST(json_extract(dispatched.payload, '$.reserved') AS INTEGER)), 0)
              FROM events AS dispatched
-             WHERE dispatched.run_id = ?1 AND dispatched.causation_id = ?2
+             WHERE dispatched.run_id = ?1
+               AND EXISTS (
+                 SELECT 1 FROM events AS round
+                 WHERE round.run_id = dispatched.run_id
+                   AND round.event_id = dispatched.causation_id
+                   AND round.type = 'RoundStarted@1'
+                   AND json_extract(round.payload, '$.round') = ?2
+                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
+               )
                AND dispatched.type = 'AttemptDispatched@1'
                AND NOT EXISTS (
                  SELECT 1 FROM events AS terminal
@@ -485,15 +513,32 @@ impl EventStore {
                )",
         )?;
         let provider_charges = sum(
-            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.charged_tokens') AS INTEGER)), 0)
-             FROM events WHERE run_id = ?1 AND causation_id = ?2
-               AND type = 'ProviderOperationTransition@1'",
+            "SELECT COALESCE(SUM(CAST(json_extract(operation.payload, '$.charged_tokens') AS INTEGER)), 0)
+             FROM events AS operation
+             WHERE operation.run_id = ?1
+               AND operation.type = 'ProviderOperationTransition@1'
+               AND EXISTS (
+                 SELECT 1 FROM events AS round
+                 WHERE round.run_id = operation.run_id
+                   AND round.event_id = operation.causation_id
+                   AND round.type = 'RoundStarted@1'
+                   AND json_extract(round.payload, '$.round') = ?2
+                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
+               )",
         )?;
         let outstanding_providers = sum(
             "SELECT COALESCE(SUM(CAST(json_extract(operation.payload, '$.reserved_tokens') AS INTEGER)), 0)
              FROM events AS operation
-             WHERE operation.run_id = ?1 AND operation.causation_id = ?2
+             WHERE operation.run_id = ?1
                AND operation.type = 'ProviderOperationTransition@1'
+               AND EXISTS (
+                 SELECT 1 FROM events AS round
+                 WHERE round.run_id = operation.run_id
+                   AND round.event_id = operation.causation_id
+                   AND round.type = 'RoundStarted@1'
+                   AND json_extract(round.payload, '$.round') = ?2
+                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
+               )
                AND json_extract(operation.payload, '$.state') = 'running'
                AND json_type(operation.payload, '$.failure_class') IS NULL
                AND operation.sequence = (
@@ -2856,15 +2901,45 @@ mod tests {
     }
 
     #[test]
-    fn round_spend_uses_admitted_cost_and_first_terminal_attempt() {
+    fn round_spend_uses_admitted_cost_first_terminal_and_every_epoch() {
         let (_dir, store, _cas) = fixture();
-        let mut sequence = 0_i64;
+        for (sequence, event_id, epoch) in [(0, "round-old", 1), (1, "round-new", 2)] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO events
+                     (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                      causation_id, correlation_id, artifact_refs, payload)
+                     VALUES ('run', ?1, ?2, 'RoundStarted@1', '2026-08-28T00:00:00Z', NULL,
+                             NULL, NULL, NULL, '[]', ?3)",
+                    params![
+                        sequence,
+                        event_id,
+                        json!({
+                            "round": 1,
+                            "epoch": epoch,
+                            "campaign_manifest_id": "manifest",
+                            "subject_id": format!("subject-{epoch}"),
+                            "prior_finding_set_id": "findings",
+                            "prior_demand_set_id": "demands"
+                        })
+                        .to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        let mut sequence = 2_i64;
         let insert = |store: &EventStore,
                       sequence: &mut i64,
                       event_type: &str,
                       attempt_id: Option<&str>,
                       correlation_id: Option<&str>,
                       payload: serde_json::Value| {
+            let causation_id = if matches!(attempt_id, Some("selected" | "fenced")) {
+                "round-old"
+            } else {
+                "round-new"
+            };
             store
                 .conn
                 .execute(
@@ -2872,12 +2947,13 @@ mod tests {
                      (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
                       causation_id, correlation_id, artifact_refs, payload)
                      VALUES ('run', ?1, ?2, ?3, '2026-08-28T00:00:00Z', 'reviewer', ?4,
-                             'round', ?5, '[]', ?6)",
+                             ?5, ?6, '[]', ?7)",
                     params![
                         *sequence,
                         format!("event-{sequence}"),
                         event_type,
                         attempt_id,
+                        causation_id,
                         correlation_id,
                         payload.to_string()
                     ],
@@ -2967,7 +3043,10 @@ mod tests {
             json!({"state": "running", "charged_tokens": 0, "reserved_tokens": 5}),
         );
 
-        assert_eq!(store.round_committed_tokens("run", "round").unwrap(), 56);
+        assert_eq!(
+            store.round_committed_tokens("run", "round-new").unwrap(),
+            56
+        );
     }
 
     #[test]
