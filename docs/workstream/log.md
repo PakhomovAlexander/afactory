@@ -1133,3 +1133,32 @@ Both published checksum sidecars passed after download: macOS arm64 archive
 archive `sha256:bb90eb44296eb69ab24ce10289811db785a44dff610ba92216472288a1509cb0`. The extracted macOS
 binary reports `af 0.4.0`, and `af onboard --help` exposes the shipped command. V3.2 is complete;
 the canonical capability roadmap resumes at M3.2.
+
+## 2026-08-28 — M3.2 explicit dispositions implemented and dogfooded
+
+Commit `e930ea1` adds the additive `ReviewerResult@2` and `FindingDisposition@1` contracts. New
+pipelines pass the exact prior `FindingSet@1` to each required reviewer and require exactly one
+`corroborate`, `not_reproduced`, or `dispute` position per assigned Finding. Missing, duplicate,
+and unassigned coverage is rejected before Attempt admission; each selected disposition is an
+immutable Attempt-produced artifact bound to source, Round, Subject, and exact inputs. Reducer@2
+records those artifacts in the next Finding Set, disputes contest without veto authority, and
+Drops remain evidence rather than trusted fixed resolution. Permanent `ReviewerResult@1` readers
+and behavior remain unchanged. Focused real-binary two-Round and incomplete-output tests plus the
+full `make check` gate passed.
+
+The candidate binary first refused `origin/main` as authority because its historic review lock
+stored the pipeline's raw SHA-256 instead of the kernel's domain-separated content ID. A local,
+disposable authority commit `05b2c98` changed only that pin, preserving the old one-reviewer Claude
+Opus policy while keeping candidate policy untrusted. Campaign `m3-2-dispositions-v1` then reviewed
+candidate `e930ea1`: Round 1 spent 286,400 chargeable tokens, rendered 118,706 context bytes
+(29,677 estimated tokens), and opened one blocker, two major Findings, and one minor Finding.
+
+Commit `1fb9569` fixes all four. V2 corroboration now emits current provenance-carrying evidence so
+a persisting fixed Finding reopens; every dispatch pins the exact Finding Set; the required subset
+is derived from the current Round's already-pinned filtered assignment so authority diagnostics
+and operator-declined Findings are not obligations; and V2 guidance forbids duplicate flat
+reports and names only the dispositions channel. Regression tests cover each boundary, including
+the durable dispatch reference, and the full gate passes with byte-identical fixture replay. All
+four Campaign Findings are recorded fixed. A proposed Round 2 was refused before provider egress
+because the original disclosure approval did not cover the changed private payload, so it spent
+no tokens; a fresh explicit approval may run that optional clean confirmation later.

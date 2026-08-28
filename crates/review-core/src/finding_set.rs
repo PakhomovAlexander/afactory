@@ -6,6 +6,8 @@ use crate::{Severity, is_digest};
 
 /// The deterministic reducer implementation recorded in every new Finding Set.
 pub const FINDING_REDUCER_VERSION: &str = "review.kernel/finding-reducer@1";
+/// The additive reducer that admits immutable prior-Finding disposition artifacts.
+pub const FINDING_REDUCER_VERSION_V2: &str = "review.kernel/finding-reducer@2";
 
 /// One Finding as exposed by an immutable `FindingSet@1` projection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,7 +78,10 @@ impl FindingSetV1 {
             return Err("FindingSet@1 contains an invalid artifact ID".into());
         }
         if self.round == 0
-            || self.reducer_version != FINDING_REDUCER_VERSION
+            || !matches!(
+                self.reducer_version.as_str(),
+                FINDING_REDUCER_VERSION | FINDING_REDUCER_VERSION_V2
+            )
             || self.identity_policy.trim().is_empty()
         {
             return Err("FindingSet@1 contains invalid reducer authority".into());
@@ -85,7 +90,12 @@ impl FindingSetV1 {
             finding.finding_id.trim().is_empty()
                 || !matches!(
                     finding.status.as_str(),
-                    "open" | "fixed" | "rejected" | "wontfix" | "contested"
+                    "open"
+                        | "pending-verification"
+                        | "fixed"
+                        | "rejected"
+                        | "wontfix"
+                        | "contested"
                 )
                 || !matches!(finding.scope.as_str(), "in" | "out" | "unknown")
                 || finding.title.trim().is_empty()

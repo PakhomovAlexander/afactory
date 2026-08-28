@@ -8,30 +8,49 @@ use std::path::PathBuf;
 
 use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
-    FindingSetEntryV1, FindingSetV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PortArtifactsV1, PortCardinality,
-    Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ReviewerPackageV1,
-    RunEvent, RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV2, RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    CampaignOpenedPayloadV1, ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef,
+    ClaimRefKind, DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1,
+    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceSatisfactionV1, EvidenceV1,
+    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
+    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
+    FixVerificationV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
+    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
+    ResolutionChallengeKind, ResolutionChallengeV1, ReviewerPackageV1, RunEvent,
+    RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
+    SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 18] = [
+const SCHEMAS: [&str; 32] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
+    "change-attestation-v1.json",
     "change-set-v1.json",
+    "demand-set-v1.json",
+    "demand-v1.json",
+    "demand-waiver-v1.json",
+    "evidence-satisfaction-v1.json",
+    "evidence-v1.json",
+    "finding-disposition-v1.json",
+    "finding-grouping-v1.json",
     "finding-report-v1.json",
+    "finding-resolution-v1.json",
+    "finding-set-v1.json",
+    "fix-verification-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
+    "policy-time-v1.json",
     "provider-operation-transition-v1.json",
     "reviewer-package-v1.json",
     "reviewer-result-v1.json",
+    "reviewer-result-v2.json",
+    "resolution-challenge-v1.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
@@ -56,8 +75,14 @@ fn schema(name: &str) -> Value {
 fn validator(name: &str) -> jsonschema::Validator {
     let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
         .expect("FindingReport@1 is a schema resource");
+    let reviewer_result = jsonschema::Resource::from_contents(schema("reviewer-result-v1.json"))
+        .expect("ReviewerResult@1 is a schema resource");
     jsonschema::options()
         .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
+        .with_resource(
+            "urn:review-kernel:schema:reviewer-result:1",
+            reviewer_result,
+        )
         .build(&schema(name))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -151,6 +176,224 @@ fn reviewer_result_legacy_conformance_corpus_matches_schema() {
             case["name"].as_str().unwrap(),
         );
     }
+}
+
+#[test]
+fn reviewer_result_v2_names_explicit_dispositions() {
+    let value = json!({
+        "verdict": "approve",
+        "summary": null,
+        "reports": [],
+        "benchmark_demands": [],
+        "dispositions": [{
+            "finding_id": "finding:one",
+            "position": "not_reproduced",
+            "reason": "the guarded branch no longer reaches the failing call"
+        }]
+    });
+    assert_valid("reviewer-result-v2.json", &value);
+    review_core::validate_reviewer_result_v2(&value).unwrap();
+
+    let mut omitted = value.clone();
+    omitted.as_object_mut().unwrap().remove("dispositions");
+    assert_invalid(
+        "reviewer-result-v2.json",
+        &omitted,
+        "silence cannot stand in for explicit coverage",
+    );
+    assert!(review_core::validate_reviewer_result_v2(&omitted).is_err());
+}
+
+#[test]
+fn finding_disposition_roundtrips() {
+    let disposition = FindingDispositionV1 {
+        finding_id: "finding:one".into(),
+        source: "correctness".into(),
+        position: FindingDispositionPosition::Dispute,
+        reason: "the claimed branch is unreachable".into(),
+        round: 2,
+        subject_id: format!("sha256:{}", "a".repeat(64)),
+    };
+    disposition.validate().unwrap();
+    let value = serde_json::to_value(&disposition).unwrap();
+    assert_valid("finding-disposition-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<FindingDispositionV1>(value).unwrap(),
+        disposition
+    );
+}
+
+#[test]
+fn finding_grouping_roundtrips() {
+    let grouping = FindingGroupingV1 {
+        from: "finding:duplicate".into(),
+        into: "finding:canonical".into(),
+        action: FindingGroupingAction::Group,
+        round: 3,
+    };
+    grouping.validate().unwrap();
+    let value = serde_json::to_value(&grouping).unwrap();
+    assert_valid("finding-grouping-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<FindingGroupingV1>(value).unwrap(),
+        grouping
+    );
+}
+
+#[test]
+fn demand_evidence_and_exact_set_roundtrip() {
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let demand = DemandV1 {
+        demand_id: digest('a'),
+        claim: "the index remains linear".into(),
+        why: "a regression would dominate large reviews".into(),
+        suggested_method: "measure 10k and 20k inputs".into(),
+        source: "performance".into(),
+        requirement: DemandRequirement::Required,
+        round: 2,
+        subject_id: digest('b'),
+    };
+    demand.validate().unwrap();
+    assert_valid("demand-v1.json", &serde_json::to_value(&demand).unwrap());
+    let evidence = EvidenceV1 {
+        demand_id: demand.demand_id.clone(),
+        subject_id: demand.subject_id.clone(),
+        content_artifact_id: digest('c'),
+        actor: "operator".into(),
+    };
+    evidence.validate().unwrap();
+    assert_valid(
+        "evidence-v1.json",
+        &serde_json::to_value(&evidence).unwrap(),
+    );
+    let satisfaction = EvidenceSatisfactionV1 {
+        demand_id: demand.demand_id.clone(),
+        evidence_id: digest('d'),
+        subject_id: demand.subject_id.clone(),
+        policy_revision: "bench-policy@1".into(),
+        reason: "the required scaling envelope passed".into(),
+    };
+    satisfaction.validate().unwrap();
+    assert_valid(
+        "evidence-satisfaction-v1.json",
+        &serde_json::to_value(&satisfaction).unwrap(),
+    );
+    let waiver = DemandWaiverV1 {
+        demand_id: demand.demand_id.clone(),
+        subject_id: demand.subject_id.clone(),
+        actor: "operator".into(),
+        policy_revision: "bench-policy@1".into(),
+        reason: "the affected feature is disabled".into(),
+    };
+    waiver.validate().unwrap();
+    assert_valid(
+        "demand-waiver-v1.json",
+        &serde_json::to_value(&waiver).unwrap(),
+    );
+    let set = DemandSetV1 {
+        subject_id: demand.subject_id.clone(),
+        round: 2,
+        prior_demand_set_id: digest('e'),
+        reducer_version: DEMAND_REDUCER_VERSION.into(),
+        selected_demand_artifact_ids: vec![digest('f')],
+        satisfaction_artifact_ids: vec![digest('1')],
+        waiver_artifact_ids: vec![],
+        demands: vec![DemandSetEntryV1 {
+            demand_id: demand.demand_id,
+            claim: demand.claim,
+            why: demand.why,
+            suggested_method: demand.suggested_method,
+            source: demand.source,
+            requirement: demand.requirement,
+            status: DemandStatus::Satisfied,
+            subject_id: demand.subject_id,
+            evidence_ids: vec![digest('d')],
+            satisfaction_ids: vec![digest('1')],
+            waiver_ids: vec![],
+        }],
+    };
+    set.validate().unwrap();
+    assert_valid("demand-set-v1.json", &serde_json::to_value(set).unwrap());
+}
+
+#[test]
+fn resolution_authority_roundtrips() {
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let attestation = ChangeAttestationV1 {
+        finding_id: "finding:one".into(),
+        expected_finding_view_id: digest('a'),
+        subject_id: digest('b'),
+        change_set_id: Some(digest('c')),
+        changed_regions: vec![ChangedRegionV1 {
+            path: "src/lib.rs".into(),
+            start_line: Some(10),
+            end_line: Some(14),
+        }],
+        actor: "implementer".into(),
+        reason: "guarded the failing path".into(),
+        evidence_ids: vec![digest('d')],
+    };
+    attestation.validate().unwrap();
+    assert_valid(
+        "change-attestation-v1.json",
+        &serde_json::to_value(&attestation).unwrap(),
+    );
+    let verification = FixVerificationV1 {
+        finding_id: attestation.finding_id.clone(),
+        attestation_id: digest('e'),
+        expected_finding_view_id: digest('f'),
+        subject_id: attestation.subject_id.clone(),
+        verifier: "trusted-verifier".into(),
+        policy_revision: "fix-policy@1".into(),
+        positive: true,
+        reason: "all active claims and required checks pass".into(),
+        evidence_ids: vec![],
+    };
+    verification.validate().unwrap();
+    assert_valid(
+        "fix-verification-v1.json",
+        &serde_json::to_value(&verification).unwrap(),
+    );
+    let resolution = FindingResolutionV1 {
+        finding_id: attestation.finding_id.clone(),
+        expected_finding_view_id: digest('1'),
+        subject_id: attestation.subject_id.clone(),
+        outcome: FindingResolutionOutcome::Fixed,
+        actor: "trusted-verifier".into(),
+        policy_revision: "fix-policy@1".into(),
+        reason: "positive verification covers the current view".into(),
+        evidence_ids: vec![],
+        verification_id: Some(digest('2')),
+        max_accepted_severity: None,
+        tracking_reference: None,
+        expires_at_policy_time: None,
+    };
+    resolution.validate().unwrap();
+    assert_valid(
+        "finding-resolution-v1.json",
+        &serde_json::to_value(&resolution).unwrap(),
+    );
+    let challenge = ResolutionChallengeV1 {
+        finding_id: resolution.finding_id,
+        resolution_id: digest('3'),
+        subject_id: resolution.subject_id,
+        kind: ResolutionChallengeKind::NewEvidence,
+        actor: "operator".into(),
+        reason: "new reproduction evidence changes the claim view".into(),
+        evidence_ids: vec![digest('4')],
+    };
+    challenge.validate().unwrap();
+    assert_valid(
+        "resolution-challenge-v1.json",
+        &serde_json::to_value(challenge).unwrap(),
+    );
+    let time = PolicyTimeV1 {
+        tick: 7,
+        actor: "policy".into(),
+        reason: "evaluate tracked resolution expiry".into(),
+    };
+    time.validate().unwrap();
+    assert_valid("policy-time-v1.json", &serde_json::to_value(time).unwrap());
 }
 
 #[test]

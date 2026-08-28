@@ -11,7 +11,8 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1 is complete: fresh pinned Campaign v7 returned Pass. V3.1 local delivery is
+verified. M3.1 and M3.2 are complete; M3.2's lightweight dogfood Findings are fixed and the full
+gate passes. V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
@@ -65,6 +66,14 @@ budget, or sandbox boundary to make a test or review pass.
   executes Gates, accesses credentials, or publishes repository changes. Emitted authority is
   project-owned and becomes trusted only after review and commit on an Authority Snapshot
   ([ADR-0032](docs/adr/0032-generate-review-authority-with-af-onboard.md)).
+- Trusting configured Worker authority and intentionally running `af review run` or `af task
+  start` authorizes delivery of each Worker's exact declared inputs for every retry and later
+  Round or stage in that Campaign or Task. Do not ask for per-call confirmation; undeclared
+  context, changed bindings, delivery, publication, and remote side effects remain unauthorized
+  ([ADR-0033](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md)).
+- Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
+  output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
+  convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

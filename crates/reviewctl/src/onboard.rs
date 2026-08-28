@@ -39,6 +39,10 @@ Behavior:
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
 fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
 
+Trusting configured Worker authority and intentionally running `af review run` or `af task start`
+authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or stages
+of that Campaign or Task. Afactory does not ask for per-call confirmation.
+
 Runner profiles:
   mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)
   claude  both Workers = Claude Opus/high
@@ -637,7 +641,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         kind: NodeKindSpec::Generation,
         inputs: Vec::new(),
         outputs: vec![
-            typed_port("findings", contract::PRIOR_FINDINGS_V1),
+            prior_finding_set_port("findings"),
             typed_port("change_set", contract::CHANGE_SET_V1),
         ],
         gated_by: None,
@@ -651,10 +655,10 @@ fn build_definition(gates: &[Gate]) -> Definition {
             kind: NodeKindSpec::Reviewer,
             inputs: vec![
                 typed_port("gate", contract::GATE_DECISION_V1),
-                typed_port("prior_findings", contract::PRIOR_FINDINGS_V1),
+                prior_finding_set_port("prior_findings"),
                 typed_port("change_set", contract::CHANGE_SET_V1),
             ],
-            outputs: vec![typed_port("result", contract::REVIEWER_RESULT_V1)],
+            outputs: vec![typed_port("result", contract::REVIEWER_RESULT_V2)],
             gated_by: Some("gate".into()),
             runner: None,
             package: Some(id.into()),
@@ -664,8 +668,8 @@ fn build_definition(gates: &[Gate]) -> Definition {
         id: "gather".into(),
         kind: NodeKindSpec::Gather,
         inputs: vec![
-            typed_port("correctness", contract::REVIEWER_RESULT_V1),
-            typed_port("architecture", contract::REVIEWER_RESULT_V1),
+            typed_port("correctness", contract::REVIEWER_RESULT_V2),
+            typed_port("architecture", contract::REVIEWER_RESULT_V2),
         ],
         outputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
         gated_by: None,
@@ -676,7 +680,10 @@ fn build_definition(gates: &[Gate]) -> Definition {
         id: "ledger".into(),
         kind: NodeKindSpec::Ledger,
         inputs: vec![typed_port("reports", contract::REPORT_SET_V1)],
-        outputs: vec![typed_port("findings", contract::FINDING_SET_V1)],
+        outputs: vec![
+            typed_port("findings", contract::FINDING_SET_V1),
+            typed_port("demands", contract::DEMAND_SET_V1),
+        ],
         gated_by: None,
         runner: None,
         package: None,
@@ -725,6 +732,16 @@ fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {
         cardinality: PortCardinality::One,
         optional: false,
         snapshot_affinity: SnapshotAffinity::SameSubject,
+    })
+}
+
+fn prior_finding_set_port(name: &str) -> PortContractSpec {
+    PortContractSpec::Typed(TypedPortSpec {
+        name: name.to_string(),
+        artifact_type: contract::FINDING_SET_V1.to_string(),
+        cardinality: PortCardinality::One,
+        optional: true,
+        snapshot_affinity: SnapshotAffinity::Any,
     })
 }
 
@@ -887,6 +904,14 @@ The reviewers receive the exact Diff Subject, bounded kernel artifacts, and thei
 They do not receive one another's transcript. Results meet at the deterministic gather barrier.
 The Campaign stops after one clean Round or two Rounds total, with caps of 300,000 tokens per
 Attempt and 1,000,000 tokens per Campaign.
+
+## Worker data authorization
+
+Trusting this configured authority and intentionally running `af review run` authorizes Afactory
+to send each configured Worker exactly its declared, bounded inputs for every Attempt and later
+Round in that Campaign. Agents should not ask for additional per-Worker, per-Attempt, or per-Round
+confirmation. This does not authorize undeclared context, changed Provider bindings, comments,
+commits, pushes, pull requests, publication, or other remote side effects.
 
 Required Gate commands (declared as literal trusted argv; onboarding does not execute them):
 

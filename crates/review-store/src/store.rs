@@ -843,6 +843,48 @@ fn typed_json_artifacts(
                 )?;
                 continue;
             }
+            EventType::DemandRecordedV1
+            | EventType::DemandWaivedV1
+            | EventType::EvidenceAddedV1
+            | EventType::EvidenceSatisfiedV1
+            | EventType::ChangeAttestedV1
+            | EventType::FixVerifiedV1
+            | EventType::FindingResolutionRecordedV1
+            | EventType::FindingResolutionChallengedV1
+            | EventType::PolicyTimeAdvancedV1 => {
+                let payload: review_core::RecordedArtifactPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                let artifact_type = match event.event_type {
+                    EventType::DemandRecordedV1 => review_core::contract::DEMAND_V1,
+                    EventType::DemandWaivedV1 => review_core::contract::DEMAND_WAIVER_V1,
+                    EventType::EvidenceAddedV1 => review_core::contract::EVIDENCE_V1,
+                    EventType::EvidenceSatisfiedV1 => {
+                        review_core::contract::EVIDENCE_SATISFACTION_V1
+                    }
+                    EventType::ChangeAttestedV1 => review_core::contract::CHANGE_ATTESTATION_V1,
+                    EventType::FixVerifiedV1 => review_core::contract::FIX_VERIFICATION_V1,
+                    EventType::FindingResolutionRecordedV1 => {
+                        review_core::contract::FINDING_RESOLUTION_V1
+                    }
+                    EventType::FindingResolutionChallengedV1 => {
+                        review_core::contract::RESOLUTION_CHALLENGE_V1
+                    }
+                    EventType::PolicyTimeAdvancedV1 => review_core::contract::POLICY_TIME_V1,
+                    _ => unreachable!(),
+                };
+                insert_artifact_type(&mut artifacts, payload.artifact_id, artifact_type.into())?;
+                continue;
+            }
+            EventType::FindingsGroupedV1 | EventType::FindingsUngroupedV1 => {
+                let payload: review_core::FindingGroupingEventPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.grouping_artifact_id,
+                    review_core::contract::FINDING_GROUPING_V1.into(),
+                )?;
+                continue;
+            }
             _ => continue,
         };
         for port in ports {
@@ -1036,6 +1078,111 @@ fn validate_artifact_payload(
             }
         }
         review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
+        review_core::contract::REVIEWER_RESULT_V2 => {
+            review_core::validate_reviewer_result_v2(value).map_err(StoreError::Conflict)?
+        }
+        review_core::contract::FINDING_DISPOSITION_V1 => {
+            if value.get("type").is_none() {
+                return Err(StoreError::Conflict(
+                    "FindingDisposition@1 artifact is not an envelope".into(),
+                ));
+            }
+            let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingDisposition@1 artifact is not an envelope: {error}"
+                    ))
+                })?;
+            crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+            if envelope.artifact_type != review_core::contract::FINDING_DISPOSITION_V1 {
+                return Err(StoreError::Conflict(
+                    "FindingDisposition@1 envelope carries the wrong type".into(),
+                ));
+            }
+            let payload: review_core::FindingDispositionV1 =
+                serde_json::from_value(envelope.payload).map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingDisposition@1 envelope has an invalid payload: {error}"
+                    ))
+                })?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::FINDING_GROUPING_V1 => {
+            if value.get("type").is_none() {
+                return Err(StoreError::Conflict(
+                    "FindingGrouping@1 artifact is not an envelope".into(),
+                ));
+            }
+            let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingGrouping@1 artifact is not an envelope: {error}"
+                    ))
+                })?;
+            crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+            if envelope.artifact_type != review_core::contract::FINDING_GROUPING_V1 {
+                return Err(StoreError::Conflict(
+                    "FindingGrouping@1 envelope carries the wrong type".into(),
+                ));
+            }
+            let payload: review_core::FindingGroupingV1 = serde_json::from_value(envelope.payload)
+                .map_err(|error| {
+                    StoreError::Conflict(format!(
+                        "FindingGrouping@1 envelope has an invalid payload: {error}"
+                    ))
+                })?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::DEMAND_V1 => {
+            let payload: review_core::DemandV1 =
+                validated_envelope_payload(value, review_core::contract::DEMAND_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::DEMAND_SET_V1 => {
+            let payload: review_core::DemandSetV1 =
+                validated_envelope_payload(value, review_core::contract::DEMAND_SET_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::EVIDENCE_V1 => {
+            let payload: review_core::EvidenceV1 =
+                validated_envelope_payload(value, review_core::contract::EVIDENCE_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::EVIDENCE_SATISFACTION_V1 => {
+            let payload: review_core::EvidenceSatisfactionV1 =
+                validated_envelope_payload(value, review_core::contract::EVIDENCE_SATISFACTION_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::DEMAND_WAIVER_V1 => {
+            let payload: review_core::DemandWaiverV1 =
+                validated_envelope_payload(value, review_core::contract::DEMAND_WAIVER_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::CHANGE_ATTESTATION_V1 => {
+            let payload: review_core::ChangeAttestationV1 =
+                validated_envelope_payload(value, review_core::contract::CHANGE_ATTESTATION_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::FIX_VERIFICATION_V1 => {
+            let payload: review_core::FixVerificationV1 =
+                validated_envelope_payload(value, review_core::contract::FIX_VERIFICATION_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::FINDING_RESOLUTION_V1 => {
+            let payload: review_core::FindingResolutionV1 =
+                validated_envelope_payload(value, review_core::contract::FINDING_RESOLUTION_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::RESOLUTION_CHALLENGE_V1 => {
+            let payload: review_core::ResolutionChallengeV1 =
+                validated_envelope_payload(value, review_core::contract::RESOLUTION_CHALLENGE_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::POLICY_TIME_V1 => {
+            let payload: review_core::PolicyTimeV1 =
+                validated_envelope_payload(value, review_core::contract::POLICY_TIME_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
         review_core::contract::REPORT_SET_V1 => {
             if object.is_empty()
                 || object.values().any(|ids| {
@@ -1119,6 +1266,26 @@ fn validate_prepared_refusal_history(
         )));
     }
     Ok(())
+}
+
+fn validated_envelope_payload<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    expected_type: &str,
+) -> Result<T, StoreError> {
+    let envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            StoreError::Conflict(format!(
+                "{expected_type} artifact is not an envelope: {error}"
+            ))
+        })?;
+    crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+    if envelope.artifact_type != expected_type {
+        return Err(StoreError::Conflict(format!(
+            "{expected_type} envelope carries type {}",
+            envelope.artifact_type
+        )));
+    }
+    serde_json::from_value(envelope.payload).map_err(StoreError::from)
 }
 
 pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
@@ -1231,6 +1398,8 @@ fn validate_campaign_transition(
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
     let mut batch_findings = std::collections::BTreeSet::new();
+    let mut batch_demands = std::collections::BTreeSet::new();
+    let mut active_groupings = load_active_groupings(tx, run_id)?;
     let mut batch_provider_operations: std::collections::BTreeMap<
         String,
         review_core::ProviderOperationTransitionPayloadV1,
@@ -1910,6 +2079,23 @@ fn validate_campaign_transition(
                             }
                             batch_findings.insert(key.to_string());
                         }
+                        EventType::DemandRecordedV1 => {
+                            let demand: review_core::DemandV1 = validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::DEMAND_V1,
+                            )?;
+                            if event.correlation_id.as_deref() != Some(demand.demand_id.as_str())
+                                || demand.round != active_payload.round
+                                || demand.subject_id != active_payload.subject_id
+                            {
+                                return Err(StoreError::Conflict(
+                                    "DemandRecorded@1 is not bound to its Demand, Round, and Subject"
+                                        .into(),
+                                ));
+                            }
+                            batch_demands.insert(demand.demand_id);
+                        }
                         _ => {}
                     }
                     if event_type.is_run_report() && report_closes(event_type, &event.payload)? {
@@ -1963,6 +2149,260 @@ fn validate_campaign_transition(
                     ));
                 }
             }
+            EventType::FindingsGroupedV1 | EventType::FindingsUngroupedV1 => {
+                let Some((_, active_payload)) = &active else {
+                    return Err(StoreError::Conflict(format!(
+                        "{} requires an existing Campaign Round",
+                        event.event_type
+                    )));
+                };
+                if !terminal || event.causation_id.is_some() {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is an operator transition allowed only after a closed Round",
+                        event.event_type
+                    )));
+                }
+                let payload: review_core::FindingGroupingEventPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                payload.validate().map_err(StoreError::Conflict)?;
+                if event.correlation_id.as_deref() != Some(payload.from.as_str())
+                    || event.artifact_refs.as_slice() != [payload.grouping_artifact_id.as_str()]
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "{} metadata disagrees with its grouping payload",
+                        event.event_type
+                    )));
+                }
+                let action = if event.event_type == EventType::FindingsGroupedV1 {
+                    review_core::FindingGroupingAction::Group
+                } else {
+                    review_core::FindingGroupingAction::Ungroup
+                };
+                validate_grouping_event_artifact(prepared, &payload, action, active_payload.round)?;
+                for key in [&payload.from, &payload.into] {
+                    let existing: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM events
+                         WHERE run_id = ?1 AND type = 'FindingReported@1' AND correlation_id = ?2",
+                        params![run_id, key],
+                        |row| row.get(0),
+                    )?;
+                    if existing == 0 && !batch_findings.contains(key) {
+                        return Err(StoreError::Conflict(format!(
+                            "{} names unknown Finding `{key}`",
+                            event.event_type
+                        )));
+                    }
+                }
+                match action {
+                    review_core::FindingGroupingAction::Group => {
+                        if payload.from == payload.into
+                            || active_groupings.contains_key(&payload.from)
+                            || grouping_root(&active_groupings, &payload.into)
+                                != Some(payload.into.as_str())
+                        {
+                            return Err(StoreError::Conflict(
+                                "FindingsGrouped@1 would create an ambiguous or cyclic grouping"
+                                    .into(),
+                            ));
+                        }
+                        active_groupings.insert(payload.from, payload.into);
+                    }
+                    review_core::FindingGroupingAction::Ungroup => {
+                        if active_groupings.get(&payload.from) != Some(&payload.into) {
+                            return Err(StoreError::Conflict(
+                                "FindingsUngrouped@1 has no matching active grouping".into(),
+                            ));
+                        }
+                        active_groupings.remove(&payload.from);
+                    }
+                }
+            }
+            EventType::EvidenceAddedV1
+            | EventType::EvidenceSatisfiedV1
+            | EventType::DemandWaivedV1 => {
+                let Some((_, active_payload)) = &active else {
+                    return Err(StoreError::Conflict(format!(
+                        "{} requires an existing Campaign Round",
+                        event.event_type
+                    )));
+                };
+                if !terminal || event.causation_id.is_some() {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is an operator transition allowed only after a closed Round",
+                        event.event_type
+                    )));
+                }
+                let (demand_id, subject_id) = match event.event_type {
+                    EventType::EvidenceAddedV1 => {
+                        let value: review_core::EvidenceV1 = validate_recorded_event_artifact(
+                            prepared,
+                            event,
+                            review_core::contract::EVIDENCE_V1,
+                        )?;
+                        (value.demand_id, value.subject_id)
+                    }
+                    EventType::EvidenceSatisfiedV1 => {
+                        let value: review_core::EvidenceSatisfactionV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::EVIDENCE_SATISFACTION_V1,
+                            )?;
+                        (value.demand_id, value.subject_id)
+                    }
+                    EventType::DemandWaivedV1 => {
+                        let value: review_core::DemandWaiverV1 = validate_recorded_event_artifact(
+                            prepared,
+                            event,
+                            review_core::contract::DEMAND_WAIVER_V1,
+                        )?;
+                        (value.demand_id, value.subject_id)
+                    }
+                    _ => unreachable!(),
+                };
+                if event.correlation_id.as_deref() != Some(demand_id.as_str())
+                    || subject_id != active_payload.subject_id
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is not bound to its Demand and active Subject",
+                        event.event_type
+                    )));
+                }
+                let existing: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM events
+                     WHERE run_id = ?1 AND type = 'DemandRecorded@1' AND correlation_id = ?2",
+                    params![run_id, demand_id],
+                    |row| row.get(0),
+                )?;
+                if existing == 0 && !batch_demands.contains(&demand_id) {
+                    return Err(StoreError::Conflict(format!(
+                        "{} names unknown Demand `{demand_id}`",
+                        event.event_type
+                    )));
+                }
+            }
+            EventType::ChangeAttestedV1
+            | EventType::FixVerifiedV1
+            | EventType::FindingResolutionRecordedV1
+            | EventType::FindingResolutionChallengedV1
+            | EventType::PolicyTimeAdvancedV1 => {
+                let Some((active_id, active_payload)) = &active else {
+                    return Err(StoreError::Conflict(format!(
+                        "{} requires an existing Campaign Round",
+                        event.event_type
+                    )));
+                };
+                let automatic_challenge = if event.event_type
+                    == EventType::FindingResolutionChallengedV1
+                    && event.causation_id.as_deref() == Some(active_id.as_str())
+                {
+                    let challenge: review_core::ResolutionChallengeV1 =
+                        validate_recorded_event_artifact(
+                            prepared,
+                            event,
+                            review_core::contract::RESOLUTION_CHALLENGE_V1,
+                        )?;
+                    let recorded: review_core::RecordedArtifactPayloadV1 =
+                        serde_json::from_value(event.payload.clone())?;
+                    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+                        prepared
+                            .json
+                            .get(&recorded.artifact_id)
+                            .expect("validated recorded artifact")
+                            .clone(),
+                    )?;
+                    challenge.actor == "review.kernel/resolution-policy@1"
+                        && !challenge.evidence_ids.is_empty()
+                        && matches!(
+                            envelope.producer,
+                            review_core::Producer::KernelOperation {
+                                run_id: producer_run,
+                                node_id: None,
+                                operation_id,
+                            } if producer_run == run_id
+                                && operation_id.starts_with("automatic-resolution-challenge:")
+                        )
+                } else {
+                    false
+                };
+                if !automatic_challenge && (!terminal || event.causation_id.is_some()) {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is an operator transition allowed only after a closed Round",
+                        event.event_type
+                    )));
+                }
+                let (correlation, subject_id) = match event.event_type {
+                    EventType::ChangeAttestedV1 => {
+                        let value: review_core::ChangeAttestationV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::CHANGE_ATTESTATION_V1,
+                            )?;
+                        (value.finding_id, Some(value.subject_id))
+                    }
+                    EventType::FixVerifiedV1 => {
+                        let value: review_core::FixVerificationV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::FIX_VERIFICATION_V1,
+                            )?;
+                        (value.finding_id, Some(value.subject_id))
+                    }
+                    EventType::FindingResolutionRecordedV1 => {
+                        let value: review_core::FindingResolutionV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::FINDING_RESOLUTION_V1,
+                            )?;
+                        (value.finding_id, Some(value.subject_id))
+                    }
+                    EventType::FindingResolutionChallengedV1 => {
+                        let value: review_core::ResolutionChallengeV1 =
+                            validate_recorded_event_artifact(
+                                prepared,
+                                event,
+                                review_core::contract::RESOLUTION_CHALLENGE_V1,
+                            )?;
+                        (value.finding_id, Some(value.subject_id))
+                    }
+                    EventType::PolicyTimeAdvancedV1 => {
+                        let _: review_core::PolicyTimeV1 = validate_recorded_event_artifact(
+                            prepared,
+                            event,
+                            review_core::contract::POLICY_TIME_V1,
+                        )?;
+                        ("policy-time".into(), None)
+                    }
+                    _ => unreachable!(),
+                };
+                if event.correlation_id.as_deref() != Some(correlation.as_str())
+                    || subject_id
+                        .as_deref()
+                        .is_some_and(|subject| subject != active_payload.subject_id)
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is not bound to its Finding and active Subject",
+                        event.event_type
+                    )));
+                }
+                if event.event_type != EventType::PolicyTimeAdvancedV1 {
+                    let existing: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM events
+                         WHERE run_id = ?1 AND type = 'FindingReported@1' AND correlation_id = ?2",
+                        params![run_id, correlation],
+                        |row| row.get(0),
+                    )?;
+                    if existing == 0 && !batch_findings.contains(&correlation) {
+                        return Err(StoreError::Conflict(format!(
+                            "{} names unknown Finding `{correlation}`",
+                            event.event_type
+                        )));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1995,6 +2435,96 @@ fn validate_campaign_transition(
     Ok(())
 }
 
+fn load_active_groupings(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+    let mut groupings = std::collections::BTreeMap::new();
+    let mut statement = tx.prepare(
+        "SELECT type, payload FROM events
+         WHERE run_id = ?1 AND type IN ('FindingsGrouped@1', 'FindingsUngrouped@1')
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (event_type, raw) = row?;
+        let payload: review_core::FindingGroupingEventPayloadV1 = serde_json::from_str(&raw)?;
+        if event_type == EventType::FindingsGroupedV1.as_str() {
+            groupings.insert(payload.from, payload.into);
+        } else {
+            groupings.remove(&payload.from);
+        }
+    }
+    Ok(groupings)
+}
+
+fn grouping_root<'a>(
+    groupings: &'a std::collections::BTreeMap<String, String>,
+    key: &'a str,
+) -> Option<&'a str> {
+    let mut root = key;
+    for _ in 0..=groupings.len() {
+        let Some(next) = groupings.get(root) else {
+            return Some(root);
+        };
+        root = next;
+    }
+    None
+}
+
+fn validate_grouping_event_artifact(
+    prepared: &PreparedArtifacts,
+    payload: &review_core::FindingGroupingEventPayloadV1,
+    action: review_core::FindingGroupingAction,
+    round: u32,
+) -> Result<(), StoreError> {
+    let value = prepared
+        .json
+        .get(&payload.grouping_artifact_id)
+        .ok_or_else(|| StoreError::Conflict("grouping artifact was not prepared".into()))?;
+    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value.clone())?;
+    crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+    if envelope.artifact_type != review_core::contract::FINDING_GROUPING_V1 {
+        return Err(StoreError::Conflict(
+            "grouping event references the wrong artifact type".into(),
+        ));
+    }
+    let grouping: review_core::FindingGroupingV1 = serde_json::from_value(envelope.payload)?;
+    grouping.validate().map_err(StoreError::Conflict)?;
+    if grouping.from != payload.from
+        || grouping.into != payload.into
+        || grouping.action != action
+        || grouping.round != round
+    {
+        return Err(StoreError::Conflict(
+            "grouping event contradicts its immutable artifact".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recorded_event_artifact<T: serde::de::DeserializeOwned>(
+    prepared: &PreparedArtifacts,
+    event: &NewEvent,
+    expected_type: &str,
+) -> Result<T, StoreError> {
+    let payload: review_core::RecordedArtifactPayloadV1 =
+        serde_json::from_value(event.payload.clone())?;
+    payload.validate().map_err(StoreError::Conflict)?;
+    if event.artifact_refs.as_slice() != [payload.artifact_id.as_str()] {
+        return Err(StoreError::Conflict(format!(
+            "{} recorded artifact disagrees with its sole reference",
+            event.event_type
+        )));
+    }
+    let value = prepared.json.get(&payload.artifact_id).ok_or_else(|| {
+        StoreError::Conflict(format!("{} artifact was not prepared", event.event_type))
+    })?;
+    validated_envelope_payload(value, expected_type)
+}
+
 fn round_runtime_event(event_type: EventType) -> bool {
     event_type.is_run_report()
         || matches!(
@@ -2007,6 +2537,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::AttemptFencedV1
                 | EventType::AttemptReleasedV1
                 | EventType::CheckCompletedV1
+                | EventType::DemandRecordedV1
                 | EventType::FindingReportedV1
                 | EventType::GateDecisionV1
                 | EventType::GenerationAdvancedV1

@@ -74,3 +74,7 @@ options you rejected and why — that is the part future-you needs.
   worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)
 - [0032 — Generate review authority with
   `af onboard`](0032-generate-review-authority-with-af-onboard.md)
+- [0033 — Treat configured Workers as authorization for declared input
+  delivery](0033-configured-workers-authorize-declared-input-delivery.md)
+- [0034 — Surface partial results without granting Ledger
+  authority](0034-surface-partial-results-without-ledger-authority.md)

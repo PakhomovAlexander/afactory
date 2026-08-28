@@ -326,7 +326,10 @@ apply, existing-authority validation, explicit lock refresh, and built-in agent 
 bounded static multi-review profile. The command generates exact pins itself and fails closed
 when it cannot identify a real Gate. It does not fetch or publish PRs, execute a review, or pull
 dynamic fan-out ahead of M8. See
-[ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md).
+[ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md). Trusting the configured Worker
+authority and intentionally starting a Campaign authorizes its declared bounded Worker input
+delivery without per-call confirmation; broader context and remote side effects remain separate
+([ADR-0033](adr/0033-configured-workers-authorize-declared-input-delivery.md)).
 
 ---
 
@@ -375,6 +378,9 @@ make the exact Set a complete assignment view.
 
 ### M3.2 — Prior-Finding dispositions become explicit
 
+**Status: complete (2026-08-28). `ReviewerResult@2` and `FindingDisposition@1` are live, exact
+coverage fails closed, the candidate dogfood's four Findings are fixed, and `make check` passes.**
+
 The flat compatibility adapter currently turns `refute` directly into a
 `FindingResolved(contested)` event. The rendered status therefore exists, but the dispute itself
 is not an immutable attached artifact and the reviewer cannot express complete explicit coverage
@@ -414,6 +420,10 @@ bound to the Subject snapshot. Pipeline policy, not reviewer prose, classifies a
 as required or advisory. Required open Demands block convergence and carry into later Rounds.
 Each demand barrier emits a deterministic `DemandSet@1` from the prior Set plus canonical selected
 Demand, Evidence Satisfaction, and waiver artifact IDs; downstream nodes consume that exact view.
+New canonical Campaign authority must declare that Ledger output before the Campaign is opened.
+A pre-M4 Campaign whose immutable pinned pipeline lacks the port remains resumable while it has no
+selected Demand; selecting one still fails closed at the Ledger and requires a new Campaign. This
+compatibility exception never permits an open required Demand to pass convergence.
 
 ### M4.2 — `af review evidence add` and explicit Demand waiver
 
@@ -466,6 +476,14 @@ Demand, and the configured clean-Round window over the exact final `FindingSet@1
 `DemandSet@1`. Budget exhaustion, missing dispositions, stale Evidence, or missing outputs yields
 incomplete/needs-human and does not consume a closed Round. Reaching the hard Round cap with
 obligations open is exhausted, never pass.
+
+Issue [#15](https://github.com/PakhomovAlexander/afactory/issues/15) is included here. If a
+reviewer result is admitted but a required sibling failure suppresses gather and Ledger, reports
+surface that result as recorded, not gathered evidence with node, Attempt, artifact, severity,
+and spend provenance. The verdict remains incomplete, partial evidence never becomes a Ledger or
+convergence input, `af review ledger` distinguishes an absent latest-Round Ledger from a produced
+clean one, and fully gathered Campaign output remains unchanged. See
+[ADR-0034](adr/0034-surface-partial-results-without-ledger-authority.md).
 
 Any head-Snapshot advancement or materially new/challenged claim resets the clean window. A
 fixed claim remains News until a later complete Round verifies the same current head without

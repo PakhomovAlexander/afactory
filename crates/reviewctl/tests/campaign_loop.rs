@@ -58,13 +58,17 @@ fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
 fn write_review_config(repo: &Path) {
     std::fs::create_dir_all(repo.join(".review/pipelines")).unwrap();
     std::fs::write(repo.join(".review/review.lock"), "version = 1\n").unwrap();
-    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"disputes\":[]}"#;
     let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
     let script = format!(
         "if [ -f FAIL ]; then exit 7; fi; \
-         if grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
+         if [ -f DEMAND ]; then printf '%s' \"{demand}\"; \
+         elif [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
+         elif grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
          else printf '%s' \"{clean}\"; fi"
     );
     let pipeline = format!(
@@ -103,7 +107,10 @@ outputs = ["reports"]
 id = "ledger"
 kind = "ledger"
 inputs = ["reports"]
-outputs = ["findings"]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
 
 [[edges]]
 from = {{ node = "gate", port = "decision" }}
@@ -142,6 +149,77 @@ gate = "major"
         format!(
             "version = 1\n[pipelines.review]\nversion = \"1.0.0\"\ndigest = \"{}\"\n",
             review_store::canonical::blob_content_id(&pipeline)
+        ),
+    )
+    .unwrap();
+}
+
+fn write_disposition_config(repo: &Path) {
+    let reviewer = repo.join("disposition-reviewer.sh");
+    std::fs::write(
+        &reviewer,
+        r#"#!/bin/sh
+input=$(cat)
+if [ -f OMIT ]; then
+  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}'
+elif grep -q 'loop {}' src/main.rs; then
+  printf '%s' '{"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
+else
+  finding_id=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\([^"]*\)".*/\1/p')
+  printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
+fi
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&reviewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        repo.join(".review/pipelines/heavy.toml"),
+        format!(
+            r#"version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+inputs = [{{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+runner = {{ program = "{}" }}
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{{ name = "correctness", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "correctness", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "correctness", port = "result" }}
+to = {{ node = "gather", port = "correctness" }}
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 3
+gate = "major"
+"#,
+            reviewer.display()
         ),
     )
     .unwrap();
@@ -200,7 +278,279 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
 }
 
 #[test]
-fn a_campaign_converges_after_the_fix_survives_review() {
+fn required_demands_are_visible_in_run_ledger_and_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
+    git(&repo, &home, &["add", "DEMAND"]);
+    git(&repo, &home, &["commit", "-qm", "request evidence"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "demand-human", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("demands  1 open/stale (required)"),
+        "{stdout}"
+    );
+    let (code, _, ledger_err) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "demand-human", "--state", &state],
+    );
+    assert_eq!(code, 0, "{ledger_err}");
+    assert!(
+        ledger_err.contains("1 required demands open/stale"),
+        "{ledger_err}"
+    );
+
+    let json_state = dir.path().join("json-state");
+    let json_state = json_state.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "demand-json",
+            "--state",
+            &json_state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["totals"]["open_required_demands"], 1);
+    assert_eq!(
+        outcome["totals"]["open_or_stale_demand_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
+    let demand_port = "  { name = \"demands\", type = \"review.kernel/DemandSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"same_subject\" },\n";
+    let without_demand = pipeline.replace(demand_port, "");
+    assert_ne!(without_demand, pipeline, "fixture must declare DemandSet");
+    std::fs::write(&pipeline_path, without_demand).unwrap();
+    git(&repo, &home, &["add", ".review/pipelines/heavy.toml"]);
+    git(&repo, &home, &["commit", "-qm", "remove demand output"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "missing-demand", "--state", &state],
+    );
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(
+            "canonical pipeline `.review/pipelines/heavy.toml` Ledger node must declare a review.kernel/DemandSet@1 output"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn exact_prior_set_requires_and_persists_explicit_disposition() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_disposition_config(&repo);
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "use explicit dispositions"],
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "dispositions", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "round 1 must retain the major Finding\n{stdout}\n{stderr}"
+    );
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "dispositions", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "a Drop is not trusted fixed authority\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("round    2"), "{stdout}");
+    assert!(!stdout.contains("Incomplete"), "{stdout}");
+
+    let state = Path::new(&state);
+    let cas = review_store::Cas::open(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let events = store.replay("campaign-dispositions").unwrap();
+    let ledger_receipt = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeOutputReceiptV1
+                && event.node_id.as_deref() == Some("ledger")
+        })
+        .expect("Round 2 ledger receipt");
+    let receipt: review_core::NodeOutputReceiptPayloadV1 =
+        serde_json::from_value(ledger_receipt.payload.clone()).unwrap();
+    let set_record_id = &receipt.outputs[0].artifact_ids[0];
+    let set_envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(set_record_id).unwrap()).unwrap();
+    let set: review_core::FindingSetV1 =
+        serde_json::from_value(set_envelope.payload.clone()).unwrap();
+    assert_eq!(set.round, 2);
+    assert_eq!(set.reducer_version, review_core::FINDING_REDUCER_VERSION_V2);
+    assert_eq!(set.relation_ids.len(), 1);
+    assert_eq!(set.findings[0].status, "open");
+
+    let disposition_envelope = set_envelope
+        .input_artifacts
+        .iter()
+        .filter_map(|id| cas.get_json(id).ok())
+        .filter_map(|value| serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok())
+        .find(|envelope| envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1)
+        .expect("immutable disposition reducer input");
+    assert_eq!(disposition_envelope.artifact_id, set.relation_ids[0]);
+    let disposition: review_core::FindingDispositionV1 =
+        serde_json::from_value(disposition_envelope.payload).unwrap();
+    assert_eq!(
+        disposition.position,
+        review_core::FindingDispositionPosition::NotReproduced
+    );
+    assert_eq!(disposition.round, 2);
+    assert_eq!(disposition.subject_id, set.subject_id);
+
+    let invocation = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeInvocationV1
+                && event.node_id.as_deref() == Some("correctness")
+        })
+        .expect("Round 2 reviewer invocation");
+    let invocation: review_core::NodeInvocationPayloadV1 =
+        serde_json::from_value(invocation.payload.clone()).unwrap();
+    let assigned = invocation
+        .inputs
+        .iter()
+        .find(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+        .expect("exact prior FindingSet@1 input");
+    assert_eq!(
+        assigned.artifact_ids,
+        vec![set.prior_finding_set_id.clone()]
+    );
+
+    let dispatched = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::AttemptDispatchedV1
+                && event.node_id.as_deref() == Some("correctness")
+        })
+        .expect("Round 2 reviewer dispatch");
+    let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
+        serde_json::from_value(dispatched.payload.clone()).unwrap();
+    assert_eq!(
+        dispatch.prior_findings.as_deref(),
+        Some(set.prior_finding_set_id.as_str())
+    );
+    assert!(
+        dispatched.artifact_refs.contains(&set.prior_finding_set_id),
+        "dispatch must pin the exact assignment Set"
+    );
+}
+
+#[test]
+fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_disposition_config(&repo);
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "use explicit dispositions"],
+    );
+
+    let (code, ..) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "missing-disposition",
+            "--state",
+            &state,
+        ],
+    );
+    assert_eq!(code, 3);
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    std::fs::write(repo.join("OMIT"), "force silence\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "omit required disposition"],
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "missing-disposition",
+            "--state",
+            &state,
+        ],
+    );
+    assert_eq!(
+        code, 4,
+        "missing semantic output must be incomplete\n{stdout}\n{stderr}"
+    );
+
+    let state = Path::new(&state);
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let report = store
+        .replay("campaign-missing-disposition")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.event_type == review_core::EventType::RunReportV3)
+        .expect("durable incomplete RunReport@3");
+    let report: review_core::RunReportPayloadV3 = serde_json::from_value(report.payload).unwrap();
+    let review_core::RunVerdictV3::Incomplete { missing_nodes } = report.verdict else {
+        panic!("missing dispositions did not produce an incomplete verdict");
+    };
+    let correctness = missing_nodes
+        .iter()
+        .find(|missing| missing.node == "correctness")
+        .expect("structured missing correctness output");
+    assert!(
+        correctness.reason.contains("missing_disposition_coverage"),
+        "{}",
+        correctness.reason
+    );
+}
+
+#[test]
+fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
@@ -270,7 +620,8 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
 
-    // Fix, commit, record the disposition.
+    // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
+    // attestation/verification path is covered by the canonical projection tests.
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
     let (code, resolve_out, resolve_err) = reviewctl(
@@ -283,13 +634,34 @@ fn a_campaign_converges_after_the_fix_survives_review() {
             "--state",
             &state,
             &key,
-            "fixed",
-            "--note",
-            "bounded in src/main.rs",
+            "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejected the original claim after inspecting src/main.rs",
         ],
     );
     assert_eq!(code, 0, "{resolve_out}\n{resolve_err}");
-    assert!(resolve_out.contains("-> fixed"), "{resolve_out}");
+    assert!(resolve_out.contains("-> rejected"), "{resolve_out}");
+    let (code, duplicate_out, duplicate_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            &key,
+            "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejected the original claim after inspecting src/main.rs",
+        ],
+    );
+    assert_eq!(code, 0, "{duplicate_out}\n{duplicate_err}");
+    assert_eq!(duplicate_out, resolve_out, "exact duplicate is idempotent");
 
     // Round 2: prior findings travel to the reviewer; the clean round converges.
     let (code, stdout, stderr) = reviewctl(
@@ -299,16 +671,16 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert_eq!(code, 0, "round 2 must converge\n{stdout}\n{stderr}");
     assert!(stdout.contains("round    2"), "{stdout}");
-    assert!(stdout.contains("prior    1 findings carried"), "{stdout}");
+    assert!(!stdout.contains("findings carried"), "{stdout}");
     assert!(stdout.contains("verdict  Pass"), "{stdout}");
 
-    // The ledger's final state: the finding stayed fixed, nothing reopened.
+    // The Ledger's final state remains the exact scoped operator decision.
     let (_, ledger_out, ledger_err) = reviewctl(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
     );
-    assert!(ledger_out.contains("\tfixed\t"), "{ledger_out}");
+    assert!(ledger_out.contains("\trejected\t"), "{ledger_out}");
     assert!(ledger_err.contains("0 open"), "{ledger_err}");
 
     let (_, report_out, report_err) = reviewctl(
@@ -318,15 +690,233 @@ fn a_campaign_converges_after_the_fix_survives_review() {
     );
     assert!(report_out.contains("Final verdict: pass"), "{report_out}");
     assert!(
-        report_out.contains("bounded in src/main.rs"),
+        report_out.contains("operator rejected the original claim"),
         "{report_out}"
     );
     assert!(report_err.is_empty(), "{report_err}");
 }
 
+#[test]
+fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 must find the defect\n{stdout}\n{stderr}");
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "verified-fix", "--state", &state],
+    );
+    let key = ledger_out.split('\t').next().unwrap().to_string();
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "the clean reviewer result alone cannot fix the prior claim\n{stdout}\n{stderr}"
+    );
+
+    let (code, attestation_out, attestation_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "attest-change",
+            "--campaign",
+            "verified-fix",
+            "--state",
+            &state,
+            &key,
+            "--region",
+            "src/main.rs:1-1",
+            "--reason",
+            "bounded the loop in the active whole-tree Snapshot",
+        ],
+    );
+    assert_eq!(code, 0, "{attestation_out}\n{attestation_err}");
+    assert!(
+        attestation_out.contains("pending-verification"),
+        "{attestation_out}"
+    );
+    let attestation_id = attestation_out
+        .split_once('(')
+        .and_then(|(_, tail)| tail.trim().strip_suffix(')'))
+        .expect("attestation artifact ID");
+
+    let (code, verification_out, verification_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "verify-fix",
+            "--campaign",
+            "verified-fix",
+            "--state",
+            &state,
+            &key,
+            attestation_id,
+            "--positive",
+            "--policy",
+            "fix-policy@1",
+            "--reason",
+            "the current whole-tree Snapshot no longer contains the unbounded loop",
+        ],
+    );
+    assert_eq!(code, 0, "{verification_out}\n{verification_err}");
+    assert!(verification_out.contains("-> fixed"), "{verification_out}");
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert_eq!(
+        code, 0,
+        "verified fixed state must converge\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("round    3"), "{stdout}");
+    assert!(stdout.contains("verdict  Pass"), "{stdout}");
+
+    let (_, ledger_out, ledger_err) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "verified-fix", "--state", &state],
+    );
+    assert!(ledger_out.contains("\tfixed\t"), "{ledger_out}");
+    assert!(ledger_err.contains("0 open"), "{ledger_err}");
+}
+
+#[test]
+fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    let key = ledger_out.split('\t').next().unwrap().to_string();
+    let (code, policy_out, policy_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "policy-time",
+            "advance",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            "50",
+            "--reason",
+            "set the deterministic test clock",
+        ],
+    );
+    assert_eq!(code, 0, "{policy_out}\n{policy_err}");
+    let (code, _, expired_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            &key,
+            "wontfix-tracked",
+            "--policy",
+            "risk-policy@1",
+            "--reason",
+            "already expired exception",
+            "--max-severity",
+            "major",
+            "--tracking",
+            "ISSUE-EXPIRED",
+            "--expires-at-policy-time",
+            "50",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(
+        expired_err.contains("persisted policy time 50"),
+        "{expired_err}"
+    );
+    let (code, resolve_out, resolve_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "resolve",
+            "--campaign",
+            "wontfix-ceiling",
+            "--state",
+            &state,
+            &key,
+            "wontfix-tracked",
+            "--policy",
+            "risk-policy@1",
+            "--reason",
+            "temporarily accept only the current major risk",
+            "--max-severity",
+            "major",
+            "--tracking",
+            "ISSUE-42",
+            "--expires-at-policy-time",
+            "99",
+        ],
+    );
+    assert_eq!(code, 0, "{resolve_out}\n{resolve_err}");
+    assert!(resolve_out.contains("-> wontfix"), "{resolve_out}");
+
+    std::fs::write(repo.join("BLOCKER"), "escalate the stable occurrence\n").unwrap();
+    git(&repo, &home, &["add", "BLOCKER"]);
+    git(&repo, &home, &["commit", "-qm", "escalate finding"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "an above-ceiling claim must block\n{stdout}\n{stderr}"
+    );
+
+    let (_, ledger_out, _) = reviewctl(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
+    );
+    assert!(
+        ledger_out.contains("\tblocker\tcontested\t"),
+        "{ledger_out}"
+    );
+    let store = review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+    assert!(
+        store
+            .replay("campaign-wontfix-ceiling")
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == review_core::EventType::FindingResolutionChallengedV1),
+        "the higher-severity report must emit an explicit challenge artifact/event"
+    );
+}
+
 /// A "fix" that does not actually fix reopens the finding, and the campaign refuses to pass.
 #[test]
-fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
+fn a_direct_fixed_assertion_is_refused_and_the_claim_remains_blocking() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
@@ -343,8 +933,8 @@ fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
     );
     let key = ledger_out.split('\t').next().unwrap().to_string();
 
-    // Claim it is fixed without touching the code.
-    let (code, ..) = reviewctl(
+    // A bare operator assertion cannot make the Finding fixed.
+    let (code, _, stderr) = reviewctl(
         &repo,
         &home,
         &[
@@ -355,9 +945,14 @@ fn a_resolution_the_next_round_refutes_reopens_and_blocks() {
             &state,
             &key,
             "fixed",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "unsupported bare assertion",
         ],
     );
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("attest-change"), "{stderr}");
 
     // Round 2 re-finds it: reopened, and the run must not pass.
     let (code, stdout, _) = reviewctl(
@@ -477,6 +1072,10 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
             &state,
             &key,
             "rejected",
+            "--policy",
+            "test-policy@1",
+            "--reason",
+            "operator rejects the claim",
         ],
     );
     assert_eq!(code, 0);
@@ -574,7 +1173,10 @@ outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality =
 id = "ledger"
 kind = "ledger"
 inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
 [[edges]]
 from = { node = "generation", port = "change_set" }
 to = { node = "reviewer", port = "change_set" }

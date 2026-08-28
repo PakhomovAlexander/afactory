@@ -23,10 +23,11 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    CommandAdapter, ContextEntry, ContextManifest, Grant, ModelRunner, RESULT_CONTRACT, RawCapture,
-    ReceiptedReviewerReturn, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
-    ReviewerInputs, ReviewerReturn, TokenUsage, estimate_tokens, extract_result,
-    parse_stage_output, unfence,
+    CommandAdapter, ContextEntry, ContextManifest, Grant, ModelRunner, RESULT_CONTRACT,
+    RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn, ReviewerAdapter,
+    ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, TokenUsage,
+    estimate_tokens, extract_result, parse_stage_output, parse_stage_output_for, result_contract,
+    unfence,
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{

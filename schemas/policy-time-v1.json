@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:policy-time:1",
+  "title": "PolicyTime@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tick", "actor", "reason"],
+  "properties": {
+    "tick": {"type": "integer", "minimum": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1}
+  }
+}

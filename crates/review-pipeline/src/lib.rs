@@ -38,9 +38,9 @@ use review_core::event::{
 use review_core::{
     CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
     MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultRejection, RoundStartedPayloadV1,
-    RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultContract, ReviewerResultRejection,
+    RoundStartedPayloadV1, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
     run_report_closes_round,
 };
 use review_graph::{
@@ -64,11 +64,47 @@ fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u3
             && port.name == "findings"
 }
 
+fn is_generation_finding_set_output(port: &PortContract) -> bool {
+    port.artifact_type == review_core::contract::FINDING_SET_V1
+}
+
+fn is_demand_set_port(port: &PortContract) -> bool {
+    port.artifact_type == review_core::contract::DEMAND_SET_V1
+}
+
 fn is_reviewer_prior_findings_input(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
         || pipeline_version == 1
             && port.artifact_type == review_core::contract::OPAQUE_V1
             && port.name == "prior_findings"
+}
+
+fn is_reviewer_finding_set_input(port: &PortContract) -> bool {
+    port.artifact_type == review_core::contract::FINDING_SET_V1
+}
+
+fn is_reviewer_prior_set_input(port: &PortContract, pipeline_version: u32) -> bool {
+    is_reviewer_prior_findings_input(port, pipeline_version) || is_reviewer_finding_set_input(port)
+}
+
+fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, String> {
+    let [port] = node.outputs.as_slice() else {
+        return Err(format!(
+            "reviewer `{}` must declare exactly one result output",
+            node.id
+        ));
+    };
+    ReviewerResultContract::parse_artifact_type(&port.artifact_type)
+        .or_else(|| {
+            (port.artifact_type == review_core::contract::OPAQUE_V1)
+                .then_some(ReviewerResultContract::V1)
+        })
+        .ok_or_else(|| {
+            format!(
+                "reviewer `{}` output `{}` has unsupported result type `{}`",
+                node.id, port.name, port.artifact_type
+            )
+        })
 }
 
 fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
@@ -158,6 +194,7 @@ pub struct AttemptEvidence {
     pub usage: TokenUsage,
     pub context_manifest: ContextManifest,
     pub raw_artifact: String,
+    pub result_artifact: String,
 }
 
 /// The immutable publication boundary every event emitted by one Round execution inherits.
@@ -174,6 +211,9 @@ pub struct RoundAuthority {
     head_content_digest: String,
     prior_finding_set_id: String,
     prior_reduction_finding_set_id: String,
+    prior_demand_set_id: String,
+    finding_genesis_id: String,
+    demand_genesis_id: String,
     finding_identity_policy: String,
     subject_kind: review_core::SubjectKind,
     change_set_id: Option<String>,
@@ -319,6 +359,9 @@ impl RoundAuthority {
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
             prior_reduction_finding_set_id,
+            prior_demand_set_id: payload.prior_demand_set_id,
+            finding_genesis_id: campaign_manifest.finding_genesis_id,
+            demand_genesis_id: campaign_manifest.demand_genesis_id,
             finding_identity_policy: campaign_manifest.finding_identity_policy,
             subject_kind: subject.kind,
             change_set_id,
@@ -1231,6 +1274,9 @@ impl<'a> Kernel<'a> {
                     .as_str()
                     .ok_or("selected Attempt provenance has no raw artifact")?
                     .to_string(),
+                result_artifact: payload
+                    .result_artifact
+                    .ok_or("selected Attempt has no result artifact")?,
             });
         }
         evidence.sort_by(|left, right| {
@@ -1668,22 +1714,32 @@ impl<'a> Kernel<'a> {
     fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
         let mut outputs = ArtifactMap::new();
         for port in &node.outputs {
-            let value = if is_generation_prior_findings_output(port, self.pipeline_version) {
-                self.prior_findings.clone().ok_or(
+            let artifacts = if is_generation_prior_findings_output(port, self.pipeline_version) {
+                vec![self.prior_findings.clone().ok_or(
                     "campaign execution has no exact prior Finding Set from RoundStarted@1",
-                )?
+                )?]
+            } else if is_generation_finding_set_output(port) {
+                if self.authority.prior_reduction_finding_set_id
+                    == self.authority.finding_genesis_id
+                {
+                    Vec::new()
+                } else {
+                    vec![self.authority.prior_reduction_finding_set_id.clone()]
+                }
             } else if is_change_set_port(port, self.pipeline_version) {
-                self.authority
-                    .change_set_id
-                    .clone()
-                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?
+                vec![
+                    self.authority
+                        .change_set_id
+                        .clone()
+                        .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
+                ]
             } else {
                 return Err(format!(
                     "generation output `{}` has unsupported artifact type `{}`",
                     port.name, port.artifact_type
                 ));
             };
-            outputs.insert(port.name.clone(), vec![value]);
+            outputs.insert(port.name.clone(), artifacts);
         }
         Ok(outputs)
     }
@@ -1759,20 +1815,50 @@ impl<'a> Kernel<'a> {
                 return Err(error);
             }
         };
+        let result_contract = match reviewer_result_contract(node) {
+            Ok(contract) => contract,
+            Err(error) => {
+                if let Some(prepared) = prepared.take() {
+                    self.release_prepared_attempt(
+                        node_id,
+                        &prepared.attempt,
+                        prepared.reservation.as_ref(),
+                        &error,
+                    )?;
+                }
+                return Err(error);
+            }
+        };
 
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
         // reviewer that declares no such input receives none; the plan is the delivery.
-        let prior_findings_port = node
+        let prior_findings_contract = node
             .inputs
             .iter()
-            .find(|port| is_reviewer_prior_findings_input(port, self.pipeline_version))
-            .map(|port| port.name.as_str());
+            .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version));
+        let exact_finding_set = prior_findings_contract.is_some_and(is_reviewer_finding_set_input);
+        if (result_contract == ReviewerResultContract::V2) != exact_finding_set {
+            let error = format!(
+                "reviewer `{node_id}` must pair ReviewerResult@2 with an exact FindingSet@1 input"
+            );
+            if let Some(prepared) = prepared.take() {
+                self.release_prepared_attempt(
+                    node_id,
+                    &prepared.attempt,
+                    prepared.reservation.as_ref(),
+                    &error,
+                )?;
+            }
+            return Err(error);
+        }
+        let prior_findings_port = prior_findings_contract.map(|port| port.name.as_str());
         let prior_findings_artifact = prior_findings_port
             .and_then(|port| node_inputs.get(port))
             .and_then(|artifacts| artifacts.first())
             .cloned();
         let mut inputs = ReviewerInputs {
+            result_contract,
             finding_identity_policy: Some(self.authority.finding_identity_policy.clone()),
             ..ReviewerInputs::default()
         };
@@ -1785,7 +1871,7 @@ impl<'a> Kernel<'a> {
                     .ok_or_else(|| {
                         format!("reviewer input port '{port}' has no declared contract")
                     })?;
-                if is_reviewer_prior_findings_input(contract, self.pipeline_version) {
+                if is_reviewer_prior_set_input(contract, self.pipeline_version) {
                     continue;
                 }
                 let is_change_set = is_change_set_port(contract, self.pipeline_version);
@@ -1875,12 +1961,116 @@ impl<'a> Kernel<'a> {
                     return Err(error.to_string());
                 }
             };
-            // The generation node emits an empty document in the first round; only a non-empty
-            // finding set is worth rendering into the prompt.
+            let value = if exact_finding_set {
+                let envelope: review_core::ArtifactEnvelope = match serde_json::from_value(value) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        let error = format!(
+                            "exact prior FindingSet@1 `{artifact}` is not an envelope: {error}"
+                        );
+                        if let Some(prepared) = prepared.take() {
+                            self.release_prepared_attempt(
+                                node_id,
+                                &prepared.attempt,
+                                prepared.reservation.as_ref(),
+                                &error,
+                            )?;
+                        }
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = review_store::validate_envelope(&envelope) {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+                    let error = format!("exact prior artifact `{artifact}` is not FindingSet@1");
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                let mut set: review_core::FindingSetV1 =
+                    match serde_json::from_value(envelope.payload) {
+                        Ok(set) => set,
+                        Err(error) => {
+                            let error = format!("exact prior FindingSet@1 is invalid: {error}");
+                            if let Some(prepared) = prepared.take() {
+                                self.release_prepared_attempt(
+                                    node_id,
+                                    &prepared.attempt,
+                                    prepared.reservation.as_ref(),
+                                    &error,
+                                )?;
+                            }
+                            return Err(error);
+                        }
+                    };
+                if let Err(error) = set.validate() {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                let round_assignment = match self.cas.get_json(&self.authority.prior_finding_set_id)
+                {
+                    Ok(assignment) => assignment,
+                    Err(error) => {
+                        let error =
+                            format!("exact Round finding assignment is unreadable: {error}");
+                        if let Some(prepared) = prepared.take() {
+                            self.release_prepared_attempt(
+                                node_id,
+                                &prepared.attempt,
+                                prepared.reservation.as_ref(),
+                                &error,
+                            )?;
+                        }
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error,
+                        )?;
+                    }
+                    return Err(error);
+                }
+                serde_json::to_value(set).expect("validated FindingSet@1 serializes")
+            } else {
+                value
+            };
+            // An empty assignment needs no prompt section and requires an empty disposition list.
+            let findings_field = if exact_finding_set {
+                "findings"
+            } else {
+                "prior_findings"
+            };
             let has_findings = value
-                .get("prior_findings")
-                .and_then(|f| f.as_array())
-                .is_some_and(|f| !f.is_empty());
+                .get(findings_field)
+                .and_then(|findings| findings.as_array())
+                .is_some_and(|findings| !findings.is_empty());
             if has_findings {
                 inputs.prior_findings = Some(value);
             }
@@ -1987,7 +2177,25 @@ impl<'a> Kernel<'a> {
             match invoked {
                 Ok(receipted) => {
                     let returned = receipted.returned;
-                    let result_value = match reviewer_result_value(&returned.output) {
+                    let assigned_finding_ids = inputs
+                        .prior_findings
+                        .as_ref()
+                        .and_then(|value| value.get("findings"))
+                        .and_then(serde_json::Value::as_array)
+                        .map(|findings| {
+                            findings
+                                .iter()
+                                .filter_map(|finding| finding.get("finding_id"))
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let result_value = match reviewer_result_value(
+                        &returned.output,
+                        result_contract,
+                        &assigned_finding_ids,
+                    ) {
                         Ok(value) => value,
                         Err(error) => {
                             retry_failures.push(failed_retry_context(
@@ -2125,7 +2333,10 @@ impl<'a> Kernel<'a> {
                     return Ok(vec![result_artifact]);
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
-                    let error = format!("reviewer output is not a ReviewerResult@1: {why}");
+                    let error = format!(
+                        "reviewer output is not a {}: {why}",
+                        result_contract.artifact_type()
+                    );
                     retry_failures.push(failed_retry_context(
                         &attempt.to_string(),
                         "parse_error",
@@ -2328,17 +2539,18 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+    fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
         let canonical = self.authority.finding_identity_policy
             == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
-        let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
+        let mut results: Vec<(String, String, ReviewerResultContract, LegacyStageOutput)> =
+            Vec::new();
         let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
-            let output =
+            let (contract, output) =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
-            results.push((node.to_string(), id.to_string(), output));
+            results.push((node.to_string(), id.to_string(), contract, output));
             Ok(())
         };
         for (input_port, artifacts) in inputs {
@@ -2425,7 +2637,7 @@ impl<'a> Kernel<'a> {
                     }
                     _ => {
                         return Err(format!(
-                            "artifact {input} is neither ReviewerResult@1 nor a gather manifest"
+                            "artifact {input} is neither a supported ReviewerResult nor a gather manifest"
                         ));
                     }
                 }
@@ -2437,7 +2649,7 @@ impl<'a> Kernel<'a> {
                 .lock()
                 .expect("reviewer selections");
             let mut result_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-            for (index, (_, result_id, _)) in results.iter().enumerate() {
+            for (index, (_, result_id, _, _)) in results.iter().enumerate() {
                 result_indices
                     .entry(result_id.clone())
                     .or_default()
@@ -2500,7 +2712,7 @@ impl<'a> Kernel<'a> {
             Some(
                 results
                     .iter()
-                    .map(|(node, result_id, _)| {
+                    .map(|(node, result_id, _, _)| {
                         let selection = selections.get(node).ok_or_else(|| {
                             format!("selected reviewer result for `{node}` has no Attempt")
                         })?;
@@ -2523,7 +2735,20 @@ impl<'a> Kernel<'a> {
         };
 
         let projection = self.take_ledger_projection();
-        let (round, finding_count, finding_entries, reduction, projection) = {
+        let (
+            round,
+            finding_count,
+            finding_entries,
+            grouping_relation_ids,
+            grouping_input_artifact_ids,
+            resolution_ids,
+            resolution_input_artifact_ids,
+            demand_entries,
+            demand_artifact_ids,
+            demand_input_artifact_ids,
+            reduction,
+            projection,
+        ) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =
                 Ingest::from_projection(*store, self.cas, self.run_id.clone(), projection)
@@ -2537,7 +2762,10 @@ impl<'a> Kernel<'a> {
                         .iter()
                         .zip(metadata)
                         .map(
-                            |((node, result_id, stage), (attempt_id, input_artifacts))| {
+                            |(
+                                (node, result_id, result_contract, stage),
+                                (attempt_id, input_artifacts),
+                            )| {
                                 review_store::CanonicalStage {
                                     source: node,
                                     stage,
@@ -2545,6 +2773,8 @@ impl<'a> Kernel<'a> {
                                     result_artifact_id: result_id,
                                     input_artifacts,
                                     subject_snapshot_id: &self.authority.head_snapshot_id,
+                                    subject_id: &self.authority.subject_id,
+                                    result_contract: *result_contract,
                                 }
                             },
                         )
@@ -2556,9 +2786,17 @@ impl<'a> Kernel<'a> {
                     )
                 }
                 None => {
+                    if results
+                        .iter()
+                        .any(|(_, _, contract, _)| *contract == ReviewerResultContract::V2)
+                    {
+                        return Err(
+                            "ReviewerResult@2 requires canonical Finding identity authority".into(),
+                        );
+                    }
                     let stages: Vec<_> = results
                         .iter()
-                        .map(|(node, _, stage)| (node.as_str(), stage))
+                        .map(|(node, _, _, stage)| (node.as_str(), stage))
                         .collect();
                     ingest
                         .add_live_stage_outputs(&stages)
@@ -2568,30 +2806,46 @@ impl<'a> Kernel<'a> {
             };
             (
                 reduction_round,
-                ingest.ledger().len(),
+                ingest.ledger().finding_views().len(),
                 canonical.then(|| finding_set_entries(ingest.ledger())),
+                ingest.ledger().grouping_relation_ids(),
+                ingest.ledger().grouping_input_artifact_ids(),
+                ingest.ledger().resolution_artifact_ids(),
+                ingest.ledger().resolution_input_artifact_ids(),
+                canonical.then(|| ingest.ledger().demand_views()),
+                ingest.ledger().demand_reduction_artifact_ids(),
+                ingest.ledger().demand_reduction_input_ids(),
                 reduction,
                 ingest.into_projection(),
             )
         };
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        if let (Some(entries), Some(reduction)) = (finding_entries, reduction) {
+        let findings_artifact = if let (Some(entries), Some(reduction)) =
+            (finding_entries, reduction)
+        {
+            let reducer_version = reduction.reducer_version;
             let payload = review_core::FindingSetV1 {
                 subject_id: self.authority.subject_id.clone(),
                 round,
                 prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
-                reducer_version: review_core::FINDING_REDUCER_VERSION.to_string(),
+                reducer_version: reducer_version.to_string(),
                 identity_policy: self.authority.finding_identity_policy.clone(),
                 selected_report_ids: reduction.selected_report_ids,
-                relation_ids: reduction.relation_ids,
-                resolution_ids: Vec::new(),
+                relation_ids: reduction
+                    .relation_ids
+                    .into_iter()
+                    .chain(grouping_relation_ids)
+                    .collect(),
+                resolution_ids,
                 findings: entries,
             };
             payload.validate()?;
             let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
             reduction_inputs.extend(reduction.input_artifact_ids);
+            reduction_inputs.extend(grouping_input_artifact_ids);
+            reduction_inputs.extend(resolution_input_artifact_ids);
             let operation_digest = review_store::content_id(&serde_json::json!({
-                "reducer_version": review_core::FINDING_REDUCER_VERSION,
+                "reducer_version": reducer_version,
                 "identity_policy": self.authority.finding_identity_policy,
                 "inputs": reduction_inputs,
             }))
@@ -2605,7 +2859,7 @@ impl<'a> Kernel<'a> {
                         node_id: Some("ledger".into()),
                         operation_id: format!(
                             "{}:{}:{}",
-                            review_core::FINDING_REDUCER_VERSION,
+                            reducer_version,
                             self.authority.finding_identity_policy,
                             operation_digest
                         ),
@@ -2615,25 +2869,103 @@ impl<'a> Kernel<'a> {
                     serde_json::to_value(payload).map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
-            return Ok(vec![record_id]);
-        }
-        // The `findings` port must carry a real artifact, not a label: the scheduler delivers
-        // exactly this string to whatever consumes the port, and a downstream event referencing
-        // a non-CAS string would be rejected as a dangling artifact far from its cause.
-        let artifact = self
-            .cas
-            .put_json(&serde_json::json!({
-                "round": round,
-                "sources": results.iter().map(|(node, _, _)| node).collect::<Vec<_>>(),
-                "findings": finding_count,
+            record_id
+        } else {
+            // The `findings` port must carry a real artifact, not a label: the scheduler delivers
+            // exactly this string to whatever consumes the port, and a downstream event referencing
+            // a non-CAS string would be rejected as a dangling artifact far from its cause.
+            self.cas
+                .put_json(&serde_json::json!({
+                    "round": round,
+                    "sources": results.iter().map(|(node, _, _, _)| node).collect::<Vec<_>>(),
+                    "findings": finding_count,
+                }))
+                .map_err(|e| e.to_string())?
+        };
+
+        let finding_port = node
+            .outputs
+            .iter()
+            .find(|port| is_generation_finding_set_output(port))
+            .or_else(|| (node.outputs.len() == 1).then(|| &node.outputs[0]))
+            .ok_or_else(|| "ledger node has no Finding Set output".to_string())?;
+        let mut outputs = ArtifactMap::from([(finding_port.name.clone(), vec![findings_artifact])]);
+
+        if let Some(demands) = demand_entries {
+            if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id
+            {
+                return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
+            }
+            let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
+                demand_artifact_ids;
+            let payload = review_core::DemandSetV1 {
+                subject_id: self.authority.subject_id.clone(),
+                round,
+                prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
+                reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
+                selected_demand_artifact_ids,
+                satisfaction_artifact_ids,
+                waiver_artifact_ids,
+                demands,
+            };
+            payload.validate()?;
+            let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
+            reduction_inputs.extend(demand_input_artifact_ids);
+            let mut unique = BTreeSet::new();
+            reduction_inputs.retain(|id| unique.insert(id.clone()));
+            let operation_digest = review_store::content_id(&serde_json::json!({
+                "reducer_version": review_core::DEMAND_REDUCER_VERSION,
+                "inputs": reduction_inputs,
             }))
-            .map_err(|e| e.to_string())?;
-        Ok(vec![artifact])
+            .map_err(|error| error.to_string())?;
+            let (record_id, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::DEMAND_SET_V1,
+                    review_core::Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: Some("ledger".into()),
+                        operation_id: format!(
+                            "{}:{}",
+                            review_core::DEMAND_REDUCER_VERSION,
+                            operation_digest
+                        ),
+                    },
+                    reduction_inputs,
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            match node.outputs.iter().find(|port| is_demand_set_port(port)) {
+                Some(port) => {
+                    outputs.insert(port.name.clone(), vec![record_id]);
+                }
+                None if !outputs.is_empty()
+                    && self
+                        .ledger_cache
+                        .lock()
+                        .expect("ledger cache")
+                        .as_ref()
+                        .is_some_and(|projection| {
+                            !projection.ledger().demand_views().is_empty()
+                        }) =>
+                {
+                    return Err(
+                        "ledger selected Demands but declares no review.kernel/DemandSet@1 output"
+                            .into(),
+                    );
+                }
+                None => {}
+            }
+        }
+        Ok(outputs)
     }
 }
 
 fn reviewer_result_value(
     stage: &LegacyStageOutput,
+    contract: ReviewerResultContract,
+    assigned_finding_ids: &[String],
 ) -> Result<serde_json::Value, ReviewerResultRejection> {
     let mut object =
         match serde_json::to_value(stage).map_err(|_| ReviewerResultRejection::ReportPayload)? {
@@ -2644,41 +2976,122 @@ fn reviewer_result_value(
         .remove("findings")
         .ok_or(ReviewerResultRejection::UnexpectedFields)?;
     object.insert("reports".into(), reports);
-    if let Some(disputes) = object
+    let entries = object
         .get_mut("disputes")
         .and_then(serde_json::Value::as_array_mut)
-    {
-        for dispute in disputes {
-            let dispute = dispute
-                .as_object_mut()
-                .ok_or(ReviewerResultRejection::MalformedDispute)?;
-            let claim_id = dispute
-                .remove("fp")
-                .ok_or(ReviewerResultRejection::InvalidDispute)?;
-            dispute.insert("claim_id".into(), claim_id);
-            if !matches!(
-                dispute.get("position").and_then(serde_json::Value::as_str),
+        .ok_or(ReviewerResultRejection::MalformedDispute)?;
+    for entry in entries.iter_mut() {
+        let entry = entry.as_object_mut().ok_or(match contract {
+            ReviewerResultContract::V1 => ReviewerResultRejection::MalformedDispute,
+            ReviewerResultContract::V2 => ReviewerResultRejection::MalformedDisposition,
+        })?;
+        let finding_id = entry.remove("fp").ok_or(match contract {
+            ReviewerResultContract::V1 => ReviewerResultRejection::InvalidDispute,
+            ReviewerResultContract::V2 => ReviewerResultRejection::InvalidDisposition,
+        })?;
+        let key = match contract {
+            ReviewerResultContract::V1 => "claim_id",
+            ReviewerResultContract::V2 => "finding_id",
+        };
+        entry.insert(key.into(), finding_id);
+        let valid = match contract {
+            ReviewerResultContract::V1 => matches!(
+                entry.get("position").and_then(serde_json::Value::as_str),
                 Some("confirm" | "refute")
-            ) {
-                return Err(ReviewerResultRejection::InvalidDispute);
+            ),
+            ReviewerResultContract::V2 => matches!(
+                entry.get("position").and_then(serde_json::Value::as_str),
+                Some("corroborate" | "not_reproduced" | "dispute")
+            ),
+        };
+        if !valid {
+            return Err(match contract {
+                ReviewerResultContract::V1 => ReviewerResultRejection::InvalidDispute,
+                ReviewerResultContract::V2 => ReviewerResultRejection::InvalidDisposition,
+            });
+        }
+    }
+    if contract == ReviewerResultContract::V2 {
+        let dispositions = object
+            .remove("disputes")
+            .ok_or(ReviewerResultRejection::MalformedDisposition)?;
+        object.insert("dispositions".into(), dispositions);
+    }
+    let value = serde_json::Value::Object(object);
+    match contract {
+        ReviewerResultContract::V1 => {
+            review_core::validate_reviewer_result_classified(&value)?;
+        }
+        ReviewerResultContract::V2 => {
+            review_core::validate_reviewer_result_v2_classified(&value)?;
+            let expected: BTreeSet<_> = assigned_finding_ids.iter().map(String::as_str).collect();
+            let dispositions = value["dispositions"]
+                .as_array()
+                .expect("ReviewerResult@2 validator checked dispositions");
+            let mut actual = BTreeSet::new();
+            for disposition in dispositions {
+                let finding_id = disposition["finding_id"]
+                    .as_str()
+                    .expect("ReviewerResult@2 validator checked finding_id");
+                if !actual.insert(finding_id) {
+                    return Err(ReviewerResultRejection::DuplicateDisposition);
+                }
+                if !expected.contains(finding_id) {
+                    return Err(ReviewerResultRejection::UnassignedDisposition);
+                }
+            }
+            if actual != expected {
+                return Err(ReviewerResultRejection::MissingDispositionCoverage);
             }
         }
     }
-    let value = serde_json::Value::Object(object);
-    review_core::validate_reviewer_result_classified(&value)?;
     Ok(value)
 }
 
-fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {
+fn reviewer_stage_output(
+    value: serde_json::Value,
+) -> Result<(ReviewerResultContract, LegacyStageOutput), String> {
+    let contract = match (
+        value.get("disputes").is_some(),
+        value.get("dispositions").is_some(),
+    ) {
+        (true, false) => ReviewerResultContract::V1,
+        (false, true) => ReviewerResultContract::V2,
+        _ => return Err("reviewer result has ambiguous versioned disposition fields".into()),
+    };
+    match contract {
+        ReviewerResultContract::V1 => review_core::validate_reviewer_result(&value)?,
+        ReviewerResultContract::V2 => review_core::validate_reviewer_result_v2(&value)?,
+    }
     let mut object = match value {
         serde_json::Value::Object(object) => object,
-        _ => return Err("ReviewerResult@1 is not an object".into()),
+        _ => return Err("ReviewerResult is not an object".into()),
     };
     let reports = object
         .remove("reports")
-        .ok_or("ReviewerResult@1 has no reports array")?;
+        .ok_or("ReviewerResult has no reports array")?;
     object.insert("findings".into(), reports);
-    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+    if contract == ReviewerResultContract::V2 {
+        let mut dispositions = object
+            .remove("dispositions")
+            .ok_or("ReviewerResult@2 has no dispositions array")?;
+        for disposition in dispositions
+            .as_array_mut()
+            .ok_or("ReviewerResult@2 dispositions is not an array")?
+        {
+            let disposition = disposition
+                .as_object_mut()
+                .ok_or("ReviewerResult@2 disposition is not an object")?;
+            let finding_id = disposition
+                .remove("finding_id")
+                .ok_or("ReviewerResult@2 disposition has no finding_id")?;
+            disposition.insert("fp".into(), finding_id);
+        }
+        object.insert("disputes".into(), dispositions);
+    }
+    serde_json::from_value(serde_json::Value::Object(object))
+        .map(|stage| (contract, stage))
+        .map_err(|error| error.to_string())
 }
 
 fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<u32, String> {
@@ -2692,7 +3105,7 @@ fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<
 
 fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::FindingSetEntryV1> {
     ledger
-        .findings()
+        .finding_views()
         .iter()
         .map(|finding| {
             let (file, line, location_unrecorded) =
@@ -2737,6 +3150,39 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
         .collect()
 }
 
+fn retain_round_assignment(
+    set: &mut review_core::FindingSetV1,
+    round_assignment: &serde_json::Value,
+) -> Result<(), String> {
+    let rows = round_assignment
+        .get("prior_findings")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Round prior Finding assignment does not contain a prior_findings array")?;
+    let mut assigned = BTreeSet::new();
+    for row in rows {
+        let key = row
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Round prior Finding assignment contains a row without a key")?;
+        if !assigned.insert(key) {
+            return Err("Round prior Finding assignment contains a duplicate key".into());
+        }
+    }
+    let available: BTreeSet<_> = set
+        .findings
+        .iter()
+        .map(|finding| finding.finding_id.as_str())
+        .collect();
+    if !assigned.is_subset(&available) {
+        return Err(
+            "Round prior Finding assignment is not a subset of its exact FindingSet@1".into(),
+        );
+    }
+    set.findings
+        .retain(|finding| assigned.contains(finding.finding_id.as_str()));
+    Ok(())
+}
+
 /// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
 /// CAS digest of the full set. Bounded on purpose — the full list is thousands of entries when
 /// a reviewer built, and it must not be inlined into every event payload.
@@ -2779,18 +3225,22 @@ fn validate_generation_outputs(
     }
     for port in &node.outputs {
         let expected = if is_generation_prior_findings_output(port, pipeline_version) {
-            Some(&authority.prior_finding_set_id)
+            vec![authority.prior_finding_set_id.clone()]
+        } else if is_generation_finding_set_output(port) {
+            if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
+                Vec::new()
+            } else {
+                vec![authority.prior_reduction_finding_set_id.clone()]
+            }
         } else if is_change_set_port(port, pipeline_version) {
-            authority.change_set_id.as_ref()
+            authority.change_set_id.iter().cloned().collect()
         } else {
             return Err(format!(
                 "generation receipt port `{}` has unsupported artifact type `{}`",
                 port.name, port.artifact_type
             ));
         };
-        if outputs.get(&port.name).and_then(|ids| ids.first()) != expected
-            || outputs.get(&port.name).is_some_and(|ids| ids.len() != 1)
-        {
+        if outputs.get(&port.name) != Some(&expected) {
             return Err(format!(
                 "generation receipt port `{}` contradicts Round {} authority",
                 port.name, authority.round
@@ -2844,7 +3294,7 @@ impl Dispatch for Kernel<'_> {
             let prior_findings = node
                 .inputs
                 .iter()
-                .find(|port| is_reviewer_prior_findings_input(port, self.pipeline_version))
+                .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version))
                 .and_then(|port| inputs.get(&port.name))
                 .and_then(|artifacts| artifacts.first());
             let replayed_failures = self
@@ -2919,7 +3369,7 @@ impl Dispatch for Kernel<'_> {
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.run_gather(node, inputs),
-            NodeKind::Ledger => self.run_ledger(node, inputs),
+            NodeKind::Ledger => return self.run_ledger(node, inputs),
             NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
@@ -3444,10 +3894,60 @@ outputs = ["findings"]
     }
 
     #[test]
+    fn exact_finding_set_is_filtered_by_the_pinned_round_assignment() {
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let entry = |finding_id: String| review_core::FindingSetEntryV1 {
+            finding_id,
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: "correctness".into(),
+            last_seen_round: 1,
+            report_ids: vec![digest('d')],
+        };
+        let keep = digest('a');
+        let declined = digest('b');
+        let diagnostic = digest('c');
+        let mut set = review_core::FindingSetV1 {
+            subject_id: digest('d'),
+            round: 1,
+            prior_finding_set_id: digest('e'),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: vec![entry(keep.clone()), entry(declined), entry(diagnostic)],
+        };
+
+        retain_round_assignment(
+            &mut set,
+            &serde_json::json!({
+                "subject_id": digest('f'),
+                "round": 2,
+                "prior_findings": [{"key": keep}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(set.findings.len(), 1);
+        assert_eq!(set.findings[0].finding_id, keep);
+    }
+
+    #[test]
     fn unavailable_authority_has_a_distinct_durable_failure_reason() {
         let mut convergence = Convergence {
             round: 2,
             open_blocking: 1,
+            open_required_demands: 0,
             new_recent: 1,
             authority_failures_recent: 1,
             verdict: Verdict::NotConverged,
@@ -3491,7 +3991,7 @@ outputs = ["findings"]
 
     #[test]
     fn flat_reviewer_reports_reach_the_legacy_reducer() {
-        let output = reviewer_stage_output(serde_json::json!({
+        let (contract, output) = reviewer_stage_output(serde_json::json!({
             "verdict": "request-changes",
             "summary": null,
             "reports": [{
@@ -3511,8 +4011,65 @@ outputs = ["findings"]
             }]
         }))
         .unwrap();
+        assert_eq!(contract, ReviewerResultContract::V1);
         assert_eq!(output.findings.len(), 1);
         assert_eq!(output.findings[0].file, "src/a.rs");
         assert_eq!(output.disputes[0].fp, "prior");
+    }
+
+    #[test]
+    fn reviewer_result_v2_requires_exact_disposition_coverage() {
+        let stage = |ids: &[&str]| LegacyStageOutput {
+            verdict: review_core::legacy::LegacyVerdict::Approve,
+            summary: None,
+            findings: Vec::new(),
+            benchmark_demands: Vec::new(),
+            disputes: ids
+                .iter()
+                .map(|id| review_core::legacy::LegacyDispute {
+                    fp: (*id).into(),
+                    position: "not_reproduced".into(),
+                    reason: "the current Subject no longer reaches the failing branch".into(),
+                })
+                .collect(),
+        };
+        let assigned = vec!["finding:a".to_string(), "finding:b".to_string()];
+
+        assert_eq!(
+            reviewer_result_value(
+                &stage(&["finding:a"]),
+                ReviewerResultContract::V2,
+                &assigned,
+            )
+            .unwrap_err(),
+            ReviewerResultRejection::MissingDispositionCoverage
+        );
+        assert_eq!(
+            reviewer_result_value(
+                &stage(&["finding:a", "finding:a"]),
+                ReviewerResultContract::V2,
+                &assigned,
+            )
+            .unwrap_err(),
+            ReviewerResultRejection::DuplicateDisposition
+        );
+        assert_eq!(
+            reviewer_result_value(
+                &stage(&["finding:a", "finding:outside"]),
+                ReviewerResultContract::V2,
+                &assigned,
+            )
+            .unwrap_err(),
+            ReviewerResultRejection::UnassignedDisposition
+        );
+
+        let value = reviewer_result_value(
+            &stage(&["finding:b", "finding:a"]),
+            ReviewerResultContract::V2,
+            &assigned,
+        )
+        .unwrap();
+        assert!(value.get("disputes").is_none());
+        assert_eq!(value["dispositions"].as_array().unwrap().len(), 2);
     }
 }

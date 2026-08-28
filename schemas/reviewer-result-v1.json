@@ -85,7 +85,12 @@
           "type": ["number", "null"],
           "minimum": 0,
           "maximum": 1
-        }
+        },
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.]*/[^/@]+@[^/@]+$"
+        },
+        "occurrence_key": { "type": "string", "minLength": 1 }
       }
     }
   }

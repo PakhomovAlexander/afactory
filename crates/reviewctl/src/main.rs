@@ -11,6 +11,8 @@
 //! - `ledger` prints a campaign's findings, one per line, machine-readably.
 //! - `resolve` records the operator's disposition of one finding (fixed, wontfix, ...) in the
 //!   campaign's ledger — the step between fixing and the round that verifies the fix.
+//! - `group` and `ungroup` append reversible adjudication between duplicate Findings without
+//!   erasing either identity, Report history, or verification obligation.
 //! - `tui` drafts an explicit configuration patch for the pipeline's existing reviewer packages
 //!   and launches the same pinned-authority `run` path from an alternate-screen interface.
 //!
@@ -219,7 +221,86 @@ struct ResolveOptions {
     campaign: String,
     key: String,
     status: String,
-    note: Option<String>,
+    actor: Option<String>,
+    policy_revision: String,
+    reason: String,
+    evidence_ids: Vec<String>,
+    max_accepted_severity: Option<Severity>,
+    tracking_reference: Option<String>,
+    expires_at_policy_time: Option<u64>,
+}
+
+struct AttestChangeOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    finding_id: String,
+    actor: Option<String>,
+    reason: String,
+    regions: Vec<review_core::ChangedRegionV1>,
+    evidence_ids: Vec<String>,
+}
+
+struct VerifyFixOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    finding_id: String,
+    attestation_id: String,
+    verifier: Option<String>,
+    policy_revision: String,
+    reason: String,
+    positive: bool,
+    evidence_ids: Vec<String>,
+}
+
+struct ChallengeResolutionOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    finding_id: String,
+    kind: review_core::ResolutionChallengeKind,
+    actor: Option<String>,
+    reason: String,
+    evidence_ids: Vec<String>,
+}
+
+struct PolicyTimeOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    tick: u64,
+    actor: Option<String>,
+    reason: String,
+}
+
+struct GroupOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    from: String,
+    into: String,
+}
+
+struct EvidenceAddOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    demand_id: String,
+    file: PathBuf,
+    actor: Option<String>,
+}
+
+struct EvidenceSatisfyOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    demand_id: String,
+    evidence_id: String,
+    policy_revision: String,
+    reason: String,
+}
+
+struct DemandWaiveOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    demand_id: String,
+    actor: Option<String>,
+    policy_revision: String,
+    reason: String,
 }
 
 fn usage() -> ! {
@@ -232,7 +313,16 @@ fn usage() -> ! {
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
-        \x20      af review resolve --campaign NAME [--state DIR] KEY STATUS [--note TEXT]\n\
+        \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
+        \x20      af review attest-change --campaign NAME [--state DIR] FINDING --region PATH[:START-END] --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
+        \x20      af review verify-fix --campaign NAME [--state DIR] FINDING ATTESTATION --policy REV --reason TEXT (--positive|--negative) [--verifier ACTOR] [--evidence ID]...\n\
+        \x20      af review challenge-resolution --campaign NAME [--state DIR] FINDING --kind new-evidence|higher-severity|outside-scope|expired --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
+        \x20      af review policy-time advance --campaign NAME [--state DIR] TICK --reason TEXT [--actor ACTOR]\n\
+        \x20      af review group   --campaign NAME [--state DIR] FROM INTO\n\
+        \x20      af review ungroup --campaign NAME [--state DIR] FROM INTO\n\
+        \x20      af review evidence add --campaign NAME [--state DIR] DEMAND FILE [--actor ACTOR]\n\
+        \x20      af review evidence satisfy --campaign NAME [--state DIR] DEMAND EVIDENCE --policy REV --reason TEXT\n\
+        \x20      af review demand waive --campaign NAME [--state DIR] DEMAND --policy REV --reason TEXT [--actor ACTOR]\n\
         \x20      af provider status\n\
         \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock] [--json]\n\
         \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
@@ -241,7 +331,7 @@ fn usage() -> ! {
         \x20      af task show TASK_ID [--repo DIR] [--state DIR] [--json]\n\
         \x20      af --version\n\
          \n\
-         STATUS is one of: open fixed rejected wontfix contested"
+         wontfix-tracked also requires --max-severity, --tracking, and --expires-at-policy-time"
     );
     std::process::exit(2);
 }
@@ -399,14 +489,35 @@ fn parse_report(mut args: std::env::Args) -> ReportOptions {
 fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
     let mut state = None;
     let mut campaign = None;
-    let mut note = None;
+    let mut actor = None;
+    let mut policy_revision = None;
+    let mut reason = None;
+    let mut evidence_ids = Vec::new();
+    let mut max_accepted_severity = None;
+    let mut tracking_reference = None;
+    let mut expires_at_policy_time = None;
     let mut positional: Vec<String> = Vec::new();
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--state" => state = Some(PathBuf::from(value())),
             "--campaign" => campaign = Some(value()),
-            "--note" => note = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--policy" => policy_revision = Some(value()),
+            "--reason" => reason = Some(value()),
+            "--evidence" => evidence_ids.push(value()),
+            "--max-severity" => {
+                max_accepted_severity = Some(match value().as_str() {
+                    "minor" => Severity::Minor,
+                    "major" => Severity::Major,
+                    "blocker" => Severity::Blocker,
+                    _ => usage(),
+                })
+            }
+            "--tracking" => tracking_reference = Some(value()),
+            "--expires-at-policy-time" => {
+                expires_at_policy_time = Some(value().parse().unwrap_or_else(|_| usage()))
+            }
             other if !other.starts_with("--") => positional.push(other.to_string()),
             _ => usage(),
         }
@@ -419,7 +530,292 @@ fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
         campaign,
         key: key.clone(),
         status: status.clone(),
-        note,
+        actor,
+        policy_revision: policy_revision.unwrap_or_else(|| usage()),
+        reason: reason.unwrap_or_else(|| usage()),
+        evidence_ids,
+        max_accepted_severity,
+        tracking_reference,
+        expires_at_policy_time,
+    }
+}
+
+fn parse_changed_region(value: &str) -> review_core::ChangedRegionV1 {
+    let Some((path, lines)) = value.rsplit_once(':') else {
+        return review_core::ChangedRegionV1 {
+            path: value.into(),
+            start_line: None,
+            end_line: None,
+        };
+    };
+    let Some((start, end)) = lines.split_once('-') else {
+        usage()
+    };
+    review_core::ChangedRegionV1 {
+        path: path.into(),
+        start_line: Some(start.parse().unwrap_or_else(|_| usage())),
+        end_line: Some(end.parse().unwrap_or_else(|_| usage())),
+    }
+}
+
+fn parse_attest_change(mut args: std::env::Args) -> AttestChangeOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut actor = None;
+    let mut reason = None;
+    let mut regions = Vec::new();
+    let mut evidence_ids = Vec::new();
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--reason" => reason = Some(value()),
+            "--region" => regions.push(parse_changed_region(&value())),
+            "--evidence" => evidence_ids.push(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let [finding_id] = positional.as_slice() else {
+        usage()
+    };
+    AttestChangeOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        finding_id: finding_id.clone(),
+        actor,
+        reason: reason.unwrap_or_else(|| usage()),
+        regions,
+        evidence_ids,
+    }
+}
+
+fn parse_verify_fix(mut args: std::env::Args) -> VerifyFixOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut verifier = None;
+    let mut policy_revision = None;
+    let mut reason = None;
+    let mut positive = None;
+    let mut evidence_ids = Vec::new();
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--verifier" => verifier = Some(value()),
+            "--policy" => policy_revision = Some(value()),
+            "--reason" => reason = Some(value()),
+            "--positive" if positive.is_none() => positive = Some(true),
+            "--negative" if positive.is_none() => positive = Some(false),
+            "--evidence" => evidence_ids.push(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let [finding_id, attestation_id] = positional.as_slice() else {
+        usage()
+    };
+    VerifyFixOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        finding_id: finding_id.clone(),
+        attestation_id: attestation_id.clone(),
+        verifier,
+        policy_revision: policy_revision.unwrap_or_else(|| usage()),
+        reason: reason.unwrap_or_else(|| usage()),
+        positive: positive.unwrap_or_else(|| usage()),
+        evidence_ids,
+    }
+}
+
+fn parse_challenge_resolution(mut args: std::env::Args) -> ChallengeResolutionOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut actor = None;
+    let mut kind = None;
+    let mut reason = None;
+    let mut evidence_ids = Vec::new();
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--reason" => reason = Some(value()),
+            "--evidence" => evidence_ids.push(value()),
+            "--kind" => {
+                kind = Some(match value().as_str() {
+                    "new-evidence" => review_core::ResolutionChallengeKind::NewEvidence,
+                    "higher-severity" => review_core::ResolutionChallengeKind::HigherSeverity,
+                    "outside-scope" => review_core::ResolutionChallengeKind::OutsideScope,
+                    "expired" => review_core::ResolutionChallengeKind::Expired,
+                    _ => usage(),
+                })
+            }
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let [finding_id] = positional.as_slice() else {
+        usage()
+    };
+    ChallengeResolutionOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        finding_id: finding_id.clone(),
+        kind: kind.unwrap_or_else(|| usage()),
+        actor,
+        reason: reason.unwrap_or_else(|| usage()),
+        evidence_ids,
+    }
+}
+
+fn parse_policy_time(mut args: std::env::Args) -> PolicyTimeOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut actor = None;
+    let mut reason = None;
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--reason" => reason = Some(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let [tick] = positional.as_slice() else {
+        usage()
+    };
+    PolicyTimeOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        tick: tick.parse().unwrap_or_else(|_| usage()),
+        actor,
+        reason: reason.unwrap_or_else(|| usage()),
+    }
+}
+
+fn parse_group(mut args: std::env::Args) -> GroupOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let (Some(campaign), [from, into]) = (campaign, positional.as_slice()) else {
+        usage()
+    };
+    GroupOptions {
+        state,
+        campaign,
+        from: from.clone(),
+        into: into.clone(),
+    }
+}
+
+fn parse_evidence_add(mut args: std::env::Args) -> EvidenceAddOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut actor = None;
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--actor" => actor = Some(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let (Some(campaign), [demand_id, file]) = (campaign, positional.as_slice()) else {
+        usage()
+    };
+    EvidenceAddOptions {
+        state,
+        campaign,
+        demand_id: demand_id.clone(),
+        file: PathBuf::from(file),
+        actor,
+    }
+}
+
+fn parse_evidence_satisfy(mut args: std::env::Args) -> EvidenceSatisfyOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut policy_revision = None;
+    let mut reason = None;
+    let mut positional = Vec::new();
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--policy" => policy_revision = Some(value()),
+            "--reason" => reason = Some(value()),
+            other if !other.starts_with("--") => positional.push(other.to_string()),
+            _ => usage(),
+        }
+    }
+    let (Some(campaign), Some(policy_revision), Some(reason), [demand_id, evidence_id]) =
+        (campaign, policy_revision, reason, positional.as_slice())
+    else {
+        usage()
+    };
+    EvidenceSatisfyOptions {
+        state,
+        campaign,
+        demand_id: demand_id.clone(),
+        evidence_id: evidence_id.clone(),
+        policy_revision,
+        reason,
+    }
+}
+
+fn parse_demand_waive(mut args: std::env::Args) -> DemandWaiveOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut actor = None;
+    let mut policy_revision = None;
+    let mut reason = None;
+    let mut demand_id = None;
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--policy" => policy_revision = Some(value()),
+            "--reason" => reason = Some(value()),
+            other if !other.starts_with("--") && demand_id.is_none() => {
+                demand_id = Some(other.to_string())
+            }
+            _ => usage(),
+        }
+    }
+    DemandWaiveOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        demand_id: demand_id.unwrap_or_else(|| usage()),
+        actor,
+        policy_revision: policy_revision.unwrap_or_else(|| usage()),
+        reason: reason.unwrap_or_else(|| usage()),
     }
 }
 
@@ -487,6 +883,24 @@ fn main() {
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
+        Some("attest-change") => attest_change(&parse_attest_change(args)),
+        Some("verify-fix") => verify_fix(&parse_verify_fix(args)),
+        Some("challenge-resolution") => challenge_resolution(&parse_challenge_resolution(args)),
+        Some("policy-time") => match args.next().as_deref() {
+            Some("advance") => advance_policy_time(&parse_policy_time(args)),
+            _ => usage(),
+        },
+        Some("group") => group(&parse_group(args), false),
+        Some("ungroup") => group(&parse_group(args), true),
+        Some("evidence") => match args.next().as_deref() {
+            Some("add") => add_evidence(&parse_evidence_add(args)),
+            Some("satisfy") => satisfy_evidence(&parse_evidence_satisfy(args)),
+            _ => usage(),
+        },
+        Some("demand") => match args.next().as_deref() {
+            Some("waive") => waive_demand(&parse_demand_waive(args)),
+            _ => usage(),
+        },
         Some("tui") => {
             init_review_workers();
             tui::launch(parse_run(args))
@@ -536,8 +950,21 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
         .into_ledger();
+    let events = store
+        .replay(&campaign_run_id(&options.campaign))
+        .map_err(|error| error.to_string())?;
+    if let Some(evidence) = latest_round_evidence(&events, &cas)?
+        && evidence.ledger_was_not_produced()
+    {
+        eprintln!(
+            "latest round Ledger: not produced because {}; showing the last gathered projection ({} admitted result(s) remain recorded, not gathered)",
+            evidence.absence_reason(),
+            evidence.available_node_results.len()
+        );
+    }
     print_scope_authority_warnings(&ledger);
-    for finding in ledger.findings() {
+    let findings = ledger.finding_views();
+    for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
             finding.key,
@@ -552,6 +979,9 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
             finding.line.map_or("-".to_string(), |l| l.to_string()),
             finding.title
         );
+        if !finding.aliases.is_empty() {
+            print_indented("aliases", &finding.aliases.join(", "));
+        }
         if options.long {
             print_indented("body", &finding.body);
             print_indented(
@@ -581,15 +1011,23 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
             );
         }
     }
+    let open_required_demands = ledger
+        .demand_views()
+        .into_iter()
+        .filter(|demand| {
+            demand.requirement == review_core::DemandRequirement::Required
+                && matches!(
+                    demand.status,
+                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                )
+        })
+        .count();
     eprintln!(
-        "round {}; {} findings, {} open",
+        "round {}; {} findings, {} open; {} required demands open/stale",
         ledger.round,
-        ledger.len(),
-        ledger
-            .findings()
-            .iter()
-            .filter(|f| f.status == Status::Open)
-            .count()
+        findings.len(),
+        findings.iter().filter(|f| f.status == Status::Open).count(),
+        open_required_demands
     );
     Ok(())
 }
@@ -611,10 +1049,13 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         .into_ledger();
     print_scope_authority_warnings(&ledger);
     let finding = ledger
-        .get(&options.key)
+        .finding_view(&options.key)
         .ok_or_else(|| format!("no finding with key {}", options.key))?;
 
     println!("{} [{}]", finding.title, finding.key);
+    if !finding.aliases.is_empty() {
+        println!("aliases={}", finding.aliases.join(","));
+    }
     println!(
         "severity={} effective_severity={} status={} scope={} location={}:{}",
         format!("{:?}", finding.severity).to_lowercase(),
@@ -732,6 +1173,64 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     }
 
     println!();
+    println!("## Demands");
+    let demands = ledger.demand_views();
+    if demands.is_empty() {
+        println!();
+        println!("None.");
+    } else {
+        for demand in demands {
+            println!();
+            println!(
+                "- **[{:?}, {:?}] {}** (`{}`)",
+                demand.requirement, demand.status, demand.claim, demand.demand_id
+            );
+            println!("  - Why: {}", markdown_line(&demand.why));
+            println!(
+                "  - Suggested method: {}",
+                markdown_line(&demand.suggested_method)
+            );
+            println!("  - Source: {}", demand.source);
+        }
+    }
+
+    if let Some(evidence) = latest_round_evidence(&events, &cas)?
+        && evidence.ledger_was_not_produced()
+        && !evidence.available_node_results.is_empty()
+    {
+        println!();
+        println!("## Recorded, not gathered");
+        println!();
+        println!(
+            "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
+            evidence.absence_reason()
+        );
+        for result in evidence.available_node_results {
+            println!();
+            println!(
+                "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
+                result.node,
+                result.attempt_id,
+                result.result_artifact_id,
+                result.spend_tokens,
+                if result.severities.is_empty() {
+                    "none recorded".to_string()
+                } else {
+                    result.severities.join(", ")
+                }
+            );
+            for finding in result.findings {
+                println!(
+                    "  - [{}] {} — {}",
+                    finding["severity"].as_str().unwrap_or("unknown"),
+                    markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
+                    markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
+                );
+            }
+        }
+    }
+
+    println!();
     println!("## Findings");
     for effective_severity in [
         Some(Severity::Blocker),
@@ -746,7 +1245,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         );
         println!("### {heading}");
         let matching: Vec<_> = ledger
-            .findings()
+            .finding_views()
             .into_iter()
             .filter(|finding| finding.convergence_severity == effective_severity)
             .collect();
@@ -897,8 +1396,6 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
 }
 
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
-    let status = Status::parse(&options.status)
-        .ok_or_else(|| format!("unknown status `{}`", options.status))?;
     let state = campaign_state(&options.state, &options.campaign)?;
     let mut store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -908,15 +1405,218 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     if ingest.ledger().get(&options.key).is_none() {
         return Err(format!("no finding with key {}", options.key));
     }
-    ingest
-        .resolve(&options.key, status, options.note.as_deref())
+    let outcome = match options.status.as_str() {
+        "rejected" => review_core::FindingResolutionOutcome::Rejected,
+        "wontfix-tracked" => review_core::FindingResolutionOutcome::WontfixTracked,
+        "fixed" => {
+            return Err(
+                "fixed requires `af review attest-change` followed by `af review verify-fix`"
+                    .into(),
+            );
+        }
+        other => return Err(format!("unsupported direct Resolution outcome `{other}`")),
+    };
+    let resolution_id = ingest
+        .resolve_nonfixed(
+            &options.key,
+            outcome,
+            &operator_actor(options.actor.as_deref())?,
+            &options.policy_revision,
+            &options.reason,
+            options.evidence_ids.clone(),
+            options.max_accepted_severity,
+            options.tracking_reference.clone(),
+            options.expires_at_policy_time,
+        )
         .map_err(|e| e.to_string())?;
     let now = ingest
         .ledger()
-        .get(&options.key)
+        .finding_view(&options.key)
         .map(|f| f.status.as_str())
         .unwrap_or("?");
-    println!("resolved {} -> {}", options.key, now);
+    println!("resolved {} -> {} ({resolution_id})", options.key, now);
+    Ok(())
+}
+
+fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
+    let id = ingest
+        .attest_change(
+            &options.finding_id,
+            options.regions.clone(),
+            &operator_actor(options.actor.as_deref())?,
+            &options.reason,
+            options.evidence_ids.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+    println!(
+        "attested {} -> pending-verification ({id})",
+        options.finding_id
+    );
+    Ok(())
+}
+
+fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
+    let (verification, resolution) = ingest
+        .verify_fix(
+            &options.finding_id,
+            &options.attestation_id,
+            &operator_actor(options.verifier.as_deref())?,
+            &options.policy_revision,
+            options.positive,
+            &options.reason,
+            options.evidence_ids.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+    match resolution {
+        Some(resolution) => println!(
+            "verified {} -> fixed (verification {verification}, resolution {resolution})",
+            options.finding_id
+        ),
+        None => println!(
+            "verification for {} was negative ({verification}); Finding remains pending-verification",
+            options.finding_id
+        ),
+    }
+    Ok(())
+}
+
+fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
+    let id = ingest
+        .challenge_resolution(
+            &options.finding_id,
+            options.kind,
+            &operator_actor(options.actor.as_deref())?,
+            &options.reason,
+            options.evidence_ids.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+    println!("challenged {} -> contested ({id})", options.finding_id);
+    Ok(())
+}
+
+fn advance_policy_time(options: &PolicyTimeOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
+        .map_err(|e| e.to_string())?;
+    let (time_id, challenges) = ingest
+        .advance_policy_time(
+            options.tick,
+            &operator_actor(options.actor.as_deref())?,
+            &options.reason,
+        )
+        .map_err(|e| e.to_string())?;
+    println!(
+        "policy time advanced to {} ({time_id}); {} tracked Resolution(s) challenged",
+        options.tick,
+        challenges.len()
+    );
+    Ok(())
+}
+
+fn group(options: &GroupOptions, undo: bool) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
+    if undo {
+        ingest
+            .ungroup(&options.from, &options.into)
+            .map_err(|e| e.to_string())?;
+        println!("ungrouped {} from {}", options.from, options.into);
+    } else {
+        ingest
+            .group(&options.from, &options.into)
+            .map_err(|e| e.to_string())?;
+        println!("grouped {} into {}", options.from, options.into);
+    }
+    Ok(())
+}
+
+fn operator_actor(configured: Option<&str>) -> Result<String, String> {
+    configured
+        .map(str::to_string)
+        .or_else(|| std::env::var("USER").ok())
+        .filter(|actor| !actor.trim().is_empty())
+        .ok_or_else(|| "an operator actor is required (--actor or USER)".to_string())
+}
+
+fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(&options.file)
+        .map_err(|error| format!("opening Evidence {}: {error}", options.file.display()))?;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let (content_artifact_id, _) = cas
+        .put_reader_with_buffer(&mut file, &mut buffer)
+        .map_err(|error| error.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
+    let evidence_id = ingest
+        .add_evidence(
+            &options.demand_id,
+            &content_artifact_id,
+            &operator_actor(options.actor.as_deref())?,
+        )
+        .map_err(|error| error.to_string())?;
+    println!("evidence {evidence_id} recorded for {}", options.demand_id);
+    Ok(())
+}
+
+fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
+    let satisfaction_id = ingest
+        .satisfy_demand(
+            &options.demand_id,
+            &options.evidence_id,
+            &options.policy_revision,
+            &options.reason,
+        )
+        .map_err(|error| error.to_string())?;
+    println!(
+        "demand {} satisfied by {} under {} ({satisfaction_id})",
+        options.demand_id, options.evidence_id, options.policy_revision
+    );
+    Ok(())
+}
+
+fn waive_demand(options: &DemandWaiveOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let mut store = open_campaign_store(&state)?;
+    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
+    let waiver_id = ingest
+        .waive_demand(
+            &options.demand_id,
+            &operator_actor(options.actor.as_deref())?,
+            &options.policy_revision,
+            &options.reason,
+        )
+        .map_err(|error| error.to_string())?;
+    println!("demand {} waived ({waiver_id})", options.demand_id);
     Ok(())
 }
 
@@ -987,6 +1687,227 @@ fn aggregate_usage(attempts: &[review_pipeline::AttemptEvidence]) -> review_runn
             .map(|attempt| attempt.cost_tokens)
             .fold(0, u64::saturating_add),
     }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AvailableNodeResult {
+    node: String,
+    attempt_id: String,
+    result_artifact_id: String,
+    severities: Vec<String>,
+    spend_tokens: u64,
+    findings: Vec<serde_json::Value>,
+}
+
+struct LatestRoundEvidence {
+    ledger_production: &'static str,
+    available_node_results: Vec<AvailableNodeResult>,
+}
+
+impl LatestRoundEvidence {
+    fn ledger_was_not_produced(&self) -> bool {
+        self.ledger_production.starts_with("not_produced_")
+    }
+
+    fn absence_reason(&self) -> &'static str {
+        match self.ledger_production {
+            "not_produced_upstream_missing" => "required upstream output was missing",
+            "not_produced_failed" => "the Ledger node failed",
+            "not_produced_gate_blocked" => "the Ledger node was gate-blocked",
+            _ => "the Ledger node did not produce an authoritative output",
+        }
+    }
+}
+
+fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<String, String> {
+    let round: review_core::RoundStartedPayloadV1 =
+        serde_json::from_value(round_event.payload.clone()).map_err(|error| error.to_string())?;
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+        cas.get_json(&round.campaign_manifest_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    manifest.validate()?;
+    let pipeline = cas
+        .get(&manifest.pipeline.artifact_id)
+        .map_err(|error| error.to_string())?;
+    let pipeline = std::str::from_utf8(&pipeline).map_err(|error| error.to_string())?;
+    let definition =
+        review_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())?;
+    let mut ledger_nodes = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == review_config::NodeKindSpec::Ledger);
+    let node = ledger_nodes
+        .next()
+        .ok_or("pinned Campaign pipeline has no Ledger node")?;
+    if ledger_nodes.next().is_some() {
+        return Err("pinned Campaign pipeline has multiple Ledger nodes".into());
+    }
+    Ok(node.id.clone())
+}
+
+fn run_report_outcomes(
+    event: &review_core::RunEvent,
+) -> Result<Option<Vec<review_core::RunNodeReportV2>>, String> {
+    match event.event_type {
+        EventType::RunReportV2 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV2>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV3 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV1 => Ok(None),
+        _ => Err(format!("{} is not a Run Report", event.event_type)),
+    }
+}
+
+fn latest_round_evidence(
+    events: &[review_core::RunEvent],
+    cas: &Cas,
+) -> Result<Option<LatestRoundEvidence>, String> {
+    let Some(round_event) = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == EventType::RoundStartedV1)
+    else {
+        return Ok(None);
+    };
+    let ledger_node_id = ledger_node_id(round_event, cas)?;
+    let ledger_receipt = events.iter().rev().find(|event| {
+        event.event_type == EventType::NodeOutputReceiptV1
+            && event.node_id.as_deref() == Some(ledger_node_id.as_str())
+            && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
+    });
+    if let Some(receipt) = ledger_receipt {
+        let receipt: review_core::NodeOutputReceiptPayloadV1 =
+            serde_json::from_value(receipt.payload.clone()).map_err(|error| error.to_string())?;
+        let mut count = None;
+        for artifact_id in receipt
+            .outputs
+            .iter()
+            .flat_map(|port| port.artifact_ids.iter())
+        {
+            let value = cas
+                .get_json(artifact_id)
+                .map_err(|error| error.to_string())?;
+            let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
+            else {
+                continue;
+            };
+            if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+                continue;
+            }
+            review_store::validate_envelope(&envelope)?;
+            let set: review_core::FindingSetV1 =
+                serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+            set.validate()?;
+            count = Some(set.findings.len());
+            break;
+        }
+        return Ok(Some(LatestRoundEvidence {
+            ledger_production: if count == Some(0) {
+                "produced_clean"
+            } else {
+                "produced_with_findings"
+            },
+            available_node_results: Vec::new(),
+        }));
+    }
+
+    let report = events.iter().rev().find(|event| {
+        event.event_type.is_run_report()
+            && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
+    });
+    let Some(report) = report else {
+        return Ok(None);
+    };
+    let Some(outcomes) = run_report_outcomes(report)? else {
+        return Ok(None);
+    };
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.node == ledger_node_id)
+        .ok_or("Run Report has no outcome for the pinned Ledger node")?;
+    let ledger_production = match outcome.outcome {
+        review_core::RunNodeOutcomeV2::Suppressed {
+            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+        } => "not_produced_upstream_missing",
+        review_core::RunNodeOutcomeV2::Suppressed {
+            reason: review_core::RunSuppressionReasonV2::GateBlocked,
+        } => "not_produced_gate_blocked",
+        review_core::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
+        review_core::RunNodeOutcomeV2::Completed { .. } => {
+            return Err("Ledger completed without a NodeOutputReceipt".into());
+        }
+    };
+    let mut available = Vec::new();
+    for event in events.iter().filter(|event| {
+        event.event_type == EventType::AttemptAdmittedV1
+            && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
+    }) {
+        let payload: review_core::event::AttemptAdmittedPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        if payload.selection != "selected" {
+            continue;
+        }
+        let result_artifact_id = payload
+            .result_artifact
+            .ok_or("selected Attempt has no result artifact")?;
+        let value = cas
+            .get_json(&result_artifact_id)
+            .map_err(|error| error.to_string())?;
+        let reports = value
+            .get("reports")
+            .or_else(|| value.get("findings"))
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let findings = reports
+            .into_iter()
+            .map(|report| {
+                serde_json::json!({
+                    "severity": report.get("severity").cloned().unwrap_or(serde_json::Value::Null),
+                    "title": report.get("title").cloned().unwrap_or(serde_json::Value::Null),
+                    "body": report.get("body").cloned().unwrap_or(serde_json::Value::Null),
+                    "file": report.get("file").cloned().unwrap_or(serde_json::Value::Null),
+                    "line": report.get("line").cloned().unwrap_or(serde_json::Value::Null),
+                    "locations": report.get("locations").cloned().unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect::<Vec<_>>();
+        let severities = findings
+            .iter()
+            .filter_map(|finding| finding["severity"].as_str().map(str::to_string))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        available.push(AvailableNodeResult {
+            node: event
+                .node_id
+                .clone()
+                .ok_or("selected Attempt has no node ID")?,
+            attempt_id: event
+                .attempt_id
+                .clone()
+                .ok_or("selected Attempt has no Attempt ID")?,
+            result_artifact_id,
+            severities,
+            spend_tokens: payload.cost_tokens,
+            findings,
+        });
+    }
+    available.sort_by(|left, right| {
+        (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
+    });
+    Ok(Some(LatestRoundEvidence {
+        ledger_production,
+        available_node_results: available,
+    }))
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
@@ -1216,8 +2137,9 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let ledger = kernel.ledger();
     print_scope_authority_warnings(&ledger);
     run_progress(options, format_args!(""));
-    run_progress(options, format_args!("findings {}", ledger.len()));
-    for finding in ledger.findings() {
+    let finding_views = ledger.finding_views();
+    run_progress(options, format_args!("findings {}", finding_views.len()));
+    for finding in finding_views {
         run_progress(
             options,
             format_args!(
@@ -1232,16 +2154,73 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             ),
         );
     }
-    if let Some(spent) = kernel.spent() {
+    let open_or_stale_demand_ids = ledger
+        .demand_views()
+        .into_iter()
+        .filter(|demand| {
+            demand.requirement == review_core::DemandRequirement::Required
+                && matches!(
+                    demand.status,
+                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                )
+        })
+        .map(|demand| demand.demand_id)
+        .collect::<Vec<_>>();
+    run_progress(
+        options,
+        format_args!(
+            "demands  {} open/stale (required)",
+            open_or_stale_demand_ids.len()
+        ),
+    );
+    let spent_tokens = kernel.spent();
+    if let Some(spent) = spent_tokens {
         run_progress(options, format_args!("spent    {spent} tokens"));
     }
 
     let verdict = kernel.publish_report(&report, *loaded.convergence())?;
     let attempts = kernel.selected_attempt_evidence()?;
+    drop(kernel);
+    let events = store.replay(&run_id).map_err(|error| error.to_string())?;
+    let latest_evidence = latest_round_evidence(&events, &cas)?;
+    if !options.json
+        && let Some(evidence) = latest_evidence.as_ref()
+        && evidence.ledger_was_not_produced()
+        && !evidence.available_node_results.is_empty()
+    {
+        run_progress(options, format_args!(""));
+        run_progress(
+            options,
+            format_args!("recorded, not gathered (Ledger was not produced):"),
+        );
+        for result in &evidence.available_node_results {
+            run_progress(
+                options,
+                format_args!(
+                    "  {} attempt {} artifact {} spend {} severities [{}]",
+                    result.node,
+                    result.attempt_id,
+                    result.result_artifact_id,
+                    result.spend_tokens,
+                    result.severities.join(", ")
+                ),
+            );
+            for finding in &result.findings {
+                run_progress(
+                    options,
+                    format_args!(
+                        "    [{}] {}",
+                        finding["severity"].as_str().unwrap_or("unknown"),
+                        finding["title"].as_str().unwrap_or("untitled finding")
+                    ),
+                );
+            }
+        }
+    }
     if options.json {
         let candidate = candidate_identity()?;
         let findings = ledger
-            .findings()
+            .finding_views()
             .into_iter()
             .map(|finding| {
                 serde_json::json!({
@@ -1254,6 +2233,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                     "file": finding.file,
                     "line": finding.line,
                     "title": finding.title,
+                    "aliases": finding.aliases,
                 })
             })
             .collect::<Vec<_>>();
@@ -1297,42 +2277,59 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                     "usage": &attempt.usage,
                     "context_manifest": &attempt.context_manifest,
                     "raw_artifact": &attempt.raw_artifact,
+                    "result_artifact": &attempt.result_artifact,
                 })
             })
             .collect::<Vec<_>>();
+        let mut outcome_value = serde_json::json!({
+            "schema": "af/review-outcome@1",
+            "candidate": {
+                "version": candidate.version,
+                "executable": candidate.executable,
+                "binary_sha256": candidate.binary_sha256,
+            },
+            "run_id": run_id,
+            "authority": {
+                "authority_snapshot_id": authority_receipt.authority_snapshot_id,
+                "campaign_manifest_id": authority_receipt.campaign_manifest_id,
+                "subject_id": authority_receipt.subject_id,
+                "head_snapshot_id": authority_receipt.head_snapshot_id,
+                "round": authority_receipt.round,
+                "epoch": authority_receipt.epoch,
+            },
+            "node_outcomes": node_outcomes,
+            "blocked_gates": report.blocked_gates,
+            "attempts": attempt_values,
+            "totals": {
+                "context": {
+                    "rendered_bytes": rendered_bytes,
+                    "estimated_tokens": estimated_tokens,
+                },
+                "usage": usage,
+                "spent_tokens": spent_tokens,
+                "open_required_demands": open_or_stale_demand_ids.len(),
+                "open_or_stale_demand_ids": open_or_stale_demand_ids,
+            },
+            "findings": findings,
+            "outcome": verdict_value(&verdict),
+        });
+        if let Some(evidence) = latest_evidence
+            && evidence.ledger_was_not_produced()
+        {
+            let object = outcome_value.as_object_mut().expect("outcome object");
+            object.insert(
+                "ledger_production".into(),
+                serde_json::Value::String(evidence.ledger_production.into()),
+            );
+            object.insert(
+                "available_node_results".into(),
+                serde_json::to_value(evidence.available_node_results)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
         println!(
             "{}",
-            serde_json::to_string(&serde_json::json!({
-                "schema": "af/review-outcome@1",
-                "candidate": {
-                    "version": candidate.version,
-                    "executable": candidate.executable,
-                    "binary_sha256": candidate.binary_sha256,
-                },
-                "run_id": run_id,
-                "authority": {
-                    "authority_snapshot_id": authority_receipt.authority_snapshot_id,
-                    "campaign_manifest_id": authority_receipt.campaign_manifest_id,
-                    "subject_id": authority_receipt.subject_id,
-                    "head_snapshot_id": authority_receipt.head_snapshot_id,
-                    "round": authority_receipt.round,
-                    "epoch": authority_receipt.epoch,
-                },
-                "node_outcomes": node_outcomes,
-                "blocked_gates": report.blocked_gates,
-                "attempts": attempt_values,
-                "totals": {
-                    "context": {
-                        "rendered_bytes": rendered_bytes,
-                        "estimated_tokens": estimated_tokens,
-                    },
-                    "usage": usage,
-                    "spent_tokens": kernel.spent(),
-                },
-                "findings": findings,
-                "outcome": verdict_value(&verdict),
-            }))
-            .map_err(|error| error.to_string())?
+            serde_json::to_string(&outcome_value).map_err(|error| error.to_string())?
         );
     } else {
         run_progress(options, format_args!("verdict  {verdict:?}"));
@@ -1352,7 +2349,74 @@ fn exit_for_verdict(verdict: RunVerdict) {
 mod option_tests {
     use std::ffi::OsStr;
 
-    use super::{Options, resolve_codex_home, validate_campaign_name};
+    use super::{Options, latest_round_evidence, resolve_codex_home, validate_campaign_name};
+
+    fn event(
+        sequence: u64,
+        event_type: review_core::EventType,
+        causation_id: Option<&str>,
+        node_id: Option<&str>,
+        attempt_id: Option<&str>,
+        payload: serde_json::Value,
+    ) -> review_core::RunEvent {
+        review_core::RunEvent {
+            event_id: format!("event-{sequence}"),
+            run_id: "campaign-partial".into(),
+            sequence,
+            event_type,
+            occurred_at: "2026-08-28T00:00:00Z".into(),
+            node_id: node_id.map(str::to_string),
+            attempt_id: attempt_id.map(str::to_string),
+            causation_id: causation_id.map(str::to_string),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload,
+        }
+    }
+
+    fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
+        let pipeline = format!(
+            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
+        );
+        let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
+        let opaque = cas.put(b"pinned authority").unwrap();
+        let findings = cas.put(b"finding genesis").unwrap();
+        let demands = cas.put(b"demand genesis").unwrap();
+        let manifest = review_core::CampaignManifestV1 {
+            authority_snapshot_id: opaque.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: ".af/pipelines/review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: ".af/review.lock".into(),
+                artifact_id: opaque,
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: Vec::new(),
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: None,
+            git_timeout_seconds: None,
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: findings.clone(),
+            demand_genesis_id: demands.clone(),
+        };
+        manifest.validate().unwrap();
+        let manifest_id = cas
+            .put_json(&serde_json::to_value(manifest).unwrap())
+            .unwrap();
+        (manifest_id, findings, demands)
+    }
 
     #[test]
     fn codex_runner_uses_the_ambient_auth_context() {
@@ -1400,5 +2464,125 @@ mod option_tests {
         };
         let error = options.resolved_state_dir().unwrap_err();
         assert!(error.contains("state must live under XDG state"));
+    }
+
+    #[test]
+    fn admitted_result_is_visible_without_becoming_a_ledger() {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = review_store::Cas::open(temp.path()).unwrap();
+        let (manifest_id, findings_id, demands_id) = campaign_manifest(&cas, "reduce");
+        let result_id = cas
+            .put_json(&serde_json::json!({
+                "verdict": "request-changes",
+                "summary": null,
+                "reports": [{
+                    "severity": "major",
+                    "file": "src/lib.rs",
+                    "line": 9,
+                    "title": "partial finding",
+                    "body": "the sibling reviewer failed before gather",
+                    "fix": "repair it",
+                    "confidence": 0.9
+                }],
+                "benchmark_demands": [],
+                "dispositions": []
+            }))
+            .unwrap();
+        let events = vec![
+            event(
+                0,
+                review_core::EventType::RoundStartedV1,
+                None,
+                None,
+                None,
+                serde_json::to_value(review_core::RoundStartedPayloadV1 {
+                    round: 1,
+                    epoch: 1,
+                    campaign_manifest_id: manifest_id,
+                    subject_id: findings_id.clone(),
+                    prior_finding_set_id: findings_id,
+                    prior_demand_set_id: demands_id,
+                })
+                .unwrap(),
+            ),
+            event(
+                1,
+                review_core::EventType::AttemptAdmittedV1,
+                Some("event-0"),
+                Some("correctness"),
+                Some("attempt-1"),
+                serde_json::json!({
+                    "selection": "selected",
+                    "cost_tokens": 37,
+                    "result_artifact": result_id,
+                    "provenance_artifact": null
+                }),
+            ),
+            event(
+                2,
+                review_core::EventType::RunReportV3,
+                Some("event-0"),
+                None,
+                None,
+                serde_json::to_value(review_core::RunReportPayloadV3 {
+                    outcomes: vec![review_core::RunNodeReportV2 {
+                        node: "reduce".into(),
+                        outcome: review_core::RunNodeOutcomeV2::Suppressed {
+                            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
+                        },
+                    }],
+                    blocked_gates: Vec::new(),
+                    verdict: review_core::RunVerdictV3::Incomplete {
+                        missing_nodes: Vec::new(),
+                    },
+                    spent_tokens: Some(37),
+                })
+                .unwrap(),
+            ),
+        ];
+        let evidence = latest_round_evidence(&events, &cas).unwrap().unwrap();
+        assert_eq!(evidence.ledger_production, "not_produced_upstream_missing");
+        assert_eq!(evidence.available_node_results.len(), 1);
+        let result = &evidence.available_node_results[0];
+        assert_eq!(result.node, "correctness");
+        assert_eq!(result.attempt_id, "attempt-1");
+        assert_eq!(result.spend_tokens, 37);
+        assert_eq!(result.severities, ["major"]);
+        assert_eq!(result.findings[0]["title"], "partial finding");
+
+        let mut gathered = events.clone();
+        gathered.insert(
+            2,
+            event(
+                2,
+                review_core::EventType::NodeOutputReceiptV1,
+                Some("event-0"),
+                Some("reduce"),
+                None,
+                serde_json::json!({"node": "reduce", "outputs": []}),
+            ),
+        );
+        let evidence = latest_round_evidence(&gathered, &cas).unwrap().unwrap();
+        assert_eq!(evidence.ledger_production, "produced_with_findings");
+        assert!(evidence.available_node_results.is_empty());
+
+        let mut failed = events;
+        failed.last_mut().unwrap().payload =
+            serde_json::to_value(review_core::RunReportPayloadV3 {
+                outcomes: vec![review_core::RunNodeReportV2 {
+                    node: "reduce".into(),
+                    outcome: review_core::RunNodeOutcomeV2::Failed {
+                        error: "invalid Ledger output".into(),
+                    },
+                }],
+                blocked_gates: Vec::new(),
+                verdict: review_core::RunVerdictV3::Incomplete {
+                    missing_nodes: Vec::new(),
+                },
+                spent_tokens: Some(37),
+            })
+            .unwrap();
+        let evidence = latest_round_evidence(&failed, &cas).unwrap().unwrap();
+        assert_eq!(evidence.ledger_production, "not_produced_failed");
     }
 }

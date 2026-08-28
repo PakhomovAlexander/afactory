@@ -256,6 +256,18 @@ fn validate_generation_output_contracts(
         for port in node.outputs.iter().map(PortContractSpec::build) {
             match port.artifact_type.as_str() {
                 review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
+                review_core::contract::FINDING_SET_V1 => {
+                    if port.cardinality != review_core::PortCardinality::One
+                        || !port.optional
+                        || port.snapshot_affinity != review_core::SnapshotAffinity::Any
+                    {
+                        return Err(ConfigError::Binding(format!(
+                            "generation node `{}` exact FindingSet@1 output `{}` must be optional, singular, and snapshot-affinity `any`",
+                            node.id, port.name
+                        )));
+                    }
+                    prior_findings += 1;
+                }
                 review_core::contract::CHANGE_SET_V1 => {
                     if subject != review_core::SubjectKind::Diff {
                         return Err(ConfigError::Binding(format!(
@@ -269,10 +281,11 @@ fn validate_generation_output_contracts(
                 }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
-                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}` or `{}`",
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}`, `{}`, or `{}`",
                         node.id,
                         port.name,
                         review_core::contract::PRIOR_FINDINGS_V1,
+                        review_core::contract::FINDING_SET_V1,
                         review_core::contract::CHANGE_SET_V1,
                     )));
                 }
@@ -280,9 +293,10 @@ fn validate_generation_output_contracts(
         }
         if prior_findings == 0 {
             return Err(ConfigError::Binding(format!(
-                "generation node `{}` must emit at least one explicit `{}` output",
+                "generation node `{}` must emit an explicit `{}` compatibility view or exact `{}` output",
                 node.id,
                 review_core::contract::PRIOR_FINDINGS_V1,
+                review_core::contract::FINDING_SET_V1,
             )));
         }
     }
@@ -291,6 +305,68 @@ fn validate_generation_output_contracts(
             "a `diff` pipeline must declare exactly one generation `{}` output",
             review_core::contract::CHANGE_SET_V1,
         )));
+    }
+    Ok(())
+}
+
+fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result<(), ConfigError> {
+    let finding_set_outputs: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Generation)
+        .flat_map(|node| {
+            node.outputs
+                .iter()
+                .map(PortContractSpec::build)
+                .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+                .map(move |port| (node, port))
+        })
+        .collect();
+    for reviewer in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+    {
+        let uses_v2 = reviewer
+            .outputs
+            .iter()
+            .map(PortContractSpec::build)
+            .any(|port| port.artifact_type == review_core::contract::REVIEWER_RESULT_V2);
+        if !uses_v2 {
+            continue;
+        }
+        let inputs: Vec<_> = reviewer
+            .inputs
+            .iter()
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+            .collect();
+        let [input] = inputs.as_slice() else {
+            return Err(ConfigError::Binding(format!(
+                "ReviewerResult@2 reviewer `{}` must declare exactly one FindingSet@1 input",
+                reviewer.id
+            )));
+        };
+        if input.cardinality != review_core::PortCardinality::One
+            || !input.optional
+            || input.snapshot_affinity != review_core::SnapshotAffinity::Any
+        {
+            return Err(ConfigError::Binding(format!(
+                "ReviewerResult@2 reviewer `{}` FindingSet@1 input must be optional, singular, and snapshot-affinity `any`",
+                reviewer.id
+            )));
+        }
+        if !finding_set_outputs.iter().any(|(generation, output)| {
+            edges.iter().any(|edge| {
+                edge.from.node == generation.id
+                    && edge.from.port == output.name
+                    && edge.to.node == reviewer.id
+                    && edge.to.port == input.name
+            })
+        }) {
+            return Err(ConfigError::Binding(format!(
+                "ReviewerResult@2 reviewer `{}` must receive generation's exact FindingSet@1",
+                reviewer.id
+            )));
+        }
     }
     Ok(())
 }
@@ -518,6 +594,16 @@ impl Loaded {
             .any(|edge| edge.to.name == port)
     }
 
+    pub fn node_kind_has_output_type(&self, kind: NodeKind, artifact_type: &str) -> bool {
+        self.plan.nodes.values().any(|node| {
+            node.kind == kind
+                && node
+                    .outputs
+                    .iter()
+                    .any(|output| output.artifact_type == artifact_type)
+        })
+    }
+
     /// Exact upstream node ids for every input port, captured from the validated graph.
     pub fn input_sources(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
         let mut sources: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
@@ -619,6 +705,7 @@ impl Definition {
             (version, _) => return Err(ConfigError::UnknownVersion(version)),
         };
         validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
+        validate_disposition_wiring(&self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }

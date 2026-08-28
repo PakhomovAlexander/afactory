@@ -24,7 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use review_core::{Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
+use review_core::{
+    Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES,
+    ReviewerResultContract,
+};
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
@@ -45,6 +48,29 @@ these fields and no others - an extra field is discarded, a missing one fails th
 Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
 from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
 path component. An empty `file` means the claim is change-wide.";
+
+/// Additive result contract for reviewers assigned an exact `FindingSet@1`.
+pub const RESULT_CONTRACT_V2: &str = "\n\n## Output contract\n\n\
+Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
+after, no markdown fence. Shape:\n\
+{\"verdict\":\"approve\"|\"request-changes\"|\"block\",\"summary\":string|null,\
+\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
+\"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
+\"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
+\"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}]}\n\
+Return exactly one disposition for every assigned prior Finding and no others. Omission is \
+incomplete work, not evidence that a Finding disappeared. An empty findings list is valid. Every \
+finding needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
+a missing one fails the answer. Every non-empty `file` must be a canonical repository-relative \
+path: use its exact spelling from the Change Set, without an absolute prefix, leading `./`, `.` or \
+`..` component, or empty path component. An empty `file` means the claim is change-wide.";
+
+pub const fn result_contract(contract: ReviewerResultContract) -> &'static str {
+    match contract {
+        ReviewerResultContract::V1 => RESULT_CONTRACT,
+        ReviewerResultContract::V2 => RESULT_CONTRACT_V2,
+    }
+}
 
 /// Models fence JSON despite instructions often enough that refusing to look inside the fence
 /// would manufacture failures. Anything beyond a fence is still malformed.
@@ -110,13 +136,38 @@ pub fn extract_result(text: &str) -> &str {
 /// missing or malformed *required* fields still fail, because inventing content is where
 /// tolerance would become fabrication.
 pub fn parse_stage_output(text: &str) -> Result<LegacyStageOutput, String> {
+    parse_stage_output_for(ReviewerResultContract::V1, text)
+}
+
+pub fn parse_stage_output_for(
+    contract: ReviewerResultContract,
+    text: &str,
+) -> Result<LegacyStageOutput, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(extract_result(text)).map_err(|e| e.to_string())?;
-    normalize(&mut value);
+    normalize(&mut value, contract);
+    if contract == ReviewerResultContract::V2 {
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "ReviewerResult@2 is not an object".to_string())?;
+        let mut dispositions = object
+            .remove("dispositions")
+            .ok_or_else(|| "ReviewerResult@2 has no dispositions array".to_string())?;
+        if let Some(dispositions) = dispositions.as_array_mut() {
+            for disposition in dispositions {
+                if let Some(disposition) = disposition.as_object_mut()
+                    && let Some(finding_id) = disposition.remove("finding_id")
+                {
+                    disposition.insert("fp".into(), finding_id);
+                }
+            }
+        }
+        object.insert("disputes".into(), dispositions);
+    }
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
-fn normalize(value: &mut serde_json::Value) {
+fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
     fn keep(value: &mut serde_json::Value, fields: &[&str]) {
         if let Some(object) = value.as_object_mut() {
             object.retain(|key, _| fields.contains(&key.as_str()));
@@ -129,6 +180,10 @@ fn normalize(value: &mut serde_json::Value) {
             }
         }
     }
+    let final_field = match contract {
+        ReviewerResultContract::V1 => "disputes",
+        ReviewerResultContract::V2 => "dispositions",
+    };
     keep(
         value,
         &[
@@ -136,7 +191,7 @@ fn normalize(value: &mut serde_json::Value) {
             "summary",
             "findings",
             "benchmark_demands",
-            "disputes",
+            final_field,
         ],
     );
     keep_each(
@@ -150,6 +205,8 @@ fn normalize(value: &mut serde_json::Value) {
             "body",
             "fix",
             "confidence",
+            "rule_id",
+            "occurrence_key",
         ],
     );
     keep_each(
@@ -157,7 +214,14 @@ fn normalize(value: &mut serde_json::Value) {
         "benchmark_demands",
         &["claim", "why", "suggested_method"],
     );
-    keep_each(value, "disputes", &["claim_id", "position", "reason"]);
+    match contract {
+        ReviewerResultContract::V1 => {
+            keep_each(value, "disputes", &["claim_id", "position", "reason"])
+        }
+        ReviewerResultContract::V2 => {
+            keep_each(value, "dispositions", &["finding_id", "position", "reason"])
+        }
+    }
 }
 
 #[cfg(test)]
@@ -381,6 +445,10 @@ pub struct ReceiptedReviewerReturn {
 pub struct ReviewerInputs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_context: Option<ReviewerAttemptContext>,
+    /// The node's declared durable result contract. V1 is omitted to preserve legacy command
+    /// input bytes; V2 is explicit so every adapter renders and parses the same contract.
+    #[serde(skip_serializing_if = "reviewer_result_v1")]
+    pub result_contract: ReviewerResultContract,
     /// The campaign's findings from earlier rounds, as one JSON document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prior_findings: Option<serde_json::Value>,
@@ -399,6 +467,10 @@ pub struct ReviewerInputs {
     /// Every other resolved reviewer input, labelled by the exact graph port name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub artifacts: BTreeMap<String, Vec<ReviewerInputArtifact>>,
+}
+
+fn reviewer_result_v1(contract: &ReviewerResultContract) -> bool {
+    *contract == ReviewerResultContract::V1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,23 +630,70 @@ impl ReviewerInputs {
             ));
         }
         if let Some(prior) = &self.prior_findings {
-            let persistence_guidance = match self.finding_identity_policy.as_deref() {
-                Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY) => {
+            let persistence_guidance = match (
+                self.result_contract,
+                self.finding_identity_policy.as_deref(),
+            ) {
+                (
+                    ReviewerResultContract::V2,
+                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
+                ) => {
+                    "Every Finding in this exact Set is assigned to you. Return exactly one \
+                     `dispositions` entry for each `finding_id`: `corroborate` when the defect \
+                     persists, `not_reproduced` when the current Subject no longer exhibits it, \
+                     or `dispute` when the claim is wrong. Every disposition needs a concrete \
+                     reason. Do not use omission as a disposition, and do not emit a second flat \
+                     report for a Finding you have dispositioned."
+                }
+                (
+                    ReviewerResultContract::V1,
+                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
+                ) => {
                     "A prior claim that still exists: confirm it in `disputes` with `claim_id` \
                      set to the finding's key; do not emit a second flat report for the same claim."
                 }
-                None | Some(review_core::LEGACY_FINDING_IDENTITY_POLICY) => {
+                (
+                    ReviewerResultContract::V1,
+                    None | Some(review_core::LEGACY_FINDING_IDENTITY_POLICY),
+                ) => {
                     "A prior claim that still exists: re-report it with the same title and the \
                      same canonical current location so the legacy identity policy can attach it."
                 }
-                Some(policy) => {
+                (_, Some(policy)) => {
                     return Err(format!(
                         "cannot render prior-finding guidance for unknown identity policy `{policy}`"
                     ));
                 }
+                (ReviewerResultContract::V2, None) => {
+                    return Err(
+                        "ReviewerResult@2 requires canonical Finding identity authority".into(),
+                    );
+                }
             };
             let rendered =
                 serde_json::to_string_pretty(prior).map_err(|error| error.to_string())?;
+            let absence_guidance = match self.result_contract {
+                ReviewerResultContract::V1 => {
+                    "A claim you believe is wrong: dispute it with `claim_id` set to the \
+                     finding's key, position set to `refute`, and a concrete reason. A finding \
+                     the current code no longer exhibits: do not re-report it."
+                }
+                ReviewerResultContract::V2 => {
+                    "A finding the current code no longer exhibits still requires a \
+                     `not_reproduced` disposition."
+                }
+            };
+            let location_guidance = match self.result_contract {
+                ReviewerResultContract::V1 => {
+                    "re-locate a surviving claim with a canonical current repository-relative \
+                     `file`, or use an empty `file` only when it is truly change-wide, instead \
+                     of confirming it only in `disputes`"
+                }
+                ReviewerResultContract::V2 => {
+                    "use its `corroborate` disposition and explain any current location in the \
+                     reason; do not emit a duplicate flat report for that Finding"
+                }
+            };
             if rendered.len() > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
                     "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
@@ -588,17 +707,12 @@ impl ReviewerInputs {
                  each one against the current snapshot. {persistence_guidance} The prior claim is \
                  change-wide when the row's \
                  `file` is null and `location_unrecorded` is absent or false. When \
-                 `location_unrecorded` is true, its prior location is unknown: re-locate a \
-                 surviving claim with a canonical current repository-relative `file`, or use an \
-                 empty `file` only when it is truly change-wide, instead of confirming it only \
-                 in `disputes`. A genuinely new defect uses a canonical current \
+                 `location_unrecorded` is true, its prior location is unknown: {location_guidance}. \
+                 A genuinely new defect uses a canonical current \
                  repository-relative `file`; use an empty `file` to report it change-wide. \
-                 A claim you believe is wrong: dispute it with \
-                 claim_id set to the finding's key, position set to `refute`, and a concrete \
-                 reason. `scope` defaults to `in`; `effective_severity` defaults to `severity`, \
+                 {absence_guidance} `scope` defaults to `in`; `effective_severity` defaults to `severity`, \
                  while a null effective severity means the finding is recorded and triageable \
-                 but does not block this Subject. A finding the current code no longer \
-                 exhibits: do not re-report it.\n\n```json\n{rendered}\n```"
+                 but does not block this Subject.\n\n```json\n{rendered}\n```"
             ));
         }
         let change_sets: Vec<_> = self
@@ -759,7 +873,7 @@ fn invoke_command(
     let (output, raw_artifact) = if encoded == b"{}" {
         runner.invoke_raw(command)?
     } else {
-        runner.invoke_raw_with_input(command, encoded)?
+        runner.invoke_raw_with_input_for(command, encoded, inputs.result_contract)?
     };
     Ok(ReviewerReturn {
         output,
