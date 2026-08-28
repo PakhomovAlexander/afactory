@@ -537,6 +537,11 @@ Feeds `af review report` (M1.4).
 
 ### M5.3 — Campaign enumeration
 
+**Status: complete (2026-08-28).** `af review campaigns` projects opaque ID, validated label,
+pinned Subject/authority, last closed Round/verdict, and complete closed-Round history as explicit
+text or versioned JSON. Invalid entries are reported without hiding healthy Campaigns. ADR-0035
+records contained opaque state IDs and the permanent authenticated legacy reader.
+
 No way to list campaigns or view a round-by-round history; state sits in `.review/runs/` with no
 CLI over it.
 

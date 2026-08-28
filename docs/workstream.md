@@ -3,9 +3,9 @@
 **Status:** M0–M4, private releases through `v0.4.0`, minimal product v1/v2, and their first
 candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
 exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
-open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M5.1/M5.2 now
-provide deliberate JSON/text reports and exact Round/reviewer spend; resume at M5.3 Campaign
-enumeration. The accepted V3.1
+open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M5 now provides
+deliberate JSON/text reports, exact Round/reviewer spend, and safe Campaign enumeration/history;
+fresh pinned verification returned Pass. Resume at M6.1 Gate Execution Bindings. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
@@ -155,10 +155,11 @@ and verification prerequisites exist.
   - [x] Fix the three exhausted-Campaign follow-up Findings and pass the full local gate.
   - [x] Record their exact Campaign-ledger dispositions; six Findings are fixed, zero open.
   - [x] Integrate PR #19 and verify exact `main`.
-- [ ] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
+- [x] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
       Round history are enumerable.
   - [x] M5.1/M5.2 deliberate report formats and Round/reviewer spend query.
-  - [ ] M5.3 safe Campaign enumeration and history.
+  - [x] M5.3 safe Campaign enumeration and history; exhausted review has seven fixed Findings and
+        zero open, and fresh final verification returned Pass.
 - [ ] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
       sandbox-local Cache Snapshots; safe Attempts receive revocable Broker Handles rather than
       reusable credentials.
@@ -323,9 +324,12 @@ implementation at `cea50aa`; exact-main CI passed. Verification Campaign
 preserve per-Finding Resolution authority across Grouping, pin reviewer Demand classification,
 and require explicit Evidence reuse admission; the full local gate passes. All six Campaign
 Findings are fixed with zero open. Follow-up PR #19 merged at exact `main` `01147ce`, and
-post-merge CI passed. M5.1/M5.2 add one versioned operator projection for Markdown, text, and JSON,
-including first-terminal Attempt accounting and per-Round/per-reviewer spend. Resume at M5.3 safe
-Campaign enumeration and history.
+post-merge CI passed. M5 adds versioned Markdown/text/JSON reports, first-terminal Attempt
+accounting, per-Round/per-reviewer spend, opaque contained Campaign state IDs, and deterministic
+Campaign history with isolated per-entry problems. Exhausted Campaign
+`m5-campaign-enumeration-v1` has seven fixed Findings and zero open; fresh Campaign
+`m5-campaign-enumeration-final-v1` returned Pass, and its four follow-up Minors are fixed. Resume at
+M6.1 Gate Execution Bindings.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

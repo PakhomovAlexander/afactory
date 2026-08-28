@@ -124,7 +124,13 @@ fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String
     let encoded = root.join(campaign_id(campaign));
     let legacy = root.join(campaign);
     let encoded_exists = encoded.exists();
-    let legacy_belongs_to_campaign = legacy_campaign_state_matches(&legacy, campaign)?;
+    let legacy_belongs_to_campaign =
+        legacy_campaign_state_matches(&legacy, campaign).map_err(|error| {
+            format!(
+                "legacy Campaign state {} blocks resolution of {campaign:?}: {error}",
+                legacy.display()
+            )
+        })?;
     if encoded_exists && legacy_belongs_to_campaign {
         return Err(format!(
             "campaign {campaign:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
@@ -197,10 +203,20 @@ fn campaign_run_ids(state: &Path) -> Result<Vec<String>, String> {
     if !database.is_file() {
         return Ok(Vec::new());
     }
-    EventStore::open_read_only(database)
-        .map_err(|error| error.to_string())?
+    EventStore::open_read_only(&database)
+        .map_err(|error| {
+            format!(
+                "reading Campaign event store {}: {error}",
+                database.display()
+            )
+        })?
         .run_ids()
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            format!(
+                "reading Campaign event store {}: {error}",
+                database.display()
+            )
+        })
         .map(|run_ids| {
             run_ids
                 .into_iter()
@@ -1386,13 +1402,11 @@ fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
             }
         };
         if metadata.file_type().is_symlink() {
-            if is_campaign_id(&directory_lossy) {
-                problems.push(CampaignProblemView {
-                    directory: directory_lossy,
-                    reason: "Campaign state entry is a symlink; enumeration does not follow it"
-                        .to_string(),
-                });
-            }
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: "state-root entry is a symlink; Campaign enumeration does not follow it"
+                    .to_string(),
+            });
             continue;
         }
         if !metadata.is_dir() {
@@ -1504,6 +1518,32 @@ fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
                 ),
             });
             continue;
+        }
+        if directory == label && root.join(&id).exists() {
+            return Err(format!(
+                "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                root.display()
+            ));
+        }
+        if directory == id {
+            match legacy_campaign_state_matches(&root.join(&label), &label) {
+                Ok(true) => {
+                    return Err(format!(
+                        "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                        root.display()
+                    ));
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    problems.push(CampaignProblemView {
+                        directory,
+                        reason: format!(
+                            "legacy sibling state for campaign {label:?} blocks direct resolution: {reason}"
+                        ),
+                    });
+                    continue;
+                }
+            }
         }
         let campaign = match read_campaign_view(&state, run_id, label.clone(), id.clone(), &store) {
             Ok(campaign) => campaign,
@@ -3694,6 +3734,10 @@ mod option_tests {
                 .unwrap_err()
                 .contains("both encoded and legacy")
         );
+        let Err(error) = enumerate_campaigns(&root) else {
+            panic!("ambiguous Campaign state was enumerated");
+        };
+        assert!(error.contains("both encoded and legacy"));
         assert!(
             campaign_state_beneath(&root, &id)
                 .unwrap_err()
@@ -3746,13 +3790,38 @@ mod option_tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(&outside).unwrap();
         write_campaign_opening(&root.join("good"), "good");
-        std::os::unix::fs::symlink(&outside, root.join(campaign_id("linked"))).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
 
         let enumeration = enumerate_campaigns(&root).unwrap();
         assert_eq!(enumeration.campaigns.len(), 1);
         assert_eq!(enumeration.campaigns[0].label, "good");
         assert_eq!(enumeration.problems.len(), 1);
         assert!(enumeration.problems[0].reason.contains("symlink"));
+    }
+
+    #[test]
+    fn unreadable_legacy_sibling_is_attributed_and_blocks_a_false_healthy_listing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        std::fs::create_dir(&root).unwrap();
+        let encoded = root.join(campaign_id("healthy"));
+        write_campaign_opening(&encoded, "healthy");
+        let legacy = root.join("healthy");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("events.sqlite"), b"not sqlite").unwrap();
+
+        let error = campaign_state_beneath(&root, "healthy").unwrap_err();
+        assert!(error.contains("legacy Campaign state"), "{error}");
+        assert!(error.contains("events.sqlite"), "{error}");
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert!(
+            enumeration
+                .problems
+                .iter()
+                .any(|problem| problem.reason.contains("legacy sibling state"))
+        );
     }
 
     #[cfg(unix)]

@@ -1,5 +1,22 @@
 # Review Kernel workstream log
 
+## 2026-08-28 — M5.3 Campaign enumeration
+
+`af review campaigns` now renders deterministic text or `af/review-campaigns@1` JSON containing
+each Campaign's opaque ID, validated human label, pinned Subject/authority summary, last closed
+Round/verdict, and full closed-Round history. ADR-0035 separates the human-label and filesystem-ID
+namespaces, verifies legacy state ownership, proves root containment, and keeps existing labels
+readable without changing persisted kernel contracts. Enumeration opens existing SQLite/CAS state
+without creating storage, refuses symlinked durable state, and isolates malformed entries in an
+explicit `problems` projection so healthy Campaigns remain visible.
+
+Pinned Campaign `m5-campaign-enumeration-v1` spent 145,666 tokens in Round 1 and 121,475 in Round 2,
+then exhausted with seven Findings; all seven are fixed and its ledger has zero open. Fresh pinned
+Campaign `m5-campaign-enumeration-final-v1` spent 191,407 tokens and returned Pass. Its four
+follow-up Minors are also fixed: legacy-label symlinks are reported, ambiguity presentation matches
+direct command refusal, stale legacy-state errors name their path and role, and the live roadmap now
+resumes at M6.1. Focused regressions and the full `make check` gate pass.
+
 ## 2026-08-28 — M5.1/M5.2 operator reports and spend
 
 `af review report` now renders one versioned operator projection as Markdown, explicit text, or
