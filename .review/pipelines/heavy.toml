@@ -48,6 +48,7 @@ outputs = [
 [[nodes]]
 id = "correctness"
 kind = "reviewer"
+demands = "required"
 inputs = [
   { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },

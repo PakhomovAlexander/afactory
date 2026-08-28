@@ -122,6 +122,7 @@ pub struct Ingest<'a> {
 /// One selected flat reviewer result plus the exact authority needed by the typed-report bridge.
 pub struct CanonicalStage<'a> {
     pub source: &'a str,
+    pub demand_requirement: review_core::DemandRequirement,
     pub stage: &'a LegacyStageOutput,
     pub attempt_id: &'a str,
     pub result_artifact_id: &'a str,
@@ -159,6 +160,7 @@ struct ReportProvenance {
 
 struct PreparedStage {
     source: String,
+    demand_requirement: review_core::DemandRequirement,
     reports: Vec<FindingReport>,
     demands: Vec<LegacyBenchmarkDemand>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
@@ -330,6 +332,7 @@ impl<'a> Ingest<'a> {
             }
             prepared.push(PreparedStage {
                 source: (*source).to_string(),
+                demand_requirement: review_core::DemandRequirement::Required,
                 reports,
                 demands: stage.benchmark_demands.clone(),
                 disputes: stage.disputes.clone(),
@@ -379,6 +382,7 @@ impl<'a> Ingest<'a> {
             input_artifacts.retain(|id| seen.insert(id.clone()));
             prepared.push(PreparedStage {
                 source: stage.source.to_string(),
+                demand_requirement: stage.demand_requirement,
                 reports,
                 demands: stage.stage.benchmark_demands.clone(),
                 disputes: stage.stage.disputes.clone(),
@@ -447,7 +451,7 @@ impl<'a> Ingest<'a> {
                         why: demand.why.clone(),
                         suggested_method: demand.suggested_method.clone(),
                         source: source.to_string(),
-                        requirement: review_core::DemandRequirement::Required,
+                        requirement: stage.demand_requirement,
                         round,
                         subject_id: provenance.subject_id.clone(),
                     };
@@ -1007,6 +1011,46 @@ impl<'a> Ingest<'a> {
             EventType::EvidenceSatisfiedV1,
             demand_id,
             vec![evidence.record_id.clone()],
+            serde_json::to_value(payload)?,
+        )
+    }
+
+    pub fn admit_evidence_reuse(
+        &mut self,
+        demand_id: &str,
+        satisfaction_id: &str,
+        actor: &str,
+        policy_revision: &str,
+        reason: &str,
+    ) -> Result<String, StoreError> {
+        let demand = self.ledger.demand(demand_id).ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "cannot admit reuse for unknown Demand `{demand_id}`"
+            ))
+        })?;
+        let satisfaction = demand
+            .satisfactions
+            .iter()
+            .find(|satisfaction| satisfaction.artifact_id == satisfaction_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "Satisfaction `{satisfaction_id}` is not linked to Demand `{demand_id}`"
+                ))
+            })?;
+        let payload = review_core::EvidenceReuseAdmissionV1 {
+            demand_id: demand_id.to_string(),
+            satisfaction_id: satisfaction_id.to_string(),
+            subject_id: satisfaction.satisfaction.subject_id.clone(),
+            actor: actor.to_string(),
+            policy_revision: policy_revision.to_string(),
+            reason: reason.to_string(),
+        };
+        payload.validate().map_err(StoreError::Conflict)?;
+        self.publish_operator_artifact(
+            review_core::contract::EVIDENCE_REUSE_ADMISSION_V1,
+            EventType::EvidenceReuseAdmittedV1,
+            demand_id,
+            vec![satisfaction.record_id.clone()],
             serde_json::to_value(payload)?,
         )
     }

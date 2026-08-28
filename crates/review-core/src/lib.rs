@@ -38,7 +38,8 @@ pub use campaign::{
 pub use change_set::{ChangeSetV1, PathRenameV1};
 pub use demand::{
     DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
-    DemandV1, DemandWaiverV1, EvidenceSatisfactionV1, EvidenceV1, RecordedArtifactPayloadV1,
+    DemandV1, DemandWaiverV1, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
+    RecordedArtifactPayloadV1,
 };
 pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
@@ -98,6 +99,7 @@ pub mod contract {
     pub const DEMAND_SET_V1: &str = "review.kernel/DemandSet@1";
     pub const DEMAND_WAIVER_V1: &str = "review.kernel/DemandWaiver@1";
     pub const EVIDENCE_V1: &str = "review.kernel/Evidence@1";
+    pub const EVIDENCE_REUSE_ADMISSION_V1: &str = "review.kernel/EvidenceReuseAdmission@1";
     pub const EVIDENCE_SATISFACTION_V1: &str = "review.kernel/EvidenceSatisfaction@1";
     pub const CHANGE_ATTESTATION_V1: &str = "review.kernel/ChangeAttestation@1";
     pub const FIX_VERIFICATION_V1: &str = "review.kernel/FixVerification@1";

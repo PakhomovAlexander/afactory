@@ -154,6 +154,11 @@ impl From<NodeKindSpec> for NodeKind {
 pub struct NodeSpec {
     pub id: String,
     pub kind: NodeKindSpec,
+    /// Pipeline-owned classification for benchmark Demands emitted by this reviewer. `None`
+    /// permanently retains the pre-M4 required default for pinned authority created before the
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demands: Option<review_core::DemandRequirement>,
     #[serde(default)]
     pub inputs: Vec<PortContractSpec>,
     #[serde(default = "default_outputs")]
@@ -534,6 +539,7 @@ pub struct Loaded {
     checks: Vec<CheckDefinition>,
     check_timeout_seconds: u64,
     reviewers: BTreeMap<String, Command>,
+    demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
     packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
@@ -565,6 +571,10 @@ impl Loaded {
 
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
         &self.reviewers
+    }
+
+    pub fn demand_requirements(&self) -> &BTreeMap<String, review_core::DemandRequirement> {
+        &self.demand_requirements
     }
 
     pub fn packages(&self) -> &BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> {
@@ -737,10 +747,23 @@ impl Definition {
 
         let mut pipeline = Pipeline::default();
         let mut reviewers = BTreeMap::new();
+        let mut demand_requirements = BTreeMap::new();
         let mut packages = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
+            if spec.kind == NodeKindSpec::Reviewer {
+                demand_requirements.insert(
+                    spec.id.clone(),
+                    spec.demands
+                        .unwrap_or(review_core::DemandRequirement::Required),
+                );
+            } else if spec.demands.is_some() {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` is not a reviewer but classifies reviewer Demands",
+                    spec.id
+                )));
+            }
             let mut node = Node::new(&spec.id, spec.kind.into())
                 .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
                 .emitting_contracts(spec.outputs.iter().map(PortContractSpec::build).collect());
@@ -855,6 +878,7 @@ impl Definition {
             checks,
             check_timeout_seconds,
             reviewers,
+            demand_requirements,
             packages,
             budgets: self.budgets,
             convergence: ConvergencePolicy {

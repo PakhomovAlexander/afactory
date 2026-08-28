@@ -292,6 +292,8 @@ struct EvidenceSatisfyOptions {
     evidence_id: String,
     policy_revision: String,
     reason: String,
+    actor: Option<String>,
+    admit_reuse: bool,
 }
 
 struct DemandWaiveOptions {
@@ -321,7 +323,7 @@ fn usage() -> ! {
         \x20      af review group   --campaign NAME [--state DIR] FROM INTO\n\
         \x20      af review ungroup --campaign NAME [--state DIR] FROM INTO\n\
         \x20      af review evidence add --campaign NAME [--state DIR] DEMAND FILE [--actor ACTOR]\n\
-        \x20      af review evidence satisfy --campaign NAME [--state DIR] DEMAND EVIDENCE --policy REV --reason TEXT\n\
+        \x20      af review evidence satisfy --campaign NAME [--state DIR] DEMAND EVIDENCE --policy REV --reason TEXT [--admit-reuse] [--actor ACTOR]\n\
         \x20      af review demand waive --campaign NAME [--state DIR] DEMAND --policy REV --reason TEXT [--actor ACTOR]\n\
         \x20      af provider status\n\
         \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock] [--json]\n\
@@ -761,6 +763,8 @@ fn parse_evidence_satisfy(mut args: std::env::Args) -> EvidenceSatisfyOptions {
     let mut campaign = None;
     let mut policy_revision = None;
     let mut reason = None;
+    let mut actor = None;
+    let mut admit_reuse = false;
     let mut positional = Vec::new();
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
@@ -769,6 +773,8 @@ fn parse_evidence_satisfy(mut args: std::env::Args) -> EvidenceSatisfyOptions {
             "--campaign" => campaign = Some(value()),
             "--policy" => policy_revision = Some(value()),
             "--reason" => reason = Some(value()),
+            "--actor" => actor = Some(value()),
+            "--admit-reuse" if !admit_reuse => admit_reuse = true,
             other if !other.starts_with("--") => positional.push(other.to_string()),
             _ => usage(),
         }
@@ -785,6 +791,8 @@ fn parse_evidence_satisfy(mut args: std::env::Args) -> EvidenceSatisfyOptions {
         evidence_id: evidence_id.clone(),
         policy_revision,
         reason,
+        actor,
+        admit_reuse,
     }
 }
 
@@ -1595,10 +1603,30 @@ fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
             &options.reason,
         )
         .map_err(|error| error.to_string())?;
+    let reuse_actor = options
+        .admit_reuse
+        .then(|| operator_actor(options.actor.as_deref()))
+        .transpose()?;
+    let reuse_id = reuse_actor
+        .map(|actor| {
+            ingest
+                .admit_evidence_reuse(
+                    &options.demand_id,
+                    &satisfaction_id,
+                    &actor,
+                    &options.policy_revision,
+                    &options.reason,
+                )
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
     println!(
         "demand {} satisfied by {} under {} ({satisfaction_id})",
         options.demand_id, options.evidence_id, options.policy_revision
     );
+    if let Some(reuse_id) = reuse_id {
+        println!("future-Subject Evidence reuse admitted ({reuse_id})");
+    }
     Ok(())
 }
 

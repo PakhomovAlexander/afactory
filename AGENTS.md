@@ -11,8 +11,9 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1 and M3.2 are complete; M3.2's lightweight dogfood Findings are fixed and the full
-gate passes. V3.1 local delivery is
+verified. M3.1–M3.3 are complete. M4 implementation merged through PR #18; its exhausted
+verification Campaign has three major follow-up Findings whose fixes pass the full local gate and
+still require exact Campaign-ledger dispositions before M4 is done. V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist

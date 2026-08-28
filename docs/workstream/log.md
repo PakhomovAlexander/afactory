@@ -1162,3 +1162,15 @@ the durable dispatch reference, and the full gate passes with byte-identical fix
 four Campaign Findings are recorded fixed. A proposed Round 2 was refused before provider egress
 because the original disclosure approval did not cover the changed private payload, so it spent
 no tokens; a fresh explicit approval may run that optional clean confirmation later.
+
+## 2026-08-28 — M3.3/M4 verification follow-up
+
+PR #18 merged M3.3 and the M4 implementation at exact `main` commit `cea50aa`; exact-main CI
+passed. Campaign `m3-3-m4-verification-v1` spent 417,835 tokens in Round 1 and 396,818 in Round 2.
+The first three Findings were fixed in `4d1c211`; the exhausted second Round opened three major
+follow-ups. Their corrections preserve Resolution authority across later Grouping and tracked
+expiry, pin required/advisory Demand policy in the exact pipeline artifact, and introduce an
+explicit `EvidenceReuseAdmission@1` so reuse can clear a current Demand without mutating the
+frozen `EvidenceSatisfaction@1` contract. The full local gate passed: formatting, clippy with
+warnings denied, all workspace tests and doctests, and byte-identical synthetic fixture
+reproduction. Only the exact Campaign-ledger dispositions remain.

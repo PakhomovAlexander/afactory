@@ -333,6 +333,191 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
 }
 
 #[test]
+fn pipeline_policy_can_classify_reviewer_demands_as_advisory() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
+    let advisory = pipeline.replacen(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\ndemands = \"advisory\"\n",
+        1,
+    );
+    assert_ne!(advisory, pipeline);
+    std::fs::write(&pipeline_path, advisory).unwrap();
+    std::fs::write(repo.join("DEMAND"), b"advisory\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "classify advisory demand"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "demand-advisory", "--state", &state],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("demands  0 open/stale (required)"));
+}
+
+#[test]
+fn waiver_remains_current_when_the_subject_advances() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
+    std::fs::write(
+        &pipeline_path,
+        pipeline.replace("max_rounds = 3", "max_rounds = 2"),
+    )
+    .unwrap();
+    std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "request evidence"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "demand-waiver",
+            "--state",
+            &state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let demand_id = outcome["totals"]["open_or_stale_demand_ids"][0]
+        .as_str()
+        .unwrap();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "demand",
+            "waive",
+            "--campaign",
+            "demand-waiver",
+            "--state",
+            &state,
+            demand_id,
+            "--policy",
+            "waiver-policy@1",
+            "--reason",
+            "authenticated campaign exception",
+            "--actor",
+            "operator",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    std::fs::remove_file(repo.join("DEMAND")).unwrap();
+    std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "advance subject"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "demand-waiver", "--state", &state],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+}
+
+#[test]
+fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
+    std::fs::write(
+        &pipeline_path,
+        pipeline.replace("max_rounds = 3", "max_rounds = 2"),
+    )
+    .unwrap();
+    std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(
+        &repo,
+        &home,
+        &["commit", "-qm", "request reusable evidence"],
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "demand-reuse",
+            "--state",
+            &state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let demand_id = outcome["totals"]["open_or_stale_demand_ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let evidence_path = dir.path().join("measurement.txt");
+    std::fs::write(&evidence_path, b"bounded integration test passed\n").unwrap();
+    let evidence_path = evidence_path.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "evidence",
+            "add",
+            "--campaign",
+            "demand-reuse",
+            "--state",
+            &state,
+            &demand_id,
+            &evidence_path,
+            "--actor",
+            "operator",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let evidence_id = stdout.split_whitespace().nth(1).unwrap().to_string();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "evidence",
+            "satisfy",
+            "--campaign",
+            "demand-reuse",
+            "--state",
+            &state,
+            &demand_id,
+            &evidence_id,
+            "--policy",
+            "reuse-policy@1",
+            "--reason",
+            "measurement is independent of source bytes",
+            "--admit-reuse",
+            "--actor",
+            "operator",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("future-Subject Evidence reuse admitted"));
+
+    std::fs::remove_file(repo.join("DEMAND")).unwrap();
+    std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "advance subject"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "demand-reuse", "--state", &state],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+}
+
+#[test]
 fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());

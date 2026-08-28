@@ -404,12 +404,20 @@ preserves all Report claims and histories, and makes the combined Finding active
 claim is active. `ungroup` appends a compensating event and reconstructs the independent views.
 It never rewrites earlier events.
 
+This slice is complete. A Resolution remains authority for the exact Finding named in its
+immutable artifact even if that Finding is grouped later. Grouping refuses a group carrying a
+current `wontfix-tracked` Resolution until an explicit challenge removes that terminal authority.
+
 ---
 
 ## M4 · Evidence and trusted resolution
 
 Demands, Evidence, and fixed resolution are snapshot-sensitive, so they follow M2's Subject and
 Change Set rather than being retrofitted onto whole-tree legacy events.
+
+Implementation merged through PR #18. Its exhausted verification Campaign opened three major
+follow-up Findings; their corrections pass the full local gate and must be dispositioned before
+M4 is complete.
 
 ### M4.1 — Demands become durable obligations
 
@@ -418,6 +426,8 @@ deliberate: a demand can target a claim in a commit message or comment. Persist 
 demand as an immutable artifact and project campaign-level state (`open`, `satisfied`, `waived`)
 bound to the Subject snapshot. Pipeline policy, not reviewer prose, classifies a source's demands
 as required or advisory. Required open Demands block convergence and carry into later Rounds.
+Reviewer nodes declare `demands = "required" | "advisory"` in the exact pinned pipeline artifact;
+older pinned authority without that field retains a permanent Required default.
 Each demand barrier emits a deterministic `DemandSet@1` from the prior Set plus canonical selected
 Demand, Evidence Satisfaction, and waiver artifact IDs; downstream nodes consume that exact view.
 New canonical Campaign authority must declare that Ledger output before the Campaign is opened.
@@ -431,6 +441,10 @@ compatibility exception never permits an open required Demand to pass convergenc
 to the exact Demand and Subject snapshot. Trusted policy records satisfaction; the CLI cannot turn
 an unrelated file into success merely by storing it. A head-Snapshot change makes prior
 satisfaction stale unless policy explicitly admits reuse.
+
+`--admit-reuse` records a separate immutable `EvidenceReuseAdmission@1` rather than changing the
+frozen `EvidenceSatisfaction@1` contract. A Demand waiver is Campaign-scoped and remains explicit
+across head-Snapshot advancement.
 
 `af review demand waive <demand-id> --reason ...` is the authenticated escape hatch. Resolving a
 Finding, including as `wontfix`, never implicitly satisfies or waives a Demand. Finding resolution
@@ -467,6 +481,10 @@ severity, a Subject outside scope, or a persisted policy-time expiry emits an ex
 and moves the Finding to `contested`. Replay never consults the host clock: policy time is an
 artifact/event input. Decision recorded in
 [ADR-0014](adr/0014-non-fixed-resolutions-are-challengeable.md).
+
+Resolution authority remains attached to every member Finding it covered when admitted; later
+Grouping cannot orphan it or substitute a sibling's Resolution. A group carrying an unexpired
+tracked Resolution must be challenged before it can be combined with another group.
 
 ### M4.5 — Convergence consumes exact final views
 

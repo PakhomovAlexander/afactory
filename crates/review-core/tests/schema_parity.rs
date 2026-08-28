@@ -10,22 +10,23 @@ use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef,
     ClaimRefKind, DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1,
-    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceSatisfactionV1, EvidenceV1,
-    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
-    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
-    FixVerificationV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
-    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
-    ResolutionChallengeKind, ResolutionChallengeV1, ReviewerPackageV1, RunEvent,
-    RunFailureReasonV2, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
-    RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
-    SourceSnapshot, SubjectKind, SubjectV1,
+    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
+    EvidenceSatisfactionV1, EvidenceV1, FindingDispositionPosition, FindingDispositionV1,
+    FindingGroupingAction, FindingGroupingV1, FindingReport, FindingResolutionOutcome,
+    FindingResolutionV1, FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location,
+    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
+    PathRenameV1, PolicyTimeV1, PortArtifactsV1, PortCardinality, Producer,
+    ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ResolutionChallengeKind,
+    ResolutionChallengeV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 32] = [
+const SCHEMAS: [&str; 33] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -34,6 +35,7 @@ const SCHEMAS: [&str; 32] = [
     "demand-set-v1.json",
     "demand-v1.json",
     "demand-waiver-v1.json",
+    "evidence-reuse-admission-v1.json",
     "evidence-satisfaction-v1.json",
     "evidence-v1.json",
     "finding-disposition-v1.json",
@@ -277,6 +279,32 @@ fn demand_evidence_and_exact_set_roundtrip() {
     assert_valid(
         "evidence-satisfaction-v1.json",
         &serde_json::to_value(&satisfaction).unwrap(),
+    );
+    let reuse = EvidenceReuseAdmissionV1 {
+        demand_id: demand.demand_id.clone(),
+        satisfaction_id: digest('2'),
+        subject_id: demand.subject_id.clone(),
+        actor: "operator".into(),
+        policy_revision: "bench-policy@1".into(),
+        reason: "the measurement is independent of source bytes".into(),
+    };
+    reuse.validate().unwrap();
+    assert_valid(
+        "evidence-reuse-admission-v1.json",
+        &serde_json::to_value(&reuse).unwrap(),
+    );
+    let mut invalid_reuse = serde_json::to_value(&reuse).unwrap();
+    invalid_reuse["actor"] = json!("");
+    assert_invalid(
+        "evidence-reuse-admission-v1.json",
+        &invalid_reuse,
+        "reuse requires an authenticated actor",
+    );
+    assert!(
+        serde_json::from_value::<EvidenceReuseAdmissionV1>(invalid_reuse)
+            .unwrap()
+            .validate()
+            .is_err()
     );
     let waiver = DemandWaiverV1 {
         demand_id: demand.demand_id.clone(),
