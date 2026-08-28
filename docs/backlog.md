@@ -420,6 +420,10 @@ bound to the Subject snapshot. Pipeline policy, not reviewer prose, classifies a
 as required or advisory. Required open Demands block convergence and carry into later Rounds.
 Each demand barrier emits a deterministic `DemandSet@1` from the prior Set plus canonical selected
 Demand, Evidence Satisfaction, and waiver artifact IDs; downstream nodes consume that exact view.
+New canonical Campaign authority must declare that Ledger output before the Campaign is opened.
+A pre-M4 Campaign whose immutable pinned pipeline lacks the port remains resumable while it has no
+selected Demand; selecting one still fails closed at the Ledger and requires a new Campaign. This
+compatibility exception never permits an open required Demand to pass convergence.
 
 ### M4.2 — `af review evidence add` and explicit Demand waiver
 

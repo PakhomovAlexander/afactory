@@ -1,6 +1,7 @@
 use review_core::{
-    ChangeSetV1, EventType, FindingReport, Location, PathRenameV1, RoundStartedPayloadV1, RunEvent,
-    Severity, SubjectV1,
+    ChangeSetV1, EventType, FindingGroupingAction, FindingGroupingEventPayloadV1,
+    FindingGroupingV1, FindingReport, Location, PathRenameV1, Producer, RoundStartedPayloadV1,
+    RunEvent, Severity, SubjectV1,
 };
 use review_store::ledger::TransitionKind;
 use review_store::{
@@ -908,6 +909,69 @@ fn wholly_out_findings_do_not_block_or_extend_the_clean_window() {
     assert_eq!(result.open_blocking, 0);
     assert_eq!(result.new_recent, 0);
     assert_eq!(result.verdict, Verdict::Converged);
+}
+
+#[test]
+fn a_group_of_wholly_out_findings_keeps_known_out_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path()).unwrap();
+    let mut ledger = Ledger::default();
+    apply_diff_round(&mut ledger, &cas, 1, &["src/in.rs"]);
+    apply_report(
+        &mut ledger,
+        &cas,
+        "out-a",
+        1,
+        Severity::Major,
+        "src/out-a.rs",
+    );
+    apply_report(
+        &mut ledger,
+        &cas,
+        "out-b",
+        1,
+        Severity::Major,
+        "src/out-b.rs",
+    );
+    let grouping = FindingGroupingV1 {
+        from: "out-a".into(),
+        into: "out-b".into(),
+        action: FindingGroupingAction::Group,
+        round: 1,
+    };
+    let (grouping_id, _) = cas
+        .put_artifact(
+            review_core::contract::FINDING_GROUPING_V1,
+            Producer::KernelOperation {
+                run_id: "01jd8m4qz9k7v3n2p6r8t0w1ha".into(),
+                node_id: None,
+                operation_id: "group-wholly-out".into(),
+            },
+            Vec::new(),
+            None,
+            serde_json::to_value(grouping).unwrap(),
+        )
+        .unwrap();
+    ledger
+        .apply_event(
+            &event(
+                EventType::FindingsGroupedV1,
+                serde_json::to_value(FindingGroupingEventPayloadV1 {
+                    from: "out-a".into(),
+                    into: "out-b".into(),
+                    grouping_artifact_id: grouping_id.clone(),
+                })
+                .unwrap(),
+                vec![grouping_id],
+            ),
+            &cas,
+        )
+        .unwrap();
+
+    let views = ledger.finding_views();
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].convergence_scope, Some(ReportScope::Out));
+    assert_eq!(views[0].convergence_scope_label(), "out");
 }
 
 #[test]

@@ -162,7 +162,7 @@ impl FindingReport {
     }
 }
 
-fn valid_rule_id(rule: &str) -> bool {
+pub(crate) fn valid_rule_id(rule: &str) -> bool {
     let Some((namespace, rest)) = rule.split_once('/') else {
         return false;
     };

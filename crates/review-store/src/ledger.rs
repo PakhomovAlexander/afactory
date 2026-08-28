@@ -1654,9 +1654,11 @@ impl Ledger {
             .iter()
             .filter_map(|finding| finding.scoped_news_round)
             .max();
-        view.convergence_scope = members.iter().fold(None, |scope, finding| {
-            combine_scope(scope, finding.convergence_scope)
-        });
+        view.convergence_scope = members
+            .iter()
+            .map(|finding| finding.convergence_scope)
+            .reduce(combine_scope)
+            .flatten();
         view.convergence_severity = members
             .iter()
             .filter_map(|finding| finding.convergence_severity)

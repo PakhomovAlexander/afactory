@@ -1140,17 +1140,6 @@ impl<'a> Kernel<'a> {
         loaded: &review_config::Loaded,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        if authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-            && !loaded.node_kind_has_output_type(
-                review_graph::NodeKind::Ledger,
-                review_core::contract::DEMAND_SET_V1,
-            )
-        {
-            return Err(
-                "canonical Campaign Ledger node must declare a review.kernel/DemandSet@1 output"
-                    .into(),
-            );
-        }
         let mut kernel = Kernel::for_subject(
             cas,
             store,

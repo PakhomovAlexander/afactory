@@ -434,9 +434,6 @@ fn validate_manifest_authority(
     loaded: &review_config::Loaded,
     captured: &BTreeMap<String, (ReviewerPackageV1, BTreeMap<String, Vec<u8>>)>,
 ) -> Result<(), String> {
-    if manifest.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY {
-        require_demand_set_output(loaded, &manifest.pipeline.path)?;
-    }
     let convergence = loaded.convergence();
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds

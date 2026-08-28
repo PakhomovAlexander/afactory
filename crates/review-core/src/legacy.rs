@@ -124,6 +124,8 @@ pub enum ReviewerResultRejection {
     NoncanonicalReportPath,
     InvalidLine,
     ConfidenceOutOfRange,
+    InvalidRuleId,
+    EmptyOccurrenceKey,
     MalformedBenchmarkDemand,
     EmptyBenchmarkDemand,
     MalformedDispute,
@@ -149,6 +151,8 @@ impl ReviewerResultRejection {
             Self::NoncanonicalReportPath => "noncanonical_report_path",
             Self::InvalidLine => "invalid_line",
             Self::ConfidenceOutOfRange => "confidence_out_of_range",
+            Self::InvalidRuleId => "invalid_rule_id",
+            Self::EmptyOccurrenceKey => "empty_occurrence_key",
             Self::MalformedBenchmarkDemand => "malformed_benchmark_demand",
             Self::EmptyBenchmarkDemand => "empty_benchmark_demand",
             Self::MalformedDispute => "malformed_dispute",
@@ -221,6 +225,9 @@ pub fn validate_reviewer_result_classified(
             ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
             ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
             ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
+            ImportReason::InvalidRuleId => ReviewerResultRejection::InvalidRuleId,
+            ImportReason::EmptyOccurrenceKey => ReviewerResultRejection::EmptyOccurrenceKey,
+            ImportReason::ReportContract => ReviewerResultRejection::ReportPayload,
         })?;
     }
     for demand in value["benchmark_demands"]
@@ -342,6 +349,9 @@ fn validate_reports_and_demands(value: &serde_json::Value) -> Result<(), Reviewe
             ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
             ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
             ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
+            ImportReason::InvalidRuleId => ReviewerResultRejection::InvalidRuleId,
+            ImportReason::EmptyOccurrenceKey => ReviewerResultRejection::EmptyOccurrenceKey,
+            ImportReason::ReportContract => ReviewerResultRejection::ReportPayload,
         })?;
     }
     for demand in value["benchmark_demands"]
@@ -397,6 +407,10 @@ pub enum ImportReason {
     InvalidLine,
     /// Outside 0.0..=1.0.
     ConfidenceOutOfRange,
+    InvalidRuleId,
+    EmptyOccurrenceKey,
+    /// A future FindingReport invariant not represented by this compatibility shape.
+    ReportContract,
 }
 
 impl std::fmt::Display for LegacyImportError {
@@ -408,6 +422,9 @@ impl std::fmt::Display for LegacyImportError {
             ImportReason::InvalidPath => "file is not a canonical repository-relative path",
             ImportReason::InvalidLine => "line is not a positive 32-bit number",
             ImportReason::ConfidenceOutOfRange => "confidence outside 0.0..=1.0",
+            ImportReason::InvalidRuleId => "rule_id is not a namespaced versioned rule",
+            ImportReason::EmptyOccurrenceKey => "occurrence_key is empty",
+            ImportReason::ReportContract => "finding violates the FindingReport@1 contract",
         };
         write!(f, "finding {}: {what}", self.index)
     }
@@ -433,6 +450,16 @@ impl LegacyFinding {
             .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
         {
             return Err(err(ImportReason::ConfidenceOutOfRange));
+        }
+        if self
+            .rule_id
+            .as_deref()
+            .is_some_and(|rule| !crate::finding::valid_rule_id(rule))
+        {
+            return Err(err(ImportReason::InvalidRuleId));
+        }
+        if self.occurrence_key.as_deref().is_some_and(str::is_empty) {
+            return Err(err(ImportReason::EmptyOccurrenceKey));
         }
         let line = self
             .line
@@ -494,7 +521,7 @@ impl LegacyFinding {
         };
         report
             .validate()
-            .map_err(|_| err(ImportReason::InvalidPath))?;
+            .map_err(|_| err(ImportReason::ReportContract))?;
         Ok(report)
     }
 }
@@ -577,6 +604,50 @@ mod tests {
             candidate.fix = fix.map(str::to_string);
             assert_eq!(candidate.validate(0).unwrap_err().reason, expected);
         }
+    }
+
+    #[test]
+    fn stable_claim_identity_is_validated_at_reviewer_result_admission() {
+        let result = |rule_id: &str, occurrence_key: &str| {
+            serde_json::json!({
+                "verdict": "request-changes",
+                "summary": null,
+                "reports": [{
+                    "severity": "major",
+                    "file": "src/a.rs",
+                    "line": 12,
+                    "title": "Retry loop can spin forever",
+                    "body": "no backoff, no cap",
+                    "fix": "cap the retries",
+                    "confidence": 0.9,
+                    "rule_id": rule_id,
+                    "occurrence_key": occurrence_key
+                }],
+                "benchmark_demands": [],
+                "disputes": []
+            })
+        };
+
+        assert_eq!(
+            validate_reviewer_result_classified(&result("test.rules/loop_safety@1", "main-loop")),
+            Err(ReviewerResultRejection::InvalidRuleId)
+        );
+        assert_eq!(
+            validate_reviewer_result_classified(&result("test.rules/loop-safety@1", "")),
+            Err(ReviewerResultRejection::EmptyOccurrenceKey)
+        );
+        validate_reviewer_result_classified(&result("test.rules/loop-safety@1", "main-loop"))
+            .unwrap();
+
+        let mut malformed = finding();
+        malformed.rule_id = Some("test.rules/loop_safety@1".into());
+        assert_eq!(
+            malformed.into_report(4).unwrap_err(),
+            LegacyImportError {
+                index: 4,
+                reason: ImportReason::InvalidRuleId,
+            }
+        );
     }
 
     #[test]

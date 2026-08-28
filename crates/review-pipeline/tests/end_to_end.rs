@@ -698,6 +698,37 @@ fn canonical_barrier_assigns_identical_clean_results_to_distinct_attempts() {
 }
 
 #[test]
+fn a_pinned_pre_m4_canonical_campaign_resumes_without_selected_demands() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+
+    // This helper writes the same immutable authority events an older release persisted. New
+    // Campaign creation rejects this pipeline, but an existing Campaign must remain resumable.
+    let kernel = support::canonical_whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let report = Scheduler::new(&heavy_pipeline(false).plan().unwrap()).run(&kernel);
+    assert!(report.complete(), "{:?}", report.outcomes);
+    let NodeOutcome::Completed { outputs } = report.outcome("ledger").unwrap() else {
+        panic!("pre-M4 Ledger did not complete")
+    };
+    assert!(outputs.contains_key("set"));
+    assert!(!outputs.contains_key("demands"));
+}
+
+#[test]
 fn an_unwired_identical_result_does_not_confuse_canonical_provenance() {
     let (_dir, repo_path, home) = fixture();
     let workspace = tempfile::tempdir().unwrap();
