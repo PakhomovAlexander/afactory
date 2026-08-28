@@ -72,6 +72,8 @@ a Worker. Each entry includes its opaque ID and human label, pinned Subject/auth
 last closed Round and verdict, and the complete closed-Round history. Use `--format json` for the
 versioned `af/review-campaigns@1` projection. `--state-root DIR` inspects an explicit root, including
 legacy label-named state such as a repository's gitignored `.review/runs/` directory.
+Unreadable or non-conforming entries are skipped and reported in the projection's `problems`
+array, so one bad backup or stale directory never hides healthy Campaigns.
 
 ```sh
 af review campaigns

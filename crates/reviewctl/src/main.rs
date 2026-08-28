@@ -1294,6 +1294,18 @@ fn show(options: &ShowOptions) -> Result<(), String> {
 struct CampaignListView {
     schema: &'static str,
     campaigns: Vec<CampaignView>,
+    problems: Vec<CampaignProblemView>,
+}
+
+#[derive(serde::Serialize)]
+struct CampaignProblemView {
+    directory: String,
+    reason: String,
+}
+
+struct CampaignEnumeration {
+    campaigns: Vec<CampaignView>,
+    problems: Vec<CampaignProblemView>,
 }
 
 #[derive(serde::Serialize)]
@@ -1322,9 +1334,11 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
         None => xdg_state_root()?.join("af/review/campaigns"),
     };
     let root = resolve_filesystem_path(&requested_root)?;
+    let enumeration = enumerate_campaigns(&root)?;
     let view = CampaignListView {
         schema: "af/review-campaigns@1",
-        campaigns: enumerate_campaigns(&root)?,
+        campaigns: enumeration.campaigns,
+        problems: enumeration.problems,
     };
     match options.format {
         CampaignsFormat::Json => println!(
@@ -1336,10 +1350,13 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn enumerate_campaigns(root: &Path) -> Result<Vec<CampaignView>, String> {
+fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
     let root = resolve_filesystem_path(root)?;
     if !root.exists() {
-        return Ok(Vec::new());
+        return Ok(CampaignEnumeration {
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        });
     }
     if !root.is_dir() {
         return Err(format!(
@@ -1354,75 +1371,164 @@ fn enumerate_campaigns(root: &Path) -> Result<Vec<CampaignView>, String> {
     paths.sort_by_key(std::fs::DirEntry::file_name);
 
     let mut campaigns = Vec::new();
+    let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
     for entry in paths {
-        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
-            format!("reading campaign state {}: {error}", entry.path().display())
-        })?;
+        let directory_lossy = entry.file_name().to_string_lossy().into_owned();
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: format!("reading entry metadata: {error}"),
+                });
+                continue;
+            }
+        };
         if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "campaign state {} is a symlink; campaign enumeration does not follow state outside its configured root",
-                entry.path().display()
-            ));
-        }
-        if !metadata.is_dir() || !entry.path().join("events.sqlite").is_file() {
+            if is_campaign_id(&directory_lossy) {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: "Campaign state entry is a symlink; enumeration does not follow it"
+                        .to_string(),
+                });
+            }
             continue;
         }
-        let state = resolve_filesystem_path(&entry.path())?;
+        if !metadata.is_dir() {
+            continue;
+        }
+        let database = entry.path().join("events.sqlite");
+        let database_metadata = match std::fs::symlink_metadata(&database) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: format!("reading events.sqlite metadata: {error}"),
+                });
+                continue;
+            }
+        };
+        if database_metadata.file_type().is_symlink() || !database_metadata.is_file() {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason:
+                    "events.sqlite is not a real regular file beneath the Campaign state directory"
+                        .to_string(),
+            });
+            continue;
+        }
+        let state = match resolve_filesystem_path(&entry.path()) {
+            Ok(state) => state,
+            Err(reason) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason,
+                });
+                continue;
+            }
+        };
         if !state.starts_with(&root) {
-            return Err(format!(
-                "campaign state {} escapes configured review-state root {}",
-                state.display(),
-                root.display()
-            ));
-        }
-        let store = open_campaign_store_read_only(&state)?;
-        let run_ids = store
-            .run_ids()
-            .map_err(|error| format!("enumerating {}: {error}", state.display()))?
-            .into_iter()
-            .filter(|run_id| run_id.starts_with("campaign-"))
-            .collect::<Vec<_>>();
-        if run_ids.is_empty() {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: format!(
+                    "resolved state {} escapes configured root {}",
+                    state.display(),
+                    root.display()
+                ),
+            });
             continue;
         }
+        let store = match open_campaign_store_read_only(&state) {
+            Ok(store) => store,
+            Err(reason) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason,
+                });
+                continue;
+            }
+        };
+        let run_ids = match store.run_ids() {
+            Ok(run_ids) => run_ids,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        }
+        .into_iter()
+        .filter(|run_id| run_id.starts_with("campaign-"))
+        .collect::<Vec<_>>();
         if run_ids.len() != 1 {
-            return Err(format!(
-                "campaign state {} contains {} campaign runs; each enumerated directory must contain exactly one",
-                state.display(),
-                run_ids.len()
-            ));
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: format!(
+                    "state contains {} campaign runs; each enumerated directory must contain exactly one",
+                    run_ids.len()
+                ),
+            });
+            continue;
         }
         let run_id = &run_ids[0];
         let label = run_id
             .strip_prefix("campaign-")
             .expect("campaign run prefix was filtered")
             .to_string();
-        validate_legacy_campaign_name(&label)?;
-        let id = campaign_id(&label);
-        let directory = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| format!("campaign state {} is not valid UTF-8", state.display()))?;
-        if directory != id && directory != label {
-            return Err(format!(
-                "campaign {label:?} state directory must be its opaque ID `{id}` or legacy label, not `{directory}`"
-            ));
+        if let Err(reason) = validate_legacy_campaign_name(&label) {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason,
+            });
+            continue;
         }
+        let id = campaign_id(&label);
+        let directory = match entry.file_name().into_string() {
+            Ok(directory) => directory,
+            Err(_) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: "Campaign state directory name is not valid UTF-8".to_string(),
+                });
+                continue;
+            }
+        };
+        if directory != id && directory != label {
+            problems.push(CampaignProblemView {
+                directory,
+                reason: format!(
+                    "campaign {label:?} state directory must be its opaque ID `{id}` or legacy label"
+                ),
+            });
+            continue;
+        }
+        let campaign = match read_campaign_view(&state, run_id, label.clone(), id.clone(), &store) {
+            Ok(campaign) => campaign,
+            Err(reason) => {
+                problems.push(CampaignProblemView { directory, reason });
+                continue;
+            }
+        };
         if !seen.insert(id.clone()) {
             return Err(format!(
                 "campaign {label:?} is present in both encoded and legacy state directories beneath {}",
                 root.display()
             ));
         }
-        campaigns.push(read_campaign_view(&state, run_id, label, id, &store)?);
+        campaigns.push(campaign);
     }
     campaigns.sort_by(|left, right| {
         left.label
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
-    Ok(campaigns)
+    Ok(CampaignEnumeration {
+        campaigns,
+        problems,
+    })
 }
 
 fn read_campaign_view(
@@ -1511,15 +1617,13 @@ fn print_campaigns_text(view: &CampaignListView) {
             "  last subject: {}",
             campaign.last_subject_id.as_deref().unwrap_or("not started")
         );
-        match (
+        match last_closed_summary(
             campaign.last_closed_round,
             campaign.last_closed_epoch,
             campaign.verdict.as_deref(),
         ) {
-            (Some(round), Some(epoch), Some(verdict)) => {
-                println!("  last closed: round {round} epoch {epoch}; {verdict}")
-            }
-            _ => println!("  last closed: none"),
+            Some(summary) => println!("  last closed: {summary}"),
+            None => println!("  last closed: none"),
         }
         println!("  history:");
         if campaign.rounds.is_empty() {
@@ -1535,6 +1639,14 @@ fn print_campaigns_text(view: &CampaignListView) {
                 optional_tokens(round.reported_tokens)
             );
         }
+    }
+    println!("Problems: {}", view.problems.len());
+    for problem in &view.problems {
+        println!(
+            "  {}: {}",
+            problem.directory.escape_debug(),
+            problem.reason.escape_debug()
+        );
     }
 }
 
@@ -2363,6 +2475,20 @@ fn optional_tokens(tokens: Option<u64>) -> String {
 
 fn optional_number(number: Option<u32>) -> String {
     number.map_or_else(|| "-".to_string(), |number| number.to_string())
+}
+
+fn last_closed_summary(
+    round: Option<u32>,
+    epoch: Option<u32>,
+    verdict: Option<&str>,
+) -> Option<String> {
+    verdict.map(|verdict| {
+        format!(
+            "round {} epoch {}; {verdict}",
+            optional_number(round),
+            optional_number(epoch)
+        )
+    })
 }
 
 fn one_line(value: &str) -> String {
@@ -3409,9 +3535,9 @@ mod option_tests {
     use std::ffi::OsStr;
 
     use super::{
-        Options, campaign_id, campaign_state_beneath, enumerate_campaigns, latest_round_evidence,
-        report_round_authority, report_rounds, report_spend, resolve_codex_home,
-        validate_campaign_name,
+        Options, campaign_id, campaign_state_beneath, enumerate_campaigns, last_closed_summary,
+        latest_round_evidence, report_round_authority, report_rounds, report_spend,
+        resolve_codex_home, validate_campaign_name,
     };
 
     fn event(
@@ -3591,9 +3717,10 @@ mod option_tests {
             super::campaign_state(&Some(legacy.clone()), " padded").unwrap(),
             std::fs::canonicalize(&legacy).unwrap()
         );
-        let campaigns = enumerate_campaigns(&root).unwrap();
-        assert_eq!(campaigns.len(), 1);
-        assert_eq!(campaigns[0].label, " padded");
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert_eq!(enumeration.campaigns.len(), 1);
+        assert_eq!(enumeration.campaigns[0].label, " padded");
+        assert!(enumeration.problems.is_empty());
     }
 
     #[test]
@@ -3604,23 +3731,46 @@ mod option_tests {
         write_campaign_opening(&state, "legacy");
         std::fs::remove_dir_all(state.join("cas")).unwrap();
 
-        assert!(enumerate_campaigns(&root).is_err());
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert_eq!(enumeration.problems.len(), 1);
         assert!(!state.join("cas").exists());
     }
 
     #[cfg(unix)]
     #[test]
-    fn campaign_enumeration_refuses_symlinked_state() {
+    fn bad_entries_do_not_hide_campaigns_and_symlinked_state_is_not_followed() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
         let outside = temp.path().join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(&outside).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
-        let Err(error) = enumerate_campaigns(&root) else {
-            panic!("symlinked campaign state was accepted");
-        };
-        assert!(error.contains("does not follow state outside"));
+        write_campaign_opening(&root.join("good"), "good");
+        std::os::unix::fs::symlink(&outside, root.join(campaign_id("linked"))).unwrap();
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert_eq!(enumeration.campaigns.len(), 1);
+        assert_eq!(enumeration.campaigns[0].label, "good");
+        assert_eq!(enumeration.problems.len(), 1);
+        assert!(enumeration.problems[0].reason.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn campaign_enumeration_refuses_a_symlinked_event_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        let outside = temp.path().join("outside");
+        let state = root.join("linked");
+        write_campaign_opening(&outside, "linked");
+        std::fs::create_dir_all(&state).unwrap();
+        std::os::unix::fs::symlink(outside.join("events.sqlite"), state.join("events.sqlite"))
+            .unwrap();
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert_eq!(enumeration.problems.len(), 1);
+        assert!(enumeration.problems[0].reason.contains("real regular file"));
     }
 
     #[test]
@@ -3793,6 +3943,10 @@ mod option_tests {
         assert_eq!(rounds[0].epoch, None);
         assert_eq!(rounds[0].verdict, "Pass");
         assert_eq!(rounds[0].reported_tokens, Some(9));
+        assert_eq!(
+            last_closed_summary(rounds[0].round, rounds[0].epoch, Some(&rounds[0].verdict)),
+            Some("round - epoch -; Pass".to_string())
+        );
     }
 
     #[test]

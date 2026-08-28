@@ -265,6 +265,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let campaigns: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(campaigns["schema"], "af/review-campaigns@1");
+    assert_eq!(campaigns["problems"], serde_json::json!([]));
     assert_eq!(campaigns["campaigns"][0]["label"], "loop");
     assert_eq!(campaigns["campaigns"][0]["subject_kind"], "whole-tree");
     assert_eq!(campaigns["campaigns"][0]["last_closed_round"], 1);
@@ -281,6 +282,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(stdout.contains("Campaigns: 1"), "{stdout}");
+    assert!(stdout.contains("Problems: 0"), "{stdout}");
     assert!(
         stdout.contains("last closed: round 1 epoch 1; fail (not_converged)"),
         "{stdout}"
