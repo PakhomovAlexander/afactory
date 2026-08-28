@@ -416,8 +416,8 @@ Demands, Evidence, and fixed resolution are snapshot-sensitive, so they follow M
 Change Set rather than being retrofitted onto whole-tree legacy events.
 
 Implementation merged through PR #18. Its exhausted verification Campaign has six fixed Findings
-and zero open; follow-up `0361a7d` passes the full local gate. PR #19 integration and exact-main
-verification remain before M4 is complete.
+and zero open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M4 is
+complete.
 
 ### M4.1 — Demands become durable obligations
 
@@ -513,10 +513,17 @@ reopening it.
 
 ### M5.1 — `--format json`
 
+**Status: complete (2026-08-28).** `af review report` now has deliberate `md`, `text`, and
+versioned `json` renderings driven by one operator projection.
+
 Nearly free once M0.2 lands: print the structure that already exists. Text rendering becomes an
 explicit formatter rather than `{:?}`, so both surfaces are deliberate and testable.
 
 ### M5.2 — Spend per round and per reviewer
+
+**Status: complete (2026-08-28).** The report projects selected, fenced, failed, released, and
+outstanding Attempts plus Provider Operations per exact Round epoch and reviewer. Budget-resume
+accounting now reads admitted `cost_tokens` and honors only the first terminal Attempt event.
 
 Pure query work; the data is already in the log, tagged by node. `AttemptAdmitted@1` carries
 `{selection, cost_tokens}`, `AttemptFenced@1` carries `{reason, charged}`, both stamped

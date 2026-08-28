@@ -1,5 +1,18 @@
 # Review Kernel workstream log
 
+## 2026-08-28 — M5.1/M5.2 operator reports and spend
+
+`af review report` now renders one versioned operator projection as Markdown, explicit text, or
+JSON. It exposes every Round epoch, terminal verdict, selected/fenced/failed/released/outstanding
+Attempt, Provider Operation, and per-reviewer token total. The exact-Round budget query now reads
+admitted `cost_tokens`, counts only the first terminal Attempt lifecycle event, and retains crash
+reservations. Focused projection, durable-query, end-to-end format tests, the complete `reviewctl`
+suite, and focused Clippy pass. Resume at M5.3 safe Campaign enumeration and history.
+Pinned Campaign `m5-report-spend-v1` Round 1 spent 149,528 tokens and found one Major and one
+Minor. Their corrections keep the Markdown spend table contiguous, render Attempt detail in a
+separate section, and preserve causation-less frozen `RunReport@1` presentation with an explicit
+run ordinal and absent Round authority. The focused regressions and full kernel gate pass again.
+
 ## 2026-08-20 — M0 and M1
 
 Closed the append-only event vocabulary, structural run reports, typed invocation/output ports,
@@ -1179,3 +1192,7 @@ The owner approved the three exact fixed transitions. Campaign
 `m3-3-m4-verification-v1` now has six fixed Findings and zero open; its historical final verdict
 remains exhausted because immutable completed Rounds are not rewritten. Follow-up PR #19 opened
 from `0361a7d`, and its initial CI passed. Integration and exact-main verification remain.
+
+PR #19 merged at exact `main` commit `01147ce`; post-merge CI run `33185591446` passed the full
+workspace Check and CLI smoke. M4 is complete and issue #15 is closed. Resume at M5 operator
+visibility.

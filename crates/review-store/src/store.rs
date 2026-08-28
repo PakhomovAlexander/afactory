@@ -451,9 +451,24 @@ impl EventStore {
                 .map_err(|_| StoreError::Conflict("replayed token charge overflow".into()))
         };
         let terminal_attempts = sum(
-            "SELECT COALESCE(SUM(CAST(json_extract(payload, '$.charged') AS INTEGER)), 0)
-             FROM events WHERE run_id = ?1 AND causation_id = ?2
-               AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1', 'AttemptFenced@1')",
+            "SELECT COALESCE(SUM(CASE terminal.type
+                       WHEN 'AttemptAdmitted@1' THEN CAST(json_extract(terminal.payload, '$.cost_tokens') AS INTEGER)
+                       WHEN 'AttemptFailed@1' THEN COALESCE(CAST(json_extract(terminal.payload, '$.charged') AS INTEGER), 0)
+                       WHEN 'AttemptFenced@1' THEN COALESCE(CAST(json_extract(terminal.payload, '$.charged') AS INTEGER), 0)
+                       ELSE 0
+                     END), 0)
+             FROM events AS terminal
+             WHERE terminal.run_id = ?1 AND terminal.causation_id = ?2
+               AND terminal.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
+                                     'AttemptFenced@1', 'AttemptReleased@1')
+               AND terminal.sequence = (
+                 SELECT MIN(first.sequence) FROM events AS first
+                 WHERE first.run_id = terminal.run_id
+                   AND first.causation_id = terminal.causation_id
+                   AND first.attempt_id = terminal.attempt_id
+                   AND first.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
+                                      'AttemptFenced@1', 'AttemptReleased@1')
+               )",
         )?;
         let outstanding_attempts = sum(
             "SELECT COALESCE(SUM(CAST(json_extract(dispatched.payload, '$.reserved') AS INTEGER)), 0)
@@ -484,6 +499,7 @@ impl EventStore {
                AND operation.sequence = (
                  SELECT MAX(latest.sequence) FROM events AS latest
                  WHERE latest.run_id = operation.run_id
+                   AND latest.causation_id = operation.causation_id
                    AND latest.type = operation.type
                    AND latest.correlation_id = operation.correlation_id
                )",
@@ -2837,6 +2853,121 @@ mod tests {
             )
             .unwrap();
         assert_eq!(b.sequence, 0);
+    }
+
+    #[test]
+    fn round_spend_uses_admitted_cost_and_first_terminal_attempt() {
+        let (_dir, store, _cas) = fixture();
+        let mut sequence = 0_i64;
+        let insert = |store: &EventStore,
+                      sequence: &mut i64,
+                      event_type: &str,
+                      attempt_id: Option<&str>,
+                      correlation_id: Option<&str>,
+                      payload: serde_json::Value| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO events
+                     (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                      causation_id, correlation_id, artifact_refs, payload)
+                     VALUES ('run', ?1, ?2, ?3, '2026-08-28T00:00:00Z', 'reviewer', ?4,
+                             'round', ?5, '[]', ?6)",
+                    params![
+                        *sequence,
+                        format!("event-{sequence}"),
+                        event_type,
+                        attempt_id,
+                        correlation_id,
+                        payload.to_string()
+                    ],
+                )
+                .unwrap();
+            *sequence += 1;
+        };
+
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptDispatched@1",
+            Some("selected"),
+            None,
+            json!({"reserved": 100, "prior_findings": null}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptAdmitted@1",
+            Some("selected"),
+            None,
+            json!({"selection": "selected", "cost_tokens": 31}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptDispatched@1",
+            Some("fenced"),
+            None,
+            json!({"reserved": 50, "prior_findings": null}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptFenced@1",
+            Some("fenced"),
+            None,
+            json!({"reason": "deadline", "charged": 11}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptAdmitted@1",
+            Some("fenced"),
+            None,
+            json!({"selection": "quarantined", "cost_tokens": 11}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptDispatched@1",
+            Some("released"),
+            None,
+            json!({"reserved": 20, "prior_findings": null}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptReleased@1",
+            Some("released"),
+            None,
+            json!({"error": "not run", "released": 20}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "AttemptDispatched@1",
+            Some("running"),
+            None,
+            json!({"reserved": 7, "prior_findings": null}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "ProviderOperationTransition@1",
+            None,
+            Some("failed-provider"),
+            json!({"state": "failed", "charged_tokens": 2, "reserved_tokens": 5}),
+        );
+        insert(
+            &store,
+            &mut sequence,
+            "ProviderOperationTransition@1",
+            None,
+            Some("running-provider"),
+            json!({"state": "running", "charged_tokens": 0, "reserved_tokens": 5}),
+        );
+
+        assert_eq!(store.round_committed_tokens("run", "round").unwrap(), 56);
     }
 
     #[test]

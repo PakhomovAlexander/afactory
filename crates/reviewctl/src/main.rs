@@ -213,7 +213,14 @@ struct ShowOptions {
 struct ReportOptions {
     state: Option<PathBuf>,
     campaign: String,
-    format: String,
+    format: ReportFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReportFormat {
+    Markdown,
+    Text,
+    Json,
 }
 
 struct ResolveOptions {
@@ -314,7 +321,7 @@ fn usage() -> ! {
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
-        \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
+        \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review attest-change --campaign NAME [--state DIR] FINDING --region PATH[:START-END] --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review verify-fix --campaign NAME [--state DIR] FINDING ATTESTATION --policy REV --reason TEXT (--positive|--negative) [--verifier ACTOR] [--evidence ID]...\n\
@@ -468,18 +475,22 @@ fn parse_show(mut args: std::env::Args) -> ShowOptions {
 fn parse_report(mut args: std::env::Args) -> ReportOptions {
     let mut state = None;
     let mut campaign = None;
-    let mut format = "md".to_string();
+    let mut format = ReportFormat::Markdown;
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--state" => state = Some(PathBuf::from(value())),
             "--campaign" => campaign = Some(value()),
-            "--format" => format = value(),
+            "--format" => {
+                format = match value().as_str() {
+                    "md" => ReportFormat::Markdown,
+                    "text" => ReportFormat::Text,
+                    "json" => ReportFormat::Json,
+                    _ => usage(),
+                }
+            }
             _ => usage(),
         }
-    }
-    if format != "md" {
-        usage();
     }
     ReportOptions {
         state,
@@ -1136,8 +1147,98 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct ReviewReportView {
+    schema: &'static str,
+    campaign: String,
+    runs_recorded: usize,
+    ledger_round: u32,
+    final_verdict: Option<String>,
+    rounds: Vec<ReportRoundView>,
+    spend: Vec<RoundSpendView>,
+    demands: Vec<review_core::DemandSetEntryV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_not_gathered: Option<LatestRoundEvidence>,
+    findings: Vec<review_store::Finding>,
+}
+
+#[derive(serde::Serialize)]
+struct ReportRoundView {
+    run: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u32>,
+    verdict: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reported_tokens: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct RoundSpendView {
+    round: u32,
+    epoch: u32,
+    spent_tokens: u64,
+    reviewers: Vec<ReviewerSpendView>,
+}
+
+#[derive(serde::Serialize)]
+struct ReviewerSpendView {
+    reviewer: String,
+    spent_tokens: u64,
+    attempt_tokens: u64,
+    provider_tokens: u64,
+    attempts: Vec<AttemptSpendView>,
+    provider_operations: Vec<ProviderSpendView>,
+}
+
+#[derive(serde::Serialize)]
+struct AttemptSpendView {
+    attempt_id: String,
+    outcome: String,
+    spent_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderSpendView {
+    operation_id: String,
+    provider_id: String,
+    capability_id: String,
+    state: String,
+    spent_tokens: u64,
+}
+
+struct RoundSpendAccumulator {
+    round: u32,
+    epoch: u32,
+    reviewers: BTreeMap<String, ReviewerSpendAccumulator>,
+}
+
+#[derive(Default)]
+struct ReviewerSpendAccumulator {
+    attempts: BTreeMap<String, AttemptSpendAccumulator>,
+    providers: BTreeMap<String, ProviderSpendAccumulator>,
+}
+
+struct AttemptSpendAccumulator {
+    outcome: String,
+    spent_tokens: u64,
+    detail: Option<String>,
+    terminal: bool,
+}
+
+struct ProviderSpendAccumulator {
+    provider_id: String,
+    capability_id: String,
+    state: review_core::ProviderOperationStateV1,
+    charged_tokens: u64,
+    reserved_tokens: u64,
+    failure: bool,
+}
+
 fn print_report(options: &ReportOptions) -> Result<(), String> {
-    debug_assert_eq!(options.format, "md");
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -1151,93 +1252,512 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .iter()
         .filter(|event| event.event_type.is_run_report())
         .collect();
-
-    println!("# Review campaign `{}`", options.campaign);
-    println!();
-    println!("- Runs recorded: {}", reports.len());
-    println!("- Ledger round: {}", ledger.round);
-    println!(
-        "- Final verdict: {}",
-        reports
+    let round_authority = report_round_authority(&events)?;
+    let rounds = report_rounds(&reports, &round_authority)?;
+    let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
+        evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
+    });
+    let view = ReviewReportView {
+        schema: "af/review-report@1",
+        campaign: options.campaign.clone(),
+        runs_recorded: reports.len(),
+        ledger_round: ledger.round,
+        final_verdict: reports
             .last()
             .map(|event| report_verdict(event))
-            .transpose()?
-            .unwrap_or_else(|| "not recorded".to_string())
-    );
-    println!();
-    println!("## Runs");
-    println!();
-    println!("| Run | Verdict | Tokens |");
-    println!("| ---: | --- | ---: |");
-    for (index, event) in reports.iter().enumerate() {
-        println!(
-            "| {} | {} | {} |",
-            index + 1,
-            report_verdict(event)?,
-            event.payload["spent_tokens"]
-                .as_u64()
-                .map_or("-".to_string(), |tokens| tokens.to_string())
-        );
-    }
+            .transpose()?,
+        rounds,
+        spend: report_spend(&events, &round_authority)?,
+        demands: ledger.demand_views(),
+        recorded_not_gathered,
+        findings: ledger.finding_views(),
+    };
 
-    println!();
-    println!("## Demands");
-    let demands = ledger.demand_views();
-    if demands.is_empty() {
-        println!();
-        println!("None.");
-    } else {
-        for demand in demands {
-            println!();
-            println!(
-                "- **[{:?}, {:?}] {}** (`{}`)",
-                demand.requirement, demand.status, demand.claim, demand.demand_id
-            );
-            println!("  - Why: {}", markdown_line(&demand.why));
-            println!(
-                "  - Suggested method: {}",
-                markdown_line(&demand.suggested_method)
-            );
-            println!("  - Source: {}", demand.source);
+    match options.format {
+        ReportFormat::Markdown => print_report_markdown(&view),
+        ReportFormat::Text => print_report_text(&view),
+        ReportFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+    }
+    Ok(())
+}
+
+fn report_rounds(
+    reports: &[&review_core::RunEvent],
+    round_authority: &BTreeMap<String, (u32, u32)>,
+) -> Result<Vec<ReportRoundView>, String> {
+    reports
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let authority = event
+                .causation_id
+                .as_deref()
+                .and_then(|causation| round_authority.get(causation));
+            Ok(ReportRoundView {
+                run: index + 1,
+                round: authority.map(|(round, _)| *round),
+                epoch: authority.map(|(_, epoch)| *epoch),
+                verdict: report_verdict(event)?,
+                reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
+            })
+        })
+        .collect()
+}
+
+fn report_round_authority(
+    events: &[review_core::RunEvent],
+) -> Result<BTreeMap<String, (u32, u32)>, String> {
+    events
+        .iter()
+        .filter(|event| event.event_type == EventType::RoundStartedV1)
+        .map(|event| {
+            let payload: review_core::RoundStartedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+            Ok((event.event_id.clone(), (payload.round, payload.epoch)))
+        })
+        .collect()
+}
+
+fn report_spend(
+    events: &[review_core::RunEvent],
+    round_authority: &BTreeMap<String, (u32, u32)>,
+) -> Result<Vec<RoundSpendView>, String> {
+    let mut rounds: BTreeMap<String, RoundSpendAccumulator> = round_authority
+        .iter()
+        .map(|(event_id, (round, epoch))| {
+            (
+                event_id.clone(),
+                RoundSpendAccumulator {
+                    round: *round,
+                    epoch: *epoch,
+                    reviewers: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+
+    for event in events {
+        let Some(round_id) = event.causation_id.as_deref() else {
+            continue;
+        };
+        let Some(round) = rounds.get_mut(round_id) else {
+            continue;
+        };
+        match event.event_type {
+            EventType::AttemptDispatchedV1 => {
+                let payload: review_core::event::AttemptDispatchedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let (node, attempt) = event_attempt_identity(event)?;
+                round
+                    .reviewers
+                    .entry(node.to_string())
+                    .or_default()
+                    .attempts
+                    .insert(
+                        attempt.to_string(),
+                        AttemptSpendAccumulator {
+                            outcome: "running".to_string(),
+                            spent_tokens: payload.reserved.unwrap_or(0),
+                            detail: None,
+                            terminal: false,
+                        },
+                    );
+            }
+            EventType::AttemptAdmittedV1 => {
+                let payload: review_core::event::AttemptAdmittedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(round, event, payload.selection, payload.cost_tokens, None)?;
+            }
+            EventType::AttemptFailedV1 => {
+                let payload: review_core::event::AttemptFailedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(
+                    round,
+                    event,
+                    "failed".to_string(),
+                    payload.charged.unwrap_or(0),
+                    Some(payload.error),
+                )?;
+            }
+            EventType::AttemptFencedV1 => {
+                let payload: review_core::event::AttemptFencedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(
+                    round,
+                    event,
+                    "fenced".to_string(),
+                    payload.charged.unwrap_or(0),
+                    Some(payload.reason),
+                )?;
+            }
+            EventType::AttemptReleasedV1 => {
+                let payload: review_core::event::AttemptReleasedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(round, event, "released".to_string(), 0, Some(payload.error))?;
+            }
+            EventType::ProviderOperationTransitionV1 => {
+                let payload: review_core::ProviderOperationTransitionPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let reviewer = round.reviewers.entry(payload.node_id.clone()).or_default();
+                let operation = reviewer
+                    .providers
+                    .entry(payload.operation_id.clone())
+                    .or_insert_with(|| ProviderSpendAccumulator {
+                        provider_id: payload.provider_id.clone(),
+                        capability_id: payload.capability_id.clone(),
+                        state: payload.state,
+                        charged_tokens: 0,
+                        reserved_tokens: 0,
+                        failure: false,
+                    });
+                operation.charged_tokens = operation
+                    .charged_tokens
+                    .checked_add(payload.charged_tokens)
+                    .ok_or("reported Provider spend overflow")?;
+                operation.state = payload.state;
+                operation.reserved_tokens = payload.reserved_tokens;
+                operation.failure = payload.failure_class.is_some();
+            }
+            _ => {}
         }
     }
 
-    if let Some(evidence) = latest_round_evidence(&events, &cas)?
-        && evidence.ledger_was_not_produced()
-        && !evidence.available_node_results.is_empty()
-    {
-        println!();
-        println!("## Recorded, not gathered");
-        println!();
-        println!(
-            "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
-            evidence.absence_reason()
-        );
-        for result in evidence.available_node_results {
-            println!();
-            println!(
-                "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
-                result.node,
-                result.attempt_id,
-                result.result_artifact_id,
-                result.spend_tokens,
-                if result.severities.is_empty() {
-                    "none recorded".to_string()
+    let mut views = rounds
+        .into_values()
+        .map(round_spend_view)
+        .collect::<Result<Vec<_>, String>>()?;
+    views.sort_by_key(|view| (view.round, view.epoch));
+    Ok(views)
+}
+
+fn event_attempt_identity(event: &review_core::RunEvent) -> Result<(&str, &str), String> {
+    Ok((
+        event
+            .node_id
+            .as_deref()
+            .ok_or_else(|| format!("{} has no reviewer node", event.event_type))?,
+        event
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| format!("{} has no Attempt ID", event.event_type))?,
+    ))
+}
+
+fn settle_attempt(
+    round: &mut RoundSpendAccumulator,
+    event: &review_core::RunEvent,
+    outcome: String,
+    spent_tokens: u64,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let (node, attempt_id) = event_attempt_identity(event)?;
+    let attempt = round
+        .reviewers
+        .entry(node.to_string())
+        .or_default()
+        .attempts
+        .entry(attempt_id.to_string())
+        .or_insert_with(|| AttemptSpendAccumulator {
+            outcome: "running".to_string(),
+            spent_tokens: 0,
+            detail: None,
+            terminal: false,
+        });
+    if attempt.terminal {
+        // A late response to an already-fenced Attempt is durably quarantined but must not be
+        // charged twice. The first terminal lifecycle event owns its operator-visible outcome.
+        return Ok(());
+    }
+    attempt.outcome = outcome;
+    attempt.spent_tokens = spent_tokens;
+    attempt.detail = detail;
+    attempt.terminal = true;
+    Ok(())
+}
+
+fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, String> {
+    let mut spent_tokens = 0_u64;
+    let mut reviewers = Vec::new();
+    for (reviewer, accumulator) in round.reviewers {
+        let attempts = accumulator
+            .attempts
+            .into_iter()
+            .map(|(attempt_id, attempt)| AttemptSpendView {
+                attempt_id,
+                outcome: attempt.outcome,
+                spent_tokens: attempt.spent_tokens,
+                detail: attempt.detail,
+            })
+            .collect::<Vec<_>>();
+        let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
+            sum.checked_add(attempt.spent_tokens)
+                .ok_or("reported Attempt spend overflow")
+        })?;
+        let provider_operations = accumulator
+            .providers
+            .into_iter()
+            .map(|(operation_id, provider)| {
+                let outstanding = if provider.state
+                    == review_core::ProviderOperationStateV1::Running
+                    && !provider.failure
+                {
+                    provider.reserved_tokens
                 } else {
-                    result.severities.join(", ")
-                }
+                    0
+                };
+                Ok(ProviderSpendView {
+                    operation_id,
+                    provider_id: provider.provider_id,
+                    capability_id: provider.capability_id,
+                    state: provider_state_label(provider.state).to_string(),
+                    spent_tokens: provider
+                        .charged_tokens
+                        .checked_add(outstanding)
+                        .ok_or("reported Provider spend overflow")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let provider_tokens = provider_operations
+            .iter()
+            .try_fold(0_u64, |sum, operation| {
+                sum.checked_add(operation.spent_tokens)
+                    .ok_or("reported Provider spend overflow")
+            })?;
+        let reviewer_tokens = attempt_tokens
+            .checked_add(provider_tokens)
+            .ok_or("reported reviewer spend overflow")?;
+        spent_tokens = spent_tokens
+            .checked_add(reviewer_tokens)
+            .ok_or("reported Round spend overflow")?;
+        reviewers.push(ReviewerSpendView {
+            reviewer,
+            spent_tokens: reviewer_tokens,
+            attempt_tokens,
+            provider_tokens,
+            attempts,
+            provider_operations,
+        });
+    }
+    Ok(RoundSpendView {
+        round: round.round,
+        epoch: round.epoch,
+        spent_tokens,
+        reviewers,
+    })
+}
+
+fn print_report_text(report: &ReviewReportView) {
+    println!("Review campaign: {}", report.campaign);
+    println!("Runs recorded: {}", report.runs_recorded);
+    println!("Ledger round: {}", report.ledger_round);
+    println!(
+        "Final verdict: {}",
+        report.final_verdict.as_deref().unwrap_or("not recorded")
+    );
+    println!("Rounds:");
+    if report.rounds.is_empty() {
+        println!("  none");
+    }
+    for round in &report.rounds {
+        println!(
+            "  run {} (round {} epoch {}): {}; reported tokens {}",
+            round.run,
+            optional_number(round.round),
+            optional_number(round.epoch),
+            round.verdict,
+            optional_tokens(round.reported_tokens)
+        );
+    }
+    println!("Spend:");
+    for round in &report.spend {
+        println!(
+            "  round {} epoch {}: {} tokens",
+            round.round, round.epoch, round.spent_tokens
+        );
+        for reviewer in &round.reviewers {
+            println!(
+                "    {}: {} tokens (attempts {}, providers {})",
+                reviewer.reviewer,
+                reviewer.spent_tokens,
+                reviewer.attempt_tokens,
+                reviewer.provider_tokens
             );
-            for finding in result.findings {
+            for attempt in &reviewer.attempts {
                 println!(
-                    "  - [{}] {} — {}",
-                    finding["severity"].as_str().unwrap_or("unknown"),
-                    markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
-                    markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
+                    "      attempt {}: {}, {} tokens{}",
+                    attempt.attempt_id,
+                    attempt.outcome,
+                    attempt.spent_tokens,
+                    attempt
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" - {}", one_line(detail)))
+                        .unwrap_or_default()
                 );
             }
         }
     }
+    println!("Demands:");
+    if report.demands.is_empty() {
+        println!("  none");
+    }
+    for demand in &report.demands {
+        println!(
+            "  [{}; {}] {} ({})",
+            demand_requirement_label(demand.requirement),
+            demand_status_label(demand.status),
+            one_line(&demand.claim),
+            demand.demand_id
+        );
+        println!("    why: {}", one_line(&demand.why));
+        println!(
+            "    suggested method: {}",
+            one_line(&demand.suggested_method)
+        );
+        println!("    source: {}", demand.source);
+    }
+    print_recorded_not_gathered_text(report.recorded_not_gathered.as_ref());
+    println!("Findings:");
+    if report.findings.is_empty() {
+        println!("  none");
+    }
+    for finding in &report.findings {
+        println!(
+            "  [{}; scope={}; severity={}; effective={}] {} ({}) at {}:{}",
+            finding.status.as_str(),
+            finding.convergence_scope_label(),
+            severity_label(finding.severity),
+            finding
+                .convergence_severity
+                .map(severity_label)
+                .unwrap_or("-"),
+            one_line(&finding.title),
+            finding.key,
+            finding.file,
+            finding
+                .line
+                .map_or("-".to_string(), |line| line.to_string())
+        );
+        println!("    body: {}", one_line(&finding.body));
+        println!(
+            "    fix: {}",
+            one_line(
+                finding
+                    .fix
+                    .as_deref()
+                    .unwrap_or("unavailable: artifact-less legacy import")
+            )
+        );
+        for transition in &finding.history {
+            println!(
+                "    history round {}: {} - {}",
+                transition.round,
+                transition_label(transition.kind),
+                one_line(transition.note.as_deref().unwrap_or("(no note)"))
+            );
+        }
+    }
+}
 
+fn print_report_markdown(report: &ReviewReportView) {
+    println!("# Review campaign `{}`", report.campaign);
+    println!();
+    println!("- Runs recorded: {}", report.runs_recorded);
+    println!("- Ledger round: {}", report.ledger_round);
+    println!(
+        "- Final verdict: {}",
+        report.final_verdict.as_deref().unwrap_or("not recorded")
+    );
+    println!();
+    println!("## Runs");
+    println!();
+    println!("| Run | Round | Epoch | Verdict | Tokens |");
+    println!("| ---: | ---: | ---: | --- | ---: |");
+    for round in &report.rounds {
+        println!(
+            "| {} | {} | {} | {} | {} |",
+            round.run,
+            optional_number(round.round),
+            optional_number(round.epoch),
+            round.verdict,
+            optional_tokens(round.reported_tokens)
+        );
+    }
+    println!();
+    println!("## Spend");
+    println!();
+    println!("| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens |");
+    println!("| ---: | ---: | --- | ---: | ---: | ---: |");
+    for round in &report.spend {
+        if round.reviewers.is_empty() {
+            println!("| {} | {} | - | 0 | 0 | 0 |", round.round, round.epoch);
+        }
+        for reviewer in &round.reviewers {
+            println!(
+                "| {} | {} | {} | {} | {} | {} |",
+                round.round,
+                round.epoch,
+                reviewer.reviewer,
+                reviewer.attempt_tokens,
+                reviewer.provider_tokens,
+                reviewer.spent_tokens
+            );
+        }
+    }
+    println!();
+    println!("### Attempts");
+    for round in &report.spend {
+        for reviewer in &round.reviewers {
+            for attempt in &reviewer.attempts {
+                println!();
+                println!(
+                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}",
+                    round.round,
+                    reviewer.reviewer,
+                    attempt.attempt_id,
+                    attempt.outcome,
+                    attempt.spent_tokens,
+                    attempt
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" — {}", markdown_line(detail)))
+                        .unwrap_or_default()
+                );
+            }
+        }
+    }
+    println!();
+    println!("## Demands");
+    if report.demands.is_empty() {
+        println!();
+        println!("None.");
+    }
+    for demand in &report.demands {
+        println!();
+        println!(
+            "- **[{}, {}] {}** (`{}`)",
+            demand_requirement_label(demand.requirement),
+            demand_status_label(demand.status),
+            demand.claim,
+            demand.demand_id
+        );
+        println!("  - Why: {}", markdown_line(&demand.why));
+        println!(
+            "  - Suggested method: {}",
+            markdown_line(&demand.suggested_method)
+        );
+        println!("  - Source: {}", demand.source);
+    }
+    print_recorded_not_gathered_markdown(report.recorded_not_gathered.as_ref());
     println!();
     println!("## Findings");
     for effective_severity in [
@@ -1247,16 +1767,20 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         None,
     ] {
         println!();
-        let heading = effective_severity.map_or_else(
-            || "Recorded, not blocking this Subject".to_string(),
-            |severity| title_case(&format!("{severity:?}").to_lowercase()),
-        );
+        let heading =
+            effective_severity.map_or("Recorded, not blocking this Subject", |severity| {
+                match severity {
+                    Severity::Blocker => "Blocker",
+                    Severity::Major => "Major",
+                    Severity::Minor => "Minor",
+                }
+            });
         println!("### {heading}");
-        let matching: Vec<_> = ledger
-            .finding_views()
-            .into_iter()
+        let matching = report
+            .findings
+            .iter()
             .filter(|finding| finding.convergence_severity == effective_severity)
-            .collect();
+            .collect::<Vec<_>>();
         if matching.is_empty() {
             println!();
             println!("None.");
@@ -1268,11 +1792,11 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
                 finding.status.as_str(),
                 finding.convergence_scope_label(),
-                format!("{:?}", finding.severity).to_lowercase(),
+                severity_label(finding.severity),
                 finding
                     .convergence_severity
-                    .map(|severity| format!("{severity:?}").to_lowercase())
-                    .unwrap_or_else(|| "-".to_string()),
+                    .map(severity_label)
+                    .unwrap_or("-"),
                 finding.title,
                 finding.key,
                 finding.file,
@@ -1293,25 +1817,29 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             let evidence = finding
                 .reports
                 .iter()
-                .map(|report| {
-                    if report.report_id.is_empty() {
+                .map(|attached| {
+                    if attached.report_id.is_empty() {
                         format!(
                             "{} round {} scope={} at {}:{} (legacy import)",
-                            report.source,
-                            report.round,
-                            report.scope_label(),
-                            report.file,
-                            report.line.map_or("-".to_string(), |line| line.to_string())
+                            attached.source,
+                            attached.round,
+                            attached.scope_label(),
+                            attached.file,
+                            attached
+                                .line
+                                .map_or("-".to_string(), |line| line.to_string())
                         )
                     } else {
                         format!(
                             "{} round {} scope={} at {}:{} `{}`",
-                            report.source,
-                            report.round,
-                            report.scope_label(),
-                            report.file,
-                            report.line.map_or("-".to_string(), |line| line.to_string()),
-                            report.report_id
+                            attached.source,
+                            attached.round,
+                            attached.scope_label(),
+                            attached.file,
+                            attached
+                                .line
+                                .map_or("-".to_string(), |line| line.to_string()),
+                            attached.report_id
                         )
                     }
                 })
@@ -1320,15 +1848,134 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             println!("  - Reports: {evidence}");
             for transition in &finding.history {
                 println!(
-                    "  - Resolution/history, round {}: {:?} - {}",
+                    "  - Resolution/history, round {}: {} - {}",
                     transition.round,
-                    transition.kind,
+                    transition_label(transition.kind),
                     markdown_line(transition.note.as_deref().unwrap_or("(no note)"))
                 );
             }
         }
     }
-    Ok(())
+}
+
+fn print_recorded_not_gathered_text(evidence: Option<&LatestRoundEvidence>) {
+    let Some(evidence) = evidence else { return };
+    println!("Recorded, not gathered:");
+    println!("  reason: {}", evidence.absence_reason());
+    for result in &evidence.available_node_results {
+        println!(
+            "  {} attempt {}: result {}, {} tokens, severities {}",
+            result.node,
+            result.attempt_id,
+            result.result_artifact_id,
+            result.spend_tokens,
+            if result.severities.is_empty() {
+                "none recorded".to_string()
+            } else {
+                result.severities.join(", ")
+            }
+        );
+    }
+}
+
+fn print_recorded_not_gathered_markdown(evidence: Option<&LatestRoundEvidence>) {
+    let Some(evidence) = evidence else { return };
+    println!();
+    println!("## Recorded, not gathered");
+    println!();
+    println!(
+        "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
+        evidence.absence_reason()
+    );
+    for result in &evidence.available_node_results {
+        println!();
+        println!(
+            "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
+            result.node,
+            result.attempt_id,
+            result.result_artifact_id,
+            result.spend_tokens,
+            if result.severities.is_empty() {
+                "none recorded".to_string()
+            } else {
+                result.severities.join(", ")
+            }
+        );
+        for finding in &result.findings {
+            println!(
+                "  - [{}] {} — {}",
+                finding["severity"].as_str().unwrap_or("unknown"),
+                markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
+                markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
+            );
+        }
+    }
+}
+
+fn provider_state_label(state: review_core::ProviderOperationStateV1) -> &'static str {
+    match state {
+        review_core::ProviderOperationStateV1::Running => "running",
+        review_core::ProviderOperationStateV1::WaitingForHuman => "waiting_for_human",
+        review_core::ProviderOperationStateV1::Resumed => "resumed",
+        review_core::ProviderOperationStateV1::Done => "done",
+        review_core::ProviderOperationStateV1::Failed => "failed",
+    }
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Minor => "minor",
+        Severity::Major => "major",
+        Severity::Blocker => "blocker",
+    }
+}
+
+fn demand_requirement_label(requirement: review_core::DemandRequirement) -> &'static str {
+    match requirement {
+        review_core::DemandRequirement::Required => "required",
+        review_core::DemandRequirement::Advisory => "advisory",
+    }
+}
+
+fn demand_status_label(status: review_core::DemandStatus) -> &'static str {
+    match status {
+        review_core::DemandStatus::Open => "open",
+        review_core::DemandStatus::Satisfied => "satisfied",
+        review_core::DemandStatus::Stale => "stale",
+        review_core::DemandStatus::Waived => "waived",
+    }
+}
+
+fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
+    match kind {
+        review_store::ledger::TransitionKind::Reported => "reported".to_string(),
+        review_store::ledger::TransitionKind::Duplicate => "duplicate".to_string(),
+        review_store::ledger::TransitionKind::Escalated => "escalated".to_string(),
+        review_store::ledger::TransitionKind::Reopened => "reopened".to_string(),
+        review_store::ledger::TransitionKind::AdoptedWhileDeclined => {
+            "adopted_while_declined".to_string()
+        }
+        review_store::ledger::TransitionKind::AuthorityRecovered => {
+            "authority_recovered".to_string()
+        }
+        review_store::ledger::TransitionKind::Attested => "attested".to_string(),
+        review_store::ledger::TransitionKind::Challenged => "challenged".to_string(),
+        review_store::ledger::TransitionKind::Resolved(status) => {
+            format!("resolved:{}", status.as_str())
+        }
+    }
+}
+
+fn optional_tokens(tokens: Option<u64>) -> String {
+    tokens.map_or_else(|| "-".to_string(), |tokens| tokens.to_string())
+}
+
+fn optional_number(number: Option<u32>) -> String {
+    number.map_or_else(|| "-".to_string(), |number| number.to_string())
+}
+
+fn one_line(value: &str) -> String {
+    value.lines().collect::<Vec<_>>().join(" ")
 }
 
 fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
@@ -1378,14 +2025,6 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
 
 fn markdown_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join(" ")
-}
-
-fn title_case(value: &str) -> String {
-    let mut characters = value.chars();
-    match characters.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
-        None => String::new(),
-    }
 }
 
 fn print_scope_authority_warnings(ledger: &Ledger) {
@@ -1727,6 +2366,7 @@ struct AvailableNodeResult {
     findings: Vec<serde_json::Value>,
 }
 
+#[derive(serde::Serialize)]
 struct LatestRoundEvidence {
     ledger_production: &'static str,
     available_node_results: Vec<AvailableNodeResult>,
@@ -2377,7 +3017,10 @@ fn exit_for_verdict(verdict: RunVerdict) {
 mod option_tests {
     use std::ffi::OsStr;
 
-    use super::{Options, latest_round_evidence, resolve_codex_home, validate_campaign_name};
+    use super::{
+        Options, latest_round_evidence, report_round_authority, report_rounds, report_spend,
+        resolve_codex_home, validate_campaign_name,
+    };
 
     fn event(
         sequence: u64,
@@ -2470,6 +3113,178 @@ mod option_tests {
         for valid in ["heavy", "reviewctl-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    #[test]
+    fn spend_projection_keeps_fenced_released_and_outstanding_work_visible() {
+        let round = event(
+            0,
+            review_core::EventType::RoundStartedV1,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "round": 1,
+                "epoch": 1,
+                "campaign_manifest_id": "manifest",
+                "subject_id": "subject",
+                "prior_finding_set_id": "findings",
+                "prior_demand_set_id": "demands"
+            }),
+        );
+        let attempt = |sequence, event_type, node, attempt_id, payload| {
+            event(
+                sequence,
+                event_type,
+                Some("event-0"),
+                Some(node),
+                Some(attempt_id),
+                payload,
+            )
+        };
+        let events = vec![
+            round,
+            attempt(
+                1,
+                review_core::EventType::AttemptDispatchedV1,
+                "architecture",
+                "selected",
+                serde_json::json!({"reserved": 100, "prior_findings": null}),
+            ),
+            attempt(
+                2,
+                review_core::EventType::AttemptAdmittedV1,
+                "architecture",
+                "selected",
+                serde_json::json!({
+                    "selection": "selected",
+                    "cost_tokens": 31,
+                    "result_artifact": null,
+                    "provenance_artifact": null
+                }),
+            ),
+            attempt(
+                3,
+                review_core::EventType::AttemptDispatchedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({"reserved": 50, "prior_findings": null}),
+            ),
+            attempt(
+                4,
+                review_core::EventType::AttemptFencedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({"reason": "deadline", "charged": 11}),
+            ),
+            attempt(
+                5,
+                review_core::EventType::AttemptAdmittedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({
+                    "selection": "quarantined",
+                    "cost_tokens": 11,
+                    "result_artifact": null,
+                    "provenance_artifact": null
+                }),
+            ),
+            attempt(
+                6,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "released",
+                serde_json::json!({"reserved": 20, "prior_findings": null}),
+            ),
+            attempt(
+                7,
+                review_core::EventType::AttemptReleasedV1,
+                "correctness",
+                "released",
+                serde_json::json!({"error": "not run", "released": 20}),
+            ),
+            attempt(
+                8,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "running",
+                serde_json::json!({"reserved": 7, "prior_findings": null}),
+            ),
+            event(
+                9,
+                review_core::EventType::ProviderOperationTransitionV1,
+                Some("event-0"),
+                Some("architecture"),
+                None,
+                serde_json::json!({
+                    "operation_id": "provider-op",
+                    "provider_id": "codex",
+                    "capability_id": "smoke",
+                    "node_id": "architecture",
+                    "round": 1,
+                    "round_epoch": 1,
+                    "operation_epoch": 1,
+                    "state": "failed",
+                    "attempt": null,
+                    "attempt_id": null,
+                    "failure_class": "transient_transport_failure",
+                    "failure_fingerprint": "fingerprint",
+                    "continuation_handle": null,
+                    "reserved_tokens": 5,
+                    "charged_tokens": 2,
+                    "elapsed_ms": 10,
+                    "retry_permitted": true,
+                    "circuit_open": false,
+                    "next_action": "retry_explicitly"
+                }),
+            ),
+        ];
+
+        let authority = report_round_authority(&events).unwrap();
+        let spend = report_spend(&events, &authority).unwrap();
+        assert_eq!(spend.len(), 1);
+        assert_eq!(spend[0].spent_tokens, 51);
+        let architecture = &spend[0].reviewers[0];
+        assert_eq!(architecture.reviewer, "architecture");
+        assert_eq!(architecture.attempt_tokens, 42);
+        assert_eq!(architecture.provider_tokens, 2);
+        let fenced = architecture
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == "fenced")
+            .unwrap();
+        assert_eq!(fenced.outcome, "fenced");
+        assert_eq!(fenced.spent_tokens, 11);
+        let correctness = &spend[0].reviewers[1];
+        assert_eq!(correctness.attempt_tokens, 7);
+        assert_eq!(correctness.attempts[0].outcome, "released");
+        assert_eq!(correctness.attempts[0].spent_tokens, 0);
+        assert_eq!(correctness.attempts[1].outcome, "running");
+        assert_eq!(correctness.attempts[1].spent_tokens, 7);
+    }
+
+    #[test]
+    fn legacy_report_without_round_authority_remains_reportable() {
+        let legacy = event(
+            0,
+            review_core::EventType::RunReportV1,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
+                "blocked_gates": [],
+                "verdict": "Pass",
+                "spent_tokens": 9
+            }),
+        );
+        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new()).unwrap();
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].run, 1);
+        assert_eq!(rounds[0].round, None);
+        assert_eq!(rounds[0].epoch, None);
+        assert_eq!(rounds[0].verdict, "Pass");
+        assert_eq!(rounds[0].reported_tokens, Some(9));
     }
 
     #[test]

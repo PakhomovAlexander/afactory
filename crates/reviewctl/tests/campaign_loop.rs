@@ -804,6 +804,55 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
+    assert!(report_out.contains("## Spend"), "{report_out}");
+    assert!(report_out.contains("architecture"), "{report_out}");
+
+    let (code, report_json, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{report_json}\n{report_err}");
+    let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
+    assert_eq!(report["schema"], "af/review-report@1");
+    assert_eq!(report["rounds"][0]["round"], 1);
+    assert_eq!(
+        report["spend"][0]["reviewers"][0]["reviewer"],
+        "architecture"
+    );
+    assert_eq!(
+        report["spend"][0]["reviewers"][0]["attempts"][0]["outcome"],
+        "selected"
+    );
+
+    let (code, report_text, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "text",
+        ],
+    );
+    assert_eq!(code, 0, "{report_text}\n{report_err}");
+    assert!(
+        report_text.contains("Review campaign: loop"),
+        "{report_text}"
+    );
+    assert!(report_text.contains("architecture:"), "{report_text}");
+    assert!(report_text.contains("attempt"), "{report_text}");
 
     // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
     // attestation/verification path is covered by the canonical projection tests.
@@ -877,6 +926,20 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(
         report_out.contains("operator rejected the original claim"),
         "{report_out}"
+    );
+    let attempts_heading = report_out.find("### Attempts").unwrap();
+    let spend_table = &report_out[..attempts_heading];
+    assert!(
+        spend_table.contains("| 1 | 1 | architecture |"),
+        "{report_out}"
+    );
+    assert!(
+        spend_table.contains("| 2 | 1 | architecture |"),
+        "{report_out}"
+    );
+    assert!(
+        !spend_table.contains("\n- Round"),
+        "Attempt bullets must not interrupt the Markdown Spend table:\n{report_out}"
     );
     assert!(report_err.is_empty(), "{report_err}");
 }
