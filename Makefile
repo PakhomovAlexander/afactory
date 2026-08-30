@@ -24,4 +24,5 @@ pilot-check:
 # daemon is a hard failure here, never a skip disguised as success.
 review-kernel-container-probes:
 	cargo test --locked -p review-sandbox --test container_probes -- --ignored
+	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
 	cargo test --locked -p review-pipeline --test end_to_end a_v3_container_gate_executes_through_the_pipeline -- --ignored --exact

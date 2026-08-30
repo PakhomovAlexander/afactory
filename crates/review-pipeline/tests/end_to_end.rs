@@ -1332,25 +1332,34 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
         .collect::<Vec<_>>();
     assert_eq!(
         argv.len(),
-        12,
+        20,
         "unexpected container runtime argv: {argv:?}"
     );
+    assert_eq!(&argv[..3], ["run", "--rm", "--name"]);
+    assert!(argv[3].starts_with("af-gate-"), "{:?}", argv[3]);
     assert_eq!(
-        &argv[..8],
+        &argv[4..8],
+        ["--network=none", "--env-file", "/dev/null", "-e",]
+    );
+    assert_eq!(
+        argv[8],
+        format!("PATH={}", std::env::var("PATH").unwrap_or_default())
+    );
+    assert_eq!(
+        &argv[9..16],
         [
-            "run",
-            "--rm",
-            "--network=none",
-            "--env-file",
-            "/dev/null",
+            "-e",
+            "LC_ALL=C",
+            "-e",
+            "TZ=UTC",
             "--workdir",
             "/work",
             "--volume",
         ]
     );
-    assert!(argv[8].ends_with(":/work:rw"), "{:?}", argv[8]);
-    assert_eq!(argv[9], review_sandbox::container::DEFAULT_IMAGE);
-    assert_eq!(&argv[10..], ["/bin/sh", "./build.sh"]);
+    assert!(argv[16].ends_with(":/work:rw"), "{:?}", argv[16]);
+    assert_eq!(argv[17], review_sandbox::container::DEFAULT_IMAGE);
+    assert_eq!(&argv[18..], ["/bin/sh", "./build.sh"]);
 }
 
 #[test]

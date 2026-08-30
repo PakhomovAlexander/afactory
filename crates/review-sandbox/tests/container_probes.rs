@@ -188,10 +188,11 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
         ),
     );
     let runner = CheckRunner::new(&cas, sandbox.root()).with_timeout(EXEC_TIMEOUT);
-    let result = runner.run_with(&check, |program, args, timeout| {
+    let result = runner.run_with(&check, |program, args, env, timeout| {
         provider
-            .exec_evidenced(sandbox.root(), program, args, timeout)
+            .exec_evidenced(sandbox.root(), program, args, env, timeout)
             .map(|execution| (execution.output, execution.stderr_held))
+            .map_err(|error| error.to_string())
     });
 
     assert_eq!(result.status, CheckStatus::Passed, "{result:?}");

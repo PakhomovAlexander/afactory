@@ -354,9 +354,14 @@ A `ContainerProvider` also exists for hosts with a usable runtime. Finding `dock
 proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
 installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
 back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
-inherited environment. `make review-kernel-container-probes` and its dedicated CI job carry both
-the provider probes and the live v3 Gate route. This worktree could not run them because its local
-daemon is unavailable; the route remains unverified until that job is green on the candidate.
+inherited environment. The kernel's explicit check allowlist (`PATH`, `LC_ALL=C`, `TZ=UTC`, and
+declared additions) is reintroduced one variable at a time. Each execution also has a unique
+runtime name: if the supervised client fails or times out, Afactory runs a bounded `rm -f` before
+sealing. An unconfirmed cleanup aborts the Gate and preserves rather than seals or deletes the
+possibly live bind. `make review-kernel-container-probes` and its dedicated CI job carry the
+provider probes, live timeout/reap probe, and v3 Gate route. This worktree could not run them
+because its local daemon is unavailable; the route remains unverified until that job is green on
+the candidate.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
 Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can

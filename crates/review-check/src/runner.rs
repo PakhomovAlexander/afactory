@@ -175,6 +175,7 @@ impl<'a> CheckRunner<'a> {
         F: FnOnce(
             &str,
             &[String],
+            &[(String, String)],
             std::time::Duration,
         ) -> Result<(std::process::Output, bool), String>,
     {
@@ -183,7 +184,7 @@ impl<'a> CheckRunner<'a> {
             Ok(argv) => argv,
             Err(result) => return *result,
         };
-        match execute(&definition.command.program, &argv, self.timeout) {
+        match execute(&definition.command.program, &argv, &self.env, self.timeout) {
             Ok((output, stderr_held)) => self.finish(base, output, stderr_held),
             Err(error) => CheckResult {
                 reason: Some(format!("execution provider refused or failed: {error}")),

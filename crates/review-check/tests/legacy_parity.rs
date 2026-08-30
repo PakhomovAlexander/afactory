@@ -246,7 +246,7 @@ fn a_hostile_filename_from_the_diff_cannot_become_an_option() {
     assert!(!GateDecision::evaluate(&[result]).passed());
 
     let mut provider_called = false;
-    let contained = runner.run_with(&check, |_, _, _| {
+    let contained = runner.run_with(&check, |_, _, _, _| {
         provider_called = true;
         unreachable!("an invalid typed command must never reach its execution provider")
     });

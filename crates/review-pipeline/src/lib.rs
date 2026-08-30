@@ -1914,16 +1914,32 @@ impl<'a> Kernel<'a> {
         let runner = CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
+            let mut cleanup_failure = None;
             let result = match container.as_ref() {
-                Some(provider) => runner.run_with(check, |program, args, timeout| {
-                    provider
-                        .exec_evidenced(sandbox.root(), program, args, timeout)
-                        .map(|execution| (execution.output, execution.stderr_held))
+                Some(provider) => runner.run_with(check, |program, args, env, timeout| {
+                    match provider.exec_evidenced(sandbox.root(), program, args, env, timeout) {
+                        Ok(execution) => Ok((execution.output, execution.stderr_held)),
+                        Err(error) => {
+                            if !error.cleanup_confirmed() {
+                                cleanup_failure = Some(error.to_string());
+                            }
+                            Err(error.to_string())
+                        }
+                    }
                 }),
                 None => runner.run(check),
             };
             self.buffer_reviewer_event(node_id, check_event(&result, node_id));
             results.push(result);
+            if let Some(error) = cleanup_failure {
+                // A container may still own the writable bind. Do not scan a concurrently
+                // changing tree or delete it from under that process. Preserving this temporary
+                // sandbox is the fail-closed forensic residue for an operator to recover.
+                std::mem::forget(sandbox);
+                return Err(format!(
+                    "container cleanup was not confirmed; Gate sandbox preserved: {error}"
+                ));
+            }
         }
 
         let decision = GateDecision::evaluate(&results);
