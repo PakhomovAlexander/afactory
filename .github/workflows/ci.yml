@@ -20,3 +20,14 @@ jobs:
         run: make check
       - name: CLI smoke
         run: cargo run --locked -p reviewctl --bin af -- --version
+
+  container-probes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Verify container runtime
+        run: docker info
+      - name: Run live container probes
+        run: make review-kernel-container-probes

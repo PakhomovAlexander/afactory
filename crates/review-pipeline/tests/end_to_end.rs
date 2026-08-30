@@ -7,7 +7,7 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use review_check::{Arg, CheckDefinition, Command};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, PortContract, Scheduler};
@@ -245,6 +245,23 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     git(&["commit", "-q", "-m", "initial"]);
 
     (dir, repo, home)
+}
+
+#[cfg(unix)]
+fn recording_container_runtime(root: &Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let runtime = root.join("recording-container-runtime");
+    let log = root.join("recording-container-runtime.args");
+    std::fs::write(
+        &runtime,
+        b"#!/bin/sh\nif [ \"${1:-}\" = info ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > \"$0.args\"\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&runtime, permissions).unwrap();
+    (runtime, log)
 }
 
 fn reviewer(node: &str, title: &str, severity: &str) -> Command {
@@ -1088,9 +1105,30 @@ fn a_v3_gate_binding_allows_disposable_writes_without_tainting_reviewer_sandboxe
     assert!(!repo_path.join("gate-output").exists());
     drop(kernel);
 
-    let report = store
-        .replay("run")
-        .unwrap()
+    let events = store.replay("run").unwrap();
+    let gate = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::GateDecisionV1)
+        .expect("GateDecision@1");
+    let summaries = gate
+        .artifact_refs
+        .iter()
+        .filter_map(|artifact| cas.get_json(artifact).ok())
+        .filter(|value| value.get("count").is_some() && value.get("artifact").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summaries.len(),
+        1,
+        "GateDecision@1 has one referenced mutation summary"
+    );
+    let summary = &summaries[0];
+    assert_eq!(summary["count"], 1);
+    assert_eq!(summary["added"], 1);
+    let mutations_artifact = summary["artifact"].as_str().expect("full mutation digest");
+    let mutations = cas.get_json(mutations_artifact).unwrap();
+    assert_eq!(mutations["added"], serde_json::json!(["gate-output"]));
+
+    let report = events
         .into_iter()
         .find(|event| event.event_type == review_core::EventType::RunReportV4)
         .expect("RunReport@4");
@@ -1175,6 +1213,7 @@ fn a_resumed_v3_round_replays_its_durable_gate_binding() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_v3_unusable_container_is_not_admitted_or_executed() {
     use review_config::Definition;
 
@@ -1247,14 +1286,13 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
             .all(|event| event.event_type != review_core::EventType::CheckCompletedV1)
     );
 
-    // The same Round/epoch remains resumable when provider availability changes. `/bin/true`
-    // is a deterministic provider stub: its `info` and `run` invocations both succeed. The
-    // ignored live test below proves the real container boundary.
+    // The same Round/epoch remains resumable when provider availability changes. This recording
+    // runtime proves the successful retry goes through the container invocation path rather than
+    // running the check on the host. The ignored live test below proves the real boundary.
+    let (runtime, runtime_log) = recording_container_runtime(workspace.path());
     let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
         .unwrap()
-        .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
-            "/usr/bin/true",
-        ))
+        .with_container_provider(review_sandbox::ContainerProvider::with_runtime(runtime))
         .with_checks(vec![passing_check()])
         .with_reviewer("architecture", clean_reviewer())
         .with_reviewer("performance", clean_reviewer());
@@ -1286,6 +1324,33 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
         final_report.execution_bindings[0].provided_isolation,
         review_core::RunIsolationV4::Container
     );
+
+    let argv = std::fs::read_to_string(runtime_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argv.len(),
+        12,
+        "unexpected container runtime argv: {argv:?}"
+    );
+    assert_eq!(
+        &argv[..8],
+        [
+            "run",
+            "--rm",
+            "--network=none",
+            "--env-file",
+            "/dev/null",
+            "--workdir",
+            "/work",
+            "--volume",
+        ]
+    );
+    assert!(argv[8].ends_with(":/work:rw"), "{:?}", argv[8]);
+    assert_eq!(argv[9], review_sandbox::container::DEFAULT_IMAGE);
+    assert_eq!(&argv[10..], ["/bin/sh", "./build.sh"]);
 }
 
 #[test]

@@ -1943,6 +1943,27 @@ impl<'a> Kernel<'a> {
             .cas
             .put_json(&serde_json::to_value(&decision).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+        let mut event_artifacts = vec![artifact.clone()];
+        if !require_unchanged {
+            // V3 Gates may write only inside their disposable clone. Preserve what they wrote
+            // before that clone disappears: the complete mutation set lives once in the CAS,
+            // while the Gate event references the same bounded summary shape as Worker
+            // provenance. The decision artifact remains the Gate's sole graph output.
+            let mutations_artifact = self
+                .cas
+                .put_json(&serde_json::json!({
+                    "added": sealed.mutations.added,
+                    "modified": sealed.mutations.modified,
+                    "deleted": sealed.mutations.deleted,
+                }))
+                .map_err(|error| error.to_string())?;
+            let mutation_summary = mutation_summary(&sealed.mutations, &mutations_artifact);
+            let mutation_summary_artifact = self
+                .cas
+                .put_json(&mutation_summary)
+                .map_err(|error| error.to_string())?;
+            event_artifacts.push(mutation_summary_artifact);
+        }
         self.buffer_reviewer_event(
             node_id,
             NewEvent::new(
@@ -1950,7 +1971,7 @@ impl<'a> Kernel<'a> {
                 serde_json::to_value(&decision).map_err(|e| e.to_string())?,
             )
             .node(node_id)
-            .referencing(vec![artifact.clone()]),
+            .referencing(event_artifacts),
         );
         self.gates
             .lock()

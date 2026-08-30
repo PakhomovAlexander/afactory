@@ -1,4 +1,4 @@
-.PHONY: check fmt lint test fixtures build pilot-check
+.PHONY: check fmt lint test fixtures build pilot-check review-kernel-container-probes
 
 check: fmt lint test fixtures
 
@@ -19,3 +19,9 @@ build:
 
 pilot-check:
 	cargo test --locked -p reviewctl --test task_implement
+
+# Live containment and the v3 Gate route. These stay outside `make check` because a missing
+# daemon is a hard failure here, never a skip disguised as success.
+review-kernel-container-probes:
+	cargo test --locked -p review-sandbox --test container_probes -- --ignored
+	cargo test --locked -p review-pipeline --test end_to_end a_v3_container_gate_executes_through_the_pipeline -- --ignored --exact

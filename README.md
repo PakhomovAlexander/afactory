@@ -354,8 +354,9 @@ A `ContainerProvider` also exists for hosts with a usable runtime. Finding `dock
 proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
 installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
 back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
-inherited environment — and the live-runtime probe target proves the boundary where CI provides
-a daemon.
+inherited environment. `make review-kernel-container-probes` and its dedicated CI job carry both
+the provider probes and the live v3 Gate route. This worktree could not run them because its local
+daemon is unavailable; the route remains unverified until that job is green on the candidate.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
 Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can
@@ -367,7 +368,9 @@ pristine template. Each resolution attempt is durable before its Gate receipt; s
 uses the latest observation while the append-only log retains failed admissions. `RunReport@4`
 records that latest provider, pinned image when applicable, required and provided isolation,
 mode, and admission result for every Gate node. Formats v1/v2 permanently retain their captured
-local, read-only behavior.
+local, read-only behavior. `GateDecision@1` also references a bounded mutation summary plus the
+CAS digest of the complete v3 Gate mutation set, so permitted disposable writes remain observable
+after the clone is discarded without becoming graph output.
 
 ### Sealing
 
