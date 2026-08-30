@@ -25,7 +25,9 @@ tempfile = "3.27.0"
 nix = { version = "0.30.1", default-features = false, features = ["dir", "fs", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+exacl = "0.13.0"
 rustix = { version = "1.1.4", features = ["fs"] }
+xattr = "1.6.1"
 
 [dev-dependencies]
 review-check = { path = "../review-check" }

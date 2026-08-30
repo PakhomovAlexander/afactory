@@ -182,3 +182,50 @@ fn macos_reflinks_a_retained_descriptor_above_the_plain_copy_limit() {
         review_sandbox::CacheMaterialization::Reflink
     );
 }
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_reflink_strips_unmanifested_extended_metadata() {
+    use exacl::{AclEntry, Perm};
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, repo, cas) = fixture_repo();
+    let cache = directory.path().join("cargo-cache");
+    let crate_file = cache.join("registry/cache/index/metadata.crate");
+    std::fs::create_dir_all(crate_file.parent().unwrap()).unwrap();
+    std::fs::write(&crate_file, b"manifested data fork").unwrap();
+    xattr::set(&crate_file, "com.afactory.secret", b"not manifest data").unwrap();
+    exacl::setfacl(
+        &[&crate_file],
+        &[AclEntry::allow_user(
+            "ABCDEFAB-CDEF-ABCD-EFAB-CDEF0000000C",
+            Perm::READ,
+            None,
+        )],
+        None,
+    )
+    .unwrap();
+
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, Mode::EphemeralWrite).unwrap();
+    let receipt = materialize_cache(&source(&cache), &sandbox, &cas).unwrap();
+    assert_eq!(
+        receipt.materialization,
+        review_sandbox::CacheMaterialization::Reflink
+    );
+
+    let target = sandbox
+        .root()
+        .join(".af-cache/cargo/registry/cache/index/metadata.crate");
+    assert_eq!(
+        xattr::get(&target, "com.afactory.secret").unwrap(),
+        None,
+        "source xattrs must not survive materialization"
+    );
+    assert!(exacl::getfacl(&target, None).unwrap().is_empty());
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(std::fs::read(target).unwrap(), b"manifested data fork");
+}

@@ -11,7 +11,7 @@ use review_core::{
 use review_source_git::{digest_reader_with_buffer, encode_path};
 use review_store::Cas;
 
-use crate::{Sandbox, ensure_directory_mode};
+use crate::Sandbox;
 
 pub use review_core::{
     MAX_CACHE_BYTES_V1 as MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES_V1 as MAX_CACHE_COPY_BYTES,
@@ -229,10 +229,10 @@ pub fn materialize_cache(
             format!("creating sandbox cache root: {error}"),
         )
     })?;
-    ensure_directory_mode(&cache_root, 0o700).map_err(|error| {
+    normalize_materialized_metadata(&cache_root, true, 0o700).map_err(|error| {
         cache_error(
             CacheErrorKind::MaterializationFailed,
-            format!("restricting sandbox cache root: {error}"),
+            format!("normalizing sandbox cache root metadata: {error}"),
         )
     })?;
     let target = sandbox.root().join(source.kind.relative_root());
@@ -465,10 +465,10 @@ fn materialize_preflight(
             format!("creating sandbox cache target: {error}"),
         )
     })?;
-    ensure_directory_mode(target, 0o700).map_err(|error| {
+    normalize_materialized_metadata(target, true, 0o700).map_err(|error| {
         cache_error(
             CacheErrorKind::MaterializationFailed,
-            format!("restricting sandbox cache target: {error}"),
+            format!("normalizing sandbox cache target metadata: {error}"),
         )
     })?;
     for relative in &preflight.directories {
@@ -479,10 +479,10 @@ fn materialize_preflight(
                 format!("creating cache directory {}: {error}", directory.display()),
             )
         })?;
-        ensure_directory_mode(&directory, 0o700).map_err(|error| {
+        normalize_materialized_metadata(&directory, true, 0o700).map_err(|error| {
             cache_error(
                 CacheErrorKind::MaterializationFailed,
-                format!("making cache directory writable: {error}"),
+                format!("normalizing cache directory metadata: {error}"),
             )
         })?;
     }
@@ -545,10 +545,13 @@ fn materialize_file(
             copy_exact_bounded(&file.source, &target, file.size)?;
         }
     }
-    make_file_writable(&target).map_err(|error| {
+    normalize_materialized_metadata(&target, false, 0o600).map_err(|error| {
         cache_error(
             CacheErrorKind::MaterializationFailed,
-            format!("making cache file {} writable: {error}", target.display()),
+            format!(
+                "normalizing cache file metadata for {}: {error}",
+                file.relative.display()
+            ),
         )
     })?;
     let mut source_buffer = vec![0_u8; 64 * 1024];
@@ -732,15 +735,73 @@ fn digest_stable_file(
 }
 
 #[cfg(unix)]
-fn make_file_writable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let metadata = std::fs::symlink_metadata(path)?;
-    let mode = metadata.permissions().mode() | 0o600;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+fn normalize_materialized_metadata(path: &Path, directory: bool, mode: u32) -> std::io::Result<()> {
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::{Mode as NixMode, fchmod};
+
+    let mut flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
+    if directory {
+        flags |= OFlag::O_DIRECTORY;
+    }
+    let descriptor =
+        nix::fcntl::open(path, flags, NixMode::empty()).map_err(std::io::Error::other)?;
+    let file = std::fs::File::from(descriptor);
+
+    normalize_macos_metadata(&file, directory)?;
+    fchmod(&file, NixMode::from_bits_truncate(mode as _)).map_err(std::io::Error::other)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_macos_metadata(file: &std::fs::File, directory: bool) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use xattr::FileExt;
+
+    if !directory {
+        let attributes: Vec<_> = file.list_xattr()?.collect();
+        for attribute in attributes {
+            let _ = file.remove_xattr(&attribute);
+        }
+        for attribute in file.list_xattr()? {
+            let value = file.get_xattr(&attribute)?;
+            // macOS attaches an immutable, kernel-owned provenance marker to files created by a
+            // provenance-tracked process and refuses its removal. Admit only its closed bounded
+            // shape; every source-controlled xattr and named fork is removed or fails closed.
+            let admitted_provenance = attribute == std::ffi::OsStr::new("com.apple.provenance")
+                && value
+                    .as_ref()
+                    .is_some_and(|value| value.len() <= 64 && value.starts_with(&[1, 2]));
+            if !admitted_provenance {
+                return Err(std::io::Error::other(format!(
+                    "materialized cache object retained extended attribute {attribute:?}"
+                )));
+            }
+        }
+    }
+
+    // The cache tree is private and no worker has started, and `/dev/fd` binds the ACL operation
+    // to the no-follow descriptor above rather than resolving the candidate path a second time.
+    let descriptor_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
+    exacl::setfacl(&[&descriptor_path], &[], None)?;
+    if !exacl::getfacl(&descriptor_path, None)?.is_empty() {
+        return Err(std::io::Error::other(
+            "materialized cache object retained an extended ACL",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn normalize_macos_metadata(_file: &std::fs::File, _directory: bool) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn make_file_writable(path: &Path) -> std::io::Result<()> {
+fn normalize_materialized_metadata(
+    path: &Path,
+    _directory: bool,
+    _mode: u32,
+) -> std::io::Result<()> {
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_readonly(false);
     std::fs::set_permissions(path, permissions)

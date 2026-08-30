@@ -1849,6 +1849,10 @@ impl<'a> Kernel<'a> {
                     serde_json::to_value(payload).map_err(|e| e.to_string())?,
                 ))?;
             } else {
+                let manifest_refs = cache_snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.source_digest.clone())
+                    .collect();
                 let payload = RunReportPayloadV5 {
                     outcomes,
                     blocked_gates,
@@ -1858,10 +1862,13 @@ impl<'a> Kernel<'a> {
                     cache_snapshots,
                     cache_failures,
                 };
-                self.append(NewEvent::new(
-                    EventType::RunReportV5,
-                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
-                ))?;
+                self.append(
+                    NewEvent::new(
+                        EventType::RunReportV5,
+                        serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                    )
+                    .referencing(manifest_refs),
+                )?;
             }
         } else {
             let payload = RunReportPayloadV3 {
@@ -2126,7 +2133,7 @@ impl<'a> Kernel<'a> {
                         self.record_cache_failure(
                             node_id,
                             kind,
-                            RunCacheFailureReasonV5::PolicyUnavailable,
+                            cache_failure_reason(error.kind()),
                         );
                         eprintln!(
                             "cache diagnostic for Gate `{node_id}`: {}",

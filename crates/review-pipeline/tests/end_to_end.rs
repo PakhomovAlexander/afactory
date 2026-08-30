@@ -1275,6 +1275,24 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
     assert!(first.complete(), "{:?}", first.outcomes);
     assert!(kernel.gate_decision("gate").unwrap().passed());
     drop(kernel); // crash window: cache receipt and node receipts exist, final report does not.
+    let cache_manifest_id = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::CacheSnapshotMaterializedV1)
+        .map(|event| {
+            serde_json::from_value::<review_core::RunCacheSnapshotV5>(event.payload)
+                .unwrap()
+                .source_digest
+        })
+        .expect("durable cache receipt");
+    let cache_manifest_hex = cache_manifest_id.strip_prefix("sha256:").unwrap();
+    let cache_manifest_path = workspace
+        .path()
+        .join("cas/objects")
+        .join(&cache_manifest_hex[..2])
+        .join(&cache_manifest_hex[2..]);
+    let cache_manifest_bytes = std::fs::read(&cache_manifest_path).unwrap();
     std::fs::remove_dir_all(&cache_root).unwrap();
 
     let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
@@ -1287,6 +1305,15 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
         .with_reviewer("performance", clean_reviewer());
     let replayed = loaded.run(&resumed).unwrap();
     assert!(replayed.complete(), "{:?}", replayed.outcomes);
+    std::fs::write(&cache_manifest_path, b"corrupt before RunReport@5").unwrap();
+    let error = resumed
+        .publish_report(&replayed, *loaded.convergence())
+        .unwrap_err();
+    assert!(
+        error.contains("failed verification"),
+        "RunReport@5 must reverify every newly referenced manifest: {error}"
+    );
+    std::fs::write(&cache_manifest_path, cache_manifest_bytes).unwrap();
     resumed
         .publish_report(&replayed, *loaded.convergence())
         .unwrap();
@@ -1316,12 +1343,13 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
         .unwrap();
     assert!(gate.artifact_refs.contains(receipt_artifact));
 
-    let report = events
+    let report_event = events
         .iter()
         .find(|event| event.event_type == review_core::EventType::RunReportV5)
         .expect("RunReport@5");
+    assert!(report_event.artifact_refs.contains(&receipt.source_digest));
     let report: review_core::RunReportPayloadV5 =
-        serde_json::from_value(report.payload.clone()).unwrap();
+        serde_json::from_value(report_event.payload.clone()).unwrap();
     assert_eq!(report.cache_snapshots, vec![receipt]);
     assert!(!repo_path.join(".af-cache").exists());
 }
@@ -1399,12 +1427,24 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
 
     let mut forged = report;
     forged.cache_failures.clear();
+    let forged_manifest = review_core::CacheManifestV1 {
+        kind: review_core::RunCacheKindV5::Cargo,
+        path_encoding: review_core::CachePathEncodingV1::PercentV2,
+        entries: vec![review_core::CacheManifestEntryV1 {
+            path: "registry/cache/forged.crate".into(),
+            content: cas.put(b"").unwrap(),
+            size: 0,
+        }],
+    };
+    let forged_manifest_id = cas
+        .put_json(&serde_json::to_value(forged_manifest).unwrap())
+        .unwrap();
     forged
         .cache_snapshots
         .push(review_core::RunCacheSnapshotV5 {
             node: "gate".into(),
             kind: review_core::RunCacheKindV5::Cargo,
-            source_digest: format!("sha256:{}", "0".repeat(64)),
+            source_digest: forged_manifest_id.clone(),
             bytes: 0,
             files: 1,
             materialization: review_core::RunCacheMaterializationV5::Copy,
@@ -1419,7 +1459,7 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
             )
             .caused_by(report_event.causation_id.clone().unwrap())
             .correlating(report_event.correlation_id.clone().unwrap())
-            .referencing(report_event.artifact_refs.clone()),
+            .referencing(vec![forged_manifest_id]),
         )
         .unwrap_err();
     assert!(
@@ -1428,6 +1468,108 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
             .contains("Cache Snapshots differ from the durable materialization facts"),
         "{error}"
     );
+}
+
+#[test]
+fn cache_resolver_preserves_every_non_policy_failure_kind() {
+    use review_config::Definition;
+    use review_core::RunCacheFailureReasonV5;
+    use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheSource};
+
+    let cases = [
+        (
+            CacheErrorKind::SourceUnavailable,
+            RunCacheFailureReasonV5::SourceUnavailable,
+            "cache source unavailable",
+        ),
+        (
+            CacheErrorKind::UnsafeContent,
+            RunCacheFailureReasonV5::UnsafeContent,
+            "cache source refused by safety policy",
+        ),
+        (
+            CacheErrorKind::LimitExceeded,
+            RunCacheFailureReasonV5::LimitExceeded,
+            "cache source exceeds configured limits",
+        ),
+        (
+            CacheErrorKind::CopyLimitExceeded,
+            RunCacheFailureReasonV5::CopyLimitExceeded,
+            "cache source cannot be materialized within its copy limit",
+        ),
+        (
+            CacheErrorKind::ConcurrentChange,
+            RunCacheFailureReasonV5::ConcurrentChange,
+            "cache source changed during snapshot",
+        ),
+        (
+            CacheErrorKind::MaterializationFailed,
+            RunCacheFailureReasonV5::MaterializationFailed,
+            "cache materialization failed",
+        ),
+    ];
+
+    for (index, (error_kind, expected_reason, expected_error)) in cases.into_iter().enumerate() {
+        let (_dir, repo_path, home) = fixture();
+        let workspace = tempfile::tempdir().unwrap();
+        let cas = Cas::open(workspace.path().join("cas")).unwrap();
+        let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+        let definition = v3_gate_authority("trusted_local", "none").replace(
+            "mode = \"ephemeral-write\"",
+            "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+        );
+        let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+        let repo = Repo::open(&repo_path, &home);
+        let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+        let run_id = format!("resolver-error-{index}");
+        let authority = support::test_round_authority_for_pipeline(
+            &cas,
+            &mut store,
+            &run_id,
+            &snapshot.manifest,
+            &definition,
+        );
+        let kernel = Kernel::from_loaded(
+            &cas,
+            &mut store,
+            &run_id,
+            snapshot.manifest,
+            &loaded,
+            authority,
+        )
+        .unwrap()
+        .with_cache_source_resolver(move |_: CacheKind| -> Result<CacheSource, CacheError> {
+            Err(CacheError::new(
+                error_kind,
+                "/tmp/operator-only-cache-detail",
+            ))
+        })
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+
+        let run = loaded.run(&kernel).unwrap();
+        assert!(matches!(
+            run.outcome("gate"),
+            Some(NodeOutcome::Failed { error, .. }) if error == expected_error
+        ));
+        kernel.publish_report(&run, *loaded.convergence()).unwrap();
+        drop(kernel);
+
+        let events = store.replay(&run_id).unwrap();
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("/tmp/operator-only")
+        );
+        let report = events
+            .into_iter()
+            .find(|event| event.event_type == review_core::EventType::RunReportV5)
+            .expect("cache-aware failure must be RunReport@5");
+        let report: review_core::RunReportPayloadV5 =
+            serde_json::from_value(report.payload).unwrap();
+        assert_eq!(report.cache_failures[0].reason, expected_reason);
+    }
 }
 
 #[test]

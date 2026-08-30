@@ -975,6 +975,18 @@ fn typed_json_artifacts(
                 )?;
                 continue;
             }
+            EventType::RunReportV5 => {
+                let report: review_core::RunReportPayloadV5 =
+                    serde_json::from_value(event.payload.clone())?;
+                for snapshot in report.cache_snapshots {
+                    insert_artifact_type(
+                        &mut artifacts,
+                        snapshot.source_digest,
+                        review_core::contract::CACHE_MANIFEST_V1.into(),
+                    )?;
+                }
+                continue;
+            }
             EventType::DemandRecordedV1
             | EventType::DemandWaivedV1
             | EventType::EvidenceAddedV1
@@ -1631,8 +1643,37 @@ fn validate_report_cache_snapshots(
     run_id: &str,
     round_event_id: &str,
     payload: &Value,
+    artifact_refs: &[String],
+    prepared: &PreparedArtifacts,
 ) -> Result<(), StoreError> {
     let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
+    let expected_refs: std::collections::BTreeSet<_> = report
+        .cache_snapshots
+        .iter()
+        .map(|snapshot| snapshot.source_digest.clone())
+        .collect();
+    let reported_refs: std::collections::BTreeSet<_> = artifact_refs.iter().cloned().collect();
+    if artifact_refs.len() != reported_refs.len() || !expected_refs.is_subset(&reported_refs) {
+        return Err(StoreError::Conflict(
+            "RunReport@5 must reference each successful Cache Snapshot manifest exactly once"
+                .into(),
+        ));
+    }
+    for snapshot in &report.cache_snapshots {
+        let manifest = prepared.json.get(&snapshot.source_digest).ok_or_else(|| {
+            StoreError::Conflict("RunReport@5 Cache Snapshot manifest was not prepared".into())
+        })?;
+        let manifest: review_core::CacheManifestV1 = serde_json::from_value(manifest.clone())?;
+        manifest.validate().map_err(StoreError::Conflict)?;
+        if manifest.kind != snapshot.kind
+            || u64::try_from(manifest.entries.len()).ok() != Some(snapshot.files)
+            || manifest.bytes() != snapshot.bytes
+        {
+            return Err(StoreError::Conflict(
+                "RunReport@5 Cache Snapshot receipt contradicts CacheManifest@1".into(),
+            ));
+        }
+    }
     let failed: std::collections::BTreeSet<_> = report
         .cache_failures
         .iter()
@@ -2520,6 +2561,8 @@ fn validate_campaign_transition(
                                     run_id,
                                     active_id,
                                     &event.payload,
+                                    &event.artifact_refs,
+                                    prepared,
                                 )?;
                             }
                             validate_report_receipts(
