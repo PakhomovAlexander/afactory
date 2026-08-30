@@ -3,10 +3,7 @@ version = "1.0.0"
 subjects = ["diff", "whole-tree"]
 
 [runner]
-program = "claude"
-args = [
-  { value = "--model" },
-  { value = "opus" },
-  { value = "--effort" },
-  { value = "high" },
-]
+program = "codex"
+# Temporarily inherit the machine-configured Codex model. The adapter owns its
+# exec, sandbox, output-schema, and stdin arguments.
+args = []
