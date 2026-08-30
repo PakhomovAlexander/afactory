@@ -573,6 +573,7 @@ mod tests {
     /// The invocation is the part a stub can prove: one bind, no network, only declared
     /// environment, and a name that can be reaped after client failure.
     #[test]
+    #[cfg(unix)]
     fn the_invocation_binds_only_the_sandbox_and_disables_the_network() {
         let provider =
             ContainerProvider::with_runtime("/nonexistent/runtime").with_image("example/image:tag");
