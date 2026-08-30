@@ -7,7 +7,9 @@ Pipeline format v3 now requires explicit Gate provider, required isolation, and
 isolation before command dispatch, runs in an independent writable clone, and publishes the
 exact fact in structural `RunReport@4`; v1/v2 retain their frozen local read-only contract.
 Container live probes exercise the same typed `CheckRunner` route and compile locally, but the
-machine had no running Docker daemon, so only the trusted-local/none path was executed here.
+machine had no running Docker daemon, so only the trusted-local/none path was executed here. A
+dedicated CI job now runs provider containment controls, the live v3 Gate route, timeout reaping,
+and host-ownership assertions; it remains pending until this product branch is published.
 
 Disposable Campaign `m6-gate-binding-dogfood-fixed` ran project-hub's write-heavy scaffold and
 update smoke checks, then two machine-configured Codex Workers, and returned Pass with 30,060
@@ -15,7 +17,21 @@ tokens, zero Findings, and zero Demands. Its report records an admitted
 `trusted_local`/`none`/`ephemeral-write` binding, and the candidate checkout retained no Gate
 mutations. Dogfood also exposed and fixed generated Codex manifests incorrectly repeating the
 adapter-owned `exec`/sandbox/stdin flags. Focused regressions and the full local `make check` gate
-pass; resume at M6.2 sandbox-local Cache Snapshots.
+pass.
+
+Pinned Campaign `m6-1-gate-bindings-v1` spent 202,163 and 180,236 tokens across its two Rounds,
+exhausted, and left five fixed Findings with zero open. Follow-up Campaign
+`m6-1-gate-bindings-final-v1` spent 217,695 and 174,419 tokens, exhausted, and left another five
+fixed Findings with zero open. Those reviews added replayable append-only binding observations,
+digest-pinned project images, provider-usability admission, durable Gate mutation summaries, an
+executed recording-runtime route, a real Docker CI target, portable environment forwarding, and
+bounded timeout reaping that refuses to seal an unreaped writable bind.
+
+Fresh final Campaign `m6-1-gate-bindings-final-v2` spent 223,179 tokens in Round 1 and 250,781 in
+Round 2 and returned Pass. Its four Findings are fixed with zero open: the image retains its own
+`PATH`, container writes use the caller's UID:GID, preserved unsafe sandboxes report their path,
+and the Unix-specific argv assertion is Unix-gated. Final candidate `6a22aaa` passes `make check`.
+Resume at M6.2 sandbox-local Cache Snapshots.
 
 ## 2026-08-28 — M5.3 Campaign enumeration
 

@@ -15,8 +15,9 @@ verified. M3.1–M3.3 and M4 are complete. M4's exhausted verification Campaign 
 Findings and zero open; follow-up PR #19 merged at exact `main` `01147ce` and post-merge CI passed.
 M5 is complete: deliberate report formats, exact Round/reviewer spend, and safe Campaign
 enumeration/history are implemented and externally verified. M6.1 Gate Execution Bindings are
-implemented, locally verified, and proven by a real v3 Campaign; resume at M6.2 sandbox-local
-Cache Snapshots. V3.1 local delivery is
+implemented, locally verified, proven by dogfood, and passed final pinned Campaign
+`m6-1-gate-bindings-final-v2` with zero open Findings; the Docker-backed CI probe remains pending
+the first product-branch publication. Resume at M6.2 sandbox-local Cache Snapshots. V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist

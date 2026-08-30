@@ -577,6 +577,15 @@ before command dispatch, and records replayable append-only binding attempts wit
 exact fact in `RunReport@4`.
 Legacy v1/v2 behavior is frozen. A disposable project-hub Campaign ran both write-heavy smoke
 checks and two Codex Workers to Pass without leaking Gate mutations into the candidate checkout.
+Pinned external Campaigns then worked every Gate-binding defect to closure. Final Campaign
+`m6-1-gate-bindings-final-v2` spent 223,179 tokens in Round 1 and 250,781 in Round 2, returned
+Pass, and has four fixed Findings with zero open. Container execution now preserves the pinned
+image `PATH`, forwards only portable declared environment, writes as the caller's UID:GID, reaps
+timed-out daemon workloads before sealing, reports any deliberately preserved sandbox path, and
+records Gate mutations durably. `make check` is green. The Docker-only containment, timeout, and
+ownership probes are wired into the dedicated `container-probes` CI job but remain unexecuted on
+this local host because its daemon is unavailable; that job must pass on the first published
+candidate.
 
 Route every Gate check through its resolved Execution Binding and admit the Sandbox Provider
 against the pipeline's required isolation before execution. A safe pipeline requires the

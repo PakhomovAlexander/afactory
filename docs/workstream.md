@@ -7,7 +7,10 @@ open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passe
 deliberate JSON/text reports, exact Round/reviewer spend, and safe Campaign enumeration/history;
 fresh pinned verification returned Pass. M6.1 now routes v3 Gates through explicit admitted
 Execution Bindings in independent writable clones and reports the fact through `RunReport@4`; a
-real smoke/reviewer Campaign returned Pass. Resume at M6.2 sandbox-local Cache Snapshots. The accepted V3.1
+real dogfood Campaign passed, final pinned Campaign `m6-1-gate-bindings-final-v2` returned Pass,
+and its four Findings are fixed with zero open. The Docker-backed probe job remains unexecuted on
+this daemon-less worktree and must be green when the product branch is first published. Resume at
+M6.2 sandbox-local Cache Snapshots. The accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
