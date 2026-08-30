@@ -32,9 +32,9 @@ pub mod seal;
 
 pub use self::SandboxTemplate as Template;
 pub use cache::{
-    CacheEnvironment, CacheKind, CacheLimits, CacheMaterialization, CacheSnapshot, CacheSource,
-    MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES, MAX_CACHE_FILES, materialize_cache,
-    remove_materialized_caches,
+    CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
+    CacheSnapshot, CacheSource, MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES, MAX_CACHE_FILES,
+    materialize_cache, remove_materialized_caches,
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};

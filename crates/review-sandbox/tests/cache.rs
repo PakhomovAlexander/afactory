@@ -72,6 +72,7 @@ fn cargo_cache_refuses_credential_shaped_and_over_limit_content() {
     assert!(
         materialize_cache(&source(&cache), &sandbox, &cas)
             .unwrap_err()
+            .operator_detail()
             .contains("credential-shaped")
     );
 
@@ -83,6 +84,7 @@ fn cargo_cache_refuses_credential_shaped_and_over_limit_content() {
     assert!(
         materialize_cache(&bounded, &sandbox, &cas)
             .unwrap_err()
+            .operator_detail()
             .contains("byte limit")
     );
 }
@@ -106,6 +108,7 @@ fn cargo_cache_never_follows_symlinks() {
     assert!(
         materialize_cache(&source(&cache), &sandbox, &cas)
             .unwrap_err()
+            .operator_detail()
             .contains("following links")
     );
 }
@@ -121,7 +124,8 @@ fn cargo_cache_refuses_uncurated_registry_and_git_layouts() {
     assert!(
         materialize_cache(&source(&cache), &sandbox, &cas)
             .unwrap_err()
-            .contains("outside the admitted")
+            .operator_detail()
+            .contains("outside registry/cache")
     );
 
     std::fs::remove_dir_all(cache.join("registry")).unwrap();
@@ -130,7 +134,8 @@ fn cargo_cache_refuses_uncurated_registry_and_git_layouts() {
     assert!(
         materialize_cache(&source(&cache), &sandbox, &cas)
             .unwrap_err()
-            .contains("not admitted")
+            .operator_detail()
+            .contains("outside registry/cache")
     );
 }
 
@@ -149,6 +154,31 @@ fn cargo_cache_counts_directories_before_allocating_an_unbounded_tree() {
     assert!(
         materialize_cache(&bounded, &sandbox, &cas)
             .unwrap_err()
+            .operator_detail()
             .contains("filesystem-entry limit")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_reflinks_a_retained_descriptor_above_the_plain_copy_limit() {
+    let (directory, repo, cas) = fixture_repo();
+    let cache = directory.path().join("cargo-cache");
+    let crate_file = cache.join("registry/cache/index/sparse.crate");
+    std::fs::create_dir_all(crate_file.parent().unwrap()).unwrap();
+    std::fs::File::create(&crate_file)
+        .unwrap()
+        .set_len(2 * 1024 * 1024)
+        .unwrap();
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, Mode::EphemeralWrite).unwrap();
+    let mut bounded = source(&cache);
+    bounded.limits.max_bytes = 4 * 1024 * 1024;
+    bounded.limits.max_copy_bytes = 1;
+
+    let receipt = materialize_cache(&bounded, &sandbox, &cas).unwrap();
+    assert_eq!(
+        receipt.materialization,
+        review_sandbox::CacheMaterialization::Reflink
     );
 }

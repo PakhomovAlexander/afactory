@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use review_config::CacheKindSpec;
-use review_sandbox::{CacheKind, CacheLimits, CacheSource};
+use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheSource};
 use serde::Deserialize;
 
 const MAX_POLICY_BYTES: u64 = 64 * 1024;
@@ -45,13 +45,19 @@ pub fn resolve(requested: &[CacheKindSpec]) -> Result<BTreeMap<CacheKind, CacheS
         .map_err(|error| format!("invalid cache policy {}: {error}", path.display()))
 }
 
-pub fn resolve_kind(kind: CacheKind) -> Result<CacheSource, String> {
+pub fn resolve_kind(kind: CacheKind) -> Result<CacheSource, CacheError> {
     let requested = match kind {
         CacheKind::Cargo => CacheKindSpec::Cargo,
     };
-    resolve(&[requested])?
+    resolve(&[requested])
+        .map_err(|error| CacheError::new(CacheErrorKind::PolicyUnavailable, error))?
         .remove(&kind)
-        .ok_or_else(|| format!("requested cache `{}` was not resolved", kind.name()))
+        .ok_or_else(|| {
+            CacheError::new(
+                CacheErrorKind::PolicyUnavailable,
+                format!("requested cache `{}` was not resolved", kind.name()),
+            )
+        })
 }
 
 fn policy_path() -> Result<Option<PathBuf>, String> {

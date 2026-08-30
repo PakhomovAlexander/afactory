@@ -30,7 +30,10 @@ pub mod resolution;
 pub mod snapshot;
 pub mod subject;
 
-pub use cache::{CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1};
+pub use cache::{
+    CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
+    MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,
+};
 pub use campaign::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
     CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1,

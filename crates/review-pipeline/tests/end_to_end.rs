@@ -1279,7 +1279,7 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
 
     let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
         .unwrap()
-        .with_cache_source_resolver(|_| -> Result<CacheSource, String> {
+        .with_cache_source_resolver(|_| -> Result<CacheSource, review_sandbox::CacheError> {
             panic!("completed Gate replay must not resolve machine-local cache policy")
         })
         .with_checks(vec![passing_check()])
@@ -1358,9 +1358,14 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
         authority,
     )
     .unwrap()
-    .with_cache_source_resolver(|kind: CacheKind| -> Result<CacheSource, String> {
-        Err(format!("no policy for {}", kind.name()))
-    })
+    .with_cache_source_resolver(
+        |kind: CacheKind| -> Result<CacheSource, review_sandbox::CacheError> {
+            Err(review_sandbox::CacheError::new(
+                review_sandbox::CacheErrorKind::PolicyUnavailable,
+                format!("no policy for {} at /tmp/limit-changed-link", kind.name()),
+            ))
+        },
+    )
     .with_checks(vec![passing_check()])
     .with_reviewer("architecture", clean_reviewer())
     .with_reviewer("performance", clean_reviewer());
@@ -1368,7 +1373,7 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
     let run = loaded.run(&kernel).unwrap();
     assert!(matches!(
         run.outcome("gate"),
-        Some(NodeOutcome::Failed { .. })
+        Some(NodeOutcome::Failed { error, .. }) if error == "cache policy unavailable"
     ));
     kernel.publish_report(&run, *loaded.convergence()).unwrap();
     drop(kernel);
@@ -1379,17 +1384,49 @@ fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
             .iter()
             .all(|event| event.event_type != review_core::EventType::RunReportV4)
     );
-    let report = events
+    let report_event = events
         .iter()
         .find(|event| event.event_type == review_core::EventType::RunReportV5)
         .expect("cache-aware failure must be RunReport@5");
     let report: review_core::RunReportPayloadV5 =
-        serde_json::from_value(report.payload.clone()).unwrap();
+        serde_json::from_value(report_event.payload.clone()).unwrap();
     assert!(report.cache_snapshots.is_empty());
     assert_eq!(report.cache_failures.len(), 1);
     assert_eq!(
         report.cache_failures[0].reason,
         review_core::RunCacheFailureReasonV5::PolicyUnavailable
+    );
+
+    let mut forged = report;
+    forged.cache_failures.clear();
+    forged
+        .cache_snapshots
+        .push(review_core::RunCacheSnapshotV5 {
+            node: "gate".into(),
+            kind: review_core::RunCacheKindV5::Cargo,
+            source_digest: format!("sha256:{}", "0".repeat(64)),
+            bytes: 0,
+            files: 1,
+            materialization: review_core::RunCacheMaterializationV5::Copy,
+        });
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                review_core::EventType::RunReportV5,
+                serde_json::to_value(forged).unwrap(),
+            )
+            .caused_by(report_event.causation_id.clone().unwrap())
+            .correlating(report_event.correlation_id.clone().unwrap())
+            .referencing(report_event.artifact_refs.clone()),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Cache Snapshots differ from the durable materialization facts"),
+        "{error}"
     );
 }
 
@@ -1429,9 +1466,11 @@ fn a_cache_not_reached_after_gate_setup_failure_is_explicit_v5_evidence() {
     .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
         workspace.path().join("missing-container-runtime"),
     ))
-    .with_cache_source_resolver(|_: CacheKind| -> Result<CacheSource, String> {
-        panic!("cache policy must remain lazy when Gate setup fails")
-    })
+    .with_cache_source_resolver(
+        |_: CacheKind| -> Result<CacheSource, review_sandbox::CacheError> {
+            panic!("cache policy must remain lazy when Gate setup fails")
+        },
+    )
     .with_checks(vec![passing_check()])
     .with_reviewer("architecture", clean_reviewer())
     .with_reviewer("performance", clean_reviewer());

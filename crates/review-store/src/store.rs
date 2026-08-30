@@ -2492,13 +2492,15 @@ fn validate_campaign_transition(
                         }
                         _ => {}
                     }
-                    if event_type.is_run_report() && report_closes(event_type, &event.payload)? {
-                        if terminal {
-                            return Err(StoreError::Conflict(
-                                "the active Round epoch already has a terminal conclusion".into(),
-                            ));
-                        }
-                        if event_type.run_report_requires_receipts() {
+                    if event_type.is_run_report() {
+                        let closes = report_closes(event_type, &event.payload)?;
+                        // RunReport@5 is the first incomplete report that carries new execution
+                        // authority. Validate its plan, binding, cache, and receipt claims even
+                        // when it keeps the Round open; frozen report versions retain their
+                        // existing closing-report admission behavior.
+                        if event_type.run_report_requires_receipts()
+                            && (closes || event_type == EventType::RunReportV5)
+                        {
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
@@ -2528,7 +2530,15 @@ fn validate_campaign_transition(
                                 &event.payload,
                             )?;
                         }
-                        terminal = true;
+                        if closes {
+                            if terminal {
+                                return Err(StoreError::Conflict(
+                                    "the active Round epoch already has a terminal conclusion"
+                                        .into(),
+                                ));
+                            }
+                            terminal = true;
+                        }
                     }
                 }
             }

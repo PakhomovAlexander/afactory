@@ -53,8 +53,8 @@ use review_runner::{
     ReviewerInputs, RunnerError, TokenUsage,
 };
 use review_sandbox::{
-    CacheKind, CacheMaterialization, CacheSource, ContainerProvider, Isolation, Mode, Policy,
-    Sandbox, admit, materialize_cache, remove_materialized_caches,
+    CacheError, CacheErrorKind, CacheKind, CacheMaterialization, CacheSource, ContainerProvider,
+    Isolation, Mode, Policy, Sandbox, admit, materialize_cache, remove_materialized_caches,
 };
 use review_source_git::Manifest;
 use review_store::{
@@ -62,7 +62,7 @@ use review_store::{
     Verdict,
 };
 
-type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, String> + Send + Sync;
+type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync;
 
 fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
@@ -142,25 +142,15 @@ fn run_cache_materialization(method: CacheMaterialization) -> RunCacheMaterializ
     }
 }
 
-fn classify_cache_failure(error: &str) -> RunCacheFailureReasonV5 {
-    let error = error.to_ascii_lowercase();
-    if error.contains("changed") {
-        RunCacheFailureReasonV5::ConcurrentChange
-    } else if error.contains("copy limit") || error.contains("plain copy") {
-        RunCacheFailureReasonV5::CopyLimitExceeded
-    } else if error.contains("limit") || error.contains("overflow") {
-        RunCacheFailureReasonV5::LimitExceeded
-    } else if error.contains("credential")
-        || error.contains("link")
-        || error.contains("special")
-        || error.contains("allowlist")
-        || error.contains("not admitted")
-    {
-        RunCacheFailureReasonV5::UnsafeContent
-    } else if error.contains("source") || error.contains("directory") {
-        RunCacheFailureReasonV5::SourceUnavailable
-    } else {
-        RunCacheFailureReasonV5::MaterializationFailed
+fn cache_failure_reason(kind: CacheErrorKind) -> RunCacheFailureReasonV5 {
+    match kind {
+        CacheErrorKind::PolicyUnavailable => RunCacheFailureReasonV5::PolicyUnavailable,
+        CacheErrorKind::SourceUnavailable => RunCacheFailureReasonV5::SourceUnavailable,
+        CacheErrorKind::UnsafeContent => RunCacheFailureReasonV5::UnsafeContent,
+        CacheErrorKind::LimitExceeded => RunCacheFailureReasonV5::LimitExceeded,
+        CacheErrorKind::CopyLimitExceeded => RunCacheFailureReasonV5::CopyLimitExceeded,
+        CacheErrorKind::ConcurrentChange => RunCacheFailureReasonV5::ConcurrentChange,
+        CacheErrorKind::MaterializationFailed => RunCacheFailureReasonV5::MaterializationFailed,
     }
 }
 
@@ -1298,7 +1288,7 @@ impl<'a> Kernel<'a> {
 
     pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
     where
-        F: Fn(CacheKind) -> Result<CacheSource, String> + Send + Sync + 'static,
+        F: Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync + 'static,
     {
         self.cache_source_resolver = Some(Arc::new(resolver));
         self
@@ -2102,25 +2092,35 @@ impl<'a> Kernel<'a> {
                 } else if let Some(resolver) = self.cache_source_resolver.as_ref() {
                     resolver(kind)
                 } else {
-                    Err(format!(
-                        "Gate requested `{}` cache without an available machine-local mapping",
-                        kind.name()
+                    Err(CacheError::new(
+                        CacheErrorKind::PolicyUnavailable,
+                        format!(
+                            "Gate requested `{}` cache without an available machine-local mapping",
+                            kind.name()
+                        ),
                     ))
                 };
                 let source = match resolved {
                     Ok(source) if source.kind == kind => source,
                     Ok(source) => {
-                        let error = format!(
-                            "machine-local cache mapping for `{}` resolved as `{}`",
-                            kind.name(),
-                            source.kind.name()
+                        let error = CacheError::new(
+                            CacheErrorKind::PolicyUnavailable,
+                            format!(
+                                "machine-local cache mapping for `{}` resolved as `{}`",
+                                kind.name(),
+                                source.kind.name()
+                            ),
                         );
                         self.record_cache_failure(
                             node_id,
                             kind,
                             RunCacheFailureReasonV5::PolicyUnavailable,
                         );
-                        return Err(error);
+                        eprintln!(
+                            "cache diagnostic for Gate `{node_id}`: {}",
+                            error.operator_detail()
+                        );
+                        return Err(error.to_string());
                     }
                     Err(error) => {
                         self.record_cache_failure(
@@ -2128,14 +2128,26 @@ impl<'a> Kernel<'a> {
                             kind,
                             RunCacheFailureReasonV5::PolicyUnavailable,
                         );
-                        return Err(error);
+                        eprintln!(
+                            "cache diagnostic for Gate `{node_id}`: {}",
+                            error.operator_detail()
+                        );
+                        return Err(error.to_string());
                     }
                 };
                 let snapshot = match materialize_cache(&source, &sandbox, self.cas) {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
-                        self.record_cache_failure(node_id, kind, classify_cache_failure(&error));
-                        return Err(error);
+                        self.record_cache_failure(
+                            node_id,
+                            kind,
+                            cache_failure_reason(error.kind()),
+                        );
+                        eprintln!(
+                            "cache diagnostic for Gate `{node_id}`: {}",
+                            error.operator_detail()
+                        );
+                        return Err(error.to_string());
                     }
                 };
                 let receipt = RunCacheSnapshotV5 {

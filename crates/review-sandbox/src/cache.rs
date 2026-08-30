@@ -1,19 +1,81 @@
 //! Bounded, credential-free package cache snapshots for writable Gate clones.
 
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use review_core::{CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, RunCacheKindV5};
+use review_core::{
+    CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, RunCacheKindV5,
+    validate_cache_path_v1,
+};
 use review_source_git::{digest_reader_with_buffer, encode_path};
 use review_store::Cas;
 
 use crate::{Sandbox, ensure_directory_mode};
 
-pub const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-pub const MAX_CACHE_COPY_BYTES: u64 = 512 * 1024 * 1024;
-pub const MAX_CACHE_FILES: u64 = 250_000;
+pub use review_core::{
+    MAX_CACHE_BYTES_V1 as MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES_V1 as MAX_CACHE_COPY_BYTES,
+    MAX_CACHE_ENTRIES_V1 as MAX_CACHE_FILES,
+};
 const CACHE_ROOT: &str = ".af-cache";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheErrorKind {
+    PolicyUnavailable,
+    SourceUnavailable,
+    UnsafeContent,
+    LimitExceeded,
+    CopyLimitExceeded,
+    ConcurrentChange,
+    MaterializationFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheError {
+    kind: CacheErrorKind,
+    detail: String,
+}
+
+impl CacheError {
+    pub fn new(kind: CacheErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    pub const fn kind(&self) -> CacheErrorKind {
+        self.kind
+    }
+
+    /// Operator detail is deliberately separate from Display: it may contain a machine-local
+    /// source path and must never be copied into a durable RunReport.
+    pub fn operator_detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl std::fmt::Display for CacheError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self.kind {
+            CacheErrorKind::PolicyUnavailable => "cache policy unavailable",
+            CacheErrorKind::SourceUnavailable => "cache source unavailable",
+            CacheErrorKind::UnsafeContent => "cache source refused by safety policy",
+            CacheErrorKind::LimitExceeded => "cache source exceeds configured limits",
+            CacheErrorKind::CopyLimitExceeded => {
+                "cache source cannot be materialized within its copy limit"
+            }
+            CacheErrorKind::ConcurrentChange => "cache source changed during snapshot",
+            CacheErrorKind::MaterializationFailed => "cache materialization failed",
+        })
+    }
+}
+
+impl std::error::Error for CacheError {}
+
+fn cache_error(kind: CacheErrorKind, detail: impl Into<String>) -> CacheError {
+    CacheError::new(kind, detail)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CacheKind {
@@ -31,62 +93,15 @@ impl CacheKind {
         Path::new(CACHE_ROOT).join(self.name())
     }
 
-    fn validate_relative(self, relative: &Path) -> Result<(), String> {
-        let mut components = relative.components();
-        let Some(Component::Normal(first)) = components.next() else {
-            return Err("cache entry has no normal relative path".into());
-        };
-        let first = first
-            .to_str()
-            .ok_or("Cargo cache paths must be portable UTF-8")?;
-        if first != "registry" {
-            return Err(format!(
-                "Cargo cache path `{}` is outside the credential-free registry/ allowlist; git dependency caches are not admitted in CacheManifest@1",
-                relative.display()
-            ));
-        }
-        if let Some(Component::Normal(second)) = components.next() {
-            let second = second
-                .to_str()
-                .ok_or("Cargo cache paths must be portable UTF-8")?;
-            if !matches!(second, "cache" | "index") {
-                return Err(format!(
-                    "Cargo cache path `{}` is outside the admitted registry/cache and sparse registry/index layouts",
-                    relative.display()
-                ));
-            }
-        }
-        for component in relative.components() {
-            let Component::Normal(component) = component else {
-                return Err(format!(
-                    "cache path `{}` has a non-normal component",
-                    relative.display()
-                ));
-            };
-            let component = component
-                .to_str()
-                .ok_or("Cargo cache paths must be portable UTF-8")?
-                .to_ascii_lowercase();
-            if matches!(
-                component.as_str(),
-                "credentials"
-                    | "credentials.toml"
-                    | "credentials.json"
-                    | ".git-credentials"
-                    | "config"
-                    | "config.toml"
-                    | ".netrc"
-                    | ".npmrc"
-                    | "token"
-                    | "tokens"
-            ) {
-                return Err(format!(
-                    "cache path `{}` has credential-shaped component `{component}`",
-                    relative.display()
-                ));
-            }
-        }
-        Ok(())
+    fn validate_relative(self, relative: &Path, is_file: bool) -> Result<(), CacheError> {
+        let relative = relative.to_str().ok_or_else(|| {
+            cache_error(
+                CacheErrorKind::UnsafeContent,
+                "Cargo cache paths must be portable UTF-8",
+            )
+        })?;
+        validate_cache_path_v1(manifest_kind(self), relative.as_bytes(), is_file)
+            .map_err(|error| cache_error(CacheErrorKind::UnsafeContent, error))
     }
 
     pub fn environment(self, sandbox_root: &Path) -> CacheEnvironment {
@@ -108,6 +123,12 @@ impl CacheKind {
                 ],
             },
         }
+    }
+}
+
+fn manifest_kind(kind: CacheKind) -> RunCacheKindV5 {
+    match kind {
+        CacheKind::Cargo => RunCacheKindV5::Cargo,
     }
 }
 
@@ -183,22 +204,37 @@ pub fn materialize_cache(
     source: &CacheSource,
     sandbox: &Sandbox,
     cas: &Cas,
-) -> Result<CacheSnapshot, String> {
-    source.limits.validate()?;
+) -> Result<CacheSnapshot, CacheError> {
+    source
+        .limits
+        .validate()
+        .map_err(|error| cache_error(CacheErrorKind::LimitExceeded, error))?;
     if !source.source.is_absolute() {
-        return Err("cache source must resolve to an absolute directory".into());
+        return Err(cache_error(
+            CacheErrorKind::SourceUnavailable,
+            "cache source must resolve to an absolute directory",
+        ));
     }
     let preflight = preflight(source.kind, &source.source, source.limits)?;
     let cache_root = sandbox.root().join(CACHE_ROOT);
     if std::fs::symlink_metadata(&cache_root).is_ok() {
-        return Err(format!(
-            "Subject already contains reserved cache path `{CACHE_ROOT}`"
+        return Err(cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("Subject already contains reserved cache path `{CACHE_ROOT}`"),
         ));
     }
-    std::fs::create_dir(&cache_root)
-        .map_err(|error| format!("creating sandbox cache root: {error}"))?;
-    ensure_directory_mode(&cache_root, 0o700)
-        .map_err(|error| format!("restricting sandbox cache root: {error}"))?;
+    std::fs::create_dir(&cache_root).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("creating sandbox cache root: {error}"),
+        )
+    })?;
+    ensure_directory_mode(&cache_root, 0o700).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("restricting sandbox cache root: {error}"),
+        )
+    })?;
     let target = sandbox.root().join(source.kind.relative_root());
 
     let result = materialize_preflight(source, &preflight, &target, cas);
@@ -209,7 +245,7 @@ pub fn materialize_cache(
 }
 
 #[cfg(unix)]
-fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Preflight, String> {
+fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Preflight, CacheError> {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
     use nix::sys::stat::{Mode as NixMode, SFlag, fstat};
@@ -221,37 +257,56 @@ fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Pref
     let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK;
     let root =
         Dir::open(source, flags | OFlag::O_DIRECTORY, NixMode::empty()).map_err(|error| {
-            format!(
-                "{} cache source {} must be an accessible real directory: {error}",
-                kind.name(),
-                source.display()
+            cache_error(
+                CacheErrorKind::SourceUnavailable,
+                format!(
+                    "{} cache source {} must be an accessible real directory: {error}",
+                    kind.name(),
+                    source.display()
+                ),
             )
         })?;
     let mut level = vec![(root, PathBuf::new(), 0_u32)];
     while let Some((mut directory, parent, depth)) = level.pop() {
         if depth > 128 {
-            return Err("cache tree exceeds the 128-directory depth limit".into());
+            return Err(cache_error(
+                CacheErrorKind::LimitExceeded,
+                "cache tree exceeds the 128-directory depth limit",
+            ));
         }
         let mut names = Vec::new();
         for entry in directory.iter() {
-            let entry = entry.map_err(|error| format!("reading cache directory: {error}"))?;
+            let entry = entry.map_err(|error| {
+                cache_error(
+                    CacheErrorKind::SourceUnavailable,
+                    format!("reading cache directory: {error}"),
+                )
+            })?;
             let raw = entry.file_name().to_bytes();
             if matches!(raw, b"." | b"..") {
                 continue;
             }
-            entry_count = entry_count
-                .checked_add(1)
-                .ok_or("cache entry count overflow")?;
+            entry_count = entry_count.checked_add(1).ok_or_else(|| {
+                cache_error(CacheErrorKind::LimitExceeded, "cache entry count overflow")
+            })?;
             if entry_count > limits.max_files {
-                return Err(format!(
-                    "{} cache exceeds its {} filesystem-entry limit",
-                    kind.name(),
-                    limits.max_files
+                return Err(cache_error(
+                    CacheErrorKind::LimitExceeded,
+                    format!(
+                        "{} cache exceeds its {} filesystem-entry limit",
+                        kind.name(),
+                        limits.max_files
+                    ),
                 ));
             }
             names.push(
                 std::str::from_utf8(raw)
-                    .map_err(|_| "Cargo cache paths must be portable UTF-8")?
+                    .map_err(|_| {
+                        cache_error(
+                            CacheErrorKind::UnsafeContent,
+                            "Cargo cache paths must be portable UTF-8",
+                        )
+                    })?
                     .to_string(),
             );
         }
@@ -259,51 +314,75 @@ fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Pref
         for name in names.into_iter().rev() {
             let relative = parent.join(&name);
             if relative.as_os_str().as_encoded_bytes().len() > 4096 {
-                return Err("cache path exceeds the 4096-byte portability limit".into());
+                return Err(cache_error(
+                    CacheErrorKind::LimitExceeded,
+                    "cache path exceeds the 4096-byte portability limit",
+                ));
             }
-            kind.validate_relative(&relative)?;
+            kind.validate_relative(&relative, false)?;
             let descriptor = nix::fcntl::openat(&directory, name.as_str(), flags, NixMode::empty())
                 .map_err(|error| {
-                    format!(
-                        "opening cache path {} without following links: {error}",
-                        relative.display()
+                    cache_error(
+                        CacheErrorKind::UnsafeContent,
+                        format!(
+                            "opening cache path {} without following links: {error}",
+                            relative.display()
+                        ),
                     )
                 })?;
             let stat = fstat(&descriptor).map_err(|error| {
-                format!("inspecting cache path {}: {error}", relative.display())
+                cache_error(
+                    CacheErrorKind::SourceUnavailable,
+                    format!("inspecting cache path {}: {error}", relative.display()),
+                )
             })?;
             let file_type = SFlag::from_bits_truncate(stat.st_mode);
             if file_type == SFlag::S_IFDIR {
                 directories.push(relative);
-                let child = Dir::from_fd(descriptor)
-                    .map_err(|error| format!("opening cache directory: {error}"))?;
+                let child = Dir::from_fd(descriptor).map_err(|error| {
+                    cache_error(
+                        CacheErrorKind::SourceUnavailable,
+                        format!("opening cache directory: {error}"),
+                    )
+                })?;
                 level.push((child, parent.join(name), depth + 1));
                 continue;
             }
             if file_type != SFlag::S_IFREG {
-                return Err(format!(
-                    "cache path {} is not a regular file or directory; links are never followed",
-                    relative.display()
+                return Err(cache_error(
+                    CacheErrorKind::UnsafeContent,
+                    format!(
+                        "cache path {} is not a regular file or directory; links are never followed",
+                        relative.display()
+                    ),
                 ));
             }
-            if relative.components().count() < 3 {
-                return Err(format!(
-                    "Cargo cache file `{}` is outside the admitted registry/cache and sparse registry/index layouts",
-                    relative.display()
-                ));
-            }
-            let size = u64::try_from(stat.st_size).map_err(|_| "cache file has negative size")?;
-            bytes = bytes.checked_add(size).ok_or("cache byte count overflow")?;
+            kind.validate_relative(&relative, true)?;
+            let size = u64::try_from(stat.st_size).map_err(|_| {
+                cache_error(
+                    CacheErrorKind::UnsafeContent,
+                    "cache file has negative size",
+                )
+            })?;
+            bytes = bytes.checked_add(size).ok_or_else(|| {
+                cache_error(CacheErrorKind::LimitExceeded, "cache byte count overflow")
+            })?;
             if bytes > limits.max_bytes {
-                return Err(format!(
-                    "{} cache exceeds its {} byte limit",
-                    kind.name(),
-                    limits.max_bytes
+                return Err(cache_error(
+                    CacheErrorKind::LimitExceeded,
+                    format!(
+                        "{} cache exceeds its {} byte limit",
+                        kind.name(),
+                        limits.max_bytes
+                    ),
                 ));
             }
-            let relative_text = relative
-                .to_str()
-                .ok_or("Cargo cache paths must be portable UTF-8")?;
+            let relative_text = relative.to_str().ok_or_else(|| {
+                cache_error(
+                    CacheErrorKind::UnsafeContent,
+                    "Cargo cache paths must be portable UTF-8",
+                )
+            })?;
             files.push(PlannedFile {
                 source: Arc::new(std::fs::File::from(descriptor)),
                 relative: relative.clone(),
@@ -313,7 +392,10 @@ fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Pref
         }
     }
     if files.is_empty() {
-        return Err(format!("{} cache source contains no files", kind.name()));
+        return Err(cache_error(
+            CacheErrorKind::SourceUnavailable,
+            format!("{} cache source contains no files", kind.name()),
+        ));
     }
     directories.sort();
     directories.dedup();
@@ -326,8 +408,15 @@ fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Pref
 }
 
 #[cfg(not(unix))]
-fn preflight(_kind: CacheKind, _source: &Path, _limits: CacheLimits) -> Result<Preflight, String> {
-    Err("Cache Snapshots require descriptor-relative no-follow filesystem APIs".into())
+fn preflight(
+    _kind: CacheKind,
+    _source: &Path,
+    _limits: CacheLimits,
+) -> Result<Preflight, CacheError> {
+    Err(cache_error(
+        CacheErrorKind::MaterializationFailed,
+        "Cache Snapshots require descriptor-relative no-follow filesystem APIs",
+    ))
 }
 
 fn materialize_preflight(
@@ -335,16 +424,22 @@ fn materialize_preflight(
     preflight: &Preflight,
     target: &Path,
     cas: &Cas,
-) -> Result<CacheSnapshot, String> {
-    let parent = target
-        .parent()
-        .ok_or("sandbox cache target has no parent")?;
+) -> Result<CacheSnapshot, CacheError> {
+    let parent = target.parent().ok_or_else(|| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            "sandbox cache target has no parent",
+        )
+    })?;
     let probe = parent.join(".reflink-probe");
-    let probe_source = source_handle_path(&preflight.files[0].source)?;
-    let materialization = match reflink_copy::reflink(&probe_source, &probe) {
+    let materialization = match reflink_from_handle(&preflight.files[0].source, &probe) {
         Ok(()) => {
-            std::fs::remove_file(&probe)
-                .map_err(|error| format!("removing cache reflink probe: {error}"))?;
+            std::fs::remove_file(&probe).map_err(|error| {
+                cache_error(
+                    CacheErrorKind::MaterializationFailed,
+                    format!("removing cache reflink probe: {error}"),
+                )
+            })?;
             CacheMaterialization::Reflink
         }
         Err(_) if preflight.bytes <= source.limits.max_copy_bytes => {
@@ -353,48 +448,71 @@ fn materialize_preflight(
         }
         Err(error) => {
             let _ = std::fs::remove_file(&probe);
-            return Err(format!(
-                "{} cache needs a {} byte plain copy after reflink preflight failed ({error}), exceeding its {} byte copy limit",
-                source.kind.name(),
-                preflight.bytes,
-                source.limits.max_copy_bytes
+            return Err(cache_error(
+                CacheErrorKind::CopyLimitExceeded,
+                format!(
+                    "{} cache needs a {} byte plain copy after reflink preflight failed ({error}), exceeding its {} byte copy limit",
+                    source.kind.name(),
+                    preflight.bytes,
+                    source.limits.max_copy_bytes
+                ),
             ));
         }
     };
-    std::fs::create_dir(target)
-        .map_err(|error| format!("creating sandbox cache target: {error}"))?;
-    ensure_directory_mode(target, 0o700)
-        .map_err(|error| format!("restricting sandbox cache target: {error}"))?;
+    std::fs::create_dir(target).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("creating sandbox cache target: {error}"),
+        )
+    })?;
+    ensure_directory_mode(target, 0o700).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("restricting sandbox cache target: {error}"),
+        )
+    })?;
     for relative in &preflight.directories {
         let directory = target.join(relative);
         std::fs::create_dir_all(&directory).map_err(|error| {
-            format!("creating cache directory {}: {error}", directory.display())
+            cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("creating cache directory {}: {error}", directory.display()),
+            )
         })?;
-        ensure_directory_mode(&directory, 0o700)
-            .map_err(|error| format!("making cache directory writable: {error}"))?;
+        ensure_directory_mode(&directory, 0o700).map_err(|error| {
+            cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("making cache directory writable: {error}"),
+            )
+        })?;
     }
 
     let mut entries = review_parallel::try_map_owned(preflight.files.clone(), |file| {
         materialize_file(file, target.to_path_buf(), materialization)
-    })
-    .map_err(|error| format!("materializing {} cache: {error}", source.kind.name()))?;
+    })?;
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     let manifest = CacheManifestV1 {
-        kind: match source.kind {
-            CacheKind::Cargo => RunCacheKindV5::Cargo,
-        },
+        kind: manifest_kind(source.kind),
         path_encoding: CachePathEncodingV1::PercentV2,
         entries,
     };
-    manifest.validate()?;
+    manifest.validate().map_err(|error| {
+        cache_error(
+            CacheErrorKind::UnsafeContent,
+            format!("validating materialized CacheManifest@1: {error}"),
+        )
+    })?;
     let source_digest = cas
-        .put_json(&serde_json::to_value(&manifest).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+        .put_json(&serde_json::to_value(&manifest).map_err(|error| {
+            cache_error(CacheErrorKind::MaterializationFailed, error.to_string())
+        })?)
+        .map_err(|error| cache_error(CacheErrorKind::MaterializationFailed, error.to_string()))?;
     Ok(CacheSnapshot {
         kind: source.kind,
         source_digest,
         bytes: preflight.bytes,
-        files: u64::try_from(preflight.files.len()).map_err(|_| "cache file count overflow")?,
+        files: u64::try_from(preflight.files.len())
+            .map_err(|_| cache_error(CacheErrorKind::LimitExceeded, "cache file count overflow"))?,
         materialization,
     })
 }
@@ -403,41 +521,61 @@ fn materialize_file(
     file: PlannedFile,
     target_root: PathBuf,
     materialization: CacheMaterialization,
-) -> Result<CacheManifestEntryV1, String> {
+) -> Result<CacheManifestEntryV1, CacheError> {
     let target = target_root.join(&file.relative);
     if stable_size(&file.source)? != file.size {
-        return Err(format!(
-            "cache source {} changed before materialization",
-            file.relative.display()
+        return Err(cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!(
+                "cache source {} changed before materialization",
+                file.relative.display()
+            ),
         ));
     }
     match materialization {
         CacheMaterialization::Reflink => {
-            let source = source_handle_path(&file.source)?;
-            reflink_copy::reflink(&source, &target)
-                .map_err(|error| format!("reflinking {}: {error}", file.relative.display()))?;
+            reflink_from_handle(&file.source, &target).map_err(|error| {
+                cache_error(
+                    CacheErrorKind::MaterializationFailed,
+                    format!("reflinking {}: {error}", file.relative.display()),
+                )
+            })?;
         }
         CacheMaterialization::Copy => {
             copy_exact_bounded(&file.source, &target, file.size)?;
         }
     }
-    make_file_writable(&target)
-        .map_err(|error| format!("making cache file {} writable: {error}", target.display()))?;
+    make_file_writable(&target).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("making cache file {} writable: {error}", target.display()),
+        )
+    })?;
     let mut source_buffer = vec![0_u8; 64 * 1024];
     let mut target_buffer = vec![0_u8; 64 * 1024];
     let (source_digest, source_size) =
-        digest_stable_file(&file.source, file.size, &mut source_buffer)
-            .map_err(|error| format!("hashing cache source: {error}"))?;
-    let mut target_file = std::fs::File::open(&target)
-        .map_err(|error| format!("opening materialized cache file: {error}"))?;
+        digest_stable_file(&file.source, file.size, &mut source_buffer)?;
+    let mut target_file = std::fs::File::open(&target).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("opening materialized cache file: {error}"),
+        )
+    })?;
     let mut bounded_target = (&mut target_file).take(file.size.saturating_add(1));
     let (target_digest, target_size) =
-        digest_reader_with_buffer(&mut bounded_target, &mut target_buffer)
-            .map_err(|error| format!("hashing materialized cache file: {error}"))?;
+        digest_reader_with_buffer(&mut bounded_target, &mut target_buffer).map_err(|error| {
+            cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("hashing materialized cache file: {error}"),
+            )
+        })?;
     if source_size != file.size || target_size != file.size || source_digest != target_digest {
-        return Err(format!(
-            "cache source {} changed during materialization",
-            file.relative.display()
+        return Err(cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!(
+                "cache source {} changed during materialization",
+                file.relative.display()
+            ),
         ));
     }
     Ok(CacheManifestEntryV1 {
@@ -448,53 +586,113 @@ fn materialize_file(
 }
 
 #[cfg(target_os = "linux")]
-fn source_handle_path(file: &std::fs::File) -> Result<PathBuf, String> {
+fn reflink_from_handle(file: &std::fs::File, target: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
-    Ok(PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())))
+    reflink_copy::reflink(
+        PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())),
+        target,
+    )
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
-fn source_handle_path(file: &std::fs::File) -> Result<PathBuf, String> {
+#[cfg(target_os = "macos")]
+fn reflink_from_handle(file: &std::fs::File, target: &Path) -> std::io::Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::other("cache reflink target has no parent"))?;
+    let name = target
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("cache reflink target has no file name"))?;
+    let directory = nix::fcntl::open(
+        parent,
+        nix::fcntl::OFlag::O_RDONLY
+            | nix::fcntl::OFlag::O_CLOEXEC
+            | nix::fcntl::OFlag::O_NOFOLLOW
+            | nix::fcntl::OFlag::O_DIRECTORY,
+        nix::sys::stat::Mode::empty(),
+    )
+    .map_err(std::io::Error::other)?;
+    rustix::fs::fclonefileat(file, &directory, name, rustix::fs::CloneFlags::NOOWNERCOPY)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn reflink_from_handle(file: &std::fs::File, target: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
-    Ok(PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())))
+    reflink_copy::reflink(
+        PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())),
+        target,
+    )
 }
 
 #[cfg(not(unix))]
-fn source_handle_path(_file: &std::fs::File) -> Result<PathBuf, String> {
-    Err("Cache Snapshots require stable descriptor paths".into())
+fn reflink_from_handle(_file: &std::fs::File, _target: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "Cache Snapshots require stable descriptor paths",
+    ))
 }
 
-fn stable_size(file: &std::fs::File) -> Result<u64, String> {
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("inspecting open cache file: {error}"))?;
+fn stable_size(file: &std::fs::File) -> Result<u64, CacheError> {
+    let metadata = file.metadata().map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("inspecting open cache file: {error}"),
+        )
+    })?;
     if !metadata.is_file() {
-        return Err("open cache descriptor changed away from a regular file".into());
+        return Err(cache_error(
+            CacheErrorKind::ConcurrentChange,
+            "open cache descriptor changed away from a regular file",
+        ));
     }
     Ok(metadata.len())
 }
 
-fn copy_exact_bounded(source: &std::fs::File, target: &Path, expected: u64) -> Result<(), String> {
-    let mut reader = source
-        .try_clone()
-        .map_err(|error| format!("cloning cache source descriptor: {error}"))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|error| format!("rewinding cache source: {error}"))?;
+fn copy_exact_bounded(
+    source: &std::fs::File,
+    target: &Path,
+    expected: u64,
+) -> Result<(), CacheError> {
+    let mut reader = source.try_clone().map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("cloning cache source descriptor: {error}"),
+        )
+    })?;
+    reader.seek(SeekFrom::Start(0)).map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("rewinding cache source: {error}"),
+        )
+    })?;
     let mut reader = reader.take(expected.saturating_add(1));
     let mut writer = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(target)
-        .map_err(|error| format!("creating cache target {}: {error}", target.display()))?;
-    let copied = std::io::copy(&mut reader, &mut writer)
-        .map_err(|error| format!("copying bounded cache file: {error}"))?;
-    writer
-        .flush()
-        .map_err(|error| format!("flushing cache target: {error}"))?;
+        .map_err(|error| {
+            cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("creating cache target {}: {error}", target.display()),
+            )
+        })?;
+    let copied = std::io::copy(&mut reader, &mut writer).map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("copying bounded cache file: {error}"),
+        )
+    })?;
+    writer.flush().map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("flushing cache target: {error}"),
+        )
+    })?;
     if copied != expected {
-        return Err(format!(
-            "cache source changed size during bounded copy: expected {expected}, read {copied}"
+        return Err(cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!(
+                "cache source changed size during bounded copy: expected {expected}, read {copied}"
+            ),
         ));
     }
     Ok(())
@@ -504,18 +702,31 @@ fn digest_stable_file(
     source: &std::fs::File,
     expected: u64,
     buffer: &mut [u8],
-) -> Result<(String, u64), String> {
-    let mut reader = source
-        .try_clone()
-        .map_err(|error| format!("cloning cache source descriptor: {error}"))?;
-    reader
-        .seek(SeekFrom::Start(0))
-        .map_err(|error| format!("rewinding cache source: {error}"))?;
+) -> Result<(String, u64), CacheError> {
+    let mut reader = source.try_clone().map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("cloning cache source descriptor: {error}"),
+        )
+    })?;
+    reader.seek(SeekFrom::Start(0)).map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("rewinding cache source: {error}"),
+        )
+    })?;
     let mut bounded = reader.take(expected.saturating_add(1));
-    let result =
-        digest_reader_with_buffer(&mut bounded, buffer).map_err(|error| error.to_string())?;
+    let result = digest_reader_with_buffer(&mut bounded, buffer).map_err(|error| {
+        cache_error(
+            CacheErrorKind::ConcurrentChange,
+            format!("hashing bounded cache source: {error}"),
+        )
+    })?;
     if result.1 != expected || stable_size(source)? != expected {
-        return Err("cache source changed during bounded hashing".into());
+        return Err(cache_error(
+            CacheErrorKind::ConcurrentChange,
+            "cache source changed during bounded hashing",
+        ));
     }
     Ok(result)
 }
@@ -624,6 +835,7 @@ mod race_tests {
                 CacheMaterialization::Copy,
             )
             .unwrap_err()
+            .operator_detail()
             .contains("changed")
         );
         assert!(

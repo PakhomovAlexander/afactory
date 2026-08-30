@@ -1195,6 +1195,7 @@ dependencies = [
  "review-process",
  "review-source-git",
  "review-store",
+ "rustix",
  "serde_json",
  "tempfile",
 ]

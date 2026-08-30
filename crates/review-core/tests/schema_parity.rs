@@ -1166,7 +1166,7 @@ fn cache_manifest_v1_has_explicit_path_encoding_and_exact_totals() {
         kind: RunCacheKindV5::Cargo,
         path_encoding: CachePathEncodingV1::PercentV2,
         entries: vec![CacheManifestEntryV1 {
-            path: "%20leading.crate".into(),
+            path: "registry/cache/index/ leading.crate".into(),
             content: format!("sha256:{}", "a".repeat(64)),
             size: 42,
         }],
@@ -1177,6 +1177,16 @@ fn cache_manifest_v1_has_explicit_path_encoding_and_exact_totals() {
         "cache-manifest-v1.json",
         &serde_json::to_value(&manifest).unwrap(),
     );
+
+    let mut credential = manifest.clone();
+    credential.entries[0].path = "registry/cache/index/.git-credentials".into();
+    assert!(credential.validate().is_err());
+    let mut outside_layout = manifest.clone();
+    outside_layout.entries[0].path = "registry/src/index/lib.rs".into();
+    assert!(outside_layout.validate().is_err());
+    let mut over_ceiling = manifest.clone();
+    over_ceiling.entries[0].size = review_core::MAX_CACHE_BYTES_V1 + 1;
+    assert!(over_ceiling.validate().is_err());
 
     let failure = RunCacheFailureV5 {
         node: "gate".into(),
