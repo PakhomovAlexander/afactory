@@ -7,28 +7,30 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef,
-    ClaimRefKind, DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1,
-    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
-    EvidenceSatisfactionV1, EvidenceV1, FindingDispositionPosition, FindingDispositionV1,
-    FindingGroupingAction, FindingGroupingV1, FindingReport, FindingResolutionOutcome,
-    FindingResolutionV1, FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location,
-    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PathRenameV1, PolicyTimeV1, PortArtifactsV1, PortCardinality, Producer,
-    ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ResolutionChallengeKind,
-    ResolutionChallengeV1, ReviewerPackageV1, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
-    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
-    SourceSnapshot, SubjectKind, SubjectV1,
+    ArtifactEnvelope, AuthorityFileV1, CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1,
+    CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
+    ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, DEMAND_REDUCER_VERSION,
+    DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus, DemandV1, DemandWaiverV1,
+    EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
+    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
+    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
+    FixVerificationV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
+    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
+    ResolutionChallengeKind, ResolutionChallengeV1, ReviewerPackageV1, RunCacheFailureReasonV5,
+    RunCacheFailureV5, RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent,
+    RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3,
+    RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2,
+    RunVerdictV3, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 34] = [
+const SCHEMAS: [&str; 36] = [
     "artifact-envelope-v1.json",
+    "cache-manifest-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
     "change-attestation-v1.json",
@@ -60,6 +62,7 @@ const SCHEMAS: [&str; 34] = [
     "run-report-v2.json",
     "run-report-v3.json",
     "run-report-v4.json",
+    "run-report-v5.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -1096,12 +1099,91 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         Some(true)
     );
 
+    let report_v5 = RunReportPayloadV5 {
+        outcomes: report_v4.outcomes.clone(),
+        blocked_gates: report_v4.blocked_gates.clone(),
+        verdict: report_v4.verdict.clone(),
+        spent_tokens: report_v4.spent_tokens,
+        execution_bindings: report_v4.execution_bindings.clone(),
+        cache_snapshots: vec![RunCacheSnapshotV5 {
+            node: "review".into(),
+            kind: RunCacheKindV5::Cargo,
+            source_digest: format!("sha256:{}", "d".repeat(64)),
+            bytes: 42,
+            files: 2,
+            materialization: RunCacheMaterializationV5::Reflink,
+        }],
+        cache_failures: vec![],
+    };
+    report_v5.validate().unwrap();
+    let value = serde_json::to_value(&report_v5).unwrap();
+    assert_valid("run-report-v5.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV5>(value.clone()).unwrap(),
+        report_v5
+    );
+    event.event_type = EventType::RunReportV5;
+    event.payload = value;
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let mut dishonest_cache = report_v5;
+    dishonest_cache.cache_snapshots[0].node = "missing".into();
+    assert!(dishonest_cache.validate().is_err());
+
+    let mut failed_cache = dishonest_cache;
+    failed_cache.cache_snapshots.clear();
+    failed_cache.cache_failures = vec![RunCacheFailureV5 {
+        node: "review".into(),
+        kind: RunCacheKindV5::Cargo,
+        reason: RunCacheFailureReasonV5::GateSetupFailed,
+    }];
+    assert!(failed_cache.validate().is_err());
+    failed_cache.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
+        error: "provider unavailable".into(),
+    };
+    failed_cache.verdict = RunVerdictV3::Incomplete {
+        missing_nodes: vec![MissingNodeV2 {
+            node: "review".into(),
+            reason: "provider unavailable".into(),
+        }],
+    };
+    failed_cache.validate().unwrap();
+
     let mut dishonest = report_v4;
     dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
     assert!(dishonest.validate().is_err());
     dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::None;
     dishonest.execution_bindings[0].required_isolation = RunIsolationV4::Process;
     assert!(dishonest.validate().is_err());
+}
+
+#[test]
+fn cache_manifest_v1_has_explicit_path_encoding_and_exact_totals() {
+    let manifest = CacheManifestV1 {
+        kind: RunCacheKindV5::Cargo,
+        path_encoding: CachePathEncodingV1::PercentV2,
+        entries: vec![CacheManifestEntryV1 {
+            path: "%20leading.crate".into(),
+            content: format!("sha256:{}", "a".repeat(64)),
+            size: 42,
+        }],
+    };
+    manifest.validate().unwrap();
+    assert_eq!(manifest.bytes(), 42);
+    assert_valid(
+        "cache-manifest-v1.json",
+        &serde_json::to_value(&manifest).unwrap(),
+    );
+
+    let failure = RunCacheFailureV5 {
+        node: "gate".into(),
+        kind: RunCacheKindV5::Cargo,
+        reason: RunCacheFailureReasonV5::LimitExceeded,
+    };
+    failure.validate().unwrap();
 }
 
 #[test]

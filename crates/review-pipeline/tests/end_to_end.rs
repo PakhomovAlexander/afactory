@@ -1213,6 +1213,253 @@ fn a_resumed_v3_round_replays_its_durable_gate_binding() {
 }
 
 #[test]
+fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheLimits, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let cache_root = workspace.path().join("cargo-cache");
+    let cached = cache_root.join("registry/cache/index/example.crate");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, b"offline crate").unwrap();
+    let source = CacheSource {
+        kind: CacheKind::Cargo,
+        source: cache_root.clone(),
+        limits: CacheLimits {
+            max_bytes: 1024 * 1024,
+            max_files: 100,
+            max_copy_bytes: 1024 * 1024,
+        },
+    };
+    let sources = std::collections::BTreeMap::from([(CacheKind::Cargo, source)]);
+
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let manifest = snapshot.manifest;
+    let authority =
+        support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, &definition);
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        manifest.clone(),
+        &loaded,
+        authority.clone(),
+    )
+    .unwrap()
+    .with_cache_sources(sources)
+    .with_checks(vec![CheckDefinition::new(
+        "offline-cache",
+        Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(
+                    "test \"$CARGO_NET_OFFLINE\" = true && test -f \"$CARGO_HOME/registry/cache/index/example.crate\"",
+                ),
+            ],
+        ),
+    )])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let first = loaded.run(&kernel).unwrap();
+    assert!(first.complete(), "{:?}", first.outcomes);
+    assert!(kernel.gate_decision("gate").unwrap().passed());
+    drop(kernel); // crash window: cache receipt and node receipts exist, final report does not.
+    std::fs::remove_dir_all(&cache_root).unwrap();
+
+    let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
+        .unwrap()
+        .with_cache_source_resolver(|_| -> Result<CacheSource, String> {
+            panic!("completed Gate replay must not resolve machine-local cache policy")
+        })
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+    let replayed = loaded.run(&resumed).unwrap();
+    assert!(replayed.complete(), "{:?}", replayed.outcomes);
+    resumed
+        .publish_report(&replayed, *loaded.convergence())
+        .unwrap();
+    drop(resumed);
+
+    let events = store.replay("run").unwrap();
+    let snapshots = events
+        .iter()
+        .filter(|event| event.event_type == review_core::EventType::CacheSnapshotMaterializedV1)
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots.len(), 1, "resume must reuse the durable receipt");
+    let receipt: review_core::RunCacheSnapshotV5 =
+        serde_json::from_value(snapshots[0].payload.clone()).unwrap();
+    assert_eq!(receipt.node, "gate");
+    assert_eq!(receipt.kind, review_core::RunCacheKindV5::Cargo);
+    assert_eq!(receipt.files, 1);
+    assert_eq!(receipt.bytes, 13);
+    assert!(cas.verify(&receipt.source_digest).is_ok());
+    let receipt_artifact = snapshots[0]
+        .artifact_refs
+        .iter()
+        .find(|artifact| cas.get_json(artifact).ok().as_ref() == Some(&snapshots[0].payload))
+        .expect("exact cache receipt artifact");
+    let gate = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::GateDecisionV1)
+        .unwrap();
+    assert!(gate.artifact_refs.contains(receipt_artifact));
+
+    let report = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("RunReport@5");
+    let report: review_core::RunReportPayloadV5 =
+        serde_json::from_value(report.payload.clone()).unwrap();
+    assert_eq!(report.cache_snapshots, vec![receipt]);
+    assert!(!repo_path.join(".af-cache").exists());
+}
+
+#[test]
+fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_cache_source_resolver(|kind: CacheKind| -> Result<CacheSource, String> {
+        Err(format!("no policy for {}", kind.name()))
+    })
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let run = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        run.outcome("gate"),
+        Some(NodeOutcome::Failed { .. })
+    ));
+    kernel.publish_report(&run, *loaded.convergence()).unwrap();
+    drop(kernel);
+
+    let events = store.replay("run").unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != review_core::EventType::RunReportV4)
+    );
+    let report = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("cache-aware failure must be RunReport@5");
+    let report: review_core::RunReportPayloadV5 =
+        serde_json::from_value(report.payload.clone()).unwrap();
+    assert!(report.cache_snapshots.is_empty());
+    assert_eq!(report.cache_failures.len(), 1);
+    assert_eq!(
+        report.cache_failures[0].reason,
+        review_core::RunCacheFailureReasonV5::PolicyUnavailable
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_cache_not_reached_after_gate_setup_failure_is_explicit_v5_evidence() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("container", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
+        workspace.path().join("missing-container-runtime"),
+    ))
+    .with_cache_source_resolver(|_: CacheKind| -> Result<CacheSource, String> {
+        panic!("cache policy must remain lazy when Gate setup fails")
+    })
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let run = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        run.outcome("gate"),
+        Some(NodeOutcome::Failed { .. })
+    ));
+    kernel.publish_report(&run, *loaded.convergence()).unwrap();
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("cache-aware Gate setup failure must be RunReport@5");
+    let report: review_core::RunReportPayloadV5 = serde_json::from_value(report.payload).unwrap();
+    assert!(report.cache_snapshots.is_empty());
+    assert_eq!(report.cache_failures.len(), 1);
+    assert_eq!(
+        report.cache_failures[0].reason,
+        review_core::RunCacheFailureReasonV5::GateSetupFailed
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn a_v3_unusable_container_is_not_admitted_or_executed() {
     use review_config::Definition;

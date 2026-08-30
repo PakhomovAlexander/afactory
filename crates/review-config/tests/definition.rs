@@ -239,6 +239,7 @@ fn version_three_requires_an_explicit_root_gate_execution_binding() {
     );
     assert_eq!(binding.mode, review_config::GateModeSpec::EphemeralWrite);
     assert_eq!(binding.image, None);
+    assert!(binding.caches.is_empty());
 
     let unpinned_container = MINIMAL.replace(
         "version = 2",
@@ -266,6 +267,33 @@ fn version_three_requires_an_explicit_root_gate_execution_binding() {
         Definition::from_toml(&inherited).unwrap().load(),
         Err(ConfigError::Binding(message)) if message.contains("use version 3")
     ));
+}
+
+#[test]
+fn version_three_accepts_only_unique_known_symbolic_gate_caches() {
+    let cached = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&cached).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.gate_execution().unwrap().caches,
+        [review_config::CacheKindSpec::Cargo]
+    );
+
+    let duplicate = cached.replace("caches = [\"cargo\"]", "caches = [\"cargo\", \"cargo\"]");
+    assert!(matches!(
+        Definition::from_toml(&duplicate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("must be unique")
+    ));
+
+    let unknown = cached.replace("caches = [\"cargo\"]", "caches = [\"npm\"]");
+    assert!(
+        Definition::from_toml(&unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
 }
 
 #[test]

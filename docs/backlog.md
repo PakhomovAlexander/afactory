@@ -600,6 +600,11 @@ their mutations did not become Subject content.
 
 ### M6.2 — Sandbox-local cache snapshots
 
+Proposed realization:
+[ADR-0036](adr/0036-resolve-gate-caches-through-machine-local-bounded-policy.md). Project authority
+requests only a symbolic cache kind; a versioned machine-local policy supplies the bounded,
+credential-free source and copy limits.
+
 `Sandbox::environment()` sets `HOME` to the sandbox root (`review-sandbox/src/lib.rs:314`), so
 every cache is cold. A pipeline may request a symbolic cache kind:
 
@@ -609,15 +614,18 @@ mode = "ephemeral-write"
 caches = ["cargo"]
 ```
 
-Administrator policy maps that symbolic kind to exact credential-free subtrees, never to an
-entire home cache root. The kernel preflights size and filesystem support, then reflinks or copies
-those bytes into the sandbox under a hard byte/file limit. Cross-filesystem or over-limit copies
-fail with a diagnostic rather than degrading into an unbounded multi-gigabyte copy. Writes stay
-inside the sandbox and disappear at teardown.
+Administrator policy maps that symbolic kind to one curated credential-free root, never to an
+entire home cache root. The initial Cargo layout admits only `registry/cache/` package archives
+and sparse `registry/index/` data; unpacked sources and Git dependency caches are postponed. The
+kernel traverses through retained no-follow descriptors, preflights size and filesystem support,
+then reflinks or copies those bytes into the sandbox under hard byte, filesystem-entry, path, and
+copy limits. Cross-filesystem or over-limit copies fail with a diagnostic rather than degrading
+into an unbounded multi-gigabyte copy. Writes stay inside the sandbox and disappear at teardown.
 
-Use offline package-manager mode so a cache miss fails loudly. Every Cache Snapshot kind, source
-digest, size, and materialization method is recorded in the current structural `RunReport`
-contract. A direct host passthrough
+Use offline package-manager mode so a cache miss fails loudly. `CacheManifest@1` records exact
+paths, digests, and sizes; `RunReport@5` records one success receipt or typed failure for every
+requested Gate/cache pair. Policy is resolved only for unresolved Gates, so completed-Gate replay
+does not depend on mutable machine policy. A direct host passthrough
 is permitted only by an explicitly unsafe `trusted_local` execution policy and cannot satisfy a
 pipeline requiring container isolation.
 

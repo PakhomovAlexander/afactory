@@ -1190,10 +1190,12 @@ dependencies = [
  "nix 0.30.1",
  "reflink-copy",
  "review-check",
+ "review-core",
  "review-parallel",
  "review-process",
  "review-source-git",
  "review-store",
+ "serde_json",
  "tempfile",
 ]
 

@@ -720,6 +720,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             required_isolation: IsolationSpec::None,
             mode: GateModeSpec::EphemeralWrite,
             image: None,
+            caches: Vec::new(),
         }),
         nodes,
         edges,

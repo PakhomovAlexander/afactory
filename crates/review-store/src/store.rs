@@ -732,13 +732,21 @@ struct AuthorityDefinition {
     #[serde(default)]
     check_timeout_seconds: Option<u64>,
     #[serde(default)]
-    gate: Option<toml::Value>,
+    gate: Option<AuthorityGate>,
     #[serde(default)]
     edges: Vec<toml::Value>,
     #[serde(default)]
     budgets: Option<toml::Value>,
     #[serde(default)]
     convergence: Option<toml::Value>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AuthorityGate {
+    #[serde(default)]
+    caches: Vec<String>,
+    #[serde(flatten)]
+    _binding: std::collections::BTreeMap<String, toml::Value>,
 }
 
 #[allow(dead_code)]
@@ -822,6 +830,7 @@ struct AuthorityPlan {
     budgeted: bool,
     gate_bound: bool,
     gate_nodes: std::collections::BTreeSet<String>,
+    cache_kinds: std::collections::BTreeSet<String>,
 }
 
 fn default_authority_outputs() -> Vec<AuthorityPort> {
@@ -877,6 +886,22 @@ fn load_authority_plan_id(
         ));
     }
     let gate_bound = definition.gate.is_some();
+    let cache_kinds: std::collections::BTreeSet<String> = definition
+        .gate
+        .as_ref()
+        .into_iter()
+        .flat_map(|gate| gate.caches.iter().cloned())
+        .collect();
+    if definition
+        .gate
+        .as_ref()
+        .is_some_and(|gate| gate.caches.len() != cache_kinds.len())
+        || cache_kinds.iter().any(|kind| kind != "cargo")
+    {
+        return Err(StoreError::Conflict(
+            "pinned pipeline has duplicate or unsupported cache kinds".into(),
+        ));
+    }
     let mut nodes = std::collections::BTreeMap::new();
     for node in definition.nodes {
         if node.id.trim().is_empty() || nodes.insert(node.id.clone(), node).is_some() {
@@ -898,6 +923,7 @@ fn load_authority_plan_id(
         budgeted,
         gate_bound,
         gate_nodes,
+        cache_kinds,
     })
 }
 
@@ -936,6 +962,16 @@ fn typed_json_artifacts(
                     &mut artifacts,
                     payload.refusal_history_id,
                     review_core::contract::REFUSAL_HISTORY_V1.into(),
+                )?;
+                continue;
+            }
+            EventType::CacheSnapshotMaterializedV1 => {
+                let snapshot: review_core::RunCacheSnapshotV5 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    snapshot.source_digest,
+                    review_core::contract::CACHE_MANIFEST_V1.into(),
                 )?;
                 continue;
             }
@@ -1442,6 +1478,10 @@ fn report_outcomes(
             payload.clone(),
         )?
         .outcomes),
+        EventType::RunReportV5 => Ok(serde_json::from_value::<review_core::RunReportPayloadV5>(
+            payload.clone(),
+        )?
+        .outcomes),
         _ => Err(StoreError::Conflict(format!(
             "{event_type} has no structural run-report outcomes"
         ))),
@@ -1465,22 +1505,68 @@ fn validate_report_plan(
             "{event_type} does not cover exactly the pinned Campaign plan"
         )));
     }
-    let reports_bindings = event_type == EventType::RunReportV4;
+    let reports_bindings = matches!(event_type, EventType::RunReportV4 | EventType::RunReportV5);
     if reports_bindings != plan.gate_bound {
         return Err(StoreError::Conflict(format!(
             "{event_type} does not match the pinned pipeline's Gate Execution Binding version"
         )));
     }
+    let reports_caches = event_type == EventType::RunReportV5;
+    if reports_caches == plan.cache_kinds.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} does not match the pinned pipeline's Cache Snapshot authority"
+        )));
+    }
     if reports_bindings {
-        let report: review_core::RunReportPayloadV4 = serde_json::from_value(payload.clone())?;
-        let binding_nodes: std::collections::BTreeSet<String> = report
-            .execution_bindings
-            .into_iter()
-            .map(|binding| binding.node)
-            .collect();
+        let bindings = match event_type {
+            EventType::RunReportV4 => {
+                serde_json::from_value::<review_core::RunReportPayloadV4>(payload.clone())?
+                    .execution_bindings
+            }
+            EventType::RunReportV5 => {
+                serde_json::from_value::<review_core::RunReportPayloadV5>(payload.clone())?
+                    .execution_bindings
+            }
+            _ => unreachable!("reports_bindings accepted only RunReport@4/@5"),
+        };
+        let binding_nodes: std::collections::BTreeSet<String> =
+            bindings.into_iter().map(|binding| binding.node).collect();
         if binding_nodes != plan.gate_nodes {
             return Err(StoreError::Conflict(
                 "RunReport@4 does not cover exactly the pinned Gate nodes".into(),
+            ));
+        }
+    }
+    if event_type == EventType::RunReportV5 {
+        let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
+        let actual: std::collections::BTreeSet<(String, String)> = report
+            .cache_snapshots
+            .into_iter()
+            .map(|snapshot| {
+                let kind = match snapshot.kind {
+                    review_core::RunCacheKindV5::Cargo => "cargo",
+                };
+                (snapshot.node, kind.to_string())
+            })
+            .chain(report.cache_failures.into_iter().map(|failure| {
+                let kind = match failure.kind {
+                    review_core::RunCacheKindV5::Cargo => "cargo",
+                };
+                (failure.node, kind.to_string())
+            }))
+            .collect();
+        let expected: std::collections::BTreeSet<(String, String)> = plan
+            .gate_nodes
+            .iter()
+            .flat_map(|node| {
+                plan.cache_kinds
+                    .iter()
+                    .map(move |kind| (node.clone(), kind.clone()))
+            })
+            .collect();
+        if actual != expected {
+            return Err(StoreError::Conflict(
+                "RunReport@5 does not cover exactly the pinned Gate cache requests".into(),
             ));
         }
     }
@@ -1491,11 +1577,25 @@ fn validate_report_gate_bindings(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
+    event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV4 = serde_json::from_value(payload.clone())?;
-    let reported: std::collections::BTreeMap<_, _> = report
-        .execution_bindings
+    let bindings = match event_type {
+        EventType::RunReportV4 => {
+            serde_json::from_value::<review_core::RunReportPayloadV4>(payload.clone())?
+                .execution_bindings
+        }
+        EventType::RunReportV5 => {
+            serde_json::from_value::<review_core::RunReportPayloadV5>(payload.clone())?
+                .execution_bindings
+        }
+        _ => {
+            return Err(StoreError::Conflict(format!(
+                "{event_type} has no Gate Execution Bindings"
+            )));
+        }
+    };
+    let reported: std::collections::BTreeMap<_, _> = bindings
         .into_iter()
         .map(|binding| (binding.node.clone(), binding))
         .collect();
@@ -1519,8 +1619,54 @@ fn validate_report_gate_bindings(
         durable.insert(node, binding);
     }
     if durable != reported {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} bindings differ from the durable Gate execution facts"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_report_cache_snapshots(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    payload: &Value,
+) -> Result<(), StoreError> {
+    let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
+    let failed: std::collections::BTreeSet<_> = report
+        .cache_failures
+        .iter()
+        .map(|failure| (failure.node.clone(), failure.kind))
+        .collect();
+    let reported: std::collections::BTreeMap<_, _> = report
+        .cache_snapshots
+        .into_iter()
+        .map(|snapshot| ((snapshot.node.clone(), snapshot.kind), snapshot))
+        .collect();
+    let mut statement = tx.prepare(
+        "SELECT node_id, payload FROM events
+         WHERE run_id = ?1 AND causation_id = ?2 AND type = 'CacheSnapshotMaterialized@1'
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![run_id, round_event_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut durable = std::collections::BTreeMap::new();
+    for row in rows {
+        let (node, payload) = row?;
+        let snapshot: review_core::RunCacheSnapshotV5 = serde_json::from_str(&payload)?;
+        if snapshot.node != node {
+            return Err(StoreError::Conflict(
+                "durable Cache Snapshot metadata disagrees with its payload".into(),
+            ));
+        }
+        if !failed.contains(&(node.clone(), snapshot.kind)) {
+            durable.insert((node, snapshot.kind), snapshot);
+        }
+    }
+    if durable != reported {
         return Err(StoreError::Conflict(
-            "RunReport@4 bindings differ from the durable Gate execution facts".into(),
+            "RunReport@5 Cache Snapshots differ from the durable materialization facts".into(),
         ));
     }
     Ok(())
@@ -1820,6 +1966,67 @@ fn validate_campaign_transition(
                                 return Err(StoreError::Conflict(format!(
                                     "Gate Execution Binding node '{node}' is absent from the pinned Gate plan"
                                 )));
+                            }
+                        }
+                        EventType::CacheSnapshotMaterializedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "CacheSnapshotMaterialized@1 has no node ID".into(),
+                                )
+                            })?;
+                            let snapshot: review_core::RunCacheSnapshotV5 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if snapshot.node != node {
+                                return Err(StoreError::Conflict(
+                                    "CacheSnapshotMaterialized@1 metadata disagrees with its payload"
+                                        .into(),
+                                ));
+                            }
+                            if plan.is_none_or(|plan| !plan.gate_nodes.contains(node)) {
+                                return Err(StoreError::Conflict(format!(
+                                    "Cache Snapshot node '{node}' is absent from the pinned Gate plan"
+                                )));
+                            }
+                            let kind = match snapshot.kind {
+                                review_core::RunCacheKindV5::Cargo => "cargo",
+                            };
+                            if plan.is_none_or(|plan| !plan.cache_kinds.contains(kind)) {
+                                return Err(StoreError::Conflict(format!(
+                                    "Cache Snapshot kind '{kind}' is absent from pinned authority"
+                                )));
+                            }
+                            let has_manifest = event
+                                .artifact_refs
+                                .iter()
+                                .any(|artifact| artifact == &snapshot.source_digest);
+                            let receipt_bytes = crate::canonical::canonicalize(&event.payload)
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            let receipt_artifact =
+                                crate::canonical::blob_content_id(&receipt_bytes);
+                            let has_receipt = event.artifact_refs.contains(&receipt_artifact);
+                            if !has_manifest || !has_receipt {
+                                return Err(StoreError::Conflict(
+                                    "CacheSnapshotMaterialized@1 lacks its manifest or exact receipt artifact"
+                                        .into(),
+                                ));
+                            }
+                            let manifest =
+                                prepared.json.get(&snapshot.source_digest).ok_or_else(|| {
+                                    StoreError::Conflict(
+                                        "Cache Snapshot manifest was not prepared".into(),
+                                    )
+                                })?;
+                            let manifest: review_core::CacheManifestV1 =
+                                serde_json::from_value(manifest.clone())?;
+                            manifest.validate().map_err(StoreError::Conflict)?;
+                            if manifest.kind != snapshot.kind
+                                || u64::try_from(manifest.entries.len()).ok()
+                                    != Some(snapshot.files)
+                                || manifest.bytes() != snapshot.bytes
+                            {
+                                return Err(StoreError::Conflict(
+                                    "Cache Snapshot receipt contradicts CacheManifest@1".into(),
+                                ));
                             }
                         }
                         EventType::NodeInvocationV1 => {
@@ -2295,8 +2502,18 @@ fn validate_campaign_transition(
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
-                            if event_type == EventType::RunReportV4 {
+                            if matches!(event_type, EventType::RunReportV4 | EventType::RunReportV5)
+                            {
                                 validate_report_gate_bindings(
+                                    tx,
+                                    run_id,
+                                    active_id,
+                                    event_type,
+                                    &event.payload,
+                                )?;
+                            }
+                            if event_type == EventType::RunReportV5 {
+                                validate_report_cache_snapshots(
                                     tx,
                                     run_id,
                                     active_id,
@@ -2746,6 +2963,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::FindingReportedV1
                 | EventType::GateDecisionV1
                 | EventType::GateExecutionBoundV1
+                | EventType::CacheSnapshotMaterializedV1
                 | EventType::GenerationAdvancedV1
                 | EventType::NodeInvocationV1
                 | EventType::NodeOutputReceiptV1
@@ -2759,6 +2977,7 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
             event_type,
             EventType::NodeInvocationV1
                 | EventType::GateExecutionBoundV1
+                | EventType::CacheSnapshotMaterializedV1
                 | EventType::AttemptDispatchedV1
                 | EventType::NodeOutputReceiptV1
         )

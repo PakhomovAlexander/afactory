@@ -57,6 +57,8 @@ pub enum EventType {
     GateDecisionV1,
     #[serde(rename = "GateExecutionBound@1")]
     GateExecutionBoundV1,
+    #[serde(rename = "CacheSnapshotMaterialized@1")]
+    CacheSnapshotMaterializedV1,
     #[serde(rename = "GenerationAdvanced@1")]
     GenerationAdvancedV1,
     #[serde(rename = "NodeInvocation@1")]
@@ -75,6 +77,8 @@ pub enum EventType {
     RunReportV3,
     #[serde(rename = "RunReport@4")]
     RunReportV4,
+    #[serde(rename = "RunReport@5")]
+    RunReportV5,
     #[serde(rename = "RoundInputSuperseded@1")]
     RoundInputSupersededV1,
     #[serde(rename = "RoundStarted@1")]
@@ -84,7 +88,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 38] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -109,6 +113,7 @@ impl EventType {
         Self::FixVerifiedV1,
         Self::GateDecisionV1,
         Self::GateExecutionBoundV1,
+        Self::CacheSnapshotMaterializedV1,
         Self::GenerationAdvancedV1,
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
@@ -118,6 +123,7 @@ impl EventType {
         Self::RunReportV2,
         Self::RunReportV3,
         Self::RunReportV4,
+        Self::RunReportV5,
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
         Self::SourceCapturedV1,
@@ -149,6 +155,7 @@ impl EventType {
             Self::FindingResolvedV1 => "FindingResolved@1",
             Self::GateDecisionV1 => "GateDecision@1",
             Self::GateExecutionBoundV1 => "GateExecutionBound@1",
+            Self::CacheSnapshotMaterializedV1 => "CacheSnapshotMaterialized@1",
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
@@ -158,6 +165,7 @@ impl EventType {
             Self::RunReportV2 => "RunReport@2",
             Self::RunReportV3 => "RunReport@3",
             Self::RunReportV4 => "RunReport@4",
+            Self::RunReportV5 => "RunReport@5",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
@@ -168,7 +176,11 @@ impl EventType {
     pub const fn is_run_report(self) -> bool {
         matches!(
             self,
-            Self::RunReportV1 | Self::RunReportV2 | Self::RunReportV3 | Self::RunReportV4
+            Self::RunReportV1
+                | Self::RunReportV2
+                | Self::RunReportV3
+                | Self::RunReportV4
+                | Self::RunReportV5
         )
     }
 
@@ -176,7 +188,7 @@ impl EventType {
     pub const fn run_report_requires_receipts(self) -> bool {
         matches!(
             self,
-            Self::RunReportV2 | Self::RunReportV3 | Self::RunReportV4
+            Self::RunReportV2 | Self::RunReportV3 | Self::RunReportV4 | Self::RunReportV5
         )
     }
 
@@ -206,6 +218,7 @@ impl EventType {
             Self::FindingResolvedV1 => ("FindingResolved", 1),
             Self::GateDecisionV1 => ("GateDecision", 1),
             Self::GateExecutionBoundV1 => ("GateExecutionBound", 1),
+            Self::CacheSnapshotMaterializedV1 => ("CacheSnapshotMaterialized", 1),
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
@@ -215,6 +228,7 @@ impl EventType {
             Self::RunReportV2 => ("RunReport", 2),
             Self::RunReportV3 => ("RunReport", 3),
             Self::RunReportV4 => ("RunReport", 4),
+            Self::RunReportV5 => ("RunReport", 5),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
@@ -280,6 +294,7 @@ impl std::str::FromStr for EventType {
             "FindingResolved@1" => Ok(Self::FindingResolvedV1),
             "GateDecision@1" => Ok(Self::GateDecisionV1),
             "GateExecutionBound@1" => Ok(Self::GateExecutionBoundV1),
+            "CacheSnapshotMaterialized@1" => Ok(Self::CacheSnapshotMaterializedV1),
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
@@ -289,6 +304,7 @@ impl std::str::FromStr for EventType {
             "RunReport@2" => Ok(Self::RunReportV2),
             "RunReport@3" => Ok(Self::RunReportV3),
             "RunReport@4" => Ok(Self::RunReportV4),
+            "RunReport@5" => Ok(Self::RunReportV5),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
@@ -521,6 +537,90 @@ pub struct RunReportPayloadV4 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spent_tokens: Option<u64>,
     pub execution_bindings: Vec<RunExecutionBindingV4>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCacheKindV5 {
+    Cargo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCacheMaterializationV5 {
+    Reflink,
+    Copy,
+}
+
+/// Machine-path-free evidence for the exact cache bytes made available to one Gate clone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunCacheSnapshotV5 {
+    pub node: String,
+    pub kind: RunCacheKindV5,
+    pub source_digest: String,
+    pub bytes: u64,
+    pub files: u64,
+    pub materialization: RunCacheMaterializationV5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunCacheFailureReasonV5 {
+    GateSetupFailed,
+    PolicyUnavailable,
+    SourceUnavailable,
+    UnsafeContent,
+    LimitExceeded,
+    CopyLimitExceeded,
+    ConcurrentChange,
+    MaterializationFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunCacheFailureV5 {
+    pub node: String,
+    pub kind: RunCacheKindV5,
+    pub reason: RunCacheFailureReasonV5,
+}
+
+impl RunCacheFailureV5 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.trim().is_empty() {
+            return Err("Cache failure has an empty Gate node".into());
+        }
+        Ok(())
+    }
+}
+
+impl RunCacheSnapshotV5 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.trim().is_empty()
+            || !crate::is_digest(&self.source_digest)
+            || self.files == 0
+            || self.bytes > 9_007_199_254_740_991
+            || self.files > 9_007_199_254_740_991
+        {
+            return Err("Cache Snapshot has invalid identity, digest, or bounds".into());
+        }
+        Ok(())
+    }
+}
+
+/// RunReport@5 adds bounded sandbox-local Cache Snapshot receipts. RunReport@4 stays frozen for
+/// v3 pipelines that do not request caches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunReportPayloadV5 {
+    pub outcomes: Vec<RunNodeReportV2>,
+    pub blocked_gates: Vec<String>,
+    pub verdict: RunVerdictV3,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_tokens: Option<u64>,
+    pub execution_bindings: Vec<RunExecutionBindingV4>,
+    pub cache_snapshots: Vec<RunCacheSnapshotV5>,
+    pub cache_failures: Vec<RunCacheFailureV5>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -938,6 +1038,62 @@ impl RunReportPayloadV4 {
     }
 }
 
+impl RunReportPayloadV5 {
+    pub fn validate(&self) -> Result<(), String> {
+        RunReportPayloadV4 {
+            outcomes: self.outcomes.clone(),
+            blocked_gates: self.blocked_gates.clone(),
+            verdict: self.verdict.clone(),
+            spent_tokens: self.spent_tokens,
+            execution_bindings: self.execution_bindings.clone(),
+        }
+        .validate()?;
+        if self.cache_snapshots.is_empty() && self.cache_failures.is_empty() {
+            return Err("RunReport@5 must contain Cache Snapshot or failure evidence".into());
+        }
+        let binding_nodes: std::collections::BTreeSet<&str> = self
+            .execution_bindings
+            .iter()
+            .map(|binding| binding.node.as_str())
+            .collect();
+        let mut identities = std::collections::BTreeSet::new();
+        for snapshot in &self.cache_snapshots {
+            snapshot.validate()?;
+            if !binding_nodes.contains(snapshot.node.as_str()) {
+                return Err(format!(
+                    "RunReport@5 Cache Snapshot node `{}` has no execution binding",
+                    snapshot.node
+                ));
+            }
+            if !identities.insert((snapshot.node.as_str(), snapshot.kind)) {
+                return Err("RunReport@5 contains a duplicate Cache Snapshot identity".into());
+            }
+        }
+        for failure in &self.cache_failures {
+            failure.validate()?;
+            if !binding_nodes.contains(failure.node.as_str()) {
+                return Err(format!(
+                    "RunReport@5 Cache failure node `{}` has no execution binding",
+                    failure.node
+                ));
+            }
+            if !identities.insert((failure.node.as_str(), failure.kind)) {
+                return Err("RunReport@5 contains a duplicate Cache result identity".into());
+            }
+            if !self.outcomes.iter().any(|outcome| {
+                outcome.node == failure.node
+                    && matches!(&outcome.outcome, RunNodeOutcomeV2::Failed { .. })
+            }) {
+                return Err(format!(
+                    "RunReport@5 Cache failure node `{}` does not have a failed outcome",
+                    failure.node
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyRunReportV1 {
@@ -1241,6 +1397,13 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("GateExecutionBound@1: {error}"))
         }
+        EventType::CacheSnapshotMaterializedV1 => {
+            let snapshot = serde_json::from_value::<RunCacheSnapshotV5>(payload.clone())
+                .map_err(|error| format!("CacheSnapshotMaterialized@1: {error}"))?;
+            snapshot
+                .validate()
+                .map_err(|error| format!("CacheSnapshotMaterialized@1: {error}"))
+        }
         EventType::FindingReportedV1 => validate_finding_reported(payload),
         EventType::FindingResolvedV1 => validate_finding_resolved(payload),
         EventType::FindingsGroupedV1 | EventType::FindingsUngroupedV1 => {
@@ -1348,6 +1511,13 @@ pub fn validate_event_payload(
             report
                 .validate()
                 .map_err(|error| format!("RunReport@4: {error}"))
+        }
+        EventType::RunReportV5 => {
+            let report = serde_json::from_value::<RunReportPayloadV5>(payload.clone())
+                .map_err(|error| format!("RunReport@5: {error}"))?;
+            report
+                .validate()
+                .map_err(|error| format!("RunReport@5: {error}"))
         }
         EventType::SourceCapturedV1 => Ok(()),
     }
@@ -1613,6 +1783,16 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
         }
         EventType::RunReportV4 => {
             let report: RunReportPayloadV4 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            Ok(Some(!matches!(
+                report.verdict,
+                RunVerdictV3::Incomplete { .. }
+            )))
+        }
+        EventType::RunReportV5 => {
+            let report: RunReportPayloadV5 = serde_json::from_value(event.payload.clone())?;
             report
                 .validate()
                 .map_err(<serde_json::Error as serde::de::Error>::custom)?;

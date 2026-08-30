@@ -39,10 +39,11 @@ use review_core::{
     CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
     MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultContract, ReviewerResultRejection,
-    RoundStartedPayloadV1, RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV3,
-    RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunReportPayloadV4,
-    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
-    run_report_closes_round,
+    RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
+    RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4,
+    RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
+    RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3,
+    SnapshotAffinity, SourceSnapshot, run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
@@ -51,12 +52,17 @@ use review_runner::{
     ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
     ReviewerInputs, RunnerError, TokenUsage,
 };
-use review_sandbox::{ContainerProvider, Isolation, Mode, Policy, Sandbox, admit};
+use review_sandbox::{
+    CacheKind, CacheMaterialization, CacheSource, ContainerProvider, Isolation, Mode, Policy,
+    Sandbox, admit, materialize_cache, remove_materialized_caches,
+};
 use review_source_git::Manifest;
 use review_store::{
     Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, LedgerProjection, NewEvent,
     Verdict,
 };
+
+type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, String> + Send + Sync;
 
 fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
@@ -120,6 +126,41 @@ fn run_isolation(isolation: Isolation) -> RunIsolationV4 {
         Isolation::None => RunIsolationV4::None,
         Isolation::Process => RunIsolationV4::Process,
         Isolation::Container => RunIsolationV4::Container,
+    }
+}
+
+fn run_cache_kind(kind: CacheKind) -> RunCacheKindV5 {
+    match kind {
+        CacheKind::Cargo => RunCacheKindV5::Cargo,
+    }
+}
+
+fn run_cache_materialization(method: CacheMaterialization) -> RunCacheMaterializationV5 {
+    match method {
+        CacheMaterialization::Reflink => RunCacheMaterializationV5::Reflink,
+        CacheMaterialization::Copy => RunCacheMaterializationV5::Copy,
+    }
+}
+
+fn classify_cache_failure(error: &str) -> RunCacheFailureReasonV5 {
+    let error = error.to_ascii_lowercase();
+    if error.contains("changed") {
+        RunCacheFailureReasonV5::ConcurrentChange
+    } else if error.contains("copy limit") || error.contains("plain copy") {
+        RunCacheFailureReasonV5::CopyLimitExceeded
+    } else if error.contains("limit") || error.contains("overflow") {
+        RunCacheFailureReasonV5::LimitExceeded
+    } else if error.contains("credential")
+        || error.contains("link")
+        || error.contains("special")
+        || error.contains("allowlist")
+        || error.contains("not admitted")
+    {
+        RunCacheFailureReasonV5::UnsafeContent
+    } else if error.contains("source") || error.contains("directory") {
+        RunCacheFailureReasonV5::SourceUnavailable
+    } else {
+        RunCacheFailureReasonV5::MaterializationFailed
     }
 }
 
@@ -582,6 +623,7 @@ struct ReplayedExecution {
     selected_reviewers: BTreeMap<String, SelectedReviewer>,
     gates: BTreeMap<String, GateDecision>,
     execution_bindings: BTreeMap<String, RunExecutionBindingV4>,
+    cache_snapshots: BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>,
     attempt_counts: BTreeMap<String, u64>,
     outstanding_attempts: Vec<(String, String, u64)>,
     refusal_histories: BTreeMap<String, Vec<String>>,
@@ -693,6 +735,34 @@ fn replay_execution(
                 // changes. Replay uses the latest observation; the append-only log retains all
                 // earlier failed admissions for forensics.
                 replayed.execution_bindings.insert(node, binding);
+            }
+            EventType::CacheSnapshotMaterializedV1 if active_epoch => {
+                let node = event
+                    .node_id
+                    .ok_or("CacheSnapshotMaterialized@1 has no node ID")?;
+                let snapshot: RunCacheSnapshotV5 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                if snapshot.node != node || !event.artifact_refs.contains(&snapshot.source_digest) {
+                    return Err(
+                        "CacheSnapshotMaterialized@1 metadata or manifest reference disagrees with its payload"
+                            .into(),
+                    );
+                }
+                let manifest: review_core::CacheManifestV1 = serde_json::from_value(
+                    cas.get_json(&snapshot.source_digest)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                manifest.validate()?;
+                if manifest.kind != snapshot.kind
+                    || u64::try_from(manifest.entries.len()).ok() != Some(snapshot.files)
+                    || manifest.bytes() != snapshot.bytes
+                {
+                    return Err("Cache Snapshot receipt contradicts CacheManifest@1".into());
+                }
+                replayed
+                    .cache_snapshots
+                    .insert((node, snapshot.kind), snapshot);
             }
             EventType::AttemptDispatchedV1 => {
                 let payload: AttemptDispatchedPayloadV1 =
@@ -968,7 +1038,13 @@ pub struct Kernel<'a> {
     /// Optional machine-resolved provider. The CLI normally lets the kernel probe locally;
     /// embedding callers and deterministic boundary tests may bind an already-probed provider.
     container_provider: Option<ContainerProvider>,
+    /// Machine-local sources resolved by the CLI. Host paths never enter captured pipeline
+    /// authority or durable events.
+    cache_sources: BTreeMap<CacheKind, CacheSource>,
+    cache_source_resolver: Option<Arc<CacheSourceResolver>>,
     execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
+    cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
+    cache_failures: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheFailureV5>>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     attempts: Mutex<AttemptLedger>,
@@ -1128,7 +1204,11 @@ impl<'a> Kernel<'a> {
             check_timeout: Duration::from_secs(3600),
             gate_execution: None,
             container_provider: None,
+            cache_sources: BTreeMap::new(),
+            cache_source_resolver: None,
             execution_bindings: Mutex::new(replayed.execution_bindings),
+            cache_snapshots: Mutex::new(replayed.cache_snapshots),
+            cache_failures: Mutex::new(BTreeMap::new()),
             reviewers: BTreeMap::new(),
             demand_requirements: BTreeMap::new(),
             attempts: Mutex::new(attempts),
@@ -1208,6 +1288,19 @@ impl<'a> Kernel<'a> {
 
     pub fn with_check_timeout(mut self, timeout: Duration) -> Self {
         self.check_timeout = timeout;
+        self
+    }
+
+    pub fn with_cache_sources(mut self, sources: BTreeMap<CacheKind, CacheSource>) -> Self {
+        self.cache_sources = sources;
+        self
+    }
+
+    pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(CacheKind) -> Result<CacheSource, String> + Send + Sync + 'static,
+    {
+        self.cache_source_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -1728,23 +1821,58 @@ impl<'a> Kernel<'a> {
         let blocked_gates = report.blocked_gates.iter().cloned().collect();
         let spent_tokens = self.spent();
         if self.gate_execution.is_some() {
-            let payload = RunReportPayloadV4 {
-                outcomes,
-                blocked_gates,
-                verdict: persisted_verdict,
-                spent_tokens,
-                execution_bindings: self
-                    .execution_bindings
-                    .lock()
-                    .expect("execution bindings")
-                    .values()
-                    .cloned()
-                    .collect(),
-            };
-            self.append(NewEvent::new(
-                EventType::RunReportV4,
-                serde_json::to_value(payload).map_err(|e| e.to_string())?,
-            ))?;
+            let execution_bindings: Vec<_> = self
+                .execution_bindings
+                .lock()
+                .expect("execution bindings")
+                .values()
+                .cloned()
+                .collect();
+            let cache_snapshots: Vec<_> = self
+                .cache_snapshots
+                .lock()
+                .expect("cache snapshots")
+                .values()
+                .cloned()
+                .collect();
+            let cache_failures: Vec<_> = self
+                .cache_failures
+                .lock()
+                .expect("cache failures")
+                .values()
+                .cloned()
+                .collect();
+            let cache_requested = self
+                .gate_execution
+                .as_ref()
+                .is_some_and(|binding| !binding.caches.is_empty());
+            if !cache_requested {
+                let payload = RunReportPayloadV4 {
+                    outcomes,
+                    blocked_gates,
+                    verdict: persisted_verdict,
+                    spent_tokens,
+                    execution_bindings,
+                };
+                self.append(NewEvent::new(
+                    EventType::RunReportV4,
+                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                ))?;
+            } else {
+                let payload = RunReportPayloadV5 {
+                    outcomes,
+                    blocked_gates,
+                    verdict: persisted_verdict,
+                    spent_tokens,
+                    execution_bindings,
+                    cache_snapshots,
+                    cache_failures,
+                };
+                self.append(NewEvent::new(
+                    EventType::RunReportV5,
+                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                ))?;
+            }
         } else {
             let payload = RunReportPayloadV3 {
                 outcomes,
@@ -1823,7 +1951,61 @@ impl<'a> Kernel<'a> {
         Ok(outputs)
     }
 
+    fn record_cache_failure(
+        &self,
+        node_id: &str,
+        kind: CacheKind,
+        reason: RunCacheFailureReasonV5,
+    ) {
+        let identity = (node_id.to_string(), run_cache_kind(kind));
+        if self
+            .cache_snapshots
+            .lock()
+            .expect("cache snapshots")
+            .contains_key(&identity)
+        {
+            return;
+        }
+        let failure = RunCacheFailureV5 {
+            node: node_id.to_string(),
+            kind: run_cache_kind(kind),
+            reason,
+        };
+        self.cache_failures
+            .lock()
+            .expect("cache failures")
+            .entry(identity)
+            .or_insert(failure);
+    }
+
+    fn record_unmaterialized_cache_failures(&self, node_id: &str, reason: RunCacheFailureReasonV5) {
+        if let Some(binding) = self.gate_execution.as_ref() {
+            for requested in &binding.caches {
+                let kind = match requested {
+                    review_config::CacheKindSpec::Cargo => CacheKind::Cargo,
+                };
+                self.record_cache_failure(node_id, kind, reason);
+            }
+        }
+    }
+
     fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
+        if let Some(binding) = self.gate_execution.as_ref() {
+            for requested in &binding.caches {
+                let kind = match requested {
+                    review_config::CacheKindSpec::Cargo => CacheKind::Cargo,
+                };
+                let identity = (node_id.to_string(), run_cache_kind(kind));
+                self.cache_snapshots
+                    .lock()
+                    .expect("cache snapshots")
+                    .remove(&identity);
+                self.cache_failures
+                    .lock()
+                    .expect("cache failures")
+                    .remove(&identity);
+            }
+        }
         let (sandbox, container, require_unchanged) = match self.gate_execution.as_ref() {
             None => {
                 // Frozen pipeline v1/v2 semantics. Those Campaigns captured no Gate Execution
@@ -1908,10 +2090,104 @@ impl<'a> Kernel<'a> {
                 (sandbox, container, false)
             }
         };
+        let mut cache_receipt_artifacts = Vec::new();
+        let mut cache_environments = Vec::new();
+        if let Some(binding) = self.gate_execution.as_ref() {
+            for requested in &binding.caches {
+                let kind = match requested {
+                    review_config::CacheKindSpec::Cargo => CacheKind::Cargo,
+                };
+                let resolved = if let Some(source) = self.cache_sources.get(&kind).cloned() {
+                    Ok(source)
+                } else if let Some(resolver) = self.cache_source_resolver.as_ref() {
+                    resolver(kind)
+                } else {
+                    Err(format!(
+                        "Gate requested `{}` cache without an available machine-local mapping",
+                        kind.name()
+                    ))
+                };
+                let source = match resolved {
+                    Ok(source) if source.kind == kind => source,
+                    Ok(source) => {
+                        let error = format!(
+                            "machine-local cache mapping for `{}` resolved as `{}`",
+                            kind.name(),
+                            source.kind.name()
+                        );
+                        self.record_cache_failure(
+                            node_id,
+                            kind,
+                            RunCacheFailureReasonV5::PolicyUnavailable,
+                        );
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        self.record_cache_failure(
+                            node_id,
+                            kind,
+                            RunCacheFailureReasonV5::PolicyUnavailable,
+                        );
+                        return Err(error);
+                    }
+                };
+                let snapshot = match materialize_cache(&source, &sandbox, self.cas) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        self.record_cache_failure(node_id, kind, classify_cache_failure(&error));
+                        return Err(error);
+                    }
+                };
+                let receipt = RunCacheSnapshotV5 {
+                    node: node_id.to_string(),
+                    kind: run_cache_kind(snapshot.kind),
+                    source_digest: snapshot.source_digest,
+                    bytes: snapshot.bytes,
+                    files: snapshot.files,
+                    materialization: run_cache_materialization(snapshot.materialization),
+                };
+                let receipt_artifact = self
+                    .cas
+                    .put_json(&serde_json::to_value(&receipt).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+                self.append(
+                    NewEvent::new(
+                        EventType::CacheSnapshotMaterializedV1,
+                        serde_json::to_value(&receipt).map_err(|error| error.to_string())?,
+                    )
+                    .node(node_id)
+                    .referencing(vec![
+                        receipt.source_digest.clone(),
+                        receipt_artifact.clone(),
+                    ]),
+                )?;
+                self.cache_snapshots
+                    .lock()
+                    .expect("cache snapshots")
+                    .insert((node_id.to_string(), receipt.kind), receipt);
+                self.cache_failures
+                    .lock()
+                    .expect("cache failures")
+                    .remove(&(node_id.to_string(), run_cache_kind(kind)));
+                cache_receipt_artifacts.push(receipt_artifact);
+                cache_environments.push(kind.environment(sandbox.root()));
+            }
+        }
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
-        let runner = CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
+        let mut runner =
+            CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
+        for environment in cache_environments {
+            for ((local_key, local_value), (container_key, container_value)) in
+                environment.local.into_iter().zip(environment.container)
+            {
+                if local_key != container_key {
+                    return Err("cache environment keys disagree across providers".into());
+                }
+                runner = runner.with_split_env(local_key, local_value, container_value);
+            }
+        }
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
             let mut cleanup_failure = None;
@@ -1945,6 +2221,9 @@ impl<'a> Kernel<'a> {
         }
 
         let decision = GateDecision::evaluate(&results);
+        if !cache_receipt_artifacts.is_empty() {
+            remove_materialized_caches(&sandbox)?;
+        }
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
         if require_unchanged && !sealed.unchanged() {
             // Frozen v1/v2 behavior: those Gates promised read-only execution. V3 deliberately
@@ -1962,6 +2241,7 @@ impl<'a> Kernel<'a> {
             .put_json(&serde_json::to_value(&decision).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         let mut event_artifacts = vec![artifact.clone()];
+        event_artifacts.extend(cache_receipt_artifacts);
         if !require_unchanged {
             // V3 Gates may write only inside their disposable clone. Preserve what they wrote
             // before that clone disappears: the complete mutation set lives once in the CAS,
@@ -3575,7 +3855,16 @@ impl Dispatch for Kernel<'_> {
         }
         let artifacts = match node.kind {
             NodeKind::Generation => unreachable!("generation returned above"),
-            NodeKind::Gate => self.run_gate(&node.id),
+            NodeKind::Gate => {
+                let result = self.run_gate(&node.id);
+                if result.is_err() {
+                    self.record_unmaterialized_cache_failures(
+                        &node.id,
+                        RunCacheFailureReasonV5::GateSetupFailed,
+                    );
+                }
+                result
+            }
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.run_gather(node, inputs),

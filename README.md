@@ -469,6 +469,7 @@ version = 3
 provider = "trusted_local"       # use "container" for a safe pipeline
 required_isolation = "none"      # safe pipelines require "container"
 mode = "ephemeral-write"
+caches = ["cargo"]                # optional symbolic request; never a host path
 
 # A container binding instead uses:
 # provider = "container"
@@ -480,6 +481,38 @@ The binding is part of the captured pipeline artifact, so a later Round cannot s
 its provider, image, or isolation policy. `af onboard` emits the explicit trusted-local form for
 its documented first-party workflow; upgrading that policy to safe containment is a reviewed
 edit with a project-toolchain image, never a generic moving tag.
+
+A cache request is resolved twice: project authority names only `cargo`, while machine-local
+operator policy selects the source and hard limits. The default policy path is
+`$XDG_CONFIG_HOME/afactory/caches.toml` (falling back to
+`$HOME/.config/afactory/caches.toml`); `AFACTORY_CACHE_POLICY_FILE` may select another absolute
+file. Its v1 shape is:
+
+```toml
+version = 1
+
+[cache.cargo]
+source = "/absolute/curated-cargo-cache"
+max_bytes = 4294967296
+max_files = 250000
+max_copy_bytes = 536870912
+```
+
+The initial source is deliberately narrower than a complete Cargo home: it may contain package
+archives under `registry/cache/` and sparse-index data under `registry/index/`. Unpacked
+`registry/src/`, Cargo Git dependency caches, configuration, credential-shaped paths, symlinks,
+special files, excess bytes or filesystem entries, and an over-limit cross-filesystem copy are
+refused before check dispatch. Afactory walks through no-follow directory descriptors, retains
+each admitted file descriptor across materialization, and bounds every read to its preflight size
+plus one change-detection byte. It snapshots the admitted bytes under `.af-cache/cargo`, sets
+`CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache tree before sealing.
+
+`RunReport@5` records either one machine-path-free success receipt or an explicit failure for
+every requested Gate/cache pair. Its receipt references a versioned `CacheManifest@1` containing
+the sorted percent-encoded paths, content digests, and exact file sizes. Machine policy is
+resolved only for an unresolved Gate, so replay of a completed Gate does not depend on the
+original policy file or source still existing. A missing mapping is an error, never an implicit
+read of `~/.cargo`; `max_files` counts directories and files so directory-only trees are bounded.
 
 **Format note.** The design's examples are YAML and this is TOML. The shape is unchanged and the
 loader is serde types, so another syntax is a different `from_str`, not a different model. The

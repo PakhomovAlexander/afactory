@@ -127,6 +127,21 @@ impl<'a> CheckRunner<'a> {
         self
     }
 
+    /// Add execution-location-specific values for one semantic environment variable. Cache
+    /// roots are absolute host paths for trusted-local checks and fixed `/work` paths inside a
+    /// container, so treating them as one portable value would break one provider or the other.
+    pub fn with_split_env(
+        mut self,
+        key: impl Into<String>,
+        local_value: impl Into<String>,
+        portable_value: impl Into<String>,
+    ) -> Self {
+        let key = key.into();
+        self.local_env.push((key.clone(), local_value.into()));
+        self.portable_env.push((key, portable_value.into()));
+        self
+    }
+
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = timeout;
         self

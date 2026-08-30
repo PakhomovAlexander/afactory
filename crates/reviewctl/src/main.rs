@@ -29,7 +29,7 @@ use std::time::Duration;
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
     EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunVerdictV2, RunVerdictV3, Severity,
+    RunReportPayloadV4, RunReportPayloadV5, RunVerdictV2, RunVerdictV3, Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
@@ -39,6 +39,7 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Ve
 use sha2::{Digest, Sha256};
 
 mod authority;
+mod caches;
 mod onboard;
 mod providers;
 mod task;
@@ -2567,6 +2568,11 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
             Ok(render_verdict_v3(report.verdict))
         }
+        EventType::RunReportV5 => {
+            let report: RunReportPayloadV5 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
+        }
         _ => Err(format!("{} is not a run report", event.event_type)),
     }
 }
@@ -3000,6 +3006,11 @@ fn run_report_outcomes(
                 .map_err(|error| error.to_string())?
                 .outcomes,
         )),
+        EventType::RunReportV5 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
         EventType::RunReportV1 => Ok(None),
         _ => Err(format!("{} is not a Run Report", event.event_type)),
     }
@@ -3281,6 +3292,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
         .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec())
+        .with_cache_source_resolver(caches::resolve_kind)
         .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
         run_progress(

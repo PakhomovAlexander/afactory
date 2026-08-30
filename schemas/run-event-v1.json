@@ -43,6 +43,7 @@
         "FixVerified@1",
         "GateDecision@1",
         "GateExecutionBound@1",
+        "CacheSnapshotMaterialized@1",
         "GenerationAdvanced@1",
         "NodeInvocation@1",
         "NodeOutputReceipt@1",
@@ -52,6 +53,7 @@
         "RunReport@2",
         "RunReport@3",
         "RunReport@4",
+        "RunReport@5",
         "RoundInputSuperseded@1",
         "RoundStarted@1",
         "SourceCaptured@1"
@@ -87,6 +89,10 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "type": { "const": "CacheSnapshotMaterialized@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/cache_snapshot" } } }
+    },
+    {
       "if": { "properties": { "type": { "const": "CampaignOpened@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/campaign_opened" } } }
     },
@@ -114,6 +120,19 @@
       "pattern": "^[0-9a-z]{26}$"
     },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "cache_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "kind", "source_digest", "bytes", "files", "materialization"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "kind": { "const": "cargo" },
+        "source_digest": { "$ref": "#/$defs/digest" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "files": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "materialization": { "enum": ["reflink", "copy"] }
+      }
+    },
     "gate_execution_bound": {
       "type": "object",
       "additionalProperties": false,

@@ -533,6 +533,15 @@ pub enum GateModeSpec {
     EphemeralWrite,
 }
 
+/// A cache request names behavior the kernel understands, never a host path or arbitrary
+/// environment variable. New package managers add a closed variant with their own safe target
+/// and offline controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheKindSpec {
+    Cargo,
+}
+
 fn is_pinned_container_image(image: &str) -> bool {
     let Some((name, digest)) = image.rsplit_once("@sha256:") else {
         return false;
@@ -560,6 +569,9 @@ pub struct GateExecutionSpec {
     /// changing the captured pipeline artifact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Symbolic cache kinds resolved only through machine-local administrator policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caches: Vec<CacheKindSpec>,
 }
 
 /// A whole pipeline definition, as a project writes it.
@@ -794,6 +806,13 @@ impl Definition {
             (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
         if let Some(binding) = &gate {
+            let unique_caches: std::collections::BTreeSet<_> =
+                binding.caches.iter().copied().collect();
+            if unique_caches.len() != binding.caches.len() {
+                return Err(ConfigError::Binding(
+                    "Gate cache kinds must be unique".to_string(),
+                ));
+            }
             match binding.provider {
                 SandboxProviderSpec::TrustedLocal => {
                     if binding.required_isolation != IsolationSpec::None {
