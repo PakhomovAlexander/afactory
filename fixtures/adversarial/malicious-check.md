@@ -84,10 +84,11 @@ refusal remains tested. Open here, by name:
 Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
 bindings require a project image pinned by digest. Provider usability and isolation admission are
 recorded durably before `RunReport@4`; either failure stops the Gate before a project command
-runs. A recording runtime asserts that Gate dispatch builds the exact container invocation,
-including only the declared environment and a unique reaping name. A timed-out runtime client is
-followed by bounded `rm -f`; if cleanup cannot be confirmed, the Gate preserves the sandbox and
-returns incomplete without sealing a possibly live bind. The
+runs. A recording runtime asserts that Gate dispatch builds the exact container invocation:
+portable declared environment without the host `PATH`, the caller's numeric UID:GID, and a unique
+reaping name. A timed-out runtime client is followed by bounded `rm -f`; if cleanup cannot be
+confirmed, the Gate reports the preserved sandbox path and returns incomplete without sealing a
+possibly live bind. The
 ignored live pipeline control and lower-level probes use `CheckRunner::run_with`; the new CI job
 must turn that wiring into live evidence before Gate routing is called discharged. Brokered
 credentials and allowed egress remain M6.3 and are not claimed here. Open here, by name:

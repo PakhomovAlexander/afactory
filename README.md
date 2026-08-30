@@ -354,12 +354,14 @@ A `ContainerProvider` also exists for hosts with a usable runtime. Finding `dock
 proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
 installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
 back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
-inherited environment. The kernel's explicit check allowlist (`PATH`, `LC_ALL=C`, `TZ=UTC`, and
-declared additions) is reintroduced one variable at a time. Each execution also has a unique
-runtime name: if the supervised client fails or times out, Afactory runs a bounded `rm -f` before
-sealing. An unconfirmed cleanup aborts the Gate and preserves rather than seals or deletes the
-possibly live bind. `make review-kernel-container-probes` and its dedicated CI job carry the
-provider probes, live timeout/reap probe, and v3 Gate route. This worktree could not run them
+inherited environment. The image retains its own pinned `PATH`; only host-independent check
+variables (`LC_ALL=C`, `TZ=UTC`, and declared additions) are reintroduced. The workload runs as
+the caller's numeric UID:GID so writable-bind output remains usable and removable by the host.
+Each execution also has a unique runtime name: if the supervised client fails or times out,
+Afactory runs a bounded `rm -f` before sealing. An unconfirmed cleanup aborts the Gate and reports
+the preserved sandbox path rather than sealing or deleting the possibly live bind.
+`make review-kernel-container-probes` and its dedicated CI job carry the provider probes, live
+timeout/reap probe, ownership assertion, and v3 Gate route. This worktree could not run them
 because its local daemon is unavailable; the route remains unverified until that job is green on
 the candidate.
 

@@ -1339,12 +1339,11 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
     assert!(argv[3].starts_with("af-gate-"), "{:?}", argv[3]);
     assert_eq!(
         &argv[4..8],
-        ["--network=none", "--env-file", "/dev/null", "-e",]
+        ["--network=none", "--env-file", "/dev/null", "--user"]
     );
-    assert_eq!(
-        argv[8],
-        format!("PATH={}", std::env::var("PATH").unwrap_or_default())
-    );
+    let (uid, gid) = argv[8].split_once(':').expect("numeric uid:gid");
+    assert!(!uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()));
+    assert!(!gid.is_empty() && gid.bytes().all(|byte| byte.is_ascii_digit()));
     assert_eq!(
         &argv[9..16],
         [

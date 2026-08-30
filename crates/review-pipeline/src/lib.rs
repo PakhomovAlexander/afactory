@@ -1935,9 +1935,11 @@ impl<'a> Kernel<'a> {
                 // A container may still own the writable bind. Do not scan a concurrently
                 // changing tree or delete it from under that process. Preserving this temporary
                 // sandbox is the fail-closed forensic residue for an operator to recover.
+                let preserved = sandbox.root().to_path_buf();
                 std::mem::forget(sandbox);
                 return Err(format!(
-                    "container cleanup was not confirmed; Gate sandbox preserved: {error}"
+                    "container cleanup was not confirmed; Gate sandbox preserved at {}: {error}",
+                    preserved.display()
                 ));
             }
         }

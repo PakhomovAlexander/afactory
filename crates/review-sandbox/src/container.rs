@@ -245,6 +245,15 @@ impl ContainerProvider {
             "--env-file".to_string(),
             "/dev/null".to_string(),
         ];
+        #[cfg(unix)]
+        argv.extend([
+            "--user".to_string(),
+            format!(
+                "{}:{}",
+                nix::unistd::getuid().as_raw(),
+                nix::unistd::getgid().as_raw()
+            ),
+        ]);
         for (key, value) in environment {
             argv.push("-e".to_string());
             argv.push(format!("{key}={value}"));
@@ -577,6 +586,11 @@ mod tests {
             ],
             "af-gate-test",
         );
+        let user = format!(
+            "{}:{}",
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw()
+        );
 
         assert_eq!(
             argv,
@@ -588,6 +602,8 @@ mod tests {
                 "--network=none",
                 "--env-file",
                 "/dev/null",
+                "--user",
+                user.as_str(),
                 "-e",
                 "LC_ALL=C",
                 "-e",

@@ -87,8 +87,11 @@ impl CheckResult {
 pub struct CheckRunner<'a> {
     cas: &'a Cas,
     workdir: PathBuf,
-    /// Environment handed to a check. Cleared and rebuilt, like the git adapter's.
-    env: Vec<(String, String)>,
+    /// Environment handed to a host-local check. Cleared and rebuilt, like the git adapter's.
+    local_env: Vec<(String, String)>,
+    /// Host-independent environment safe to add on top of a pinned execution image. In
+    /// particular, the host PATH must never replace the image's own toolchain PATH.
+    portable_env: Vec<(String, String)>,
     /// A check that never returns must not hang the whole review — the gate runs first and the
     /// scheduler blocks on its completion. A check past this deadline is killed and recorded
     /// `not_run`, exactly as an unstartable one is. Generous by default (an engine build+test
@@ -101,11 +104,15 @@ impl<'a> CheckRunner<'a> {
         CheckRunner {
             cas,
             workdir: workdir.as_ref().to_path_buf(),
-            env: vec![
+            local_env: vec![
                 (
                     "PATH".to_string(),
                     std::env::var("PATH").unwrap_or_default(),
                 ),
+                ("LC_ALL".to_string(), "C".to_string()),
+                ("TZ".to_string(), "UTC".to_string()),
+            ],
+            portable_env: vec![
                 ("LC_ALL".to_string(), "C".to_string()),
                 ("TZ".to_string(), "UTC".to_string()),
             ],
@@ -114,7 +121,9 @@ impl<'a> CheckRunner<'a> {
     }
 
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.push((key.into(), value.into()));
+        let entry = (key.into(), value.into());
+        self.local_env.push(entry.clone());
+        self.portable_env.push(entry);
         self
     }
 
@@ -136,7 +145,7 @@ impl<'a> CheckRunner<'a> {
         cmd.args(&argv);
         cmd.current_dir(&self.workdir);
         cmd.env_clear();
-        for (key, value) in &self.env {
+        for (key, value) in &self.local_env {
             cmd.env(key, value);
         }
         let (output, stderr_held) = match self.run_with_deadline(&mut cmd) {
@@ -184,7 +193,12 @@ impl<'a> CheckRunner<'a> {
             Ok(argv) => argv,
             Err(result) => return *result,
         };
-        match execute(&definition.command.program, &argv, &self.env, self.timeout) {
+        match execute(
+            &definition.command.program,
+            &argv,
+            &self.portable_env,
+            self.timeout,
+        ) {
             Ok((output, stderr_held)) => self.finish(base, output, stderr_held),
             Err(error) => CheckResult {
                 reason: Some(format!("execution provider refused or failed: {error}")),
@@ -354,6 +368,10 @@ fn describe(error: &ArgError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::{CheckDefinition, Command};
+    use review_store::Cas;
+
     #[test]
     fn held_stderr_is_explicitly_unverifiable() {
         assert!(
@@ -362,5 +380,28 @@ mod tests {
                 .contains("evidence was not preserved")
         );
         assert_eq!(super::stderr_held_reason(false), None);
+    }
+
+    #[test]
+    fn an_external_provider_gets_only_portable_and_explicit_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let runner =
+            CheckRunner::new(&cas, directory.path()).with_env("CARGO_TARGET_DIR", "/work/.target");
+        let check = CheckDefinition::new("probe", Command::new("/bin/true", vec![]));
+
+        let result = runner.run_with(&check, |_, _, environment, _| {
+            assert_eq!(
+                environment,
+                [
+                    ("LC_ALL".to_string(), "C".to_string()),
+                    ("TZ".to_string(), "UTC".to_string()),
+                    ("CARGO_TARGET_DIR".to_string(), "/work/.target".to_string()),
+                ]
+            );
+            assert!(environment.iter().all(|(key, _)| key != "PATH"));
+            Err("assertion provider stops here".to_string())
+        });
+        assert_eq!(result.status, CheckStatus::NotRun);
     }
 }
