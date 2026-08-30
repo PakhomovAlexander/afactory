@@ -123,6 +123,18 @@ fn run_isolation(isolation: Isolation) -> RunIsolationV4 {
     }
 }
 
+fn gate_provider_admitted(
+    provider: review_config::SandboxProviderSpec,
+    provided: Isolation,
+    required: Isolation,
+) -> bool {
+    let usable = match provider {
+        review_config::SandboxProviderSpec::TrustedLocal => true,
+        review_config::SandboxProviderSpec::Container => provided == Isolation::Container,
+    };
+    usable && provided >= required
+}
+
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
 /// (gather, ledger) that consume artifacts regardless of which port delivered them.
 fn artifact_ids(inputs: &ArtifactMap) -> Vec<String> {
@@ -569,6 +581,7 @@ struct ReplayedExecution {
     outputs: BTreeMap<String, DurableReceipt>,
     selected_reviewers: BTreeMap<String, SelectedReviewer>,
     gates: BTreeMap<String, GateDecision>,
+    execution_bindings: BTreeMap<String, RunExecutionBindingV4>,
     attempt_counts: BTreeMap<String, u64>,
     outstanding_attempts: Vec<(String, String, u64)>,
     refusal_histories: BTreeMap<String, Vec<String>>,
@@ -668,6 +681,17 @@ fn replay_execution(
                 let decision: GateDecision =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
                 replayed.gates.insert(node, decision);
+            }
+            EventType::GateExecutionBoundV1 if active_epoch => {
+                let node = event.node_id.ok_or("GateExecutionBound@1 has no node ID")?;
+                let binding: RunExecutionBindingV4 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                if binding.node != node {
+                    return Err("GateExecutionBound@1 metadata disagrees with its payload".into());
+                }
+                if replayed.execution_bindings.insert(node, binding).is_some() {
+                    return Err("one Round Gate has duplicate Execution Bindings".into());
+                }
             }
             EventType::AttemptDispatchedV1 => {
                 let payload: AttemptDispatchedPayloadV1 =
@@ -940,6 +964,9 @@ pub struct Kernel<'a> {
     /// Absent only for frozen v1/v2 pipeline semantics. V3 resolves this exact Gate binding from
     /// captured authority before any candidate check executes.
     gate_execution: Option<review_config::GateExecutionSpec>,
+    /// Optional machine-resolved provider. The CLI normally lets the kernel probe locally;
+    /// embedding callers and deterministic boundary tests may bind an already-probed provider.
+    container_provider: Option<ContainerProvider>,
     execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
@@ -1099,7 +1126,8 @@ impl<'a> Kernel<'a> {
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
             gate_execution: None,
-            execution_bindings: Mutex::new(BTreeMap::new()),
+            container_provider: None,
+            execution_bindings: Mutex::new(replayed.execution_bindings),
             reviewers: BTreeMap::new(),
             demand_requirements: BTreeMap::new(),
             attempts: Mutex::new(attempts),
@@ -1168,7 +1196,7 @@ impl<'a> Kernel<'a> {
         )?;
         kernel.input_bindings = loaded.input_bindings();
         kernel.demand_requirements = loaded.demand_requirements().clone();
-        kernel.gate_execution = loaded.gate_execution();
+        kernel.gate_execution = loaded.gate_execution().cloned();
         Ok(kernel)
     }
 
@@ -1179,6 +1207,11 @@ impl<'a> Kernel<'a> {
 
     pub fn with_check_timeout(mut self, timeout: Duration) -> Self {
         self.check_timeout = timeout;
+        self
+    }
+
+    pub fn with_container_provider(mut self, provider: ContainerProvider) -> Self {
+        self.container_provider = Some(provider);
         self
     }
 
@@ -1790,7 +1823,7 @@ impl<'a> Kernel<'a> {
     }
 
     fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
-        let (sandbox, container, require_unchanged) = match self.gate_execution {
+        let (sandbox, container, require_unchanged) = match self.gate_execution.as_ref() {
             None => {
                 // Frozen pipeline v1/v2 semantics. Those Campaigns captured no Gate Execution
                 // Binding, so replay retains the old local/read-only behavior exactly.
@@ -1807,14 +1840,22 @@ impl<'a> Kernel<'a> {
                 let policy = Policy { require: required };
                 let container = match binding.provider {
                     review_config::SandboxProviderSpec::TrustedLocal => None,
-                    review_config::SandboxProviderSpec::Container => {
-                        Some(ContainerProvider::detect())
-                    }
+                    review_config::SandboxProviderSpec::Container => Some(
+                        self.container_provider
+                            .clone()
+                            .unwrap_or_else(ContainerProvider::detect)
+                            .with_image(
+                                binding
+                                    .image
+                                    .as_deref()
+                                    .expect("validated container Gate image"),
+                            ),
+                    ),
                 };
                 let provided = container
                     .as_ref()
                     .map_or(Isolation::None, ContainerProvider::isolation);
-                let admitted = provided >= required;
+                let admitted = gate_provider_admitted(binding.provider, provided, required);
                 // Record the resolved provider claim before materialization. A broken CAS or
                 // failed clone must still leave RunReport@4 able to explain which binding was
                 // selected and whether its isolation was sufficient.
@@ -1828,6 +1869,7 @@ impl<'a> Kernel<'a> {
                             RunExecutionProviderV4::Container
                         }
                     },
+                    image: binding.image.clone(),
                     required_isolation: run_isolation(required),
                     provided_isolation: run_isolation(provided),
                     mode: RunSandboxModeV4::EphemeralWrite,
@@ -1836,7 +1878,23 @@ impl<'a> Kernel<'a> {
                 self.execution_bindings
                     .lock()
                     .expect("execution bindings")
-                    .insert(node_id.to_string(), report);
+                    .insert(node_id.to_string(), report.clone());
+                self.buffer_reviewer_event(
+                    node_id,
+                    NewEvent::new(
+                        EventType::GateExecutionBoundV1,
+                        serde_json::to_value(report).map_err(|error| error.to_string())?,
+                    )
+                    .node(node_id),
+                );
+                if let Some(provider) = container.as_ref() {
+                    if !provider.availability().usable() {
+                        return Err(format!(
+                            "container provider unavailable: {}",
+                            provider.availability().reason()
+                        ));
+                    }
+                }
                 let template = self.sandbox_template()?;
                 let sandbox = match container.as_ref() {
                     Some(provider) => provider
@@ -3568,6 +3626,20 @@ impl review_config::SubjectDispatch for Kernel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unusable_container_is_not_admitted_even_when_none_was_required() {
+        assert!(!gate_provider_admitted(
+            review_config::SandboxProviderSpec::Container,
+            Isolation::None,
+            Isolation::None,
+        ));
+        assert!(gate_provider_admitted(
+            review_config::SandboxProviderSpec::Container,
+            Isolation::Container,
+            Isolation::None,
+        ));
+    }
 
     #[test]
     fn canonical_reduction_refuses_a_stale_ledger_round() {

@@ -72,6 +72,7 @@ impl Availability {
     }
 }
 
+#[derive(Clone)]
 pub struct ContainerProvider {
     availability: Availability,
     image: String,

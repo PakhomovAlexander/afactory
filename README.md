@@ -358,13 +358,15 @@ inherited environment — and the live-runtime probe target proves the boundary 
 a daemon.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
-Execution Binding. `provider = "container"` can satisfy `required_isolation = "container"` only
-after a successful runtime probe; `trusted_local` can satisfy only an explicit `none`
+Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can
+satisfy `required_isolation = "container"` only after a successful runtime probe;
+`trusted_local` can satisfy only an explicit `none`
 requirement. Gate checks then execute through that admitted provider in an independent
 `ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
-pristine template. `RunReport@4` records the provider, required and provided isolation, mode, and
-admission result for every Gate node. Formats v1/v2 permanently retain their captured local,
-read-only behavior.
+pristine template. The resolved fact is durable before the Gate receipt, so same-Round replay
+cannot invent or lose it. `RunReport@4` records the provider, pinned image when applicable,
+required and provided isolation, mode, and admission result for every Gate node. Formats v1/v2
+permanently retain their captured local, read-only behavior.
 
 ### Sealing
 
@@ -456,11 +458,17 @@ version = 3
 provider = "trusted_local"       # use "container" for a safe pipeline
 required_isolation = "none"      # safe pipelines require "container"
 mode = "ephemeral-write"
+
+# A container binding instead uses:
+# provider = "container"
+# image = "registry.example/project-ci@sha256:<64 lowercase hex>"
+# required_isolation = "container"
 ```
 
 The binding is part of the captured pipeline artifact, so a later Round cannot silently change
-its provider or isolation policy. `af onboard` emits the explicit trusted-local form for its
-documented first-party workflow; upgrading that policy to safe containment is a reviewed edit.
+its provider, image, or isolation policy. `af onboard` emits the explicit trusted-local form for
+its documented first-party workflow; upgrading that policy to safe containment is a reviewed
+edit with a project-toolchain image, never a generic moving tag.
 
 **Format note.** The design's examples are YAML and this is TOML. The shape is unchanged and the
 loader is serde types, so another syntax is a different `from_str`, not a different model. The

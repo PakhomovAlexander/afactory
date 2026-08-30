@@ -719,6 +719,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             provider: SandboxProviderSpec::TrustedLocal,
             required_isolation: IsolationSpec::None,
             mode: GateModeSpec::EphemeralWrite,
+            image: None,
         }),
         nodes,
         edges,
@@ -921,8 +922,9 @@ commits, pushes, pull requests, publication, or other remote side effects.
 The generated pipeline explicitly binds its Gate to `trusted_local` with required isolation
 `none`. Each Gate receives a disposable `ephemeral-write` clone, so build/scaffold writes cannot
 taint reviewer clones, but this is not a security boundary against untrusted project commands.
-Before reviewing untrusted code, change the binding to provider `container` with required
-isolation `container`, refresh the lock, and verify the live container probes.
+Before reviewing untrusted code, change the binding to provider `container`, add a project
+toolchain image pinned as `name@sha256:<digest>`, require isolation `container`, refresh the lock,
+and verify the live container probes.
 
 Required Gate commands (declared as literal trusted argv; onboarding does not execute them):
 

@@ -55,6 +55,8 @@ pub enum EventType {
     FixVerifiedV1,
     #[serde(rename = "GateDecision@1")]
     GateDecisionV1,
+    #[serde(rename = "GateExecutionBound@1")]
+    GateExecutionBoundV1,
     #[serde(rename = "GenerationAdvanced@1")]
     GenerationAdvancedV1,
     #[serde(rename = "NodeInvocation@1")]
@@ -82,7 +84,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -106,6 +108,7 @@ impl EventType {
         Self::FindingsUngroupedV1,
         Self::FixVerifiedV1,
         Self::GateDecisionV1,
+        Self::GateExecutionBoundV1,
         Self::GenerationAdvancedV1,
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
@@ -145,6 +148,7 @@ impl EventType {
             Self::FixVerifiedV1 => "FixVerified@1",
             Self::FindingResolvedV1 => "FindingResolved@1",
             Self::GateDecisionV1 => "GateDecision@1",
+            Self::GateExecutionBoundV1 => "GateExecutionBound@1",
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
@@ -201,6 +205,7 @@ impl EventType {
             Self::FixVerifiedV1 => ("FixVerified", 1),
             Self::FindingResolvedV1 => ("FindingResolved", 1),
             Self::GateDecisionV1 => ("GateDecision", 1),
+            Self::GateExecutionBoundV1 => ("GateExecutionBound", 1),
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
@@ -274,6 +279,7 @@ impl std::str::FromStr for EventType {
             "FixVerified@1" => Ok(Self::FixVerifiedV1),
             "FindingResolved@1" => Ok(Self::FindingResolvedV1),
             "GateDecision@1" => Ok(Self::GateDecisionV1),
+            "GateExecutionBound@1" => Ok(Self::GateExecutionBoundV1),
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
@@ -440,10 +446,68 @@ pub enum RunSandboxModeV4 {
 pub struct RunExecutionBindingV4 {
     pub node: String,
     pub provider: RunExecutionProviderV4,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     pub required_isolation: RunIsolationV4,
     pub provided_isolation: RunIsolationV4,
     pub mode: RunSandboxModeV4,
     pub admitted: bool,
+}
+
+impl RunExecutionBindingV4 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.trim().is_empty() {
+            return Err("Gate Execution Binding has an empty node".into());
+        }
+        if self.required_isolation == RunIsolationV4::Process {
+            return Err(
+                "Gate Execution Binding cannot require unsupported process isolation".into(),
+            );
+        }
+        let provider_usable = match self.provider {
+            RunExecutionProviderV4::TrustedLocal => {
+                if self.image.is_some() || self.provided_isolation != RunIsolationV4::None {
+                    return Err(
+                        "trusted_local cannot name an image or claim non-none isolation".into(),
+                    );
+                }
+                true
+            }
+            RunExecutionProviderV4::Container => {
+                let image = self
+                    .image
+                    .as_deref()
+                    .ok_or("container Gate Execution Binding has no pinned image")?;
+                if !is_pinned_container_image(image) {
+                    return Err(
+                        "container Gate Execution Binding image is not digest-pinned".into(),
+                    );
+                }
+                self.provided_isolation == RunIsolationV4::Container
+            }
+        };
+        if self.admitted != (provider_usable && self.provided_isolation >= self.required_isolation)
+        {
+            return Err(format!(
+                "Gate Execution Binding admission for `{}` contradicts provider usability or isolation",
+                self.node
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn is_pinned_container_image(image: &str) -> bool {
+    let Some((name, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().any(char::is_whitespace)
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// RunReport@4 adds only resolved Gate Execution Bindings. All prior structural and verdict
@@ -859,27 +923,13 @@ impl RunReportPayloadV4 {
             .collect();
         let mut binding_nodes = std::collections::BTreeSet::new();
         for binding in &self.execution_bindings {
-            if binding.node.trim().is_empty() || !binding_nodes.insert(binding.node.as_str()) {
+            binding.validate()?;
+            if !binding_nodes.insert(binding.node.as_str()) {
                 return Err("RunReport@4 contains an empty or duplicate binding node".into());
             }
             if !outcome_nodes.contains(binding.node.as_str()) {
                 return Err(format!(
                     "RunReport@4 binding node `{}` has no corresponding outcome",
-                    binding.node
-                ));
-            }
-            let provider_is_honest = match binding.provider {
-                RunExecutionProviderV4::TrustedLocal => {
-                    binding.provided_isolation == RunIsolationV4::None
-                }
-                RunExecutionProviderV4::Container => true,
-            };
-            if !provider_is_honest {
-                return Err("trusted_local cannot claim container isolation".into());
-            }
-            if binding.admitted != (binding.provided_isolation >= binding.required_isolation) {
-                return Err(format!(
-                    "RunReport@4 binding admission for `{}` contradicts its isolation",
                     binding.node
                 ));
             }
@@ -1183,6 +1233,13 @@ pub fn validate_event_payload(
                 return Err("GateDecision@1 is internally inconsistent".into());
             }
             Ok(())
+        }
+        EventType::GateExecutionBoundV1 => {
+            let binding = serde_json::from_value::<RunExecutionBindingV4>(payload.clone())
+                .map_err(|error| format!("GateExecutionBound@1: {error}"))?;
+            binding
+                .validate()
+                .map_err(|error| format!("GateExecutionBound@1: {error}"))
         }
         EventType::FindingReportedV1 => validate_finding_reported(payload),
         EventType::FindingResolvedV1 => validate_finding_resolved(payload),

@@ -533,15 +533,33 @@ pub enum GateModeSpec {
     EphemeralWrite,
 }
 
+fn is_pinned_container_image(image: &str) -> bool {
+    let Some((name, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().any(char::is_whitespace)
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// The Gate slice of an Execution Binding. Reviewer bindings remain unchanged until their own
 /// milestone; this format makes the Gate's provider, isolation requirement, and write policy
 /// explicit and pins them inside the captured pipeline artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateExecutionSpec {
     pub provider: SandboxProviderSpec,
     pub required_isolation: IsolationSpec,
     pub mode: GateModeSpec,
+    /// Required for the container provider and forbidden for trusted-local execution. The
+    /// digest pin is execution authority; a moving tag could otherwise change the Gate without
+    /// changing the captured pipeline artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// A whole pipeline definition, as a project writes it.
@@ -609,8 +627,8 @@ impl Loaded {
         self.check_timeout_seconds
     }
 
-    pub fn gate_execution(&self) -> Option<GateExecutionSpec> {
-        self.gate
+    pub fn gate_execution(&self) -> Option<&GateExecutionSpec> {
+        self.gate.as_ref()
     }
 
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
@@ -775,6 +793,37 @@ impl Definition {
             (3, Some(subject), Some(gate)) => (subject, Some(gate)),
             (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        if let Some(binding) = &gate {
+            match binding.provider {
+                SandboxProviderSpec::TrustedLocal => {
+                    if binding.required_isolation != IsolationSpec::None {
+                        return Err(ConfigError::Binding(
+                            "`trusted_local` can satisfy only explicit `required_isolation = \"none\"`"
+                                .to_string(),
+                        ));
+                    }
+                    if binding.image.is_some() {
+                        return Err(ConfigError::Binding(
+                            "`trusted_local` Gate bindings cannot declare a container image"
+                                .to_string(),
+                        ));
+                    }
+                }
+                SandboxProviderSpec::Container => {
+                    let image = binding.image.as_deref().ok_or_else(|| {
+                        ConfigError::Binding(
+                            "container Gate bindings require an `image` pinned by sha256 digest"
+                                .to_string(),
+                        )
+                    })?;
+                    if !is_pinned_container_image(image) {
+                        return Err(ConfigError::Binding(format!(
+                            "container Gate image `{image}` must be a non-option OCI reference pinned as `name@sha256:<64 lowercase hex>`"
+                        )));
+                    }
+                }
+            }
+        }
         if gate.is_some() {
             let gates: Vec<_> = self
                 .nodes

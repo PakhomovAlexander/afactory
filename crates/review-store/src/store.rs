@@ -1487,6 +1487,44 @@ fn validate_report_plan(
     Ok(())
 }
 
+fn validate_report_gate_bindings(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    payload: &Value,
+) -> Result<(), StoreError> {
+    let report: review_core::RunReportPayloadV4 = serde_json::from_value(payload.clone())?;
+    let reported: std::collections::BTreeMap<_, _> = report
+        .execution_bindings
+        .into_iter()
+        .map(|binding| (binding.node.clone(), binding))
+        .collect();
+    let mut statement = tx.prepare(
+        "SELECT node_id, payload FROM events
+         WHERE run_id = ?1 AND causation_id = ?2 AND type = 'GateExecutionBound@1'
+         ORDER BY node_id",
+    )?;
+    let rows = statement.query_map(params![run_id, round_event_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut durable = std::collections::BTreeMap::new();
+    for row in rows {
+        let (node, payload) = row?;
+        let binding: review_core::RunExecutionBindingV4 = serde_json::from_str(&payload)?;
+        if binding.node != node || durable.insert(node, binding).is_some() {
+            return Err(StoreError::Conflict(
+                "durable Gate Execution Bindings have conflicting identity".into(),
+            ));
+        }
+    }
+    if durable != reported {
+        return Err(StoreError::Conflict(
+            "RunReport@4 bindings differ from the durable Gate execution facts".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_campaign_transition(
     tx: &rusqlite::Transaction<'_>,
     cas: &Cas,
@@ -1527,6 +1565,7 @@ fn validate_campaign_transition(
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
+    let mut batch_gate_bindings = std::collections::BTreeSet::new();
     let mut batch_findings = std::collections::BTreeSet::new();
     let mut batch_demands = std::collections::BTreeSet::new();
     let mut active_groupings = load_active_groupings(tx, run_id)?;
@@ -1764,6 +1803,36 @@ fn validate_campaign_transition(
                                 .map_err(StoreError::Conflict)?;
                             batch_provider_operations
                                 .insert(transition.operation_id.clone(), transition);
+                        }
+                        EventType::GateExecutionBoundV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("GateExecutionBound@1 has no node ID".into())
+                            })?;
+                            let binding: review_core::RunExecutionBindingV4 =
+                                serde_json::from_value(event.payload.clone())?;
+                            if binding.node != node {
+                                return Err(StoreError::Conflict(
+                                    "GateExecutionBound@1 metadata disagrees with its payload"
+                                        .into(),
+                                ));
+                            }
+                            if plan.is_none_or(|plan| !plan.gate_nodes.contains(node)) {
+                                return Err(StoreError::Conflict(format!(
+                                    "Gate Execution Binding node '{node}' is absent from the pinned Gate plan"
+                                )));
+                            }
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2
+                                   AND type = 'GateExecutionBound@1' AND node_id = ?3",
+                                params![run_id, active_id, node],
+                                |row| row.get(0),
+                            )?;
+                            if existing > 0 || !batch_gate_bindings.insert(node.to_string()) {
+                                return Err(StoreError::Conflict(format!(
+                                    "Gate '{node}' already has a durable Execution Binding"
+                                )));
+                            }
                         }
                         EventType::NodeInvocationV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
@@ -2238,6 +2307,14 @@ fn validate_campaign_transition(
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
+                            if event_type == EventType::RunReportV4 {
+                                validate_report_gate_bindings(
+                                    tx,
+                                    run_id,
+                                    active_id,
+                                    &event.payload,
+                                )?;
+                            }
                             validate_report_receipts(
                                 tx,
                                 run_id,
@@ -2680,6 +2757,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::DemandRecordedV1
                 | EventType::FindingReportedV1
                 | EventType::GateDecisionV1
+                | EventType::GateExecutionBoundV1
                 | EventType::GenerationAdvancedV1
                 | EventType::NodeInvocationV1
                 | EventType::NodeOutputReceiptV1
@@ -2692,6 +2770,7 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
         || matches!(
             event_type,
             EventType::NodeInvocationV1
+                | EventType::GateExecutionBoundV1
                 | EventType::AttemptDispatchedV1
                 | EventType::NodeOutputReceiptV1
         )

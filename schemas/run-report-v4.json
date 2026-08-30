@@ -47,6 +47,10 @@
         "properties": {
           "node": { "type": "string", "minLength": 1 },
           "provider": { "enum": ["trusted_local", "container"] },
+          "image": {
+            "type": "string",
+            "pattern": "^[^-\\s].*@sha256:[0-9a-f]{64}$"
+          },
           "required_isolation": { "enum": ["none", "container"] },
           "provided_isolation": { "enum": ["none", "process", "container"] },
           "mode": { "const": "ephemeral-write" },

@@ -42,6 +42,7 @@
         "FindingsUngrouped@1",
         "FixVerified@1",
         "GateDecision@1",
+        "GateExecutionBound@1",
         "GenerationAdvanced@1",
         "NodeInvocation@1",
         "NodeOutputReceipt@1",
@@ -100,6 +101,10 @@
     {
       "if": { "properties": { "type": { "const": "ProviderOperationTransition@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/provider_operation_transition" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "GateExecutionBound@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/gate_execution_bound" } } }
     }
   ],
   "$defs": {
@@ -109,6 +114,20 @@
       "pattern": "^[0-9a-z]{26}$"
     },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gate_execution_bound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "provider", "required_isolation", "provided_isolation", "mode", "admitted"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "provider": { "enum": ["trusted_local", "container"] },
+        "image": { "type": "string", "pattern": "^[^-\\s].*@sha256:[0-9a-f]{64}$" },
+        "required_isolation": { "enum": ["none", "container"] },
+        "provided_isolation": { "enum": ["none", "process", "container"] },
+        "mode": { "const": "ephemeral-write" },
+        "admitted": { "type": "boolean" }
+      }
+    },
     "campaign_opened": {
       "type": "object",
       "additionalProperties": false,

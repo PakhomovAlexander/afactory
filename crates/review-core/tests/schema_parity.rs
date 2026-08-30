@@ -797,6 +797,35 @@ fn bootstrap_event_payloads_are_semantically_validated() {
         &json!({"round":0,"epoch":1,"campaign_manifest_id":"x","subject_id":"x","prior_finding_set_id":"x","prior_demand_set_id":"x"}),
     )
     .is_err());
+
+    let binding = RunExecutionBindingV4 {
+        node: "gate".into(),
+        provider: RunExecutionProviderV4::TrustedLocal,
+        image: None,
+        required_isolation: RunIsolationV4::None,
+        provided_isolation: RunIsolationV4::None,
+        mode: RunSandboxModeV4::EphemeralWrite,
+        admitted: true,
+    };
+    let payload = serde_json::to_value(binding).unwrap();
+    assert!(
+        review_core::event::validate_event_payload(EventType::GateExecutionBoundV1, &payload)
+            .is_ok()
+    );
+    let event = RunEvent {
+        event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
+        run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+        sequence: 1,
+        event_type: EventType::GateExecutionBoundV1,
+        occurred_at: "2026-08-30T12:00:00Z".into(),
+        node_id: Some("gate".into()),
+        attempt_id: None,
+        causation_id: Some("01jd8m4qz9k7v3n2p6r8t0w201".into()),
+        correlation_id: None,
+        artifact_refs: vec![],
+        payload,
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
 }
 
 #[test]
@@ -1046,6 +1075,7 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         execution_bindings: vec![RunExecutionBindingV4 {
             node: "review".into(),
             provider: RunExecutionProviderV4::TrustedLocal,
+            image: None,
             required_isolation: RunIsolationV4::None,
             provided_isolation: RunIsolationV4::None,
             mode: RunSandboxModeV4::EphemeralWrite,
@@ -1068,6 +1098,9 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
 
     let mut dishonest = report_v4;
     dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
+    assert!(dishonest.validate().is_err());
+    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::None;
+    dishonest.execution_bindings[0].required_isolation = RunIsolationV4::Process;
     assert!(dishonest.validate().is_err());
 }
 

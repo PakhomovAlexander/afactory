@@ -238,6 +238,25 @@ fn version_three_requires_an_explicit_root_gate_execution_binding() {
         review_config::IsolationSpec::None
     );
     assert_eq!(binding.mode, review_config::GateModeSpec::EphemeralWrite);
+    assert_eq!(binding.image, None);
+
+    let unpinned_container = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"container\"\nrequired_isolation = \"container\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&unpinned_container).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("require an `image`")
+    ));
+
+    let trusted_overclaim = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"container\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&trusted_overclaim).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("can satisfy only")
+    ));
 
     let inherited = MINIMAL.replace(
         "version = 2",

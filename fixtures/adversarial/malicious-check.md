@@ -79,11 +79,12 @@ refusal remains tested. Open here, by name:
   artifacts) and exfiltration-over-allowed-egress need a broker that holds credentials outside
   the sandbox and emits receipts. There is no broker yet.
 
-Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Admission
-is recorded in `RunReport@4`; insufficient isolation fails the Gate before a project command
-runs. The live container control uses `CheckRunner::run_with`, so the same typed-argument and
-evidence-preservation path used by a real pipeline executes inside the container. Brokered
-credentials and allowed egress remain M6.3 and are not claimed here.
+Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
+bindings require a project image pinned by digest. Provider usability and isolation admission are
+recorded durably before `RunReport@4`; either failure stops the Gate before a project command
+runs. The ignored live pipeline control and the lower-level probes use `CheckRunner::run_with`,
+so the same typed-argument and evidence-preservation path executes inside the container when a
+daemon is available. Brokered credentials and allowed egress remain M6.3 and are not claimed here.
 
 **Do not weaken this case as the wiring lands.** Marking the routing or broker rows satisfied
 on the strength of the provider probes would be exactly the quiet redefinition this file warns
