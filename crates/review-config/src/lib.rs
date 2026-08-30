@@ -50,7 +50,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1 and 2"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1, 2, and 3"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -509,6 +509,41 @@ pub struct SubjectSpec {
     pub kind: review_core::SubjectKind,
 }
 
+/// The machine-local provider selected by a Gate Execution Binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxProviderSpec {
+    TrustedLocal,
+    Container,
+}
+
+/// The weakest isolation a pipeline is willing to accept for its Gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationSpec {
+    None,
+    Container,
+}
+
+/// M6.1 deliberately exposes one Gate mode. Adding another is a policy change, not a free-form
+/// string that a misspelled configuration may silently downgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GateModeSpec {
+    EphemeralWrite,
+}
+
+/// The Gate slice of an Execution Binding. Reviewer bindings remain unchanged until their own
+/// milestone; this format makes the Gate's provider, isolation requirement, and write policy
+/// explicit and pins them inside the captured pipeline artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateExecutionSpec {
+    pub provider: SandboxProviderSpec,
+    pub required_isolation: IsolationSpec,
+    pub mode: GateModeSpec,
+}
+
 /// A whole pipeline definition, as a project writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -522,6 +557,10 @@ pub struct Definition {
     /// the authority layer and persisted in CampaignManifest@1.
     #[serde(default)]
     pub check_timeout_seconds: Option<u64>,
+    /// Required by pipeline format v3. Formats v1/v2 permanently retain their legacy local,
+    /// read-only Gate behavior so pinned Campaign replay does not acquire new execution policy.
+    #[serde(default)]
+    pub gate: Option<GateExecutionSpec>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
@@ -538,6 +577,7 @@ pub struct Loaded {
     plan: Planned,
     checks: Vec<CheckDefinition>,
     check_timeout_seconds: u64,
+    gate: Option<GateExecutionSpec>,
     reviewers: BTreeMap<String, Command>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
@@ -567,6 +607,10 @@ impl Loaded {
 
     pub fn check_timeout_seconds(&self) -> u64 {
         self.check_timeout_seconds
+    }
+
+    pub fn gate_execution(&self) -> Option<GateExecutionSpec> {
+        self.gate
     }
 
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
@@ -696,24 +740,58 @@ impl Definition {
         self,
         resolver: Option<(&lock::Lockfile, &lock::Registry)>,
     ) -> Result<Loaded, ConfigError> {
-        let subject = match (self.version, self.subject) {
-            (1, None) => SubjectSpec {
-                kind: review_core::SubjectKind::WholeTree,
-            },
-            (1, Some(_)) => {
+        let (subject, gate) = match (self.version, self.subject, self.gate) {
+            (1, None, None) => (
+                SubjectSpec {
+                    kind: review_core::SubjectKind::WholeTree,
+                },
+                None,
+            ),
+            (1, Some(_), _) => {
                 return Err(ConfigError::Binding(
                     "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
                         .to_string(),
                 ));
             }
-            (2, Some(subject)) => subject,
-            (2, None) => {
+            (1 | 2, _, Some(_)) => {
                 return Err(ConfigError::Binding(
-                    "pipeline format version 2 requires `[subject]`".to_string(),
+                    "pipeline formats 1 and 2 have no `[gate]` Execution Binding; use version 3"
+                        .to_string(),
                 ));
             }
-            (version, _) => return Err(ConfigError::UnknownVersion(version)),
+            (2, Some(subject), None) => (subject, None),
+            (2 | 3, None, _) => {
+                return Err(ConfigError::Binding(format!(
+                    "pipeline format version {} requires `[subject]`",
+                    self.version
+                )));
+            }
+            (3, Some(_), None) => {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 3 requires an explicit `[gate]` Execution Binding"
+                        .to_string(),
+                ));
+            }
+            (3, Some(subject), Some(gate)) => (subject, Some(gate)),
+            (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        if gate.is_some() {
+            let gates: Vec<_> = self
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKindSpec::Gate)
+                .collect();
+            if gates.is_empty()
+                || gates
+                    .iter()
+                    .any(|node| !node.inputs.is_empty() || node.gated_by.is_some())
+            {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 3 requires every Gate node to be a root so every Gate Execution Binding is resolved"
+                        .to_string(),
+                ));
+            }
+        }
         validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
@@ -877,6 +955,7 @@ impl Definition {
             plan,
             checks,
             check_timeout_seconds,
+            gate,
             reviewers,
             demand_requirements,
             packages,

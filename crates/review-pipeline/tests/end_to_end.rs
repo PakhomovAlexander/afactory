@@ -280,6 +280,28 @@ fn clean_reviewer() -> Command {
     )
 }
 
+fn gate_isolated_reviewer() -> Command {
+    Command::new(
+        "/bin/sh",
+        vec![
+            Arg::literal("-c"),
+            Arg::literal(
+                "test ! -e gate-output && cat src/main.rs > /dev/null && printf '%s\\n' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
+            ),
+        ],
+    )
+}
+
+fn v3_gate_authority(provider: &str, required_isolation: &str) -> String {
+    HEAVY_AUTHORITY.replacen(
+        "version = 2\n",
+        &format!(
+            "version = 3\n[gate]\nprovider = \"{provider}\"\nrequired_isolation = \"{required_isolation}\"\nmode = \"ephemeral-write\"\n"
+        ),
+        1,
+    )
+}
+
 fn ledger_node(finding_port: &str, canonical: bool) -> Node {
     let node = Node::new("ledger", NodeKind::Ledger).accepting(&["reports"]);
     if canonical {
@@ -1010,6 +1032,134 @@ gate = "major"
     let convergence = kernel.convergence(*loaded.convergence());
     assert_eq!(convergence.verdict, Verdict::NotConverged);
     assert_eq!(convergence.open_blocking, 1);
+}
+
+#[test]
+fn a_v3_gate_binding_allows_disposable_writes_without_tainting_reviewer_sandboxes() {
+    use review_config::Definition;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(vec![CheckDefinition::new(
+        "write-scaffold",
+        Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal("printf gate > gate-output"),
+            ],
+        ),
+    )])
+    .with_reviewer("architecture", gate_isolated_reviewer())
+    .with_reviewer("performance", gate_isolated_reviewer());
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert!(kernel.gate_decision("gate").unwrap().passed());
+    kernel
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    assert!(!repo_path.join("gate-output").exists());
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    assert_eq!(payload.execution_bindings.len(), 1);
+    let binding = &payload.execution_bindings[0];
+    assert_eq!(binding.node, "gate");
+    assert_eq!(
+        binding.provider,
+        review_core::RunExecutionProviderV4::TrustedLocal
+    );
+    assert_eq!(
+        binding.required_isolation,
+        review_core::RunIsolationV4::None
+    );
+    assert_eq!(
+        binding.provided_isolation,
+        review_core::RunIsolationV4::None
+    );
+    assert!(binding.admitted);
+}
+
+#[test]
+fn a_v3_safe_gate_refuses_trusted_local_and_records_the_failed_admission() {
+    use review_config::Definition;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "container");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        report.outcome("gate"),
+        Some(NodeOutcome::Failed { error, .. }) if error.contains("requires Container isolation")
+    ));
+    kernel
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    assert_eq!(payload.execution_bindings.len(), 1);
+    assert!(!payload.execution_bindings[0].admitted);
 }
 
 /// A reviewer's id is a name, not its role. Dispatch that routed on the id string silently

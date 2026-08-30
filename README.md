@@ -350,21 +350,21 @@ does), the environment is rebuilt from an allowlist rather than filtered, and ev
 captured. Note what that is not — an absolute-path write to the checkout on disk is not
 prevented, and the case records that as open rather than calling it covered.
 
-A `ContainerProvider` also exists, for hosts with a usable runtime — but it has never run
-against a live daemon, so the probes that need one stay open. Its **detection** is the part worth
-knowing: finding `docker` on `PATH` proves nothing. On the machine it was written both `docker`
-and `podman` are installed and neither daemon is reachable, so a provider that stopped at `which`
-would have declared containment and delivered none. Detection runs the runtime's own `info` and
-requires it to succeed; an installed-but-unusable runtime reports `Isolation::None` and refuses to
-exec rather than falling back to the host. The invocation it builds is asserted exactly — one
-bind, `--network=none`, no inherited environment — which proves the plumbing and not containment.
+A `ContainerProvider` also exists for hosts with a usable runtime. Finding `docker` on `PATH`
+proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
+installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
+back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
+inherited environment — and the live-runtime probe target proves the boundary where CI provides
+a daemon.
 
-The distinction is enforced, not documented. A sandbox declares the isolation it provides, a
-pipeline declares what it requires, and `admit` refuses the pairing — so a pipeline that needs
-containment cannot silently run on a directory. The design's own risk register names this failure
-("worktree mistaken for security sandbox"); the way not to make it is to make the weaker provider
-unable to claim the stronger property. Three of `malicious-check.md`'s probes are discharged and three stay open, recorded in the case
-itself rather than narrowed away.
+The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
+Execution Binding. `provider = "container"` can satisfy `required_isolation = "container"` only
+after a successful runtime probe; `trusted_local` can satisfy only an explicit `none`
+requirement. Gate checks then execute through that admitted provider in an independent
+`ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
+pristine template. `RunReport@4` records the provider, required and provided isolation, mode, and
+admission result for every Gate node. Formats v1/v2 permanently retain their captured local,
+read-only behavior.
 
 ### Sealing
 
@@ -409,8 +409,8 @@ test of the boundaries underneath: if composing them had required new rules, the
 been wrong.
 
 ```text
-  capture ── snapshot ──> gate (checks, read-only sandbox) ──decision──┐
-                                                                       v
+  capture ── snapshot ──> gate (admitted, ephemeral-write clone) ──decision──┐
+                                                                              v
               architecture ┐   performance ┐   (each in its own ephemeral-write sandbox, gated)
                            └───────────────┴──> gather ──> ledger ──> convergence
 ```
@@ -446,6 +446,21 @@ input nothing feeds fails at load.
 Argument provenance defaults to `literal`, because a project writing its own check command is
 trusted; `untrusted` is the classification you have to type. The safe default is the one that
 cannot be reached by forgetting.
+
+New pipelines make Gate execution authority explicit:
+
+```toml
+version = 3
+
+[gate]
+provider = "trusted_local"       # use "container" for a safe pipeline
+required_isolation = "none"      # safe pipelines require "container"
+mode = "ephemeral-write"
+```
+
+The binding is part of the captured pipeline artifact, so a later Round cannot silently change
+its provider or isolation policy. `af onboard` emits the explicit trusted-local form for its
+documented first-party workflow; upgrading that policy to safe containment is a reviewed edit.
 
 **Format note.** The design's examples are YAML and this is TOML. The shape is unchanged and the
 loader is serde types, so another syntax is a different `from_str`, not a different model. The

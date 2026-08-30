@@ -126,27 +126,10 @@ impl<'a> CheckRunner<'a> {
     /// Run one check. Never panics and never propagates a spawn failure as an error: a check
     /// that could not start is a *result*, because losing it would be the same as passing it.
     pub fn run(&self, definition: &CheckDefinition) -> CheckResult {
-        let base = CheckResult {
-            name: definition.name.clone(),
-            status: CheckStatus::NotRun,
-            exit_code: None,
-            reason: None,
-            program: (!definition.command.program.trim().is_empty())
-                .then(|| definition.command.program.clone()),
-            args: definition.command.args.clone(),
-            stdout: None,
-            stderr: None,
-            required: definition.required,
-        };
-
-        let argv = match definition.command.resolve() {
+        let base = base_result(definition);
+        let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
-            Err(error) => {
-                return CheckResult {
-                    reason: Some(describe(&error)),
-                    ..base
-                };
-            }
+            Err(result) => return *result,
         };
 
         let mut cmd = std::process::Command::new(&definition.command.program);
@@ -181,6 +164,40 @@ impl<'a> CheckRunner<'a> {
             }
         };
 
+        self.finish(base, output, stderr_held)
+    }
+
+    /// Run one typed check through an admitted external execution provider. Command resolution
+    /// remains owned here, so a container route cannot bypass argument provenance validation;
+    /// the provider owns only where the already-resolved program executes.
+    pub fn run_with<F>(&self, definition: &CheckDefinition, execute: F) -> CheckResult
+    where
+        F: FnOnce(
+            &str,
+            &[String],
+            std::time::Duration,
+        ) -> Result<(std::process::Output, bool), String>,
+    {
+        let base = base_result(definition);
+        let argv = match resolved_args(definition, &base) {
+            Ok(argv) => argv,
+            Err(result) => return *result,
+        };
+        match execute(&definition.command.program, &argv, self.timeout) {
+            Ok((output, stderr_held)) => self.finish(base, output, stderr_held),
+            Err(error) => CheckResult {
+                reason: Some(format!("execution provider refused or failed: {error}")),
+                ..base
+            },
+        }
+    }
+
+    fn finish(
+        &self,
+        base: CheckResult,
+        output: std::process::Output,
+        stderr_held: bool,
+    ) -> CheckResult {
         let stdout = self.cas.put(&output.stdout);
         let stderr = self.cas.put(&output.stderr);
         let code = output.status.code();
@@ -250,6 +267,33 @@ impl<'a> CheckRunner<'a> {
         }
         Ok(results)
     }
+}
+
+fn base_result(definition: &CheckDefinition) -> CheckResult {
+    CheckResult {
+        name: definition.name.clone(),
+        status: CheckStatus::NotRun,
+        exit_code: None,
+        reason: None,
+        program: (!definition.command.program.trim().is_empty())
+            .then(|| definition.command.program.clone()),
+        args: definition.command.args.clone(),
+        stdout: None,
+        stderr: None,
+        required: definition.required,
+    }
+}
+
+fn resolved_args(
+    definition: &CheckDefinition,
+    base: &CheckResult,
+) -> Result<Vec<String>, Box<CheckResult>> {
+    definition.command.resolve().map_err(|error| {
+        Box::new(CheckResult {
+            reason: Some(describe(&error)),
+            ..base.clone()
+        })
+    })
 }
 
 fn stderr_held_reason(stderr_held: bool) -> Option<&'static str> {

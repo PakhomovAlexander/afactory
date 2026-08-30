@@ -29,7 +29,7 @@ use std::time::Duration;
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
     EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunVerdictV2, RunVerdictV3, Severity,
+    RunReportPayloadV4, RunVerdictV2, RunVerdictV3, Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
@@ -2560,23 +2560,32 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
         EventType::RunReportV3 => {
             let report: RunReportPayloadV3 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(match report.verdict {
-                RunVerdictV3::Pass => "pass".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::NotConverged,
-                } => "fail (not_converged)".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::AuthorityUnavailable,
-                } => "fail (authority_unavailable)".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::Exhausted,
-                } => "fail (exhausted)".to_string(),
-                RunVerdictV3::Incomplete { missing_nodes } => {
-                    format!("incomplete ({} missing nodes)", missing_nodes.len())
-                }
-            })
+            Ok(render_verdict_v3(report.verdict))
+        }
+        EventType::RunReportV4 => {
+            let report: RunReportPayloadV4 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
         }
         _ => Err(format!("{} is not a run report", event.event_type)),
+    }
+}
+
+fn render_verdict_v3(verdict: RunVerdictV3) -> String {
+    match verdict {
+        RunVerdictV3::Pass => "pass".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::NotConverged,
+        } => "fail (not_converged)".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::AuthorityUnavailable,
+        } => "fail (authority_unavailable)".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted,
+        } => "fail (exhausted)".to_string(),
+        RunVerdictV3::Incomplete { missing_nodes } => {
+            format!("incomplete ({} missing nodes)", missing_nodes.len())
+        }
     }
 }
 
@@ -2983,6 +2992,11 @@ fn run_report_outcomes(
         )),
         EventType::RunReportV3 => Ok(Some(
             serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV4 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV4>(event.payload.clone())
                 .map_err(|error| error.to_string())?
                 .outcomes,
         )),

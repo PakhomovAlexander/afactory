@@ -208,10 +208,44 @@ fn graph_validation_applies_to_definitions_too() {
 
 #[test]
 fn a_future_version_is_refused_rather_than_guessed_at() {
-    let future = MINIMAL.replace("version = 2", "version = 3");
+    let future = MINIMAL.replace("version = 2", "version = 4");
     assert!(matches!(
         Definition::from_toml(&future).unwrap().load(),
-        Err(ConfigError::UnknownVersion(3))
+        Err(ConfigError::UnknownVersion(4))
+    ));
+}
+
+#[test]
+fn version_three_requires_an_explicit_root_gate_execution_binding() {
+    let missing = MINIMAL.replace("version = 2", "version = 3");
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires an explicit `[gate]`")
+    ));
+
+    let bound = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    let loaded = Definition::from_toml(&bound).unwrap().load().unwrap();
+    let binding = loaded.gate_execution().expect("v3 Gate binding");
+    assert_eq!(
+        binding.provider,
+        review_config::SandboxProviderSpec::TrustedLocal
+    );
+    assert_eq!(
+        binding.required_isolation,
+        review_config::IsolationSpec::None
+    );
+    assert_eq!(binding.mode, review_config::GateModeSpec::EphemeralWrite);
+
+    let inherited = MINIMAL.replace(
+        "version = 2",
+        "version = 2\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&inherited).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("use version 3")
     ));
 }
 

@@ -16,7 +16,7 @@
 //! does run work and does land writes in the sandbox — so the probes fail for isolation
 //! reasons, not because the container is broken.
 
-use review_check::{Arg, Command};
+use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command};
 use review_sandbox::{Availability, ContainerProvider, Mode, Sandbox};
 use review_source_git::Capture;
 use std::time::Duration;
@@ -177,24 +177,28 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, Mode::EphemeralWrite).unwrap();
 
-    let check = Command::new(
-        "/bin/sh",
-        vec![
-            Arg::literal("-c"),
-            Arg::literal("cat src/main.rs > copied.rs && echo checked"),
-        ],
+    let check = CheckDefinition::new(
+        "contained-control",
+        Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal("cat src/main.rs > copied.rs && echo checked"),
+            ],
+        ),
     );
-    let argv = check.resolve().unwrap();
-    let output = provider
-        .exec(sandbox.root(), &check.program, &argv, EXEC_TIMEOUT)
-        .unwrap();
+    let runner = CheckRunner::new(&cas, sandbox.root()).with_timeout(EXEC_TIMEOUT);
+    let result = runner.run_with(&check, |program, args, timeout| {
+        provider
+            .exec_evidenced(sandbox.root(), program, args, timeout)
+            .map(|execution| (execution.output, execution.stderr_held))
+    });
 
+    assert_eq!(result.status, CheckStatus::Passed, "{result:?}");
     assert!(
-        output.status.success(),
-        "the check must run: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&cas.get(result.stdout.as_ref().unwrap()).unwrap())
+            .contains("checked")
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("checked"));
     assert_eq!(
         std::fs::read_to_string(sandbox.root().join("copied.rs")).unwrap(),
         "fn main() {}\n",

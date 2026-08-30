@@ -732,6 +732,8 @@ struct AuthorityDefinition {
     #[serde(default)]
     check_timeout_seconds: Option<u64>,
     #[serde(default)]
+    gate: Option<toml::Value>,
+    #[serde(default)]
     edges: Vec<toml::Value>,
     #[serde(default)]
     budgets: Option<toml::Value>,
@@ -818,6 +820,8 @@ impl AuthorityPort {
 struct AuthorityPlan {
     nodes: std::collections::BTreeMap<String, AuthorityNode>,
     budgeted: bool,
+    gate_bound: bool,
+    gate_nodes: std::collections::BTreeSet<String>,
 }
 
 fn default_authority_outputs() -> Vec<AuthorityPort> {
@@ -872,6 +876,7 @@ fn load_authority_plan_id(
             "pinned pipeline has no supported version".into(),
         ));
     }
+    let gate_bound = definition.gate.is_some();
     let mut nodes = std::collections::BTreeMap::new();
     for node in definition.nodes {
         if node.id.trim().is_empty() || nodes.insert(node.id.clone(), node).is_some() {
@@ -883,7 +888,17 @@ fn load_authority_plan_id(
     if nodes.is_empty() {
         return Err(StoreError::Conflict("pinned pipeline has no nodes".into()));
     }
-    Ok(AuthorityPlan { nodes, budgeted })
+    let gate_nodes = nodes
+        .values()
+        .filter(|node| node.kind == "gate")
+        .map(|node| node.id.clone())
+        .collect();
+    Ok(AuthorityPlan {
+        nodes,
+        budgeted,
+        gate_bound,
+        gate_nodes,
+    })
 }
 
 fn typed_json_artifacts(
@@ -1423,6 +1438,10 @@ fn report_outcomes(
             payload.clone(),
         )?
         .outcomes),
+        EventType::RunReportV4 => Ok(serde_json::from_value::<review_core::RunReportPayloadV4>(
+            payload.clone(),
+        )?
+        .outcomes),
         _ => Err(StoreError::Conflict(format!(
             "{event_type} has no structural run-report outcomes"
         ))),
@@ -1445,6 +1464,25 @@ fn validate_report_plan(
         return Err(StoreError::Conflict(format!(
             "{event_type} does not cover exactly the pinned Campaign plan"
         )));
+    }
+    let reports_bindings = event_type == EventType::RunReportV4;
+    if reports_bindings != plan.gate_bound {
+        return Err(StoreError::Conflict(format!(
+            "{event_type} does not match the pinned pipeline's Gate Execution Binding version"
+        )));
+    }
+    if reports_bindings {
+        let report: review_core::RunReportPayloadV4 = serde_json::from_value(payload.clone())?;
+        let binding_nodes: std::collections::BTreeSet<String> = report
+            .execution_bindings
+            .into_iter()
+            .map(|binding| binding.node)
+            .collect();
+        if binding_nodes != plan.gate_nodes {
+            return Err(StoreError::Conflict(
+                "RunReport@4 does not cover exactly the pinned Gate nodes".into(),
+            ));
+        }
     }
     Ok(())
 }

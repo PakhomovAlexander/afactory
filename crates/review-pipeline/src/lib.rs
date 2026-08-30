@@ -39,8 +39,9 @@ use review_core::{
     CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
     MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultContract, ReviewerResultRejection,
-    RoundStartedPayloadV1, RunFailureReasonV3, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV3, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
+    RoundStartedPayloadV1, RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV3,
+    RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunReportPayloadV4,
+    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
     run_report_closes_round,
 };
 use review_graph::{
@@ -50,7 +51,7 @@ use review_runner::{
     ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
     ReviewerInputs, RunnerError, TokenUsage,
 };
-use review_sandbox::{Mode, Sandbox};
+use review_sandbox::{ContainerProvider, Isolation, Mode, Policy, Sandbox, admit};
 use review_source_git::Manifest;
 use review_store::{
     Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, LedgerProjection, NewEvent,
@@ -112,6 +113,14 @@ fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
         || pipeline_version == 1
             && port.artifact_type == review_core::contract::OPAQUE_V1
             && port.name == "change_set"
+}
+
+fn run_isolation(isolation: Isolation) -> RunIsolationV4 {
+    match isolation {
+        Isolation::None => RunIsolationV4::None,
+        Isolation::Process => RunIsolationV4::Process,
+        Isolation::Container => RunIsolationV4::Container,
+    }
 }
 
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
@@ -928,6 +937,10 @@ pub struct Kernel<'a> {
     authority: RoundAuthority,
     checks: Vec<CheckDefinition>,
     check_timeout: Duration,
+    /// Absent only for frozen v1/v2 pipeline semantics. V3 resolves this exact Gate binding from
+    /// captured authority before any candidate check executes.
+    gate_execution: Option<review_config::GateExecutionSpec>,
+    execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     attempts: Mutex<AttemptLedger>,
@@ -1085,6 +1098,8 @@ impl<'a> Kernel<'a> {
             authority,
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
+            gate_execution: None,
+            execution_bindings: Mutex::new(BTreeMap::new()),
             reviewers: BTreeMap::new(),
             demand_requirements: BTreeMap::new(),
             attempts: Mutex::new(attempts),
@@ -1153,6 +1168,7 @@ impl<'a> Kernel<'a> {
         )?;
         kernel.input_bindings = loaded.input_bindings();
         kernel.demand_requirements = loaded.demand_requirements().clone();
+        kernel.gate_execution = loaded.gate_execution();
         Ok(kernel)
     }
 
@@ -1675,16 +1691,38 @@ impl<'a> Kernel<'a> {
             .collect();
         let persisted_verdict =
             persisted_verdict(&verdict, &convergence, !report.blocked_gates.is_empty())?;
-        let payload = RunReportPayloadV3 {
-            outcomes,
-            blocked_gates: report.blocked_gates.iter().cloned().collect(),
-            verdict: persisted_verdict,
-            spent_tokens: self.spent(),
-        };
-        self.append(NewEvent::new(
-            EventType::RunReportV3,
-            serde_json::to_value(payload).map_err(|e| e.to_string())?,
-        ))?;
+        let blocked_gates = report.blocked_gates.iter().cloned().collect();
+        let spent_tokens = self.spent();
+        if self.gate_execution.is_some() {
+            let payload = RunReportPayloadV4 {
+                outcomes,
+                blocked_gates,
+                verdict: persisted_verdict,
+                spent_tokens,
+                execution_bindings: self
+                    .execution_bindings
+                    .lock()
+                    .expect("execution bindings")
+                    .values()
+                    .cloned()
+                    .collect(),
+            };
+            self.append(NewEvent::new(
+                EventType::RunReportV4,
+                serde_json::to_value(payload).map_err(|e| e.to_string())?,
+            ))?;
+        } else {
+            let payload = RunReportPayloadV3 {
+                outcomes,
+                blocked_gates,
+                verdict: persisted_verdict,
+                spent_tokens,
+            };
+            self.append(NewEvent::new(
+                EventType::RunReportV3,
+                serde_json::to_value(payload).map_err(|e| e.to_string())?,
+            ))?;
+        }
         *published = true;
         Ok(verdict)
     }
@@ -1692,8 +1730,8 @@ impl<'a> Kernel<'a> {
     /// materialized template. The template is built once, under the lock, on the first call
     /// (the gate's); every later sandbox — the reviewers' — clones it instead of walking the
     /// manifest and re-reading the whole tree from the CAS.
-    fn sandbox(&self, mode: Mode) -> Result<Sandbox, String> {
-        let template = {
+    fn sandbox_template(&self) -> Result<Arc<review_sandbox::SandboxTemplate>, String> {
+        Ok({
             let mut guard = self.template.lock().expect("template");
             match guard.as_ref() {
                 Some(template) => template.clone(),
@@ -1706,7 +1744,11 @@ impl<'a> Kernel<'a> {
                     template
                 }
             }
-        };
+        })
+    }
+
+    fn sandbox(&self, mode: Mode) -> Result<Sandbox, String> {
+        let template = self.sandbox_template()?;
         Sandbox::from_template(&template, mode).map_err(|e| e.to_string())
     }
 
@@ -1748,27 +1790,89 @@ impl<'a> Kernel<'a> {
     }
 
     fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
-        // The gate's checks run in a read-only sandbox: a check that mutates the tree would
-        // change what every reviewer after it inspects, which is the same torn-input problem
-        // capture solves one layer down.
-        let sandbox = self.sandbox(Mode::ReadOnly)?;
+        let (sandbox, container, require_unchanged) = match self.gate_execution {
+            None => {
+                // Frozen pipeline v1/v2 semantics. Those Campaigns captured no Gate Execution
+                // Binding, so replay retains the old local/read-only behavior exactly.
+                (self.sandbox(Mode::ReadOnly)?, None, true)
+            }
+            Some(binding) => {
+                let mode = match binding.mode {
+                    review_config::GateModeSpec::EphemeralWrite => Mode::EphemeralWrite,
+                };
+                let required = match binding.required_isolation {
+                    review_config::IsolationSpec::None => Isolation::None,
+                    review_config::IsolationSpec::Container => Isolation::Container,
+                };
+                let policy = Policy { require: required };
+                let container = match binding.provider {
+                    review_config::SandboxProviderSpec::TrustedLocal => None,
+                    review_config::SandboxProviderSpec::Container => {
+                        Some(ContainerProvider::detect())
+                    }
+                };
+                let provided = container
+                    .as_ref()
+                    .map_or(Isolation::None, ContainerProvider::isolation);
+                let admitted = provided >= required;
+                // Record the resolved provider claim before materialization. A broken CAS or
+                // failed clone must still leave RunReport@4 able to explain which binding was
+                // selected and whether its isolation was sufficient.
+                let report = RunExecutionBindingV4 {
+                    node: node_id.to_string(),
+                    provider: match binding.provider {
+                        review_config::SandboxProviderSpec::TrustedLocal => {
+                            RunExecutionProviderV4::TrustedLocal
+                        }
+                        review_config::SandboxProviderSpec::Container => {
+                            RunExecutionProviderV4::Container
+                        }
+                    },
+                    required_isolation: run_isolation(required),
+                    provided_isolation: run_isolation(provided),
+                    mode: RunSandboxModeV4::EphemeralWrite,
+                    admitted,
+                };
+                self.execution_bindings
+                    .lock()
+                    .expect("execution bindings")
+                    .insert(node_id.to_string(), report);
+                let template = self.sandbox_template()?;
+                let sandbox = match container.as_ref() {
+                    Some(provider) => provider
+                        .sandbox_from_template(&template, mode)
+                        .map_err(|error| error.to_string())?,
+                    None => Sandbox::from_template(&template, mode)
+                        .map_err(|error| error.to_string())?,
+                };
+                admit(policy, &sandbox).map_err(|error| error.to_string())?;
+                (sandbox, container, false)
+            }
+        };
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
         let runner = CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
-            let result = runner.run(check);
+            let result = match container.as_ref() {
+                Some(provider) => runner.run_with(check, |program, args, timeout| {
+                    provider
+                        .exec_evidenced(sandbox.root(), program, args, timeout)
+                        .map(|execution| (execution.output, execution.stderr_held))
+                }),
+                None => runner.run(check),
+            };
             self.buffer_reviewer_event(node_id, check_event(&result, node_id));
             results.push(result);
         }
 
         let decision = GateDecision::evaluate(&results);
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
-        if !sealed.unchanged() {
-            // Not fatal, but never silent: a read-only gate that mutated its tree has broken an
-            // assumption every downstream node is relying on. Bounded — a check that ran a
-            // build could have touched thousands of paths, and this is an error string.
+        if require_unchanged && !sealed.unchanged() {
+            // Frozen v1/v2 behavior: those Gates promised read-only execution. V3 deliberately
+            // permits writes in this one disposable clone; reviewer clones still start from the
+            // pristine template, so Gate mutations cannot become Subject content.
             let paths = sealed.mutations.paths();
             return Err(format!(
                 "gate mutated its read-only sandbox: {} paths, e.g. {:?}",

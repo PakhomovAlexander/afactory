@@ -1,5 +1,22 @@
 # Review Kernel workstream log
 
+## 2026-08-30 — M6.1 Gate Execution Bindings
+
+Pipeline format v3 now requires explicit Gate provider, required isolation, and
+`ephemeral-write` mode. Every root Gate materializes through its provider, admits provided
+isolation before command dispatch, runs in an independent writable clone, and publishes the
+exact fact in structural `RunReport@4`; v1/v2 retain their frozen local read-only contract.
+Container live probes exercise the same typed `CheckRunner` route and compile locally, but the
+machine had no running Docker daemon, so only the trusted-local/none path was executed here.
+
+Disposable Campaign `m6-gate-binding-dogfood-fixed` ran project-hub's write-heavy scaffold and
+update smoke checks, then two machine-configured Codex Workers, and returned Pass with 30,060
+tokens, zero Findings, and zero Demands. Its report records an admitted
+`trusted_local`/`none`/`ephemeral-write` binding, and the candidate checkout retained no Gate
+mutations. Dogfood also exposed and fixed generated Codex manifests incorrectly repeating the
+adapter-owned `exec`/sandbox/stdin flags. Focused regressions and the full local `make check` gate
+pass; resume at M6.2 sandbox-local Cache Snapshots.
+
 ## 2026-08-28 — M5.3 Campaign enumeration
 
 `af review campaigns` now renders deterministic text or `af/review-campaigns@1` JSON containing

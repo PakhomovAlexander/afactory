@@ -45,7 +45,7 @@ A green run. The check passes, the review converges, and the only evidence of th
 a host nobody inspects. This is the case that decides whether project-supplied check commands
 can be treated as data.
 
-## Status — discharged at the provider boundary; routing and broker still open
+## Status — provider boundary and Gate routing discharged; broker still open
 
 Two test files carry this case. `crates/review-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
@@ -75,12 +75,15 @@ What "discharged (container)" claims is the *provider boundary*, no more. `trust
 still provides none of it, and `admit` still refuses a safe pipeline on that provider — that
 refusal remains tested. Open here, by name:
 
-- **Routing.** The kernel does not yet execute project checks through the container provider
-  inside a pipeline run; the probes drive the provider directly. That wiring is Phase 4, and
-  this row is where it gets checked off.
 - **The broker half.** The transformed-secret probe (re-emit the token base64'd across two
   artifacts) and exfiltration-over-allowed-egress need a broker that holds credentials outside
   the sandbox and emits receipts. There is no broker yet.
+
+Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Admission
+is recorded in `RunReport@4`; insufficient isolation fails the Gate before a project command
+runs. The live container control uses `CheckRunner::run_with`, so the same typed-argument and
+evidence-preservation path used by a real pipeline executes inside the container. Brokered
+credentials and allowed egress remain M6.3 and are not claimed here.
 
 **Do not weaken this case as the wiring lands.** Marking the routing or broker rows satisfied
 on the strength of the provider probes would be exactly the quiet redefinition this file warns

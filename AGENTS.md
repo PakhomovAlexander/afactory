@@ -14,8 +14,9 @@ M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood
 verified. M3.1–M3.3 and M4 are complete. M4's exhausted verification Campaign has six fixed
 Findings and zero open; follow-up PR #19 merged at exact `main` `01147ce` and post-merge CI passed.
 M5 is complete: deliberate report formats, exact Round/reviewer spend, and safe Campaign
-enumeration/history are implemented and externally verified; resume at M6.1 Gate Execution
-Bindings. V3.1 local delivery is
+enumeration/history are implemented and externally verified. M6.1 Gate Execution Bindings are
+implemented, locally verified, and proven by a real v3 Campaign; resume at M6.2 sandbox-local
+Cache Snapshots. V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist

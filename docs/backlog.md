@@ -571,6 +571,11 @@ The original host-passthrough decision in ADR-0003 is superseded by
 
 ### M6.1 — Gate Execution Bindings and `Mode::EphemeralWrite`
 
+**Status: complete (2026-08-30).** Pipeline format v3 resolves explicit Gate execution authority,
+admits the provider before command dispatch, and records the exact binding in `RunReport@4`.
+Legacy v1/v2 behavior is frozen. A disposable project-hub Campaign ran both write-heavy smoke
+checks and two Codex Workers to Pass without leaking Gate mutations into the candidate checkout.
+
 Route every Gate check through its resolved Execution Binding and admit the Sandbox Provider
 against the pipeline's required isolation before execution. A safe pipeline requires the
 container provider; `trusted_local` remains available only when policy explicitly accepts

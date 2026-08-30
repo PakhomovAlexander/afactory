@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use review_process::{SupervisedError, run_supervised};
 
-use crate::Isolation;
+use crate::{Isolation, Mode, Sandbox, SandboxTemplate};
 
 /// Runtimes tried in order. Docker first only because it is the likeliest to be present.
 const RUNTIMES: [&str; 3] = ["docker", "podman", "nerdctl"];
@@ -75,6 +75,11 @@ impl Availability {
 pub struct ContainerProvider {
     availability: Availability,
     image: String,
+}
+
+pub struct ContainerExecution {
+    pub output: std::process::Output,
+    pub stderr_held: bool,
 }
 
 impl ContainerProvider {
@@ -160,6 +165,17 @@ impl ContainerProvider {
         }
     }
 
+    /// Clone one node sandbox and attach only the isolation this probed provider can actually
+    /// supply. An unavailable runtime therefore creates an ordinary `Isolation::None` sandbox;
+    /// policy admission still refuses it before any project command executes.
+    pub fn sandbox_from_template(
+        &self,
+        template: &SandboxTemplate,
+        mode: Mode,
+    ) -> Result<Sandbox, std::io::Error> {
+        Sandbox::from_template_with_isolation(template, mode, self.isolation())
+    }
+
     /// The exact argv for running a command inside the sandbox.
     ///
     /// Built even when the runtime is unusable, because it is the part worth asserting: one bind,
@@ -194,6 +210,20 @@ impl ContainerProvider {
         args: &[String],
         timeout: Duration,
     ) -> Result<std::process::Output, String> {
+        self.exec_evidenced(sandbox_root, program, args, timeout)
+            .map(|execution| execution.output)
+    }
+
+    /// Execute while preserving process-supervision evidence needed by CheckResult. In
+    /// particular, a descendant that keeps stderr open must remain `not_run`, not turn into a
+    /// passing check merely because the container runtime's leader exited.
+    pub fn exec_evidenced(
+        &self,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<ContainerExecution, String> {
         let Availability::Usable { runtime } = &self.availability else {
             return Err(format!(
                 "refusing to run outside a container: {}",
@@ -202,7 +232,8 @@ impl ContainerProvider {
         };
         let mut command = std::process::Command::new(runtime);
         command.args(self.invocation(sandbox_root, program, args));
-        run_bounded(command, timeout, "container command").map_err(|error| error.to_string())
+        run_bounded_evidenced(command, timeout, "container command")
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -213,15 +244,26 @@ fn run_probe(path: &Path, timeout: Duration) -> Result<std::process::Output, std
 }
 
 fn run_bounded(
-    mut command: std::process::Command,
+    command: std::process::Command,
     timeout: Duration,
     operation: &str,
 ) -> Result<std::process::Output, std::io::Error> {
+    run_bounded_evidenced(command, timeout, operation).map(|execution| execution.output)
+}
+
+fn run_bounded_evidenced(
+    mut command: std::process::Command,
+    timeout: Duration,
+    operation: &str,
+) -> Result<ContainerExecution, std::io::Error> {
     run_supervised(&mut command, None, timeout)
-        .map(|output| std::process::Output {
-            status: output.status,
-            stdout: output.stdout,
-            stderr: output.stderr,
+        .map(|output| ContainerExecution {
+            output: std::process::Output {
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            },
+            stderr_held: output.stderr_held,
         })
         .map_err(|error| match error {
             SupervisedError::TimedOut { .. } => std::io::Error::new(

@@ -17,16 +17,17 @@ use review_core::{
     MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
     PathRenameV1, PolicyTimeV1, PortArtifactsV1, PortCardinality, Producer,
     ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ResolutionChallengeKind,
-    ResolutionChallengeV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
-    SubjectKind, SubjectV1,
+    ResolutionChallengeV1, ReviewerPackageV1, RunEvent, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
+    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
+    SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 33] = [
+const SCHEMAS: [&str; 34] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -58,6 +59,7 @@ const SCHEMAS: [&str; 33] = [
     "run-event-v1.json",
     "run-report-v2.json",
     "run-report-v3.json",
+    "run-report-v4.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -1035,6 +1037,38 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         review_core::run_report_closes_round(&event).unwrap(),
         Some(true)
     );
+
+    let report_v4 = RunReportPayloadV4 {
+        outcomes: report_v3.outcomes.clone(),
+        blocked_gates: report_v3.blocked_gates.clone(),
+        verdict: report_v3.verdict.clone(),
+        spent_tokens: report_v3.spent_tokens,
+        execution_bindings: vec![RunExecutionBindingV4 {
+            node: "review".into(),
+            provider: RunExecutionProviderV4::TrustedLocal,
+            required_isolation: RunIsolationV4::None,
+            provided_isolation: RunIsolationV4::None,
+            mode: RunSandboxModeV4::EphemeralWrite,
+            admitted: true,
+        }],
+    };
+    report_v4.validate().unwrap();
+    let value = serde_json::to_value(&report_v4).unwrap();
+    assert_valid("run-report-v4.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV4>(value.clone()).unwrap(),
+        report_v4
+    );
+    event.event_type = EventType::RunReportV4;
+    event.payload = value;
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let mut dishonest = report_v4;
+    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
+    assert!(dishonest.validate().is_err());
 }
 
 #[test]

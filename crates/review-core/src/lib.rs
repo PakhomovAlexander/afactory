@@ -46,8 +46,9 @@ pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
     PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
+    ProviderOperationTransitionPayloadV1, RunEvent, RunExecutionBindingV4, RunExecutionProviderV4,
+    RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4, RunSandboxModeV4,
     RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, UnknownEventType,
     is_artifact_type, run_report_closes_round,
 };

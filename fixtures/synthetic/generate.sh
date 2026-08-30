@@ -80,7 +80,7 @@ emit() {
     printf 'exit=%d\n--- stdout\n' "$rc"
     # checks.sh reports wall-clock seconds in human output. Preserve the shape while
     # removing scheduler noise, just as checks.tsv is normalized in close_case.
-    sed -E 's/\([0-9]+s\)$/\(<secs>\)/' "$CASE_DIR/.out"
+    sed -E '/^  (✓|✗) / s/\([0-9]+s\)/\(<secs>\)/' "$CASE_DIR/.out"
     printf -- '--- stderr\n'
     sed "s|$LEDGER|ledger.sh|g; s|$CHECKS|checks.sh|g" "$CASE_DIR/.err"
     printf '\n'
