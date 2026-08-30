@@ -1056,13 +1056,14 @@ fn a_v3_gate_binding_allows_disposable_writes_without_tainting_reviewer_sandboxe
         &snapshot.manifest,
         &definition,
     );
+    let manifest = snapshot.manifest;
     let kernel = Kernel::from_loaded(
         &cas,
         &mut store,
         "run",
-        snapshot.manifest,
+        manifest.clone(),
         &loaded,
-        authority,
+        authority.clone(),
     )
     .unwrap()
     .with_checks(vec![CheckDefinition::new(
@@ -1192,13 +1193,14 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
         &snapshot.manifest,
         &definition,
     );
+    let manifest = snapshot.manifest;
     let kernel = Kernel::from_loaded(
         &cas,
         &mut store,
         "run",
-        snapshot.manifest,
+        manifest.clone(),
         &loaded,
-        authority,
+        authority.clone(),
     )
     .unwrap()
     .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
@@ -1243,6 +1245,46 @@ fn a_v3_unusable_container_is_not_admitted_or_executed() {
             .unwrap()
             .iter()
             .all(|event| event.event_type != review_core::EventType::CheckCompletedV1)
+    );
+
+    // The same Round/epoch remains resumable when provider availability changes. `/bin/true`
+    // is a deterministic provider stub: its `info` and `run` invocations both succeed. The
+    // ignored live test below proves the real container boundary.
+    let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
+        .unwrap()
+        .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
+            "/usr/bin/true",
+        ))
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+    let report = loaded.run(&resumed).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    resumed
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    drop(resumed);
+
+    let events = store.replay("run").unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == review_core::EventType::GateExecutionBoundV1)
+            .count(),
+        2,
+        "both failed and successful provider observations remain durable"
+    );
+    let final_report = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("final RunReport@4");
+    let final_report: review_core::RunReportPayloadV4 =
+        serde_json::from_value(final_report.payload.clone()).unwrap();
+    assert!(final_report.execution_bindings[0].admitted);
+    assert_eq!(
+        final_report.execution_bindings[0].provided_isolation,
+        review_core::RunIsolationV4::Container
     );
 }
 

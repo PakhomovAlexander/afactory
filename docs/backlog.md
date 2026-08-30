@@ -573,7 +573,8 @@ The original host-passthrough decision in ADR-0003 is superseded by
 
 **Status: complete (2026-08-30).** Pipeline format v3 resolves explicit Gate execution authority,
 requires digest-pinned images for container execution, admits provider usability and isolation
-before command dispatch, and records a replayable exact binding in `RunReport@4`.
+before command dispatch, and records replayable append-only binding attempts with the latest
+exact fact in `RunReport@4`.
 Legacy v1/v2 behavior is frozen. A disposable project-hub Campaign ran both write-heavy smoke
 checks and two Codex Workers to Pass without leaking Gate mutations into the candidate checkout.
 

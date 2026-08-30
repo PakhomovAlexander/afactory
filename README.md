@@ -363,10 +363,11 @@ satisfy `required_isolation = "container"` only after a successful runtime probe
 `trusted_local` can satisfy only an explicit `none`
 requirement. Gate checks then execute through that admitted provider in an independent
 `ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
-pristine template. The resolved fact is durable before the Gate receipt, so same-Round replay
-cannot invent or lose it. `RunReport@4` records the provider, pinned image when applicable,
-required and provided isolation, mode, and admission result for every Gate node. Formats v1/v2
-permanently retain their captured local, read-only behavior.
+pristine template. Each resolution attempt is durable before its Gate receipt; same-Round retry
+uses the latest observation while the append-only log retains failed admissions. `RunReport@4`
+records that latest provider, pinned image when applicable, required and provided isolation,
+mode, and admission result for every Gate node. Formats v1/v2 permanently retain their captured
+local, read-only behavior.
 
 ### Sealing
 

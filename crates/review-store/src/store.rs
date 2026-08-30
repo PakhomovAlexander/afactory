@@ -1502,7 +1502,7 @@ fn validate_report_gate_bindings(
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
          WHERE run_id = ?1 AND causation_id = ?2 AND type = 'GateExecutionBound@1'
-         ORDER BY node_id",
+         ORDER BY sequence",
     )?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1511,11 +1511,12 @@ fn validate_report_gate_bindings(
     for row in rows {
         let (node, payload) = row?;
         let binding: review_core::RunExecutionBindingV4 = serde_json::from_str(&payload)?;
-        if binding.node != node || durable.insert(node, binding).is_some() {
+        if binding.node != node {
             return Err(StoreError::Conflict(
-                "durable Gate Execution Bindings have conflicting identity".into(),
+                "durable Gate Execution Binding metadata disagrees with its payload".into(),
             ));
         }
+        durable.insert(node, binding);
     }
     if durable != reported {
         return Err(StoreError::Conflict(
@@ -1565,7 +1566,6 @@ fn validate_campaign_transition(
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
-    let mut batch_gate_bindings = std::collections::BTreeSet::new();
     let mut batch_findings = std::collections::BTreeSet::new();
     let mut batch_demands = std::collections::BTreeSet::new();
     let mut active_groupings = load_active_groupings(tx, run_id)?;
@@ -1819,18 +1819,6 @@ fn validate_campaign_transition(
                             if plan.is_none_or(|plan| !plan.gate_nodes.contains(node)) {
                                 return Err(StoreError::Conflict(format!(
                                     "Gate Execution Binding node '{node}' is absent from the pinned Gate plan"
-                                )));
-                            }
-                            let existing: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'GateExecutionBound@1' AND node_id = ?3",
-                                params![run_id, active_id, node],
-                                |row| row.get(0),
-                            )?;
-                            if existing > 0 || !batch_gate_bindings.insert(node.to_string()) {
-                                return Err(StoreError::Conflict(format!(
-                                    "Gate '{node}' already has a durable Execution Binding"
                                 )));
                             }
                         }

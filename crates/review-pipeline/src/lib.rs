@@ -689,9 +689,10 @@ fn replay_execution(
                 if binding.node != node {
                     return Err("GateExecutionBound@1 metadata disagrees with its payload".into());
                 }
-                if replayed.execution_bindings.insert(node, binding).is_some() {
-                    return Err("one Round Gate has duplicate Execution Bindings".into());
-                }
+                // An incomplete Gate may resolve again in this epoch after provider state
+                // changes. Replay uses the latest observation; the append-only log retains all
+                // earlier failed admissions for forensics.
+                replayed.execution_bindings.insert(node, binding);
             }
             EventType::AttemptDispatchedV1 => {
                 let payload: AttemptDispatchedPayloadV1 =
