@@ -504,15 +504,21 @@ archives under `registry/cache/` and sparse-index data under `registry/index/`. 
 special files, excess bytes or filesystem entries, and an over-limit cross-filesystem copy are
 refused before check dispatch. Afactory walks through no-follow directory descriptors, retains
 each admitted file descriptor across materialization, and bounds every read to its preflight size
-plus one change-detection byte. It snapshots the admitted bytes under `.af-cache/cargo`, sets
-`CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache tree before sealing.
+plus one change-detection byte. macOS reflinks use the retained descriptor directly; before Gate
+dispatch, Afactory removes source-controlled extended attributes, named forks, and ACLs from the
+materialized file and applies fixed safe modes. It snapshots the admitted bytes under
+`.af-cache/cargo`, sets `CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache
+tree before sealing.
 
 `RunReport@5` records either one machine-path-free success receipt or an explicit failure for
 every requested Gate/cache pair. Its receipt references a versioned `CacheManifest@1` containing
-the sorted percent-encoded paths, content digests, and exact file sizes. Machine policy is
-resolved only for an unresolved Gate, so replay of a completed Gate does not depend on the
-original policy file or source still existing. A missing mapping is an error, never an implicit
-read of `~/.cargo`; `max_files` counts directories and files so directory-only trees are bounded.
+the sorted percent-encoded paths, content digests, and exact file sizes. Report publication
+reverifies every referenced manifest and cross-checks it against the durable receipt, including
+for incomplete reports. Machine policy is resolved only for an unresolved Gate, so replay of a
+completed Gate does not depend on the original policy file or source still existing. A missing
+mapping is an error, never an implicit read of `~/.cargo`; `max_files` counts directories and
+files so directory-only trees are bounded. Durable cache failures are typed and path-free;
+machine-local operator detail is emitted only to stderr.
 
 **Format note.** The design's examples are YAML and this is TOML. The shape is unchanged and the
 loader is serde types, so another syntax is a different `from_str`, not a different model. The

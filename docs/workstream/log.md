@@ -1,5 +1,27 @@
 # Review Kernel workstream log
 
+## 2026-08-31 — M6.2 bounded Cache Snapshots
+
+Pipeline v3 Gates may now request the symbolic `cargo` cache kind. Machine-local policy resolves
+that request to one curated root and hard byte, filesystem-entry, and copy limits; project
+authority never contains the host path. Descriptor-relative no-follow traversal admits only
+Cargo package archives and sparse-index files, then one preflighted reflink-or-copy method seeds
+the private Gate clone. The Gate runs offline, and the cache subtree is removed before Subject
+sealing.
+
+`CacheManifest@1` freezes the admitted layout and kernel ceilings. `RunReport@5` covers every
+requested Gate/cache pair with a typed path-free failure or a manifest receipt that publication
+rehashes, validates, and cross-checks even for incomplete reports. Completed Gate replay is lazy
+with respect to machine policy. macOS uses descriptor-native `fclonefileat`, strips
+source-controlled xattrs, named forks, and ACLs before dispatch, and fixes file and directory
+modes. Focused regressions and the full `make check` gate pass at final candidate `980f761`.
+
+Codex-only Campaign `m6-2-cache-candidate-codex` spent 281,585 and 259,944 tokens across two
+Rounds, exhausted, and left ten fixed Findings with zero open. Fresh Codex-only Campaign
+`m6-2-cache-final-codex-v1` spent 305,220 tokens in Round 1, opened three further Findings, and
+confirmed all three fixed in a 335,930-token Round 2 `Pass`. Opus/Claude packages remain available
+but are not active reviewers. Resume at M6.3 Broker Handles.
+
 ## 2026-08-30 — M6.1 Gate Execution Bindings
 
 Pipeline format v3 now requires explicit Gate provider, required isolation, and

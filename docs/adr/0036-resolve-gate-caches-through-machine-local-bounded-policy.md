@@ -1,6 +1,6 @@
 # Resolve Gate caches through machine-local bounded policy
 
-**Status:** proposed
+**Status:** accepted
 
 ADR-0008 requires safe Gate caches to be sandbox-local snapshots, but it does not define how a
 project's symbolic cache request reaches an administrator-owned host subtree without making that
@@ -26,6 +26,12 @@ method for the whole snapshot: reflink when a retained-source-descriptor-to-sand
 succeeds, otherwise plain copy only while the explicit copy limit covers the complete preflight
 size. It never silently changes method partway through a snapshot.
 
+On macOS, cloning uses `fclonefileat` from the retained source descriptor. The kernel then opens
+the materialized object without following links, removes source-controlled extended attributes
+and named forks, clears extended ACLs through that descriptor, and applies a fixed safe mode.
+Removal or verification failure aborts before Gate dispatch; the only admitted remainder is the
+closed, bounded shape of macOS's immutable kernel-owned provenance marker.
+
 Materialization happens after Gate-provider admission and before command dispatch under the
 reserved sandbox path `.af-cache/cargo`. The check receives an exact local/container path through
 `CARGO_HOME` plus `CARGO_NET_OFFLINE=true`. Cache writes remain inside that Gate clone. The kernel
@@ -37,7 +43,10 @@ Its versioned `CacheManifest@1` records the closed kind, `percent_v2` path encod
 content digests, and sizes. `RunReport@5` projects the Gate node, symbolic kind, manifest digest,
 byte/file counts, and exact materialization method. Every requested Gate/cache identity has either
 that receipt or a typed failure reason, including a cache not reached because Gate setup failed.
-The machine-local source path is deliberately absent. Existing pipeline formats and
+`RunReport@5` references each successful manifest so publication rehashes, parses, validates, and
+cross-checks it against the durable receipt even when the report is incomplete. Failure reasons
+are selected from the typed error at origin; the durable detail is normalized and path-free,
+while raw machine-local detail is operator-only stderr. Existing pipeline formats and
 `RunReport@1`–`@4` remain permanent readers; a v3 Gate without cache requests retains the M6.1
 `RunReport@4` behavior.
 

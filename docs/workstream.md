@@ -8,9 +8,12 @@ deliberate JSON/text reports, exact Round/reviewer spend, and safe Campaign enum
 fresh pinned verification returned Pass. M6.1 now routes v3 Gates through explicit admitted
 Execution Bindings in independent writable clones and reports the fact through `RunReport@4`; a
 real dogfood Campaign passed, final pinned Campaign `m6-1-gate-bindings-final-v2` returned Pass,
-and its four Findings are fixed with zero open. The Docker-backed probe job remains unexecuted on
-this daemon-less worktree and must be green when the product branch is first published. Resume at
-M6.2 sandbox-local Cache Snapshots. The accepted V3.1
+and its four Findings are fixed with zero open. M6.2 now materializes bounded machine-policy cache
+snapshots and publishes `CacheManifest@1` receipts through `RunReport@5`; its two Codex-only
+Campaigns left all thirteen discovered Findings fixed and zero open, and the final Campaign
+returned Pass. The Docker-backed probe job remains unexecuted on this daemon-less worktree and
+must be green when the product branch is first published. Resume at M6.3 Broker Handles. The
+accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
@@ -170,7 +173,8 @@ and verification prerequisites exist.
       reusable credentials.
   - [x] M6.1 explicit Gate Execution Bindings, provider admission, independent
         `Mode::EphemeralWrite` clones, and structural `RunReport@4` evidence.
-  - [ ] M6.2 bounded sandbox-local Cache Snapshots.
+  - [x] M6.2 bounded sandbox-local Cache Snapshots; full local gate and final Codex-only Campaign
+        passed with thirteen fixed Findings and zero open.
   - [ ] M6.3 Broker Handles, receipts, and revocation.
 - [ ] M7 — a Proposal unequal to the sealed diff is refused; export is by Proposal ID; stale
       export requires explicit override.
@@ -342,7 +346,8 @@ adds explicit v3 Gate authority, provider-owned sandbox materialization, pre-dis
 admission, independent ephemeral-write clones, and exact `RunReport@4` evidence while freezing
 v1/v2 behavior. The disposable `m6-gate-binding-dogfood-fixed` Campaign ran project-hub's
 write-heavy scaffold/update smoke checks and two Codex Workers to Pass with no findings; resume at
-M6.2 sandbox-local Cache Snapshots.
+M6.3 Broker Handles after M6.2's bounded cache materialization, receipt authority, deterministic
+gate, and final Codex-only Campaign passed.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

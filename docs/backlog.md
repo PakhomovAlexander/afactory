@@ -600,7 +600,7 @@ their mutations did not become Subject content.
 
 ### M6.2 — Sandbox-local cache snapshots
 
-Proposed realization:
+Accepted realization:
 [ADR-0036](adr/0036-resolve-gate-caches-through-machine-local-bounded-policy.md). Project authority
 requests only a symbolic cache kind; a versioned machine-local policy supplies the bounded,
 credential-free source and copy limits.
@@ -620,12 +620,15 @@ and sparse `registry/index/` data; unpacked sources and Git dependency caches ar
 kernel traverses through retained no-follow descriptors, preflights size and filesystem support,
 then reflinks or copies those bytes into the sandbox under hard byte, filesystem-entry, path, and
 copy limits. Cross-filesystem or over-limit copies fail with a diagnostic rather than degrading
-into an unbounded multi-gigabyte copy. Writes stay inside the sandbox and disappear at teardown.
+into an unbounded multi-gigabyte copy. macOS descriptor-native reflinks shed source-controlled
+xattrs, named forks, and ACLs before dispatch. Writes stay inside the sandbox and disappear at
+teardown.
 
 Use offline package-manager mode so a cache miss fails loudly. `CacheManifest@1` records exact
 paths, digests, and sizes; `RunReport@5` records one success receipt or typed failure for every
-requested Gate/cache pair. Policy is resolved only for unresolved Gates, so completed-Gate replay
-does not depend on mutable machine policy. A direct host passthrough
+requested Gate/cache pair and republishes every successful manifest for verification and receipt
+cross-checking. Policy is resolved only for unresolved Gates, so completed-Gate replay does not
+depend on mutable machine policy. A direct host passthrough
 is permitted only by an explicitly unsafe `trusted_local` execution policy and cannot satisfy a
 pipeline requiring container isolation.
 
