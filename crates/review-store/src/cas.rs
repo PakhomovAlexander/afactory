@@ -150,11 +150,36 @@ impl Cas {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join("objects"))?;
-        Ok(Self {
+        Ok(Self::at_root(root))
+    }
+
+    /// Open an existing CAS without creating or changing any directory.
+    pub fn open_existing(root: impl AsRef<Path>) -> Result<Self, CasError> {
+        let root = root.as_ref().to_path_buf();
+        let root_metadata = fs::symlink_metadata(&root)?;
+        let metadata = fs::symlink_metadata(root.join("objects"))?;
+        if !root_metadata.is_dir()
+            || root_metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+        {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "CAS objects path is not a real directory: {}",
+                    root.display()
+                ),
+            )));
+        }
+        Ok(Self::at_root(root))
+    }
+
+    fn at_root(root: PathBuf) -> Self {
+        Self {
             root,
             pending: Mutex::new(BTreeSet::new()),
             durable: Mutex::new(BTreeSet::new()),
-        })
+        }
     }
 
     fn path_for(&self, digest: &str) -> PathBuf {
@@ -799,6 +824,17 @@ fn sync_concurrently<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_an_existing_cas_never_creates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cas");
+        assert!(Cas::open_existing(&root).is_err());
+        assert!(!root.exists());
+
+        Cas::open(&root).unwrap();
+        Cas::open_existing(&root).unwrap();
+    }
     use serde_json::json;
 
     struct ChangesOnRewind {

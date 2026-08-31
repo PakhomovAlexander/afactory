@@ -7,7 +7,7 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use review_check::{Arg, CheckDefinition, Command};
 use review_graph::{Node, NodeKind, NodeOutcome, Pipeline, Port, PortContract, Scheduler};
@@ -247,6 +247,23 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (dir, repo, home)
 }
 
+#[cfg(unix)]
+fn recording_container_runtime(root: &Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let runtime = root.join("recording-container-runtime");
+    let log = root.join("recording-container-runtime.args");
+    std::fs::write(
+        &runtime,
+        b"#!/bin/sh\nif [ \"${1:-}\" = info ]; then exit 0; fi\nprintf '%s\\n' \"$@\" > \"$0.args\"\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&runtime).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&runtime, permissions).unwrap();
+    (runtime, log)
+}
+
 fn reviewer(node: &str, title: &str, severity: &str) -> Command {
     let json = format!(
         r#"{{"verdict":"request-changes","summary":null,"findings":[
@@ -277,6 +294,31 @@ fn clean_reviewer() -> Command {
                 "cat src/main.rs > /dev/null; printf '%s\\n' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
             ),
         ],
+    )
+}
+
+fn gate_isolated_reviewer() -> Command {
+    Command::new(
+        "/bin/sh",
+        vec![
+            Arg::literal("-c"),
+            Arg::literal(
+                "test ! -e gate-output && cat src/main.rs > /dev/null && printf '%s\\n' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
+            ),
+        ],
+    )
+}
+
+fn v3_gate_authority(provider: &str, required_isolation: &str) -> String {
+    let image = (provider == "container")
+        .then(|| format!("image = \"{}\"\n", review_sandbox::container::DEFAULT_IMAGE));
+    HEAVY_AUTHORITY.replacen(
+        "version = 2\n",
+        &format!(
+            "version = 3\n[gate]\nprovider = \"{provider}\"\nrequired_isolation = \"{required_isolation}\"\nmode = \"ephemeral-write\"\n{}",
+            image.unwrap_or_default()
+        ),
+        1,
     )
 }
 
@@ -1010,6 +1052,815 @@ gate = "major"
     let convergence = kernel.convergence(*loaded.convergence());
     assert_eq!(convergence.verdict, Verdict::NotConverged);
     assert_eq!(convergence.open_blocking, 1);
+}
+
+#[test]
+fn a_v3_gate_binding_allows_disposable_writes_without_tainting_reviewer_sandboxes() {
+    use review_config::Definition;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let manifest = snapshot.manifest;
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        manifest.clone(),
+        &loaded,
+        authority.clone(),
+    )
+    .unwrap()
+    .with_checks(vec![CheckDefinition::new(
+        "write-scaffold",
+        Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal("printf gate > gate-output"),
+            ],
+        ),
+    )])
+    .with_reviewer("architecture", gate_isolated_reviewer())
+    .with_reviewer("performance", gate_isolated_reviewer());
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert!(kernel.gate_decision("gate").unwrap().passed());
+    kernel
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    assert!(!repo_path.join("gate-output").exists());
+    drop(kernel);
+
+    let events = store.replay("run").unwrap();
+    let gate = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::GateDecisionV1)
+        .expect("GateDecision@1");
+    let summaries = gate
+        .artifact_refs
+        .iter()
+        .filter_map(|artifact| cas.get_json(artifact).ok())
+        .filter(|value| value.get("count").is_some() && value.get("artifact").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summaries.len(),
+        1,
+        "GateDecision@1 has one referenced mutation summary"
+    );
+    let summary = &summaries[0];
+    assert_eq!(summary["count"], 1);
+    assert_eq!(summary["added"], 1);
+    let mutations_artifact = summary["artifact"].as_str().expect("full mutation digest");
+    let mutations = cas.get_json(mutations_artifact).unwrap();
+    assert_eq!(mutations["added"], serde_json::json!(["gate-output"]));
+
+    let report = events
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    assert_eq!(payload.execution_bindings.len(), 1);
+    let binding = &payload.execution_bindings[0];
+    assert_eq!(binding.node, "gate");
+    assert_eq!(
+        binding.provider,
+        review_core::RunExecutionProviderV4::TrustedLocal
+    );
+    assert_eq!(
+        binding.required_isolation,
+        review_core::RunIsolationV4::None
+    );
+    assert_eq!(
+        binding.provided_isolation,
+        review_core::RunIsolationV4::None
+    );
+    assert!(binding.admitted);
+}
+
+#[test]
+fn a_resumed_v3_round_replays_its_durable_gate_binding() {
+    use review_config::Definition;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let manifest = snapshot.manifest;
+    let authority =
+        support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, &definition);
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        manifest.clone(),
+        &loaded,
+        authority.clone(),
+    )
+    .unwrap()
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let first = loaded.run(&kernel).unwrap();
+    assert!(first.complete(), "{:?}", first.outcomes);
+    drop(kernel); // crash window: every node receipt is durable, RunReport is not.
+
+    let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
+        .unwrap()
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+    let replayed = loaded.run(&resumed).unwrap();
+    assert!(replayed.complete(), "{:?}", replayed.outcomes);
+    resumed
+        .publish_report(&replayed, *loaded.convergence())
+        .unwrap();
+    drop(resumed);
+
+    let events = store.replay("run").unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == review_core::EventType::GateExecutionBoundV1)
+            .count(),
+        1
+    );
+    let report = events
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("resumed RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    assert_eq!(payload.execution_bindings.len(), 1);
+    assert!(payload.execution_bindings[0].admitted);
+}
+
+#[test]
+fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheLimits, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let cache_root = workspace.path().join("cargo-cache");
+    let cached = cache_root.join("registry/cache/index/example.crate");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, b"offline crate").unwrap();
+    let source = CacheSource {
+        kind: CacheKind::Cargo,
+        source: cache_root.clone(),
+        limits: CacheLimits {
+            max_bytes: 1024 * 1024,
+            max_files: 100,
+            max_copy_bytes: 1024 * 1024,
+        },
+    };
+    let sources = std::collections::BTreeMap::from([(CacheKind::Cargo, source)]);
+
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let manifest = snapshot.manifest;
+    let authority =
+        support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, &definition);
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        manifest.clone(),
+        &loaded,
+        authority.clone(),
+    )
+    .unwrap()
+    .with_cache_sources(sources)
+    .with_checks(vec![CheckDefinition::new(
+        "offline-cache",
+        Command::new(
+            "/bin/sh",
+            vec![
+                Arg::literal("-c"),
+                Arg::literal(
+                    "test \"$CARGO_NET_OFFLINE\" = true && test -f \"$CARGO_HOME/registry/cache/index/example.crate\"",
+                ),
+            ],
+        ),
+    )])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let first = loaded.run(&kernel).unwrap();
+    assert!(first.complete(), "{:?}", first.outcomes);
+    assert!(kernel.gate_decision("gate").unwrap().passed());
+    drop(kernel); // crash window: cache receipt and node receipts exist, final report does not.
+    let cache_manifest_id = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::CacheSnapshotMaterializedV1)
+        .map(|event| {
+            serde_json::from_value::<review_core::RunCacheSnapshotV5>(event.payload)
+                .unwrap()
+                .source_digest
+        })
+        .expect("durable cache receipt");
+    let cache_manifest_hex = cache_manifest_id.strip_prefix("sha256:").unwrap();
+    let cache_manifest_path = workspace
+        .path()
+        .join("cas/objects")
+        .join(&cache_manifest_hex[..2])
+        .join(&cache_manifest_hex[2..]);
+    let cache_manifest_bytes = std::fs::read(&cache_manifest_path).unwrap();
+    std::fs::remove_dir_all(&cache_root).unwrap();
+
+    let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
+        .unwrap()
+        .with_cache_source_resolver(|_| -> Result<CacheSource, review_sandbox::CacheError> {
+            panic!("completed Gate replay must not resolve machine-local cache policy")
+        })
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+    let replayed = loaded.run(&resumed).unwrap();
+    assert!(replayed.complete(), "{:?}", replayed.outcomes);
+    std::fs::write(&cache_manifest_path, b"corrupt before RunReport@5").unwrap();
+    let error = resumed
+        .publish_report(&replayed, *loaded.convergence())
+        .unwrap_err();
+    assert!(
+        error.contains("failed verification"),
+        "RunReport@5 must reverify every newly referenced manifest: {error}"
+    );
+    std::fs::write(&cache_manifest_path, cache_manifest_bytes).unwrap();
+    resumed
+        .publish_report(&replayed, *loaded.convergence())
+        .unwrap();
+    drop(resumed);
+
+    let events = store.replay("run").unwrap();
+    let snapshots = events
+        .iter()
+        .filter(|event| event.event_type == review_core::EventType::CacheSnapshotMaterializedV1)
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots.len(), 1, "resume must reuse the durable receipt");
+    let receipt: review_core::RunCacheSnapshotV5 =
+        serde_json::from_value(snapshots[0].payload.clone()).unwrap();
+    assert_eq!(receipt.node, "gate");
+    assert_eq!(receipt.kind, review_core::RunCacheKindV5::Cargo);
+    assert_eq!(receipt.files, 1);
+    assert_eq!(receipt.bytes, 13);
+    assert!(cas.verify(&receipt.source_digest).is_ok());
+    let receipt_artifact = snapshots[0]
+        .artifact_refs
+        .iter()
+        .find(|artifact| cas.get_json(artifact).ok().as_ref() == Some(&snapshots[0].payload))
+        .expect("exact cache receipt artifact");
+    let gate = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::GateDecisionV1)
+        .unwrap();
+    assert!(gate.artifact_refs.contains(receipt_artifact));
+
+    let report_event = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("RunReport@5");
+    assert!(report_event.artifact_refs.contains(&receipt.source_digest));
+    let report: review_core::RunReportPayloadV5 =
+        serde_json::from_value(report_event.payload.clone()).unwrap();
+    assert_eq!(report.cache_snapshots, vec![receipt]);
+    assert!(!repo_path.join(".af-cache").exists());
+}
+
+#[test]
+fn a_requested_cache_failure_is_explicit_run_report_v5_evidence() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("trusted_local", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_cache_source_resolver(
+        |kind: CacheKind| -> Result<CacheSource, review_sandbox::CacheError> {
+            Err(review_sandbox::CacheError::new(
+                review_sandbox::CacheErrorKind::PolicyUnavailable,
+                format!("no policy for {} at /tmp/limit-changed-link", kind.name()),
+            ))
+        },
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let run = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        run.outcome("gate"),
+        Some(NodeOutcome::Failed { error, .. }) if error == "cache policy unavailable"
+    ));
+    kernel.publish_report(&run, *loaded.convergence()).unwrap();
+    drop(kernel);
+
+    let events = store.replay("run").unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != review_core::EventType::RunReportV4)
+    );
+    let report_event = events
+        .iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("cache-aware failure must be RunReport@5");
+    let report: review_core::RunReportPayloadV5 =
+        serde_json::from_value(report_event.payload.clone()).unwrap();
+    assert!(report.cache_snapshots.is_empty());
+    assert_eq!(report.cache_failures.len(), 1);
+    assert_eq!(
+        report.cache_failures[0].reason,
+        review_core::RunCacheFailureReasonV5::PolicyUnavailable
+    );
+
+    let mut forged = report;
+    forged.cache_failures.clear();
+    let forged_manifest = review_core::CacheManifestV1 {
+        kind: review_core::RunCacheKindV5::Cargo,
+        path_encoding: review_core::CachePathEncodingV1::PercentV2,
+        entries: vec![review_core::CacheManifestEntryV1 {
+            path: "registry/cache/forged.crate".into(),
+            content: cas.put(b"").unwrap(),
+            size: 0,
+        }],
+    };
+    let forged_manifest_id = cas
+        .put_json(&serde_json::to_value(forged_manifest).unwrap())
+        .unwrap();
+    forged
+        .cache_snapshots
+        .push(review_core::RunCacheSnapshotV5 {
+            node: "gate".into(),
+            kind: review_core::RunCacheKindV5::Cargo,
+            source_digest: forged_manifest_id.clone(),
+            bytes: 0,
+            files: 1,
+            materialization: review_core::RunCacheMaterializationV5::Copy,
+        });
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                review_core::EventType::RunReportV5,
+                serde_json::to_value(forged).unwrap(),
+            )
+            .caused_by(report_event.causation_id.clone().unwrap())
+            .correlating(report_event.correlation_id.clone().unwrap())
+            .referencing(vec![forged_manifest_id]),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Cache Snapshots differ from the durable materialization facts"),
+        "{error}"
+    );
+}
+
+#[test]
+fn cache_resolver_preserves_every_non_policy_failure_kind() {
+    use review_config::Definition;
+    use review_core::RunCacheFailureReasonV5;
+    use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheSource};
+
+    let cases = [
+        (
+            CacheErrorKind::SourceUnavailable,
+            RunCacheFailureReasonV5::SourceUnavailable,
+            "cache source unavailable",
+        ),
+        (
+            CacheErrorKind::UnsafeContent,
+            RunCacheFailureReasonV5::UnsafeContent,
+            "cache source refused by safety policy",
+        ),
+        (
+            CacheErrorKind::LimitExceeded,
+            RunCacheFailureReasonV5::LimitExceeded,
+            "cache source exceeds configured limits",
+        ),
+        (
+            CacheErrorKind::CopyLimitExceeded,
+            RunCacheFailureReasonV5::CopyLimitExceeded,
+            "cache source cannot be materialized within its copy limit",
+        ),
+        (
+            CacheErrorKind::ConcurrentChange,
+            RunCacheFailureReasonV5::ConcurrentChange,
+            "cache source changed during snapshot",
+        ),
+        (
+            CacheErrorKind::MaterializationFailed,
+            RunCacheFailureReasonV5::MaterializationFailed,
+            "cache materialization failed",
+        ),
+    ];
+
+    for (index, (error_kind, expected_reason, expected_error)) in cases.into_iter().enumerate() {
+        let (_dir, repo_path, home) = fixture();
+        let workspace = tempfile::tempdir().unwrap();
+        let cas = Cas::open(workspace.path().join("cas")).unwrap();
+        let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+        let definition = v3_gate_authority("trusted_local", "none").replace(
+            "mode = \"ephemeral-write\"",
+            "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+        );
+        let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+        let repo = Repo::open(&repo_path, &home);
+        let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+        let run_id = format!("resolver-error-{index}");
+        let authority = support::test_round_authority_for_pipeline(
+            &cas,
+            &mut store,
+            &run_id,
+            &snapshot.manifest,
+            &definition,
+        );
+        let kernel = Kernel::from_loaded(
+            &cas,
+            &mut store,
+            &run_id,
+            snapshot.manifest,
+            &loaded,
+            authority,
+        )
+        .unwrap()
+        .with_cache_source_resolver(move |_: CacheKind| -> Result<CacheSource, CacheError> {
+            Err(CacheError::new(
+                error_kind,
+                "/tmp/operator-only-cache-detail",
+            ))
+        })
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+
+        let run = loaded.run(&kernel).unwrap();
+        assert!(matches!(
+            run.outcome("gate"),
+            Some(NodeOutcome::Failed { error, .. }) if error == expected_error
+        ));
+        kernel.publish_report(&run, *loaded.convergence()).unwrap();
+        drop(kernel);
+
+        let events = store.replay(&run_id).unwrap();
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains("/tmp/operator-only")
+        );
+        let report = events
+            .into_iter()
+            .find(|event| event.event_type == review_core::EventType::RunReportV5)
+            .expect("cache-aware failure must be RunReport@5");
+        let report: review_core::RunReportPayloadV5 =
+            serde_json::from_value(report.payload).unwrap();
+        assert_eq!(report.cache_failures[0].reason, expected_reason);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_cache_not_reached_after_gate_setup_failure_is_explicit_v5_evidence() {
+    use review_config::Definition;
+    use review_sandbox::{CacheKind, CacheSource};
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("container", "none").replace(
+        "mode = \"ephemeral-write\"",
+        "mode = \"ephemeral-write\"\ncaches = [\"cargo\"]",
+    );
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
+        workspace.path().join("missing-container-runtime"),
+    ))
+    .with_cache_source_resolver(
+        |_: CacheKind| -> Result<CacheSource, review_sandbox::CacheError> {
+            panic!("cache policy must remain lazy when Gate setup fails")
+        },
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let run = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        run.outcome("gate"),
+        Some(NodeOutcome::Failed { .. })
+    ));
+    kernel.publish_report(&run, *loaded.convergence()).unwrap();
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV5)
+        .expect("cache-aware Gate setup failure must be RunReport@5");
+    let report: review_core::RunReportPayloadV5 = serde_json::from_value(report.payload).unwrap();
+    assert!(report.cache_snapshots.is_empty());
+    assert_eq!(report.cache_failures.len(), 1);
+    assert_eq!(
+        report.cache_failures[0].reason,
+        review_core::RunCacheFailureReasonV5::GateSetupFailed
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_v3_unusable_container_is_not_admitted_or_executed() {
+    use review_config::Definition;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("container", "none");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let manifest = snapshot.manifest;
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        manifest.clone(),
+        &loaded,
+        authority.clone(),
+    )
+    .unwrap()
+    .with_container_provider(review_sandbox::ContainerProvider::with_runtime(
+        workspace.path().join("missing-container-runtime"),
+    ))
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(matches!(
+        report.outcome("gate"),
+        Some(NodeOutcome::Failed { error, .. }) if error.contains("container provider unavailable")
+    ));
+    kernel
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    assert_eq!(payload.execution_bindings.len(), 1);
+    let binding = &payload.execution_bindings[0];
+    assert_eq!(
+        binding.provider,
+        review_core::RunExecutionProviderV4::Container
+    );
+    assert_eq!(
+        binding.provided_isolation,
+        review_core::RunIsolationV4::None
+    );
+    assert!(binding.image.is_some());
+    assert!(!binding.admitted);
+    assert!(
+        store
+            .replay("run")
+            .unwrap()
+            .iter()
+            .all(|event| event.event_type != review_core::EventType::CheckCompletedV1)
+    );
+
+    // The same Round/epoch remains resumable when provider availability changes. This recording
+    // runtime proves the successful retry goes through the container invocation path rather than
+    // running the check on the host. The ignored live test below proves the real boundary.
+    let (runtime, runtime_log) = recording_container_runtime(workspace.path());
+    let resumed = Kernel::from_loaded(&cas, &mut store, "run", manifest, &loaded, authority)
+        .unwrap()
+        .with_container_provider(review_sandbox::ContainerProvider::with_runtime(runtime))
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", clean_reviewer())
+        .with_reviewer("performance", clean_reviewer());
+    let report = loaded.run(&resumed).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    resumed
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    drop(resumed);
+
+    let events = store.replay("run").unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == review_core::EventType::GateExecutionBoundV1)
+            .count(),
+        2,
+        "both failed and successful provider observations remain durable"
+    );
+    let final_report = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("final RunReport@4");
+    let final_report: review_core::RunReportPayloadV4 =
+        serde_json::from_value(final_report.payload.clone()).unwrap();
+    assert!(final_report.execution_bindings[0].admitted);
+    assert_eq!(
+        final_report.execution_bindings[0].provided_isolation,
+        review_core::RunIsolationV4::Container
+    );
+
+    let argv = std::fs::read_to_string(runtime_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argv.len(),
+        20,
+        "unexpected container runtime argv: {argv:?}"
+    );
+    assert_eq!(&argv[..3], ["run", "--rm", "--name"]);
+    assert!(argv[3].starts_with("af-gate-"), "{:?}", argv[3]);
+    assert_eq!(
+        &argv[4..8],
+        ["--network=none", "--env-file", "/dev/null", "--user"]
+    );
+    let (uid, gid) = argv[8].split_once(':').expect("numeric uid:gid");
+    assert!(!uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()));
+    assert!(!gid.is_empty() && gid.bytes().all(|byte| byte.is_ascii_digit()));
+    assert_eq!(
+        &argv[9..16],
+        [
+            "-e",
+            "LC_ALL=C",
+            "-e",
+            "TZ=UTC",
+            "--workdir",
+            "/work",
+            "--volume",
+        ]
+    );
+    assert!(argv[16].ends_with(":/work:rw"), "{:?}", argv[16]);
+    assert_eq!(argv[17], review_sandbox::container::DEFAULT_IMAGE);
+    assert_eq!(&argv[18..], ["/bin/sh", "./build.sh"]);
+}
+
+#[test]
+#[ignore = "needs a live container runtime; run with the container probe gate"]
+fn a_v3_container_gate_executes_through_the_pipeline() {
+    use review_config::Definition;
+    use review_sandbox::Availability;
+
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let definition = v3_gate_authority("container", "container");
+    let loaded = Definition::from_toml(&definition).unwrap().load().unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        &definition,
+    );
+    let provider = review_sandbox::ContainerProvider::detect();
+    assert!(
+        matches!(provider.availability(), Availability::Usable { .. }),
+        "{}",
+        provider.availability().reason()
+    );
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest,
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_container_provider(provider)
+    .with_checks(vec![CheckDefinition::new(
+        "container-control",
+        Command::new(
+            "/bin/sh",
+            vec![Arg::literal("-c"), Arg::literal("test -f src/main.rs")],
+        ),
+    )])
+    .with_reviewer("architecture", clean_reviewer())
+    .with_reviewer("performance", clean_reviewer());
+
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    assert!(kernel.gate_decision("gate").unwrap().passed());
+    kernel
+        .publish_report(&report, *loaded.convergence())
+        .unwrap();
+    drop(kernel);
+
+    let report = store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == review_core::EventType::RunReportV4)
+        .expect("RunReport@4");
+    let payload: review_core::RunReportPayloadV4 = serde_json::from_value(report.payload).unwrap();
+    let binding = &payload.execution_bindings[0];
+    assert_eq!(
+        binding.provided_isolation,
+        review_core::RunIsolationV4::Container
+    );
+    assert_eq!(
+        binding.image.as_deref(),
+        Some(review_sandbox::container::DEFAULT_IMAGE)
+    );
+    assert!(binding.admitted);
 }
 
 /// A reviewer's id is a name, not its role. Dispatch that routed on the id string silently

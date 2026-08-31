@@ -26,10 +26,16 @@
 //! be by a provider of this kind. They close only when the container provider runs against a
 //! live daemon, and the case says so rather than being quietly narrowed to what passes.
 
+pub mod cache;
 pub mod container;
 pub mod seal;
 
 pub use self::SandboxTemplate as Template;
+pub use cache::{
+    CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
+    CacheSnapshot, CacheSource, MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES, MAX_CACHE_FILES,
+    materialize_cache, remove_materialized_caches,
+};
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 
@@ -449,6 +455,16 @@ impl Sandbox {
         template: &SandboxTemplate,
         mode: Mode,
     ) -> Result<Sandbox, std::io::Error> {
+        Self::from_template_with_isolation(template, mode, Isolation::None)
+    }
+
+    /// Provider-only constructor. Isolation is not caller-settable: only code in this crate that
+    /// owns and probes a provider may attach the provider's verified claim to a sandbox.
+    fn from_template_with_isolation(
+        template: &SandboxTemplate,
+        mode: Mode,
+        isolation: Isolation,
+    ) -> Result<Sandbox, std::io::Error> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join("tree");
         let cloned_directories = clone_tree(&template.root, &root, mode)?;
@@ -456,7 +472,7 @@ impl Sandbox {
         let sandbox = Sandbox {
             root,
             mode,
-            isolation: Isolation::None,
+            isolation,
             baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
         };

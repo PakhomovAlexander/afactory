@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use review_config::lock::{Lockfile, Pin, Registry};
 use review_config::{
     ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
-    NodeKindSpec, NodeSpec, PortContractSpec, PortSpec, ProvenanceSpec, SeveritySpec, SubjectSpec,
-    TypedPortSpec,
+    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortContractSpec,
+    PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
 };
 use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
@@ -636,6 +636,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let generation = NodeSpec {
         id: "generation".into(),
@@ -649,6 +650,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let reviewers: Vec<NodeSpec> = ["correctness", "architecture"]
         .into_iter()
@@ -665,6 +667,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             gated_by: Some("gate".into()),
             runner: None,
             package: Some(id.into()),
+            execution: None,
         })
         .collect();
     let gather = NodeSpec {
@@ -679,6 +682,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let ledger = NodeSpec {
         id: "ledger".into(),
@@ -692,6 +696,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
 
     let mut nodes = vec![gate, generation];
@@ -709,12 +714,19 @@ fn build_definition(gates: &[Gate]) -> Definition {
     edges.push(edge("gather", "reports", "ledger", "reports"));
 
     Definition {
-        version: 2,
+        version: 3,
         subject: Some(SubjectSpec {
             kind: SubjectKind::Diff,
         }),
         checks,
         check_timeout_seconds: Some(3600),
+        gate: Some(GateExecutionSpec {
+            provider: SandboxProviderSpec::TrustedLocal,
+            required_isolation: IsolationSpec::None,
+            mode: GateModeSpec::EphemeralWrite,
+            image: None,
+            caches: Vec::new(),
+        }),
         nodes,
         edges,
         convergence: ConvergenceSpec {
@@ -785,15 +797,10 @@ fn worker_manifest(name: &str, runner: RunnerKind) -> String {
 
     let values: &[&str] = match runner {
         RunnerKind::Claude => &["--model", "opus", "--effort", "high"],
-        RunnerKind::Codex => &[
-            "exec",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            "--json",
-            "-s",
-            "read-only",
-            "-",
-        ],
+        // The Codex adapter owns the `exec` invocation, sandbox, output, and stdin flags.
+        // Package args are model flags only; an empty list deliberately inherits the
+        // machine-configured model.
+        RunnerKind::Codex => &[],
     };
     let manifest = Manifest {
         name,
@@ -917,6 +924,13 @@ to send each configured Worker exactly its declared, bounded inputs for every At
 Round in that Campaign. Agents should not ask for additional per-Worker, per-Attempt, or per-Round
 confirmation. This does not authorize undeclared context, changed Provider bindings, comments,
 commits, pushes, pull requests, publication, or other remote side effects.
+
+The generated pipeline explicitly binds its Gate to `trusted_local` with required isolation
+`none`. Each Gate receives a disposable `ephemeral-write` clone, so build/scaffold writes cannot
+taint reviewer clones, but this is not a security boundary against untrusted project commands.
+Before reviewing untrusted code, change the binding to provider `container`, add a project
+toolchain image pinned as `name@sha256:<digest>`, require isolation `container`, refresh the lock,
+and verify the live container probes.
 
 Required Gate commands (declared as literal trusted argv; onboarding does not execute them):
 

@@ -7,27 +7,32 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef,
-    ClaimRefKind, DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1,
-    DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
-    EvidenceSatisfactionV1, EvidenceV1, FindingDispositionPosition, FindingDispositionV1,
-    FindingGroupingAction, FindingGroupingV1, FindingReport, FindingResolutionOutcome,
-    FindingResolutionV1, FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location,
-    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PathRenameV1, PolicyTimeV1, PortArtifactsV1, PortCardinality, Producer,
-    ProviderOperationStateV1, ProviderOperationTransitionPayloadV1, ResolutionChallengeKind,
-    ResolutionChallengeV1, ReviewerPackageV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, SourceSnapshot,
-    SubjectKind, SubjectV1,
+    ArtifactEnvelope, AuthorityFileV1, BrokerCredentialModeV1, BrokerOperationOutcomeV1,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, CacheManifestEntryV1, CacheManifestV1,
+    CachePathEncodingV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
+    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind,
+    DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
+    DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1,
+    EvidenceV1, FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction,
+    FindingGroupingV1, FindingReport, FindingResolutionOutcome, FindingResolutionV1,
+    FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location, MissingNodeV2,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1,
+    PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
+    ProviderOperationTransitionPayloadV1, ResolutionChallengeKind, ResolutionChallengeV1,
+    ReviewerExecutionBindingV1, ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5,
+    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
+    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 33] = [
+const SCHEMAS: [&str; 36] = [
     "artifact-envelope-v1.json",
+    "cache-manifest-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
     "change-attestation-v1.json",
@@ -58,6 +63,8 @@ const SCHEMAS: [&str; 33] = [
     "run-event-v1.json",
     "run-report-v2.json",
     "run-report-v3.json",
+    "run-report-v4.json",
+    "run-report-v5.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -773,7 +780,112 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
         .map(|event_type| serde_json::to_value(event_type).unwrap())
         .collect();
     assert_eq!(declared, &rust);
+    for event_type in EventType::ALL {
+        assert_eq!(
+            event_type.as_str().parse::<EventType>().unwrap(),
+            event_type
+        );
+    }
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
+}
+
+#[test]
+fn broker_binding_and_receipt_payloads_match_the_event_schema() {
+    let policy = BrokerOperationPolicyV1 {
+        name: "model_inference".into(),
+        destination: "provider.test".into(),
+        method: "responses.create".into(),
+        max_request_bytes: 1024,
+        max_response_bytes: 2048,
+        max_calls: 1,
+        max_usage: 10_000,
+    };
+    let attempt_id = "a".repeat(26);
+    let handle_id = "b".repeat(26);
+    let binding = ReviewerExecutionBindingV1 {
+        node: "correctness".into(),
+        attempt_id: attempt_id.clone(),
+        lease_epoch: 1,
+        credential_mode: BrokerCredentialModeV1::Brokered,
+        auto_apply: false,
+        broker_handle: Some(handle_id.clone()),
+        operations: vec![policy.clone()],
+        admitted: true,
+    };
+    binding.validate().unwrap();
+    let binding_payload = serde_json::to_value(binding).unwrap();
+    review_core::event::validate_event_payload(
+        EventType::ReviewerExecutionBoundV1,
+        &binding_payload,
+    )
+    .unwrap();
+
+    let receipt = BrokerOperationReceiptV1 {
+        handle_id,
+        node: "correctness".into(),
+        attempt_id: attempt_id.clone(),
+        lease_epoch: 1,
+        operation: policy.name,
+        destination: policy.destination,
+        method: policy.method,
+        ordinal: 1,
+        outcome: BrokerOperationOutcomeV1::Succeeded,
+        failure_reason: None,
+        request_digest: format!("sha256:{}", "c".repeat(64)),
+        response_digest: Some(format!("sha256:{}", "d".repeat(64))),
+        request_bytes: 128,
+        response_bytes: 256,
+        reserved_usage: 1000,
+        charged_usage: 900,
+    };
+    receipt.validate().unwrap();
+    let contradictory = BrokerOperationReceiptV1 {
+        outcome: review_core::BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
+        ..receipt.clone()
+    };
+    assert!(contradictory.validate().is_err());
+    let redacted_overrun = BrokerOperationReceiptV1 {
+        outcome: review_core::BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
+        response_digest: None,
+        response_bytes: 0,
+        charged_usage: 1_001,
+        ..receipt.clone()
+    };
+    redacted_overrun.validate().unwrap();
+    let overcharged_exposure = BrokerOperationReceiptV1 {
+        failure_reason: Some(review_core::BrokerFailureReasonV1::CredentialExposure),
+        charged_usage: 1_001,
+        ..redacted_overrun
+    };
+    assert!(overcharged_exposure.validate().is_err());
+    let receipt_payload = serde_json::to_value(receipt).unwrap();
+    review_core::event::validate_event_payload(
+        EventType::BrokerOperationCompletedV1,
+        &receipt_payload,
+    )
+    .unwrap();
+
+    for (event_type, payload) in [
+        (EventType::ReviewerExecutionBoundV1, binding_payload),
+        (EventType::BrokerOperationCompletedV1, receipt_payload),
+    ] {
+        let event = RunEvent {
+            event_id: "e".repeat(26),
+            run_id: "f".repeat(26),
+            sequence: 1,
+            event_type,
+            occurred_at: "2026-08-31T12:00:00Z".into(),
+            node_id: Some("correctness".into()),
+            attempt_id: Some(attempt_id.clone()),
+            causation_id: Some("g".repeat(26)),
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload,
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
+    }
 }
 
 #[test]
@@ -795,6 +907,35 @@ fn bootstrap_event_payloads_are_semantically_validated() {
         &json!({"round":0,"epoch":1,"campaign_manifest_id":"x","subject_id":"x","prior_finding_set_id":"x","prior_demand_set_id":"x"}),
     )
     .is_err());
+
+    let binding = RunExecutionBindingV4 {
+        node: "gate".into(),
+        provider: RunExecutionProviderV4::TrustedLocal,
+        image: None,
+        required_isolation: RunIsolationV4::None,
+        provided_isolation: RunIsolationV4::None,
+        mode: RunSandboxModeV4::EphemeralWrite,
+        admitted: true,
+    };
+    let payload = serde_json::to_value(binding).unwrap();
+    assert!(
+        review_core::event::validate_event_payload(EventType::GateExecutionBoundV1, &payload)
+            .is_ok()
+    );
+    let event = RunEvent {
+        event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
+        run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+        sequence: 1,
+        event_type: EventType::GateExecutionBoundV1,
+        occurred_at: "2026-08-30T12:00:00Z".into(),
+        node_id: Some("gate".into()),
+        attempt_id: None,
+        causation_id: Some("01jd8m4qz9k7v3n2p6r8t0w201".into()),
+        correlation_id: None,
+        artifact_refs: vec![],
+        payload,
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
 }
 
 #[test]
@@ -1035,6 +1176,131 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         review_core::run_report_closes_round(&event).unwrap(),
         Some(true)
     );
+
+    let report_v4 = RunReportPayloadV4 {
+        outcomes: report_v3.outcomes.clone(),
+        blocked_gates: report_v3.blocked_gates.clone(),
+        verdict: report_v3.verdict.clone(),
+        spent_tokens: report_v3.spent_tokens,
+        execution_bindings: vec![RunExecutionBindingV4 {
+            node: "review".into(),
+            provider: RunExecutionProviderV4::TrustedLocal,
+            image: None,
+            required_isolation: RunIsolationV4::None,
+            provided_isolation: RunIsolationV4::None,
+            mode: RunSandboxModeV4::EphemeralWrite,
+            admitted: true,
+        }],
+    };
+    report_v4.validate().unwrap();
+    let value = serde_json::to_value(&report_v4).unwrap();
+    assert_valid("run-report-v4.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV4>(value.clone()).unwrap(),
+        report_v4
+    );
+    event.event_type = EventType::RunReportV4;
+    event.payload = value;
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let report_v5 = RunReportPayloadV5 {
+        outcomes: report_v4.outcomes.clone(),
+        blocked_gates: report_v4.blocked_gates.clone(),
+        verdict: report_v4.verdict.clone(),
+        spent_tokens: report_v4.spent_tokens,
+        execution_bindings: report_v4.execution_bindings.clone(),
+        cache_snapshots: vec![RunCacheSnapshotV5 {
+            node: "review".into(),
+            kind: RunCacheKindV5::Cargo,
+            source_digest: format!("sha256:{}", "d".repeat(64)),
+            bytes: 42,
+            files: 2,
+            materialization: RunCacheMaterializationV5::Reflink,
+        }],
+        cache_failures: vec![],
+    };
+    report_v5.validate().unwrap();
+    let value = serde_json::to_value(&report_v5).unwrap();
+    assert_valid("run-report-v5.json", &value);
+    assert_eq!(
+        serde_json::from_value::<RunReportPayloadV5>(value.clone()).unwrap(),
+        report_v5
+    );
+    event.event_type = EventType::RunReportV5;
+    event.payload = value;
+    assert_eq!(
+        review_core::run_report_closes_round(&event).unwrap(),
+        Some(true)
+    );
+
+    let mut dishonest_cache = report_v5;
+    dishonest_cache.cache_snapshots[0].node = "missing".into();
+    assert!(dishonest_cache.validate().is_err());
+
+    let mut failed_cache = dishonest_cache;
+    failed_cache.cache_snapshots.clear();
+    failed_cache.cache_failures = vec![RunCacheFailureV5 {
+        node: "review".into(),
+        kind: RunCacheKindV5::Cargo,
+        reason: RunCacheFailureReasonV5::GateSetupFailed,
+    }];
+    assert!(failed_cache.validate().is_err());
+    failed_cache.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
+        error: "provider unavailable".into(),
+    };
+    failed_cache.verdict = RunVerdictV3::Incomplete {
+        missing_nodes: vec![MissingNodeV2 {
+            node: "review".into(),
+            reason: "provider unavailable".into(),
+        }],
+    };
+    failed_cache.validate().unwrap();
+
+    let mut dishonest = report_v4;
+    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
+    assert!(dishonest.validate().is_err());
+    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::None;
+    dishonest.execution_bindings[0].required_isolation = RunIsolationV4::Process;
+    assert!(dishonest.validate().is_err());
+}
+
+#[test]
+fn cache_manifest_v1_has_explicit_path_encoding_and_exact_totals() {
+    let manifest = CacheManifestV1 {
+        kind: RunCacheKindV5::Cargo,
+        path_encoding: CachePathEncodingV1::PercentV2,
+        entries: vec![CacheManifestEntryV1 {
+            path: "registry/cache/index/ leading.crate".into(),
+            content: format!("sha256:{}", "a".repeat(64)),
+            size: 42,
+        }],
+    };
+    manifest.validate().unwrap();
+    assert_eq!(manifest.bytes(), 42);
+    assert_valid(
+        "cache-manifest-v1.json",
+        &serde_json::to_value(&manifest).unwrap(),
+    );
+
+    let mut credential = manifest.clone();
+    credential.entries[0].path = "registry/cache/index/.git-credentials".into();
+    assert!(credential.validate().is_err());
+    let mut outside_layout = manifest.clone();
+    outside_layout.entries[0].path = "registry/src/index/lib.rs".into();
+    assert!(outside_layout.validate().is_err());
+    let mut over_ceiling = manifest.clone();
+    over_ceiling.entries[0].size = review_core::MAX_CACHE_BYTES_V1 + 1;
+    assert!(over_ceiling.validate().is_err());
+
+    let failure = RunCacheFailureV5 {
+        node: "gate".into(),
+        kind: RunCacheKindV5::Cargo,
+        reason: RunCacheFailureReasonV5::LimitExceeded,
+    };
+    failure.validate().unwrap();
 }
 
 #[test]

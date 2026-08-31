@@ -416,8 +416,8 @@ Demands, Evidence, and fixed resolution are snapshot-sensitive, so they follow M
 Change Set rather than being retrofitted onto whole-tree legacy events.
 
 Implementation merged through PR #18. Its exhausted verification Campaign has six fixed Findings
-and zero open; follow-up `0361a7d` passes the full local gate. PR #19 integration and exact-main
-verification remain before M4 is complete.
+and zero open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M4 is
+complete.
 
 ### M4.1 — Demands become durable obligations
 
@@ -513,10 +513,17 @@ reopening it.
 
 ### M5.1 — `--format json`
 
+**Status: complete (2026-08-28).** `af review report` now has deliberate `md`, `text`, and
+versioned `json` renderings driven by one operator projection.
+
 Nearly free once M0.2 lands: print the structure that already exists. Text rendering becomes an
 explicit formatter rather than `{:?}`, so both surfaces are deliberate and testable.
 
 ### M5.2 — Spend per round and per reviewer
+
+**Status: complete (2026-08-28).** The report projects selected, fenced, failed, released, and
+outstanding Attempts plus Provider Operations per exact Round epoch and reviewer. Budget-resume
+accounting now reads admitted `cost_tokens` and honors only the first terminal Attempt event.
 
 Pure query work; the data is already in the log, tagged by node. `AttemptAdmitted@1` carries
 `{selection, cost_tokens}`, `AttemptFenced@1` carries `{reason, charged}`, both stamped
@@ -529,6 +536,11 @@ SKILL.md §5 already demands "spend per round" and the agent currently has no wa
 Feeds `af review report` (M1.4).
 
 ### M5.3 — Campaign enumeration
+
+**Status: complete (2026-08-28).** `af review campaigns` projects opaque ID, validated label,
+pinned Subject/authority, last closed Round/verdict, and complete closed-Round history as explicit
+text or versioned JSON. Invalid entries are reported without hiding healthy Campaigns. ADR-0035
+records contained opaque state IDs and the permanent authenticated legacy reader.
 
 No way to list campaigns or view a round-by-round history; state sits in `.review/runs/` with no
 CLI over it.
@@ -559,6 +571,22 @@ The original host-passthrough decision in ADR-0003 is superseded by
 
 ### M6.1 — Gate Execution Bindings and `Mode::EphemeralWrite`
 
+**Status: complete (2026-08-30).** Pipeline format v3 resolves explicit Gate execution authority,
+requires digest-pinned images for container execution, admits provider usability and isolation
+before command dispatch, and records replayable append-only binding attempts with the latest
+exact fact in `RunReport@4`.
+Legacy v1/v2 behavior is frozen. A disposable project-hub Campaign ran both write-heavy smoke
+checks and two Codex Workers to Pass without leaking Gate mutations into the candidate checkout.
+Pinned external Campaigns then worked every Gate-binding defect to closure. Final Campaign
+`m6-1-gate-bindings-final-v2` spent 223,179 tokens in Round 1 and 250,781 in Round 2, returned
+Pass, and has four fixed Findings with zero open. Container execution now preserves the pinned
+image `PATH`, forwards only portable declared environment, writes as the caller's UID:GID, reaps
+timed-out daemon workloads before sealing, reports any deliberately preserved sandbox path, and
+records Gate mutations durably. `make check` is green. The Docker-only containment, timeout, and
+ownership probes are wired into the dedicated `container-probes` CI job but remain unexecuted on
+this local host because its daemon is unavailable; that job must pass on the first published
+candidate.
+
 Route every Gate check through its resolved Execution Binding and admit the Sandbox Provider
 against the pipeline's required isolation before execution. A safe pipeline requires the
 container provider; `trusted_local` remains available only when policy explicitly accepts
@@ -572,6 +600,11 @@ their mutations did not become Subject content.
 
 ### M6.2 — Sandbox-local cache snapshots
 
+Accepted realization:
+[ADR-0036](adr/0036-resolve-gate-caches-through-machine-local-bounded-policy.md). Project authority
+requests only a symbolic cache kind; a versioned machine-local policy supplies the bounded,
+credential-free source and copy limits.
+
 `Sandbox::environment()` sets `HOME` to the sandbox root (`review-sandbox/src/lib.rs:314`), so
 every cache is cold. A pipeline may request a symbolic cache kind:
 
@@ -581,15 +614,21 @@ mode = "ephemeral-write"
 caches = ["cargo"]
 ```
 
-Administrator policy maps that symbolic kind to exact credential-free subtrees, never to an
-entire home cache root. The kernel preflights size and filesystem support, then reflinks or copies
-those bytes into the sandbox under a hard byte/file limit. Cross-filesystem or over-limit copies
-fail with a diagnostic rather than degrading into an unbounded multi-gigabyte copy. Writes stay
-inside the sandbox and disappear at teardown.
+Administrator policy maps that symbolic kind to one curated credential-free root, never to an
+entire home cache root. The initial Cargo layout admits only `registry/cache/` package archives
+and sparse `registry/index/` data; unpacked sources and Git dependency caches are postponed. The
+kernel traverses through retained no-follow descriptors, preflights size and filesystem support,
+then reflinks or copies those bytes into the sandbox under hard byte, filesystem-entry, path, and
+copy limits. Cross-filesystem or over-limit copies fail with a diagnostic rather than degrading
+into an unbounded multi-gigabyte copy. macOS descriptor-native reflinks shed source-controlled
+xattrs, named forks, and ACLs before dispatch. Writes stay inside the sandbox and disappear at
+teardown.
 
-Use offline package-manager mode so a cache miss fails loudly. Every Cache Snapshot kind, source
-digest, size, and materialization method is recorded in the current structural `RunReport`
-contract. A direct host passthrough
+Use offline package-manager mode so a cache miss fails loudly. `CacheManifest@1` records exact
+paths, digests, and sizes; `RunReport@5` records one success receipt or typed failure for every
+requested Gate/cache pair and republishes every successful manifest for verification and receipt
+cross-checking. Policy is resolved only for unresolved Gates, so completed-Gate replay does not
+depend on mutable machine policy. A direct host passthrough
 is permitted only by an explicitly unsafe `trusted_local` execution policy and cannot satisfy a
 pipeline requiring container isolation.
 
@@ -606,6 +645,29 @@ Legacy runners that require readable credentials are classified `trusted_unsafe`
 satisfy a safe pipeline or an `auto_apply` binding. Complete the transformed-secret,
 allowed-egress, and post-fence broker fixtures before M7/M9 claim those boundaries. Decision
 recorded in [ADR-0015](adr/0015-safe-attempts-receive-handles-not-secrets.md).
+
+Implemented in pipeline format v4: every reviewer declares `credential_free`, `brokered`, or
+`trusted_unsafe`; formats v1–v3 remain unchanged. Brokered authority fixes symbolic routes and
+hard request, response, call, and usage limits. `ReviewerExecutionBound@1` and
+`BrokerOperationCompleted@1` make the lease and every authorized completion durable before a
+response reaches the Worker. The store independently revalidates epochs and cumulative policy.
+The Codex and Claude CLI adapters are classified `trusted_unsafe`; safe v4 execution requires a
+broker-capable adapter plus a machine-local connector. The transformed-secret, fixed-egress,
+post-fence, failed-receipt, forged-authority, and end-to-end replay fixtures are complete. Receipt
+commit atomically checks current authority, credential-echo responses are discarded, broker usage
+is reconciled with Attempt settlement, and recovery/supersession fences cover both observed usage
+and the durable broker authority bound so late work can leave only a validated revoked receipt.
+The decoded connector response rejects raw and common encoded credential forms before either a
+fence check or response digest; connector panics are receipted, aggregate usage remains in the
+durable numeric domain, admission requires its exact binding, and replay enforces terminal handle
+state plus the full fence reservation. Percent decoding covers mixed literal/escaped bytes,
+malformed-prefix continuation, and nested escapes. Budgeted pipeline authority must fit the exact
+pre-dispatch Attempt reservation. Public revocation synchronizes with in-flight calls;
+refusals become terminal after one bounded receipt. Provider admission, recovery replay, and
+operator reports all count a live Attempt as the maximum of dispatch reservation, broker
+authority, and observed usage, then count a terminal Attempt as the maximum of settlement and
+observed usage. A late provider overrun therefore remains durable and charged above an earlier
+fence.
 
 ---
 

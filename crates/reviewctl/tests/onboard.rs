@@ -69,11 +69,31 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert!(repo.join(".af/pipelines/review.toml").is_file());
     let pipeline = std::fs::read_to_string(repo.join(".af/pipelines/review.toml")).unwrap();
     assert_eq!(pipeline.matches("demands = \"required\"").count(), 2);
+    let pipeline_value: toml::Value = toml::from_str(&pipeline).unwrap();
+    assert_eq!(pipeline_value["version"].as_integer(), Some(3));
+    assert_eq!(
+        pipeline_value["gate"]["provider"].as_str(),
+        Some("trusted_local")
+    );
+    assert_eq!(
+        pipeline_value["gate"]["required_isolation"].as_str(),
+        Some("none")
+    );
+    assert_eq!(
+        pipeline_value["gate"]["mode"].as_str(),
+        Some("ephemeral-write")
+    );
     assert!(repo.join(".af/workers/correctness/reviewer.md").is_file());
-    assert!(
-        std::fs::read_to_string(repo.join(".af/workers/architecture/reviewer.toml"))
-            .unwrap()
-            .contains("program = \"codex\"")
+    let architecture_manifest =
+        std::fs::read_to_string(repo.join(".af/workers/architecture/reviewer.toml")).unwrap();
+    assert!(architecture_manifest.contains("program = \"codex\""));
+    let architecture_manifest: toml::Value = toml::from_str(&architecture_manifest).unwrap();
+    assert_eq!(
+        architecture_manifest["runner"]["args"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "the Codex adapter owns the exec/sandbox/stdin flags"
     );
 
     let validate = af(&repo, &["--json"]);

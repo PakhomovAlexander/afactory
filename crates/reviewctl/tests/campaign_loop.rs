@@ -243,6 +243,77 @@ fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
 }
 
 #[test]
+fn campaign_enumeration_reads_legacy_state_and_round_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, _) = fixture(dir.path());
+    let root = dir.path().join("campaigns");
+    let state = root.join("loop").to_string_lossy().into_owned();
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "loop", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 must close as fail\n{stdout}\n{stderr}");
+
+    let root = root.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "json"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let campaigns: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(campaigns["schema"], "af/review-campaigns@1");
+    assert_eq!(campaigns["problems"], serde_json::json!([]));
+    assert_eq!(campaigns["campaigns"][0]["label"], "loop");
+    assert_eq!(campaigns["campaigns"][0]["subject_kind"], "whole-tree");
+    assert_eq!(campaigns["campaigns"][0]["last_closed_round"], 1);
+    assert_eq!(campaigns["campaigns"][0]["last_closed_epoch"], 1);
+    assert_eq!(campaigns["campaigns"][0]["verdict"], "fail (not_converged)");
+    assert_eq!(campaigns["campaigns"][0]["rounds"][0]["round"], 1);
+    let id = campaigns["campaigns"][0]["id"].as_str().unwrap();
+    assert!(id.starts_with("c-") && id.len() == 66, "{id}");
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "text"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("Campaigns: 1"), "{stdout}");
+    assert!(stdout.contains("Problems: 0"), "{stdout}");
+    assert!(
+        stdout.contains("last closed: round 1 epoch 1; fail (not_converged)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("run 1: round 1 epoch 1; fail (not_converged)"),
+        "{stdout}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "review",
+            "campaigns",
+            "--state-root",
+            &root,
+            "--format",
+            "json",
+        ])
+        .current_dir(&repo)
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "explicit state root unexpectedly required HOME: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn final_local_review_uses_af_authority_and_one_json_result() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
@@ -804,6 +875,55 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
+    assert!(report_out.contains("## Spend"), "{report_out}");
+    assert!(report_out.contains("architecture"), "{report_out}");
+
+    let (code, report_json, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{report_json}\n{report_err}");
+    let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
+    assert_eq!(report["schema"], "af/review-report@1");
+    assert_eq!(report["rounds"][0]["round"], 1);
+    assert_eq!(
+        report["spend"][0]["reviewers"][0]["reviewer"],
+        "architecture"
+    );
+    assert_eq!(
+        report["spend"][0]["reviewers"][0]["attempts"][0]["outcome"],
+        "selected"
+    );
+
+    let (code, report_text, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "text",
+        ],
+    );
+    assert_eq!(code, 0, "{report_text}\n{report_err}");
+    assert!(
+        report_text.contains("Review campaign: loop"),
+        "{report_text}"
+    );
+    assert!(report_text.contains("architecture:"), "{report_text}");
+    assert!(report_text.contains("attempt"), "{report_text}");
 
     // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
     // attestation/verification path is covered by the canonical projection tests.
@@ -877,6 +997,20 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(
         report_out.contains("operator rejected the original claim"),
         "{report_out}"
+    );
+    let attempts_heading = report_out.find("### Attempts").unwrap();
+    let spend_table = &report_out[..attempts_heading];
+    assert!(
+        spend_table.contains("| 1 | 1 | architecture |"),
+        "{report_out}"
+    );
+    assert!(
+        spend_table.contains("| 2 | 1 | architecture |"),
+        "{report_out}"
+    );
+    assert!(
+        !spend_table.contains("\n- Round"),
+        "Attempt bullets must not interrupt the Markdown Spend table:\n{report_out}"
     );
     assert!(report_err.is_empty(), "{report_err}");
 }

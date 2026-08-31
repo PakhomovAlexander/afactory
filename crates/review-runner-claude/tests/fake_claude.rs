@@ -89,6 +89,10 @@ fn adapter_for(
 fn a_success_envelope_yields_the_answer_and_uncached_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (adapter, cas, sandbox) = adapter_for(dir.path(), &success_envelope(ANSWER), 0);
+    assert_eq!(
+        adapter.credential_mode(),
+        review_runner::BrokerCredentialModeV1::TrustedUnsafe
+    );
 
     let receipt = adapter
         .invoke_receipted(&cas, &sandbox, &Default::default())

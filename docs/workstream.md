@@ -1,15 +1,27 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M3, private releases through `v0.4.0`, minimal product v1/v2, and their first
+**Status:** M0–M4, private releases through `v0.4.0`, minimal product v1/v2, and their first
 candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
 exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
-open; follow-up `0361a7d` passes the full local gate and awaits PR #19 integration before M4 is
-complete. The accepted V3.1
+open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M5 now provides
+deliberate JSON/text reports, exact Round/reviewer spend, and safe Campaign enumeration/history;
+fresh pinned verification returned Pass. M6.1 now routes v3 Gates through explicit admitted
+Execution Bindings in independent writable clones and reports the fact through `RunReport@4`; a
+real dogfood Campaign passed, final pinned Campaign `m6-1-gate-bindings-final-v2` returned Pass,
+and its four Findings are fixed with zero open. M6.2 materializes bounded machine-policy cache
+snapshots and publishes `CacheManifest@1` receipts through `RunReport@5`; its final Campaign
+returned Pass. M6.3 adds v4 reviewer credential modes, revocable broker handles,
+durable bounded operation receipts, secret isolation, charge reconciliation, and recovery-safe
+late revocation. Its final correctness Campaign findings are fixed and the final `make check`
+gate passes, completing M6. The Docker-backed M6.1 probe remains unexecuted on this daemon-less
+worktree and must be green when the product branch is first published. Resume at M7.1
+verified Proposals. The
+accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
 binary-owned review-onboarding slice shipped through PR #13 in private `v0.4.0`; exact-main CI,
-downloaded checksums, and the extracted macOS binary passed. M5 remains gated on verified M4.
+downloaded checksums, and the extracted macOS binary passed.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -146,19 +158,28 @@ and verification prerequisites exist.
   - [x] M3.1 pinned external convergence review.
   - [x] M3.2 implementation, full local gate, and lightweight candidate dogfood.
   - [x] M3.3 reversible Grouping implementation and full local gate.
-- [ ] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
+- [x] M4 — required Demands block independently; Evidence is Demand/Subject-linked; `fixed` can
       result only from positive Fix Verification; non-fixed resolutions are scoped, expiring, and
       challengeable; convergence reads exact final Finding/Demand views; admitted partial reviewer
       results remain visible without acquiring Ledger or convergence authority (issue #15).
   - [x] M4.1–M4.5 implementation and issue #15 reporting merged through PR #18.
   - [x] Fix the three exhausted-Campaign follow-up Findings and pass the full local gate.
   - [x] Record their exact Campaign-ledger dispositions; six Findings are fixed, zero open.
-  - [ ] Integrate PR #19 and verify exact `main`.
-- [ ] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
+  - [x] Integrate PR #19 and verify exact `main`.
+- [x] M5 — JSON/text reports are deliberate; spend is reported per Round/reviewer; Campaigns and
       Round history are enumerable.
-- [ ] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
+  - [x] M5.1/M5.2 deliberate report formats and Round/reviewer spend query.
+  - [x] M5.3 safe Campaign enumeration and history; exhausted review has seven fixed Findings and
+        zero open, and fresh final verification returned Pass.
+- [x] M6 — every executable node uses an admitted Execution Binding; smoke tests run with bounded
       sandbox-local Cache Snapshots; safe Attempts receive revocable Broker Handles rather than
       reusable credentials.
+  - [x] M6.1 explicit Gate Execution Bindings, provider admission, independent
+        `Mode::EphemeralWrite` clones, and structural `RunReport@4` evidence.
+  - [x] M6.2 bounded sandbox-local Cache Snapshots; full local gate and final Codex-only Campaign
+        passed with thirteen fixed Findings and zero open.
+  - [x] M6.3 Broker Handles, receipts, revocation, secret isolation, recovery settlement, and
+        pre-dispatch budget coverage; final correctness findings fixed and `make check` green.
 - [ ] M7 — a Proposal unequal to the sealed diff is refused; export is by Proposal ID; stale
       export requires explicit override.
 - [ ] M8 — accepted SliceSets fan out losslessly under fan-out budgets; whole-Subject closeout and
@@ -319,8 +340,26 @@ implementation at `cea50aa`; exact-main CI passed. Verification Campaign
 `m3-3-m4-verification-v1` exhausted with three major follow-up Findings. Their local corrections
 preserve per-Finding Resolution authority across Grouping, pin reviewer Demand classification,
 and require explicit Evidence reuse admission; the full local gate passes. All six Campaign
-Findings are fixed with zero open, and follow-up PR #19 carries `0361a7d`. Resume at its integration
-and exact-main verification, then M5.
+Findings are fixed with zero open. Follow-up PR #19 merged at exact `main` `01147ce`, and
+post-merge CI passed. M5 adds versioned Markdown/text/JSON reports, first-terminal Attempt
+accounting, per-Round/per-reviewer spend, opaque contained Campaign state IDs, and deterministic
+Campaign history with isolated per-entry problems. Exhausted Campaign
+`m5-campaign-enumeration-v1` has seven fixed Findings and zero open; fresh Campaign
+`m5-campaign-enumeration-final-v1` returned Pass, and its four follow-up Minors are fixed. M6.1
+adds explicit v3 Gate authority, provider-owned sandbox materialization, pre-dispatch isolation
+admission, independent ephemeral-write clones, and exact `RunReport@4` evidence while freezing
+v1/v2 behavior. The disposable `m6-gate-binding-dogfood-fixed` Campaign ran project-hub's
+write-heavy scaffold/update smoke checks and two Codex Workers to Pass with no findings. M6.2 adds
+bounded cache materialization and receipt authority. M6.3 adds explicit v4 reviewer credential
+modes and a broker that keeps reusable credentials machine-local while project authority fixes
+routes, byte/call/usage bounds, leases, and receipts. Receipt commit rechecks live authority;
+responses containing credential bytes are discarded; Attempt settlement covers broker usage; and
+recovery or supersession fences reserve enough authority to persist only a late revoked receipt.
+Late overruns raise terminal commitment, provider admission counts outstanding broker authority,
+one refusal terminally bounds receipt growth, partially percent-encoded credentials are withheld,
+and broker authority must fit the pre-dispatch reservation. The final correctness Campaign's two
+findings have deterministic regressions and are fixed; the final `make check` gate passes. Resume
+at M7.1 verified Proposals.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,

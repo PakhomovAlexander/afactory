@@ -78,3 +78,7 @@ options you rejected and why — that is the part future-you needs.
   delivery](0033-configured-workers-authorize-declared-input-delivery.md)
 - [0034 — Surface partial results without granting Ledger
   authority](0034-surface-partial-results-without-ledger-authority.md)
+- [0035 — Address Campaign state by opaque
+  ID](0035-address-campaign-state-by-opaque-id.md)
+- [0036 — Resolve Gate caches through machine-local bounded
+  policy](0036-resolve-gate-caches-through-machine-local-bounded-policy.md)

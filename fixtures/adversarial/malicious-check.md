@@ -45,17 +45,19 @@ A green run. The check passes, the review converges, and the only evidence of th
 a host nobody inspects. This is the case that decides whether project-supplied check commands
 can be treated as data.
 
-## Status — discharged at the provider boundary; routing and broker still open
+## Status — provider boundary discharged; Gate live routing and broker still open
 
 Two test files carry this case. `crates/review-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
 **not security isolation**, and its tests do not pretend otherwise.
 `crates/review-sandbox/tests/container_probes.rs` runs the probes that need real isolation
 against `ContainerProvider` with a live daemon: one bind (the sandbox), `--network=none`, no
-inherited environment, image pinned by manifest digest. Those probes run in CI
-(`make review-kernel-container-probes`) and are `#[ignore]`d in the ordinary test run; where
-they are invoked, a missing daemon is a hard failure, never a skip — an unrun probe must not
-look like a passed one.
+inherited environment, image pinned by manifest digest. The
+`make review-kernel-container-probes` target and dedicated CI job run them and the live v3 Gate
+route, including a timeout probe that asserts the daemon-owned container is gone before execution
+returns; they are `#[ignore]`d in the ordinary test run. This worktree has not produced that CI
+evidence yet, and its local host has no usable daemon. Where the target is invoked, a missing
+daemon is a hard failure, never a skip — an unrun probe must not look like a passed one.
 
 | Probe | State | Why |
 |---|---|---|
@@ -75,12 +77,24 @@ What "discharged (container)" claims is the *provider boundary*, no more. `trust
 still provides none of it, and `admit` still refuses a safe pipeline on that provider — that
 refusal remains tested. Open here, by name:
 
-- **Routing.** The kernel does not yet execute project checks through the container provider
-  inside a pipeline run; the probes drive the provider directly. That wiring is Phase 4, and
-  this row is where it gets checked off.
 - **The broker half.** The transformed-secret probe (re-emit the token base64'd across two
   artifacts) and exfiltration-over-allowed-egress need a broker that holds credentials outside
   the sandbox and emits receipts. There is no broker yet.
+
+Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
+bindings require a project image pinned by digest. Provider usability and isolation admission are
+recorded durably before `RunReport@4`; either failure stops the Gate before a project command
+runs. A recording runtime asserts that Gate dispatch builds the exact container invocation:
+portable declared environment without the host `PATH`, the caller's numeric UID:GID, and a unique
+reaping name. A timed-out runtime client is followed by bounded `rm -f`; if cleanup cannot be
+confirmed, the Gate reports the preserved sandbox path and returns incomplete without sealing a
+possibly live bind. The
+ignored live pipeline control and lower-level probes use `CheckRunner::run_with`; the new CI job
+must turn that wiring into live evidence before Gate routing is called discharged. Brokered
+credentials and allowed egress remain M6.3 and are not claimed here. Open here, by name:
+
+- **Live Gate routing.** The target and CI job exist, but this candidate has not run them on a
+  usable daemon yet. A green `container-probes` job closes this item.
 
 **Do not weaken this case as the wiring lands.** Marking the routing or broker rows satisfied
 on the strength of the provider probes would be exactly the quiet redefinition this file warns

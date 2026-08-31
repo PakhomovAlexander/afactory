@@ -29,7 +29,7 @@ use std::time::Duration;
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
     EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunVerdictV2, RunVerdictV3, Severity,
+    RunReportPayloadV4, RunReportPayloadV5, RunVerdictV2, RunVerdictV3, Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RunVerdict};
@@ -39,6 +39,7 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Ve
 use sha2::{Digest, Sha256};
 
 mod authority;
+mod caches;
 mod onboard;
 mod providers;
 mod task;
@@ -66,15 +67,17 @@ impl Options {
     /// working directory, preserving the CLI's historical meaning, and repository-contained
     /// state is confined to the review tree's `runs` directory.
     fn resolved_state_dir(&self) -> Result<PathBuf, String> {
-        if let Some(campaign) = &self.campaign {
-            validate_campaign_name(campaign)?;
-        }
         let requested = match (&self.state, &self.campaign) {
             (Some(state), _) => state.clone(),
             (None, Some(campaign)) => default_campaign_state(campaign)?,
             (None, None) => default_local_state(&self.repo)?,
         };
         let state = resolve_filesystem_path(&requested)?;
+        if let Some(campaign) = &self.campaign
+            && self.state.is_some()
+        {
+            validate_campaign_for_explicit_state(campaign, &state)?;
+        }
         let repository = std::fs::canonicalize(&self.repo)
             .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
         if state.starts_with(&repository) {
@@ -105,8 +108,53 @@ fn xdg_state_root() -> Result<PathBuf, String> {
 }
 
 fn default_campaign_state(campaign: &str) -> Result<PathBuf, String> {
-    validate_campaign_name(campaign)?;
-    Ok(xdg_state_root()?.join("af/review/campaigns").join(campaign))
+    campaign_state_beneath(&xdg_state_root()?.join("af/review/campaigns"), campaign)
+}
+
+fn campaign_id(campaign: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"af/campaign-id@1\0");
+    digest.update(campaign.as_bytes());
+    let digest = digest.finalize();
+    format!("c-{digest:x}")
+}
+
+fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
+    validate_legacy_campaign_name(campaign)?;
+    let root = resolve_filesystem_path(root)?;
+    let encoded = root.join(campaign_id(campaign));
+    let legacy = root.join(campaign);
+    let encoded_exists = encoded.exists();
+    let legacy_belongs_to_campaign =
+        legacy_campaign_state_matches(&legacy, campaign).map_err(|error| {
+            format!(
+                "legacy Campaign state {} blocks resolution of {campaign:?}: {error}",
+                legacy.display()
+            )
+        })?;
+    if encoded_exists && legacy_belongs_to_campaign {
+        return Err(format!(
+            "campaign {campaign:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+            root.display()
+        ));
+    }
+    if !legacy_belongs_to_campaign {
+        validate_campaign_name(campaign)?;
+    }
+    let selected = if legacy_belongs_to_campaign {
+        legacy
+    } else {
+        encoded
+    };
+    let selected = resolve_filesystem_path(&selected)?;
+    if !selected.starts_with(&root) {
+        return Err(format!(
+            "campaign state {} escapes configured review-state root {}",
+            selected.display(),
+            root.display()
+        ));
+    }
+    Ok(selected)
 }
 
 fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
@@ -119,15 +167,82 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
+    validate_legacy_campaign_name(campaign)?;
+    if campaign.trim() != campaign
+        || campaign
+            .chars()
+            .any(|character| matches!(character, '/' | '\\') || character.is_control())
+        || is_campaign_id(campaign)
+    {
+        return Err(format!(
+            "campaign name {campaign:?} must be a trimmed human label without separators, control characters, traversal forms, or the reserved opaque Campaign ID shape"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_legacy_campaign_name(campaign: &str) -> Result<(), String> {
     let mut components = Path::new(campaign).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(format!(
-            "campaign name `{campaign}` must be one safe path component"
+            "campaign name {campaign:?} must be one safe path component"
         ));
     }
     Ok(())
+}
+
+fn is_campaign_id(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("c-")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn campaign_run_ids(state: &Path) -> Result<Vec<String>, String> {
+    let database = state.join("events.sqlite");
+    if !database.is_file() {
+        return Ok(Vec::new());
+    }
+    EventStore::open_read_only(&database)
+        .map_err(|error| {
+            format!(
+                "reading Campaign event store {}: {error}",
+                database.display()
+            )
+        })?
+        .run_ids()
+        .map_err(|error| {
+            format!(
+                "reading Campaign event store {}: {error}",
+                database.display()
+            )
+        })
+        .map(|run_ids| {
+            run_ids
+                .into_iter()
+                .filter(|run_id| run_id.starts_with("campaign-"))
+                .collect()
+        })
+}
+
+fn legacy_campaign_state_matches(state: &Path, campaign: &str) -> Result<bool, String> {
+    Ok(campaign_run_ids(state)?.as_slice() == [campaign_run_id(campaign)])
+}
+
+fn validate_campaign_for_explicit_state(campaign: &str, state: &Path) -> Result<(), String> {
+    if let Err(validation_error) = validate_campaign_name(campaign) {
+        if campaign_run_ids(state)?
+            .iter()
+            .any(|run_id| run_id == &campaign_run_id(campaign))
+        {
+            validate_legacy_campaign_name(campaign)
+        } else {
+            Err(validation_error)
+        }
+    } else {
+        Ok(())
+    }
 }
 
 fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
@@ -213,7 +328,25 @@ struct ShowOptions {
 struct ReportOptions {
     state: Option<PathBuf>,
     campaign: String,
-    format: String,
+    format: ReportFormat,
+}
+
+struct CampaignsOptions {
+    state_root: Option<PathBuf>,
+    format: CampaignsFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CampaignsFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReportFormat {
+    Markdown,
+    Text,
+    Json,
 }
 
 struct ResolveOptions {
@@ -314,7 +447,8 @@ fn usage() -> ! {
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
-        \x20      af review report  --campaign NAME [--state DIR] [--format md]\n\
+        \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
+        \x20      af review campaigns [--state-root DIR] [--format text|json]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review attest-change --campaign NAME [--state DIR] FINDING --region PATH[:START-END] --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
         \x20      af review verify-fix --campaign NAME [--state DIR] FINDING ATTESTATION --policy REV --reason TEXT (--positive|--negative) [--verifier ACTOR] [--evidence ID]...\n\
@@ -343,12 +477,14 @@ fn campaign_run_id(campaign: &str) -> String {
 }
 
 fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, String> {
-    validate_campaign_name(campaign)?;
-    let requested = match state {
-        Some(state) => state.clone(),
-        None => default_campaign_state(campaign)?,
-    };
-    resolve_filesystem_path(&requested)
+    match state {
+        Some(state) => {
+            let state = resolve_filesystem_path(state)?;
+            validate_campaign_for_explicit_state(campaign, &state)?;
+            Ok(state)
+        }
+        None => default_campaign_state(campaign),
+    }
 }
 
 fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
@@ -468,24 +604,48 @@ fn parse_show(mut args: std::env::Args) -> ShowOptions {
 fn parse_report(mut args: std::env::Args) -> ReportOptions {
     let mut state = None;
     let mut campaign = None;
-    let mut format = "md".to_string();
+    let mut format = ReportFormat::Markdown;
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--state" => state = Some(PathBuf::from(value())),
             "--campaign" => campaign = Some(value()),
-            "--format" => format = value(),
+            "--format" => {
+                format = match value().as_str() {
+                    "md" => ReportFormat::Markdown,
+                    "text" => ReportFormat::Text,
+                    "json" => ReportFormat::Json,
+                    _ => usage(),
+                }
+            }
             _ => usage(),
         }
-    }
-    if format != "md" {
-        usage();
     }
     ReportOptions {
         state,
         campaign: campaign.unwrap_or_else(|| usage()),
         format,
     }
+}
+
+fn parse_campaigns(mut args: std::env::Args) -> CampaignsOptions {
+    let mut state_root = None;
+    let mut format = CampaignsFormat::Text;
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state-root" => state_root = Some(PathBuf::from(value())),
+            "--format" => {
+                format = match value().as_str() {
+                    "text" => CampaignsFormat::Text,
+                    "json" => CampaignsFormat::Json,
+                    _ => usage(),
+                }
+            }
+            _ => usage(),
+        }
+    }
+    CampaignsOptions { state_root, format }
 }
 
 fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
@@ -890,6 +1050,7 @@ fn main() {
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
+        Some("campaigns") => print_campaigns(&parse_campaigns(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
         Some("attest-change") => attest_change(&parse_attest_change(args)),
         Some("verify-fix") => verify_fix(&parse_verify_fix(args)),
@@ -949,6 +1110,16 @@ fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
         ));
     }
     EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())
+}
+
+fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
+    if !state.join("events.sqlite").exists() {
+        return Err(format!(
+            "no campaign state at {}; a campaign starts with `af review run --campaign`",
+            state.display()
+        ));
+    }
+    EventStore::open_read_only(state.join("events.sqlite")).map_err(|error| error.to_string())
 }
 
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
@@ -1136,8 +1307,483 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct CampaignListView {
+    schema: &'static str,
+    campaigns: Vec<CampaignView>,
+    problems: Vec<CampaignProblemView>,
+}
+
+#[derive(serde::Serialize)]
+struct CampaignProblemView {
+    directory: String,
+    reason: String,
+}
+
+struct CampaignEnumeration {
+    campaigns: Vec<CampaignView>,
+    problems: Vec<CampaignProblemView>,
+}
+
+#[derive(serde::Serialize)]
+struct CampaignView {
+    id: String,
+    label: String,
+    authority_snapshot_id: String,
+    campaign_manifest_id: String,
+    subject_kind: review_core::SubjectKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_subject_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_closed_round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_closed_epoch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<String>,
+    rounds: Vec<ReportRoundView>,
+}
+
+fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
+    let requested_root = match &options.state_root {
+        Some(root) => root.clone(),
+        None => xdg_state_root()?.join("af/review/campaigns"),
+    };
+    let root = resolve_filesystem_path(&requested_root)?;
+    let enumeration = enumerate_campaigns(&root)?;
+    let view = CampaignListView {
+        schema: "af/review-campaigns@1",
+        campaigns: enumeration.campaigns,
+        problems: enumeration.problems,
+    };
+    match options.format {
+        CampaignsFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+        CampaignsFormat::Text => print_campaigns_text(&view),
+    }
+    Ok(())
+}
+
+fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
+    let root = resolve_filesystem_path(root)?;
+    if !root.exists() {
+        return Ok(CampaignEnumeration {
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        });
+    }
+    if !root.is_dir() {
+        return Err(format!(
+            "campaign state root {} is not a directory",
+            root.display()
+        ));
+    }
+    let mut paths = std::fs::read_dir(&root)
+        .map_err(|error| format!("reading campaign state root {}: {error}", root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("reading campaign state root {}: {error}", root.display()))?;
+    paths.sort_by_key(std::fs::DirEntry::file_name);
+
+    let mut campaigns = Vec::new();
+    let mut problems = Vec::new();
+    let mut seen = BTreeSet::new();
+    for entry in paths {
+        let directory_lossy = entry.file_name().to_string_lossy().into_owned();
+        let metadata = match std::fs::symlink_metadata(entry.path()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: format!("reading entry metadata: {error}"),
+                });
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: "state-root entry is a symlink; Campaign enumeration does not follow it"
+                    .to_string(),
+            });
+            continue;
+        }
+        if !metadata.is_dir() {
+            continue;
+        }
+        let database = entry.path().join("events.sqlite");
+        let database_metadata = match std::fs::symlink_metadata(&database) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: format!("reading events.sqlite metadata: {error}"),
+                });
+                continue;
+            }
+        };
+        if database_metadata.file_type().is_symlink() || !database_metadata.is_file() {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason:
+                    "events.sqlite is not a real regular file beneath the Campaign state directory"
+                        .to_string(),
+            });
+            continue;
+        }
+        let state = match resolve_filesystem_path(&entry.path()) {
+            Ok(state) => state,
+            Err(reason) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason,
+                });
+                continue;
+            }
+        };
+        if !state.starts_with(&root) {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: format!(
+                    "resolved state {} escapes configured root {}",
+                    state.display(),
+                    root.display()
+                ),
+            });
+            continue;
+        }
+        let store = match open_campaign_store_read_only(&state) {
+            Ok(store) => store,
+            Err(reason) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason,
+                });
+                continue;
+            }
+        };
+        let run_ids = match store.run_ids() {
+            Ok(run_ids) => run_ids,
+            Err(error) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        }
+        .into_iter()
+        .filter(|run_id| run_id.starts_with("campaign-"))
+        .collect::<Vec<_>>();
+        if run_ids.len() != 1 {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason: format!(
+                    "state contains {} campaign runs; each enumerated directory must contain exactly one",
+                    run_ids.len()
+                ),
+            });
+            continue;
+        }
+        let run_id = &run_ids[0];
+        let label = run_id
+            .strip_prefix("campaign-")
+            .expect("campaign run prefix was filtered")
+            .to_string();
+        if let Err(reason) = validate_legacy_campaign_name(&label) {
+            problems.push(CampaignProblemView {
+                directory: directory_lossy,
+                reason,
+            });
+            continue;
+        }
+        let id = campaign_id(&label);
+        let directory = match entry.file_name().into_string() {
+            Ok(directory) => directory,
+            Err(_) => {
+                problems.push(CampaignProblemView {
+                    directory: directory_lossy,
+                    reason: "Campaign state directory name is not valid UTF-8".to_string(),
+                });
+                continue;
+            }
+        };
+        if directory != id && directory != label {
+            problems.push(CampaignProblemView {
+                directory,
+                reason: format!(
+                    "campaign {label:?} state directory must be its opaque ID `{id}` or legacy label"
+                ),
+            });
+            continue;
+        }
+        if directory == label && root.join(&id).exists() {
+            return Err(format!(
+                "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                root.display()
+            ));
+        }
+        if directory == id {
+            match legacy_campaign_state_matches(&root.join(&label), &label) {
+                Ok(true) => {
+                    return Err(format!(
+                        "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                        root.display()
+                    ));
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    problems.push(CampaignProblemView {
+                        directory,
+                        reason: format!(
+                            "legacy sibling state for campaign {label:?} blocks direct resolution: {reason}"
+                        ),
+                    });
+                    continue;
+                }
+            }
+        }
+        let campaign = match read_campaign_view(&state, run_id, label.clone(), id.clone(), &store) {
+            Ok(campaign) => campaign,
+            Err(reason) => {
+                problems.push(CampaignProblemView { directory, reason });
+                continue;
+            }
+        };
+        if !seen.insert(id.clone()) {
+            return Err(format!(
+                "campaign {label:?} is present in both encoded and legacy state directories beneath {}",
+                root.display()
+            ));
+        }
+        campaigns.push(campaign);
+    }
+    campaigns.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(CampaignEnumeration {
+        campaigns,
+        problems,
+    })
+}
+
+fn read_campaign_view(
+    state: &Path,
+    run_id: &str,
+    label: String,
+    id: String,
+    store: &EventStore,
+) -> Result<CampaignView, String> {
+    let opened = store
+        .campaign_opened(run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("campaign {label:?} has no CampaignOpened event"))?;
+    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_value(opened.payload)
+        .map_err(|error| format!("reading campaign {label:?} opening: {error}"))?;
+    opened.validate()?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+        cas.get_json(&opened.campaign_manifest_id)
+            .map_err(|error| format!("reading campaign {label:?} manifest: {error}"))?,
+    )
+    .map_err(|error| format!("reading campaign {label:?} manifest: {error}"))?;
+    manifest.validate()?;
+    if manifest.authority_snapshot_id != opened.authority_snapshot_id {
+        return Err(format!(
+            "campaign {label:?} opening and manifest disagree on authority Snapshot ID"
+        ));
+    }
+
+    let events = store.replay(run_id).map_err(|error| error.to_string())?;
+    let mut last_subject_id = None;
+    for event in events
+        .iter()
+        .filter(|event| event.event_type == EventType::RoundStartedV1)
+    {
+        let started: review_core::RoundStartedPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        if started.campaign_manifest_id != opened.campaign_manifest_id {
+            return Err(format!(
+                "campaign {label:?} Round {} epoch {} refers to a different manifest",
+                started.round, started.epoch
+            ));
+        }
+        last_subject_id = Some(started.subject_id);
+    }
+    let round_authority = report_round_authority(&events)?;
+    let reports = events
+        .iter()
+        .filter(|event| event.event_type.is_run_report())
+        .collect::<Vec<_>>();
+    let rounds = report_rounds(&reports, &round_authority)?;
+    let last = rounds.last();
+    Ok(CampaignView {
+        id,
+        label,
+        authority_snapshot_id: opened.authority_snapshot_id,
+        campaign_manifest_id: opened.campaign_manifest_id,
+        subject_kind: manifest.subject_kind,
+        base_snapshot_id: manifest.base_snapshot_id,
+        last_subject_id,
+        last_closed_round: last.and_then(|round| round.round),
+        last_closed_epoch: last.and_then(|round| round.epoch),
+        verdict: last.map(|round| round.verdict.clone()),
+        rounds,
+    })
+}
+
+fn print_campaigns_text(view: &CampaignListView) {
+    println!("Campaigns: {}", view.campaigns.len());
+    for campaign in &view.campaigns {
+        println!("{} ({})", campaign.label.escape_debug(), campaign.id);
+        println!(
+            "  authority: snapshot {}; manifest {}",
+            campaign.authority_snapshot_id, campaign.campaign_manifest_id
+        );
+        println!(
+            "  subject: {}{}",
+            campaign.subject_kind,
+            campaign
+                .base_snapshot_id
+                .as_deref()
+                .map(|base| format!("; base {base}"))
+                .unwrap_or_default()
+        );
+        println!(
+            "  last subject: {}",
+            campaign.last_subject_id.as_deref().unwrap_or("not started")
+        );
+        match last_closed_summary(
+            campaign.last_closed_round,
+            campaign.last_closed_epoch,
+            campaign.verdict.as_deref(),
+        ) {
+            Some(summary) => println!("  last closed: {summary}"),
+            None => println!("  last closed: none"),
+        }
+        println!("  history:");
+        if campaign.rounds.is_empty() {
+            println!("    none");
+        }
+        for round in &campaign.rounds {
+            println!(
+                "    run {}: round {} epoch {}; {}; reported tokens {}",
+                round.run,
+                optional_number(round.round),
+                optional_number(round.epoch),
+                round.verdict,
+                optional_tokens(round.reported_tokens)
+            );
+        }
+    }
+    println!("Problems: {}", view.problems.len());
+    for problem in &view.problems {
+        println!(
+            "  {}: {}",
+            problem.directory.escape_debug(),
+            problem.reason.escape_debug()
+        );
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ReviewReportView {
+    schema: &'static str,
+    campaign: String,
+    runs_recorded: usize,
+    ledger_round: u32,
+    final_verdict: Option<String>,
+    rounds: Vec<ReportRoundView>,
+    spend: Vec<RoundSpendView>,
+    demands: Vec<review_core::DemandSetEntryV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_not_gathered: Option<LatestRoundEvidence>,
+    findings: Vec<review_store::Finding>,
+}
+
+#[derive(serde::Serialize)]
+struct ReportRoundView {
+    run: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u32>,
+    verdict: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reported_tokens: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct RoundSpendView {
+    round: u32,
+    epoch: u32,
+    spent_tokens: u64,
+    reviewers: Vec<ReviewerSpendView>,
+}
+
+#[derive(serde::Serialize)]
+struct ReviewerSpendView {
+    reviewer: String,
+    spent_tokens: u64,
+    attempt_tokens: u64,
+    provider_tokens: u64,
+    attempts: Vec<AttemptSpendView>,
+    provider_operations: Vec<ProviderSpendView>,
+}
+
+#[derive(serde::Serialize)]
+struct AttemptSpendView {
+    attempt_id: String,
+    outcome: String,
+    spent_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderSpendView {
+    operation_id: String,
+    provider_id: String,
+    capability_id: String,
+    state: String,
+    spent_tokens: u64,
+}
+
+struct RoundSpendAccumulator {
+    round: u32,
+    epoch: u32,
+    reviewers: BTreeMap<String, ReviewerSpendAccumulator>,
+}
+
+#[derive(Default)]
+struct ReviewerSpendAccumulator {
+    attempts: BTreeMap<String, AttemptSpendAccumulator>,
+    providers: BTreeMap<String, ProviderSpendAccumulator>,
+}
+
+struct AttemptSpendAccumulator {
+    outcome: String,
+    spent_tokens: u64,
+    broker_observed_tokens: u64,
+    detail: Option<String>,
+    terminal: bool,
+}
+
+struct ProviderSpendAccumulator {
+    provider_id: String,
+    capability_id: String,
+    state: review_core::ProviderOperationStateV1,
+    charged_tokens: u64,
+    reserved_tokens: u64,
+    failure: bool,
+}
+
 fn print_report(options: &ReportOptions) -> Result<(), String> {
-    debug_assert_eq!(options.format, "md");
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -1151,93 +1797,545 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .iter()
         .filter(|event| event.event_type.is_run_report())
         .collect();
-
-    println!("# Review campaign `{}`", options.campaign);
-    println!();
-    println!("- Runs recorded: {}", reports.len());
-    println!("- Ledger round: {}", ledger.round);
-    println!(
-        "- Final verdict: {}",
-        reports
+    let round_authority = report_round_authority(&events)?;
+    let rounds = report_rounds(&reports, &round_authority)?;
+    let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
+        evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
+    });
+    let view = ReviewReportView {
+        schema: "af/review-report@1",
+        campaign: options.campaign.clone(),
+        runs_recorded: reports.len(),
+        ledger_round: ledger.round,
+        final_verdict: reports
             .last()
             .map(|event| report_verdict(event))
-            .transpose()?
-            .unwrap_or_else(|| "not recorded".to_string())
-    );
-    println!();
-    println!("## Runs");
-    println!();
-    println!("| Run | Verdict | Tokens |");
-    println!("| ---: | --- | ---: |");
-    for (index, event) in reports.iter().enumerate() {
-        println!(
-            "| {} | {} | {} |",
-            index + 1,
-            report_verdict(event)?,
-            event.payload["spent_tokens"]
-                .as_u64()
-                .map_or("-".to_string(), |tokens| tokens.to_string())
-        );
-    }
+            .transpose()?,
+        rounds,
+        spend: report_spend(&events, &round_authority)?,
+        demands: ledger.demand_views(),
+        recorded_not_gathered,
+        findings: ledger.finding_views(),
+    };
 
-    println!();
-    println!("## Demands");
-    let demands = ledger.demand_views();
-    if demands.is_empty() {
-        println!();
-        println!("None.");
-    } else {
-        for demand in demands {
-            println!();
-            println!(
-                "- **[{:?}, {:?}] {}** (`{}`)",
-                demand.requirement, demand.status, demand.claim, demand.demand_id
-            );
-            println!("  - Why: {}", markdown_line(&demand.why));
-            println!(
-                "  - Suggested method: {}",
-                markdown_line(&demand.suggested_method)
-            );
-            println!("  - Source: {}", demand.source);
+    match options.format {
+        ReportFormat::Markdown => print_report_markdown(&view),
+        ReportFormat::Text => print_report_text(&view),
+        ReportFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+    }
+    Ok(())
+}
+
+fn report_rounds(
+    reports: &[&review_core::RunEvent],
+    round_authority: &BTreeMap<String, (u32, u32)>,
+) -> Result<Vec<ReportRoundView>, String> {
+    reports
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let authority = event
+                .causation_id
+                .as_deref()
+                .and_then(|causation| round_authority.get(causation));
+            Ok(ReportRoundView {
+                run: index + 1,
+                round: authority.map(|(round, _)| *round),
+                epoch: authority.map(|(_, epoch)| *epoch),
+                verdict: report_verdict(event)?,
+                reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
+            })
+        })
+        .collect()
+}
+
+fn report_round_authority(
+    events: &[review_core::RunEvent],
+) -> Result<BTreeMap<String, (u32, u32)>, String> {
+    events
+        .iter()
+        .filter(|event| event.event_type == EventType::RoundStartedV1)
+        .map(|event| {
+            let payload: review_core::RoundStartedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+            Ok((event.event_id.clone(), (payload.round, payload.epoch)))
+        })
+        .collect()
+}
+
+fn report_spend(
+    events: &[review_core::RunEvent],
+    round_authority: &BTreeMap<String, (u32, u32)>,
+) -> Result<Vec<RoundSpendView>, String> {
+    let mut rounds: BTreeMap<String, RoundSpendAccumulator> = round_authority
+        .iter()
+        .map(|(event_id, (round, epoch))| {
+            (
+                event_id.clone(),
+                RoundSpendAccumulator {
+                    round: *round,
+                    epoch: *epoch,
+                    reviewers: BTreeMap::new(),
+                },
+            )
+        })
+        .collect();
+
+    for event in events {
+        let Some(round_id) = event.causation_id.as_deref() else {
+            continue;
+        };
+        let Some(round) = rounds.get_mut(round_id) else {
+            continue;
+        };
+        match event.event_type {
+            EventType::AttemptDispatchedV1 => {
+                let payload: review_core::event::AttemptDispatchedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let (node, attempt) = event_attempt_identity(event)?;
+                round
+                    .reviewers
+                    .entry(node.to_string())
+                    .or_default()
+                    .attempts
+                    .insert(
+                        attempt.to_string(),
+                        AttemptSpendAccumulator {
+                            outcome: "running".to_string(),
+                            spent_tokens: payload.reserved.unwrap_or(0),
+                            broker_observed_tokens: 0,
+                            detail: None,
+                            terminal: false,
+                        },
+                    );
+            }
+            EventType::ReviewerExecutionBoundV1 => {
+                let binding: review_core::ReviewerExecutionBindingV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let authority = review_core::broker_authority_usage(&binding.operations)?;
+                let (node, attempt_id) = event_attempt_identity(event)?;
+                let attempt = round
+                    .reviewers
+                    .get_mut(node)
+                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
+                    .ok_or("Reviewer Execution Binding has no dispatched Attempt")?;
+                if !attempt.terminal {
+                    attempt.spent_tokens = attempt.spent_tokens.max(authority);
+                }
+            }
+            EventType::BrokerOperationCompletedV1 => {
+                let receipt: review_core::BrokerOperationReceiptV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let (node, attempt_id) = event_attempt_identity(event)?;
+                let attempt = round
+                    .reviewers
+                    .get_mut(node)
+                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
+                    .ok_or("Broker operation receipt has no dispatched Attempt")?;
+                attempt.broker_observed_tokens = attempt
+                    .broker_observed_tokens
+                    .checked_add(receipt.charged_usage)
+                    .ok_or("reported Broker spend overflow")?;
+                attempt.spent_tokens = attempt.spent_tokens.max(attempt.broker_observed_tokens);
+            }
+            EventType::AttemptAdmittedV1 => {
+                let payload: review_core::event::AttemptAdmittedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(round, event, payload.selection, payload.cost_tokens, None)?;
+            }
+            EventType::AttemptFailedV1 => {
+                let payload: review_core::event::AttemptFailedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(
+                    round,
+                    event,
+                    "failed".to_string(),
+                    payload.charged.unwrap_or(0),
+                    Some(payload.error),
+                )?;
+            }
+            EventType::AttemptFencedV1 => {
+                let payload: review_core::event::AttemptFencedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(
+                    round,
+                    event,
+                    "fenced".to_string(),
+                    payload.charged.unwrap_or(0),
+                    Some(payload.reason),
+                )?;
+            }
+            EventType::AttemptReleasedV1 => {
+                let payload: review_core::event::AttemptReleasedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                settle_attempt(round, event, "released".to_string(), 0, Some(payload.error))?;
+            }
+            EventType::ProviderOperationTransitionV1 => {
+                let payload: review_core::ProviderOperationTransitionPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let reviewer = round.reviewers.entry(payload.node_id.clone()).or_default();
+                let operation = reviewer
+                    .providers
+                    .entry(payload.operation_id.clone())
+                    .or_insert_with(|| ProviderSpendAccumulator {
+                        provider_id: payload.provider_id.clone(),
+                        capability_id: payload.capability_id.clone(),
+                        state: payload.state,
+                        charged_tokens: 0,
+                        reserved_tokens: 0,
+                        failure: false,
+                    });
+                operation.charged_tokens = operation
+                    .charged_tokens
+                    .checked_add(payload.charged_tokens)
+                    .ok_or("reported Provider spend overflow")?;
+                operation.state = payload.state;
+                operation.reserved_tokens = payload.reserved_tokens;
+                operation.failure = payload.failure_class.is_some();
+            }
+            _ => {}
         }
     }
 
-    if let Some(evidence) = latest_round_evidence(&events, &cas)?
-        && evidence.ledger_was_not_produced()
-        && !evidence.available_node_results.is_empty()
-    {
-        println!();
-        println!("## Recorded, not gathered");
-        println!();
-        println!(
-            "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
-            evidence.absence_reason()
-        );
-        for result in evidence.available_node_results {
-            println!();
-            println!(
-                "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
-                result.node,
-                result.attempt_id,
-                result.result_artifact_id,
-                result.spend_tokens,
-                if result.severities.is_empty() {
-                    "none recorded".to_string()
+    let mut views = rounds
+        .into_values()
+        .map(round_spend_view)
+        .collect::<Result<Vec<_>, String>>()?;
+    views.sort_by_key(|view| (view.round, view.epoch));
+    Ok(views)
+}
+
+fn event_attempt_identity(event: &review_core::RunEvent) -> Result<(&str, &str), String> {
+    Ok((
+        event
+            .node_id
+            .as_deref()
+            .ok_or_else(|| format!("{} has no reviewer node", event.event_type))?,
+        event
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| format!("{} has no Attempt ID", event.event_type))?,
+    ))
+}
+
+fn settle_attempt(
+    round: &mut RoundSpendAccumulator,
+    event: &review_core::RunEvent,
+    outcome: String,
+    spent_tokens: u64,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let (node, attempt_id) = event_attempt_identity(event)?;
+    let attempt = round
+        .reviewers
+        .entry(node.to_string())
+        .or_default()
+        .attempts
+        .entry(attempt_id.to_string())
+        .or_insert_with(|| AttemptSpendAccumulator {
+            outcome: "running".to_string(),
+            spent_tokens: 0,
+            broker_observed_tokens: 0,
+            detail: None,
+            terminal: false,
+        });
+    if attempt.terminal {
+        // A late response to an already-fenced Attempt is durably quarantined but must not be
+        // charged twice. The first terminal lifecycle event owns its operator-visible outcome.
+        return Ok(());
+    }
+    attempt.outcome = outcome;
+    attempt.spent_tokens = spent_tokens.max(attempt.broker_observed_tokens);
+    attempt.detail = detail;
+    attempt.terminal = true;
+    Ok(())
+}
+
+fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, String> {
+    let mut spent_tokens = 0_u64;
+    let mut reviewers = Vec::new();
+    for (reviewer, accumulator) in round.reviewers {
+        let attempts = accumulator
+            .attempts
+            .into_iter()
+            .map(|(attempt_id, attempt)| AttemptSpendView {
+                attempt_id,
+                outcome: attempt.outcome,
+                spent_tokens: attempt.spent_tokens,
+                detail: attempt.detail,
+            })
+            .collect::<Vec<_>>();
+        let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
+            sum.checked_add(attempt.spent_tokens)
+                .ok_or("reported Attempt spend overflow")
+        })?;
+        let provider_operations = accumulator
+            .providers
+            .into_iter()
+            .map(|(operation_id, provider)| {
+                let outstanding = if provider.state
+                    == review_core::ProviderOperationStateV1::Running
+                    && !provider.failure
+                {
+                    provider.reserved_tokens
                 } else {
-                    result.severities.join(", ")
-                }
+                    0
+                };
+                Ok(ProviderSpendView {
+                    operation_id,
+                    provider_id: provider.provider_id,
+                    capability_id: provider.capability_id,
+                    state: provider_state_label(provider.state).to_string(),
+                    spent_tokens: provider
+                        .charged_tokens
+                        .checked_add(outstanding)
+                        .ok_or("reported Provider spend overflow")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let provider_tokens = provider_operations
+            .iter()
+            .try_fold(0_u64, |sum, operation| {
+                sum.checked_add(operation.spent_tokens)
+                    .ok_or("reported Provider spend overflow")
+            })?;
+        let reviewer_tokens = attempt_tokens
+            .checked_add(provider_tokens)
+            .ok_or("reported reviewer spend overflow")?;
+        spent_tokens = spent_tokens
+            .checked_add(reviewer_tokens)
+            .ok_or("reported Round spend overflow")?;
+        reviewers.push(ReviewerSpendView {
+            reviewer,
+            spent_tokens: reviewer_tokens,
+            attempt_tokens,
+            provider_tokens,
+            attempts,
+            provider_operations,
+        });
+    }
+    Ok(RoundSpendView {
+        round: round.round,
+        epoch: round.epoch,
+        spent_tokens,
+        reviewers,
+    })
+}
+
+fn print_report_text(report: &ReviewReportView) {
+    println!("Review campaign: {}", report.campaign);
+    println!("Runs recorded: {}", report.runs_recorded);
+    println!("Ledger round: {}", report.ledger_round);
+    println!(
+        "Final verdict: {}",
+        report.final_verdict.as_deref().unwrap_or("not recorded")
+    );
+    println!("Rounds:");
+    if report.rounds.is_empty() {
+        println!("  none");
+    }
+    for round in &report.rounds {
+        println!(
+            "  run {} (round {} epoch {}): {}; reported tokens {}",
+            round.run,
+            optional_number(round.round),
+            optional_number(round.epoch),
+            round.verdict,
+            optional_tokens(round.reported_tokens)
+        );
+    }
+    println!("Spend:");
+    for round in &report.spend {
+        println!(
+            "  round {} epoch {}: {} tokens",
+            round.round, round.epoch, round.spent_tokens
+        );
+        for reviewer in &round.reviewers {
+            println!(
+                "    {}: {} tokens (attempts {}, providers {})",
+                reviewer.reviewer,
+                reviewer.spent_tokens,
+                reviewer.attempt_tokens,
+                reviewer.provider_tokens
             );
-            for finding in result.findings {
+            for attempt in &reviewer.attempts {
                 println!(
-                    "  - [{}] {} — {}",
-                    finding["severity"].as_str().unwrap_or("unknown"),
-                    markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
-                    markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
+                    "      attempt {}: {}, {} tokens{}",
+                    attempt.attempt_id,
+                    attempt.outcome,
+                    attempt.spent_tokens,
+                    attempt
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" - {}", one_line(detail)))
+                        .unwrap_or_default()
                 );
             }
         }
     }
+    println!("Demands:");
+    if report.demands.is_empty() {
+        println!("  none");
+    }
+    for demand in &report.demands {
+        println!(
+            "  [{}; {}] {} ({})",
+            demand_requirement_label(demand.requirement),
+            demand_status_label(demand.status),
+            one_line(&demand.claim),
+            demand.demand_id
+        );
+        println!("    why: {}", one_line(&demand.why));
+        println!(
+            "    suggested method: {}",
+            one_line(&demand.suggested_method)
+        );
+        println!("    source: {}", demand.source);
+    }
+    print_recorded_not_gathered_text(report.recorded_not_gathered.as_ref());
+    println!("Findings:");
+    if report.findings.is_empty() {
+        println!("  none");
+    }
+    for finding in &report.findings {
+        println!(
+            "  [{}; scope={}; severity={}; effective={}] {} ({}) at {}:{}",
+            finding.status.as_str(),
+            finding.convergence_scope_label(),
+            severity_label(finding.severity),
+            finding
+                .convergence_severity
+                .map(severity_label)
+                .unwrap_or("-"),
+            one_line(&finding.title),
+            finding.key,
+            finding.file,
+            finding
+                .line
+                .map_or("-".to_string(), |line| line.to_string())
+        );
+        println!("    body: {}", one_line(&finding.body));
+        println!(
+            "    fix: {}",
+            one_line(
+                finding
+                    .fix
+                    .as_deref()
+                    .unwrap_or("unavailable: artifact-less legacy import")
+            )
+        );
+        for transition in &finding.history {
+            println!(
+                "    history round {}: {} - {}",
+                transition.round,
+                transition_label(transition.kind),
+                one_line(transition.note.as_deref().unwrap_or("(no note)"))
+            );
+        }
+    }
+}
 
+fn print_report_markdown(report: &ReviewReportView) {
+    println!("# Review campaign `{}`", report.campaign);
+    println!();
+    println!("- Runs recorded: {}", report.runs_recorded);
+    println!("- Ledger round: {}", report.ledger_round);
+    println!(
+        "- Final verdict: {}",
+        report.final_verdict.as_deref().unwrap_or("not recorded")
+    );
+    println!();
+    println!("## Runs");
+    println!();
+    println!("| Run | Round | Epoch | Verdict | Tokens |");
+    println!("| ---: | ---: | ---: | --- | ---: |");
+    for round in &report.rounds {
+        println!(
+            "| {} | {} | {} | {} | {} |",
+            round.run,
+            optional_number(round.round),
+            optional_number(round.epoch),
+            round.verdict,
+            optional_tokens(round.reported_tokens)
+        );
+    }
+    println!();
+    println!("## Spend");
+    println!();
+    println!("| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens |");
+    println!("| ---: | ---: | --- | ---: | ---: | ---: |");
+    for round in &report.spend {
+        if round.reviewers.is_empty() {
+            println!("| {} | {} | - | 0 | 0 | 0 |", round.round, round.epoch);
+        }
+        for reviewer in &round.reviewers {
+            println!(
+                "| {} | {} | {} | {} | {} | {} |",
+                round.round,
+                round.epoch,
+                reviewer.reviewer,
+                reviewer.attempt_tokens,
+                reviewer.provider_tokens,
+                reviewer.spent_tokens
+            );
+        }
+    }
+    println!();
+    println!("### Attempts");
+    for round in &report.spend {
+        for reviewer in &round.reviewers {
+            for attempt in &reviewer.attempts {
+                println!();
+                println!(
+                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}",
+                    round.round,
+                    reviewer.reviewer,
+                    attempt.attempt_id,
+                    attempt.outcome,
+                    attempt.spent_tokens,
+                    attempt
+                        .detail
+                        .as_deref()
+                        .map(|detail| format!(" — {}", markdown_line(detail)))
+                        .unwrap_or_default()
+                );
+            }
+        }
+    }
+    println!();
+    println!("## Demands");
+    if report.demands.is_empty() {
+        println!();
+        println!("None.");
+    }
+    for demand in &report.demands {
+        println!();
+        println!(
+            "- **[{}, {}] {}** (`{}`)",
+            demand_requirement_label(demand.requirement),
+            demand_status_label(demand.status),
+            demand.claim,
+            demand.demand_id
+        );
+        println!("  - Why: {}", markdown_line(&demand.why));
+        println!(
+            "  - Suggested method: {}",
+            markdown_line(&demand.suggested_method)
+        );
+        println!("  - Source: {}", demand.source);
+    }
+    print_recorded_not_gathered_markdown(report.recorded_not_gathered.as_ref());
     println!();
     println!("## Findings");
     for effective_severity in [
@@ -1247,16 +2345,20 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         None,
     ] {
         println!();
-        let heading = effective_severity.map_or_else(
-            || "Recorded, not blocking this Subject".to_string(),
-            |severity| title_case(&format!("{severity:?}").to_lowercase()),
-        );
+        let heading =
+            effective_severity.map_or("Recorded, not blocking this Subject", |severity| {
+                match severity {
+                    Severity::Blocker => "Blocker",
+                    Severity::Major => "Major",
+                    Severity::Minor => "Minor",
+                }
+            });
         println!("### {heading}");
-        let matching: Vec<_> = ledger
-            .finding_views()
-            .into_iter()
+        let matching = report
+            .findings
+            .iter()
             .filter(|finding| finding.convergence_severity == effective_severity)
-            .collect();
+            .collect::<Vec<_>>();
         if matching.is_empty() {
             println!();
             println!("None.");
@@ -1268,11 +2370,11 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
                 "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
                 finding.status.as_str(),
                 finding.convergence_scope_label(),
-                format!("{:?}", finding.severity).to_lowercase(),
+                severity_label(finding.severity),
                 finding
                     .convergence_severity
-                    .map(|severity| format!("{severity:?}").to_lowercase())
-                    .unwrap_or_else(|| "-".to_string()),
+                    .map(severity_label)
+                    .unwrap_or("-"),
                 finding.title,
                 finding.key,
                 finding.file,
@@ -1293,25 +2395,29 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             let evidence = finding
                 .reports
                 .iter()
-                .map(|report| {
-                    if report.report_id.is_empty() {
+                .map(|attached| {
+                    if attached.report_id.is_empty() {
                         format!(
                             "{} round {} scope={} at {}:{} (legacy import)",
-                            report.source,
-                            report.round,
-                            report.scope_label(),
-                            report.file,
-                            report.line.map_or("-".to_string(), |line| line.to_string())
+                            attached.source,
+                            attached.round,
+                            attached.scope_label(),
+                            attached.file,
+                            attached
+                                .line
+                                .map_or("-".to_string(), |line| line.to_string())
                         )
                     } else {
                         format!(
                             "{} round {} scope={} at {}:{} `{}`",
-                            report.source,
-                            report.round,
-                            report.scope_label(),
-                            report.file,
-                            report.line.map_or("-".to_string(), |line| line.to_string()),
-                            report.report_id
+                            attached.source,
+                            attached.round,
+                            attached.scope_label(),
+                            attached.file,
+                            attached
+                                .line
+                                .map_or("-".to_string(), |line| line.to_string()),
+                            attached.report_id
                         )
                     }
                 })
@@ -1320,15 +2426,148 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             println!("  - Reports: {evidence}");
             for transition in &finding.history {
                 println!(
-                    "  - Resolution/history, round {}: {:?} - {}",
+                    "  - Resolution/history, round {}: {} - {}",
                     transition.round,
-                    transition.kind,
+                    transition_label(transition.kind),
                     markdown_line(transition.note.as_deref().unwrap_or("(no note)"))
                 );
             }
         }
     }
-    Ok(())
+}
+
+fn print_recorded_not_gathered_text(evidence: Option<&LatestRoundEvidence>) {
+    let Some(evidence) = evidence else { return };
+    println!("Recorded, not gathered:");
+    println!("  reason: {}", evidence.absence_reason());
+    for result in &evidence.available_node_results {
+        println!(
+            "  {} attempt {}: result {}, {} tokens, severities {}",
+            result.node,
+            result.attempt_id,
+            result.result_artifact_id,
+            result.spend_tokens,
+            if result.severities.is_empty() {
+                "none recorded".to_string()
+            } else {
+                result.severities.join(", ")
+            }
+        );
+    }
+}
+
+fn print_recorded_not_gathered_markdown(evidence: Option<&LatestRoundEvidence>) {
+    let Some(evidence) = evidence else { return };
+    println!();
+    println!("## Recorded, not gathered");
+    println!();
+    println!(
+        "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
+        evidence.absence_reason()
+    );
+    for result in &evidence.available_node_results {
+        println!();
+        println!(
+            "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
+            result.node,
+            result.attempt_id,
+            result.result_artifact_id,
+            result.spend_tokens,
+            if result.severities.is_empty() {
+                "none recorded".to_string()
+            } else {
+                result.severities.join(", ")
+            }
+        );
+        for finding in &result.findings {
+            println!(
+                "  - [{}] {} — {}",
+                finding["severity"].as_str().unwrap_or("unknown"),
+                markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
+                markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
+            );
+        }
+    }
+}
+
+fn provider_state_label(state: review_core::ProviderOperationStateV1) -> &'static str {
+    match state {
+        review_core::ProviderOperationStateV1::Running => "running",
+        review_core::ProviderOperationStateV1::WaitingForHuman => "waiting_for_human",
+        review_core::ProviderOperationStateV1::Resumed => "resumed",
+        review_core::ProviderOperationStateV1::Done => "done",
+        review_core::ProviderOperationStateV1::Failed => "failed",
+    }
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Minor => "minor",
+        Severity::Major => "major",
+        Severity::Blocker => "blocker",
+    }
+}
+
+fn demand_requirement_label(requirement: review_core::DemandRequirement) -> &'static str {
+    match requirement {
+        review_core::DemandRequirement::Required => "required",
+        review_core::DemandRequirement::Advisory => "advisory",
+    }
+}
+
+fn demand_status_label(status: review_core::DemandStatus) -> &'static str {
+    match status {
+        review_core::DemandStatus::Open => "open",
+        review_core::DemandStatus::Satisfied => "satisfied",
+        review_core::DemandStatus::Stale => "stale",
+        review_core::DemandStatus::Waived => "waived",
+    }
+}
+
+fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
+    match kind {
+        review_store::ledger::TransitionKind::Reported => "reported".to_string(),
+        review_store::ledger::TransitionKind::Duplicate => "duplicate".to_string(),
+        review_store::ledger::TransitionKind::Escalated => "escalated".to_string(),
+        review_store::ledger::TransitionKind::Reopened => "reopened".to_string(),
+        review_store::ledger::TransitionKind::AdoptedWhileDeclined => {
+            "adopted_while_declined".to_string()
+        }
+        review_store::ledger::TransitionKind::AuthorityRecovered => {
+            "authority_recovered".to_string()
+        }
+        review_store::ledger::TransitionKind::Attested => "attested".to_string(),
+        review_store::ledger::TransitionKind::Challenged => "challenged".to_string(),
+        review_store::ledger::TransitionKind::Resolved(status) => {
+            format!("resolved:{}", status.as_str())
+        }
+    }
+}
+
+fn optional_tokens(tokens: Option<u64>) -> String {
+    tokens.map_or_else(|| "-".to_string(), |tokens| tokens.to_string())
+}
+
+fn optional_number(number: Option<u32>) -> String {
+    number.map_or_else(|| "-".to_string(), |number| number.to_string())
+}
+
+fn last_closed_summary(
+    round: Option<u32>,
+    epoch: Option<u32>,
+    verdict: Option<&str>,
+) -> Option<String> {
+    verdict.map(|verdict| {
+        format!(
+            "round {} epoch {}; {verdict}",
+            optional_number(round),
+            optional_number(epoch)
+        )
+    })
+}
+
+fn one_line(value: &str) -> String {
+    value.lines().collect::<Vec<_>>().join(" ")
 }
 
 fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
@@ -1356,36 +2595,42 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
         EventType::RunReportV3 => {
             let report: RunReportPayloadV3 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(match report.verdict {
-                RunVerdictV3::Pass => "pass".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::NotConverged,
-                } => "fail (not_converged)".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::AuthorityUnavailable,
-                } => "fail (authority_unavailable)".to_string(),
-                RunVerdictV3::Fail {
-                    reason: RunFailureReasonV3::Exhausted,
-                } => "fail (exhausted)".to_string(),
-                RunVerdictV3::Incomplete { missing_nodes } => {
-                    format!("incomplete ({} missing nodes)", missing_nodes.len())
-                }
-            })
+            Ok(render_verdict_v3(report.verdict))
+        }
+        EventType::RunReportV4 => {
+            let report: RunReportPayloadV4 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
+        }
+        EventType::RunReportV5 => {
+            let report: RunReportPayloadV5 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
         }
         _ => Err(format!("{} is not a run report", event.event_type)),
     }
 }
 
-fn markdown_line(value: &str) -> String {
-    value.lines().collect::<Vec<_>>().join(" ")
+fn render_verdict_v3(verdict: RunVerdictV3) -> String {
+    match verdict {
+        RunVerdictV3::Pass => "pass".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::NotConverged,
+        } => "fail (not_converged)".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::AuthorityUnavailable,
+        } => "fail (authority_unavailable)".to_string(),
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted,
+        } => "fail (exhausted)".to_string(),
+        RunVerdictV3::Incomplete { missing_nodes } => {
+            format!("incomplete ({} missing nodes)", missing_nodes.len())
+        }
+    }
 }
 
-fn title_case(value: &str) -> String {
-    let mut characters = value.chars();
-    match characters.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
-        None => String::new(),
-    }
+fn markdown_line(value: &str) -> String {
+    value.lines().collect::<Vec<_>>().join(" ")
 }
 
 fn print_scope_authority_warnings(ledger: &Ledger) {
@@ -1727,6 +2972,7 @@ struct AvailableNodeResult {
     findings: Vec<serde_json::Value>,
 }
 
+#[derive(serde::Serialize)]
 struct LatestRoundEvidence {
     ledger_production: &'static str,
     available_node_results: Vec<AvailableNodeResult>,
@@ -1786,6 +3032,16 @@ fn run_report_outcomes(
         )),
         EventType::RunReportV3 => Ok(Some(
             serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV4 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV4>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV5 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
                 .map_err(|error| error.to_string())?
                 .outcomes,
         )),
@@ -2070,6 +3326,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
         .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec())
+        .with_cache_source_resolver(caches::resolve_kind)
         .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
         run_progress(
@@ -2377,7 +3634,11 @@ fn exit_for_verdict(verdict: RunVerdict) {
 mod option_tests {
     use std::ffi::OsStr;
 
-    use super::{Options, latest_round_evidence, resolve_codex_home, validate_campaign_name};
+    use super::{
+        Options, campaign_id, campaign_state_beneath, enumerate_campaigns, last_closed_summary,
+        latest_round_evidence, report_round_authority, report_rounds, report_spend,
+        resolve_codex_home, validate_campaign_name,
+    };
 
     fn event(
         sequence: u64,
@@ -2446,6 +3707,30 @@ mod option_tests {
         (manifest_id, findings, demands)
     }
 
+    fn write_campaign_opening(state: &std::path::Path, label: &str) {
+        std::fs::create_dir_all(state).unwrap();
+        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let (manifest_id, _, _) = campaign_manifest(&cas, "ledger");
+        let manifest: review_core::CampaignManifestV1 =
+            serde_json::from_value(cas.get_json(&manifest_id).unwrap()).unwrap();
+        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        store
+            .append(
+                &super::campaign_run_id(label),
+                &cas,
+                review_store::NewEvent::new(
+                    review_core::EventType::CampaignOpenedV1,
+                    serde_json::to_value(review_core::CampaignOpenedPayloadV1 {
+                        campaign_manifest_id: manifest_id.clone(),
+                        authority_snapshot_id: manifest.authority_snapshot_id.clone(),
+                    })
+                    .unwrap(),
+                )
+                .referencing(vec![manifest.authority_snapshot_id, manifest_id]),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn codex_runner_uses_the_ambient_auth_context() {
         assert_eq!(
@@ -2464,12 +3749,403 @@ mod option_tests {
 
     #[test]
     fn campaign_names_cannot_redirect_state() {
-        for invalid in ["", "../reviewers/architecture", "nested/name", "."] {
+        for invalid in [
+            "",
+            "../reviewers/architecture",
+            "nested/name",
+            "nested\\name",
+            ".",
+            "..",
+            "control\nname",
+            " padded",
+            "padded ",
+        ] {
             assert!(validate_campaign_name(invalid).is_err());
         }
         for valid in ["heavy", "reviewctl-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    #[test]
+    fn campaign_state_uses_an_opaque_contained_id_and_legacy_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        std::fs::create_dir_all(&root).unwrap();
+        let id = campaign_id("heavy");
+        assert_eq!(id.len(), 66);
+        assert!(id.starts_with("c-"));
+        assert!(id[2..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let encoded = campaign_state_beneath(&root, "heavy").unwrap();
+        assert_eq!(encoded.file_name().unwrap(), id.as_str());
+        assert!(encoded.starts_with(std::fs::canonicalize(&root).unwrap()));
+
+        let legacy = root.join("heavy");
+        write_campaign_opening(&legacy, "heavy");
+        assert_eq!(
+            campaign_state_beneath(&root, "heavy").unwrap(),
+            std::fs::canonicalize(&legacy).unwrap()
+        );
+
+        std::fs::create_dir(&encoded).unwrap();
+        assert!(
+            campaign_state_beneath(&root, "heavy")
+                .unwrap_err()
+                .contains("both encoded and legacy")
+        );
+        let Err(error) = enumerate_campaigns(&root) else {
+            panic!("ambiguous Campaign state was enumerated");
+        };
+        assert!(error.contains("both encoded and legacy"));
+        assert!(
+            campaign_state_beneath(&root, &id)
+                .unwrap_err()
+                .contains("reserved opaque Campaign ID shape")
+        );
+    }
+
+    #[test]
+    fn preexisting_legacy_labels_remain_readable_and_enumerable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        std::fs::create_dir(&root).unwrap();
+        let legacy = root.join(" padded");
+        write_campaign_opening(&legacy, " padded");
+
+        assert_eq!(
+            campaign_state_beneath(&root, " padded").unwrap(),
+            std::fs::canonicalize(&legacy).unwrap()
+        );
+        assert_eq!(
+            super::campaign_state(&Some(legacy.clone()), " padded").unwrap(),
+            std::fs::canonicalize(&legacy).unwrap()
+        );
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert_eq!(enumeration.campaigns.len(), 1);
+        assert_eq!(enumeration.campaigns[0].label, " padded");
+        assert!(enumeration.problems.is_empty());
+    }
+
+    #[test]
+    fn campaign_enumeration_does_not_create_a_missing_cas() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        let state = root.join("legacy");
+        write_campaign_opening(&state, "legacy");
+        std::fs::remove_dir_all(state.join("cas")).unwrap();
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert_eq!(enumeration.problems.len(), 1);
+        assert!(!state.join("cas").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bad_entries_do_not_hide_campaigns_and_symlinked_state_is_not_followed() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        write_campaign_opening(&root.join("good"), "good");
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert_eq!(enumeration.campaigns.len(), 1);
+        assert_eq!(enumeration.campaigns[0].label, "good");
+        assert_eq!(enumeration.problems.len(), 1);
+        assert!(enumeration.problems[0].reason.contains("symlink"));
+    }
+
+    #[test]
+    fn unreadable_legacy_sibling_is_attributed_and_blocks_a_false_healthy_listing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        std::fs::create_dir(&root).unwrap();
+        let encoded = root.join(campaign_id("healthy"));
+        write_campaign_opening(&encoded, "healthy");
+        let legacy = root.join("healthy");
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("events.sqlite"), b"not sqlite").unwrap();
+
+        let error = campaign_state_beneath(&root, "healthy").unwrap_err();
+        assert!(error.contains("legacy Campaign state"), "{error}");
+        assert!(error.contains("events.sqlite"), "{error}");
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert!(
+            enumeration
+                .problems
+                .iter()
+                .any(|problem| problem.reason.contains("legacy sibling state"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn campaign_enumeration_refuses_a_symlinked_event_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("campaigns");
+        let outside = temp.path().join("outside");
+        let state = root.join("linked");
+        write_campaign_opening(&outside, "linked");
+        std::fs::create_dir_all(&state).unwrap();
+        std::os::unix::fs::symlink(outside.join("events.sqlite"), state.join("events.sqlite"))
+            .unwrap();
+
+        let enumeration = enumerate_campaigns(&root).unwrap();
+        assert!(enumeration.campaigns.is_empty());
+        assert_eq!(enumeration.problems.len(), 1);
+        assert!(enumeration.problems[0].reason.contains("real regular file"));
+    }
+
+    #[test]
+    fn spend_projection_keeps_fenced_released_and_outstanding_work_visible() {
+        let round = event(
+            0,
+            review_core::EventType::RoundStartedV1,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "round": 1,
+                "epoch": 1,
+                "campaign_manifest_id": "manifest",
+                "subject_id": "subject",
+                "prior_finding_set_id": "findings",
+                "prior_demand_set_id": "demands"
+            }),
+        );
+        let attempt = |sequence, event_type, node, attempt_id, payload| {
+            event(
+                sequence,
+                event_type,
+                Some("event-0"),
+                Some(node),
+                Some(attempt_id),
+                payload,
+            )
+        };
+        let events = vec![
+            round,
+            attempt(
+                1,
+                review_core::EventType::AttemptDispatchedV1,
+                "architecture",
+                "selected",
+                serde_json::json!({"reserved": 100, "prior_findings": null}),
+            ),
+            attempt(
+                2,
+                review_core::EventType::AttemptAdmittedV1,
+                "architecture",
+                "selected",
+                serde_json::json!({
+                    "selection": "selected",
+                    "cost_tokens": 31,
+                    "result_artifact": null,
+                    "provenance_artifact": null
+                }),
+            ),
+            attempt(
+                3,
+                review_core::EventType::AttemptDispatchedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({"reserved": 50, "prior_findings": null}),
+            ),
+            attempt(
+                4,
+                review_core::EventType::AttemptFencedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({"reason": "deadline", "charged": 11}),
+            ),
+            attempt(
+                5,
+                review_core::EventType::AttemptAdmittedV1,
+                "architecture",
+                "fenced",
+                serde_json::json!({
+                    "selection": "quarantined",
+                    "cost_tokens": 11,
+                    "result_artifact": null,
+                    "provenance_artifact": null
+                }),
+            ),
+            attempt(
+                6,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "released",
+                serde_json::json!({"reserved": 20, "prior_findings": null}),
+            ),
+            attempt(
+                7,
+                review_core::EventType::AttemptReleasedV1,
+                "correctness",
+                "released",
+                serde_json::json!({"error": "not run", "released": 20}),
+            ),
+            attempt(
+                8,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "running",
+                serde_json::json!({"reserved": 7, "prior_findings": null}),
+            ),
+            event(
+                9,
+                review_core::EventType::ProviderOperationTransitionV1,
+                Some("event-0"),
+                Some("architecture"),
+                None,
+                serde_json::json!({
+                    "operation_id": "provider-op",
+                    "provider_id": "codex",
+                    "capability_id": "smoke",
+                    "node_id": "architecture",
+                    "round": 1,
+                    "round_epoch": 1,
+                    "operation_epoch": 1,
+                    "state": "failed",
+                    "attempt": null,
+                    "attempt_id": null,
+                    "failure_class": "transient_transport_failure",
+                    "failure_fingerprint": "fingerprint",
+                    "continuation_handle": null,
+                    "reserved_tokens": 5,
+                    "charged_tokens": 2,
+                    "elapsed_ms": 10,
+                    "retry_permitted": true,
+                    "circuit_open": false,
+                    "next_action": "retry_explicitly"
+                }),
+            ),
+            attempt(
+                10,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({"reserved": null, "prior_findings": null}),
+            ),
+            attempt(
+                11,
+                review_core::EventType::ReviewerExecutionBoundV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({
+                    "node": "correctness",
+                    "attempt_id": "brokered",
+                    "lease_epoch": 1,
+                    "credential_mode": "brokered",
+                    "auto_apply": false,
+                    "broker_handle": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "operations": [{
+                        "name": "model_inference",
+                        "destination": "provider.test",
+                        "method": "responses.create",
+                        "max_request_bytes": 32,
+                        "max_response_bytes": 32,
+                        "max_calls": 1,
+                        "max_usage": 100
+                    }],
+                    "admitted": true
+                }),
+            ),
+            attempt(
+                12,
+                review_core::EventType::AttemptFencedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({"reason": "recovery", "charged": 100}),
+            ),
+            attempt(
+                13,
+                review_core::EventType::BrokerOperationCompletedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({
+                    "handle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "node": "correctness",
+                    "attempt_id": "brokered",
+                    "lease_epoch": 1,
+                    "operation": "model_inference",
+                    "destination": "provider.test",
+                    "method": "responses.create",
+                    "ordinal": 1,
+                    "outcome": "revoked",
+                    "failure_reason": "authority_revoked",
+                    "request_digest": format!("sha256:{}", "c".repeat(64)),
+                    "request_bytes": 7,
+                    "response_bytes": 0,
+                    "reserved_usage": 100,
+                    "charged_usage": 101
+                }),
+            ),
+        ];
+
+        let authority = report_round_authority(&events).unwrap();
+        let spend = report_spend(&events, &authority).unwrap();
+        assert_eq!(spend.len(), 1);
+        assert_eq!(spend[0].spent_tokens, 152);
+        let architecture = &spend[0].reviewers[0];
+        assert_eq!(architecture.reviewer, "architecture");
+        assert_eq!(architecture.attempt_tokens, 42);
+        assert_eq!(architecture.provider_tokens, 2);
+        let fenced = architecture
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == "fenced")
+            .unwrap();
+        assert_eq!(fenced.outcome, "fenced");
+        assert_eq!(fenced.spent_tokens, 11);
+        let correctness = &spend[0].reviewers[1];
+        assert_eq!(correctness.attempt_tokens, 108);
+        let attempt = |id| {
+            correctness
+                .attempts
+                .iter()
+                .find(|attempt| attempt.attempt_id == id)
+                .unwrap()
+        };
+        assert_eq!(attempt("released").outcome, "released");
+        assert_eq!(attempt("released").spent_tokens, 0);
+        assert_eq!(attempt("running").outcome, "running");
+        assert_eq!(attempt("running").spent_tokens, 7);
+        assert_eq!(attempt("brokered").outcome, "fenced");
+        assert_eq!(attempt("brokered").spent_tokens, 101);
+    }
+
+    #[test]
+    fn legacy_report_without_round_authority_remains_reportable() {
+        let legacy = event(
+            0,
+            review_core::EventType::RunReportV1,
+            None,
+            None,
+            None,
+            serde_json::json!({
+                "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
+                "blocked_gates": [],
+                "verdict": "Pass",
+                "spent_tokens": 9
+            }),
+        );
+        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new()).unwrap();
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].run, 1);
+        assert_eq!(rounds[0].round, None);
+        assert_eq!(rounds[0].epoch, None);
+        assert_eq!(rounds[0].verdict, "Pass");
+        assert_eq!(rounds[0].reported_tokens, Some(9));
+        assert_eq!(
+            last_closed_summary(rounds[0].round, rounds[0].epoch, Some(&rounds[0].verdict)),
+            Some("round - epoch -; Pass".to_string())
+        );
     }
 
     #[test]

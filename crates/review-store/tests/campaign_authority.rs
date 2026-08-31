@@ -1,14 +1,16 @@
 use review_core::event::{
     AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFeedbackPayloadV1,
-    AttemptInputPayloadV1,
+    AttemptFencedPayloadV1, AttemptInputPayloadV1,
 };
 use review_core::{
-    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
-    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
-    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV2, RunVerdictV2, SnapshotAffinity, SubjectKind, SubjectV1,
+    AuthorityFileV1, BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerOperationOutcomeV1,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, CampaignConvergenceV1, CampaignManifestV1,
+    CampaignOpenedPayloadV1, EventType, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
+    PortArtifactsV1, PortCardinality, ReviewerExecutionBindingV1, RoundInputSupersededPayloadV1,
+    RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunVerdictV2,
+    SnapshotAffinity, SubjectKind, SubjectV1,
 };
-use review_store::{Cas, EventStore, NewEvent};
+use review_store::{Cas, EventStore, NewEvent, StoreError};
 
 struct Authority {
     authority: String,
@@ -20,10 +22,10 @@ struct Authority {
 }
 
 fn authority(cas: &Cas, label: &str) -> Authority {
-    let authority = cas.put(format!("{label} authority").as_bytes()).unwrap();
-    let pipeline = cas
-        .put(
-            br#"version = 2
+    authority_with_pipeline(
+        cas,
+        label,
+        br#"version = 2
 check_timeout_seconds = 3600
 [subject]
 kind = "whole-tree"
@@ -33,8 +35,12 @@ kind = "reviewer"
 outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
 "#,
-        )
-        .unwrap();
+    )
+}
+
+fn authority_with_pipeline(cas: &Cas, label: &str, pipeline: &[u8]) -> Authority {
+    let authority = cas.put(format!("{label} authority").as_bytes()).unwrap();
+    let pipeline = cas.put(pipeline).unwrap();
     let lock = cas.put(b"test lock").unwrap();
     let finding_genesis = cas.put(b"finding genesis").unwrap();
     let demand_genesis = cas.put(b"demand genesis").unwrap();
@@ -704,4 +710,496 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
         .unwrap_err();
 
     assert!(error.to_string().contains("canonical"), "{error}");
+}
+
+#[test]
+fn broker_evidence_cannot_forge_a_lease_epoch_or_exceed_pinned_calls() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority_with_pipeline(
+        &cas,
+        "broker",
+        br#"version = 4
+[subject]
+kind = "whole-tree"
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "brokered", operations = [{ name = "model_inference", destination = "provider.test", method = "responses.create", max_request_bytes = 32, max_response_bytes = 32, max_calls = 2, max_usage = 10 }] }
+"#,
+    );
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    let attempt = "a".repeat(26);
+    let handle = "b".repeat(26);
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(AttemptDispatchedPayloadV1 {
+                    reserved: None,
+                    prior_findings: None,
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    let operation = BrokerOperationPolicyV1 {
+        name: "model_inference".into(),
+        destination: "provider.test".into(),
+        method: "responses.create".into(),
+        max_request_bytes: 32,
+        max_response_bytes: 32,
+        max_calls: 2,
+        max_usage: 10,
+    };
+    let binding = |lease_epoch| ReviewerExecutionBindingV1 {
+        node: "reviewer".into(),
+        attempt_id: attempt.clone(),
+        lease_epoch,
+        credential_mode: BrokerCredentialModeV1::Brokered,
+        auto_apply: false,
+        broker_handle: Some(handle.clone()),
+        operations: vec![operation.clone()],
+        admitted: true,
+    };
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::ReviewerExecutionBoundV1,
+                serde_json::to_value(binding(2)).unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("dispatch epoch"), "{error}");
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::ReviewerExecutionBoundV1,
+                serde_json::to_value(binding(1)).unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+
+    let receipt = |ordinal, outcome, failure_reason, reserved_usage, charged_usage| {
+        BrokerOperationReceiptV1 {
+            handle_id: handle.clone(),
+            node: "reviewer".into(),
+            attempt_id: attempt.clone(),
+            lease_epoch: 1,
+            operation: "model_inference".into(),
+            destination: "provider.test".into(),
+            method: "responses.create".into(),
+            ordinal,
+            outcome,
+            failure_reason,
+            request_digest: format!("sha256:{}", "c".repeat(64)),
+            response_digest: (outcome == BrokerOperationOutcomeV1::Succeeded)
+                .then(|| format!("sha256:{}", "d".repeat(64))),
+            request_bytes: 7,
+            response_bytes: if outcome == BrokerOperationOutcomeV1::Succeeded {
+                8
+            } else {
+                0
+            },
+            reserved_usage,
+            charged_usage,
+        }
+    };
+    let append_receipt = |store: &mut EventStore, receipt: BrokerOperationReceiptV1| {
+        store.append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::BrokerOperationCompletedV1,
+                serde_json::to_value(receipt).unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+    };
+    let over_budget = receipt(1, BrokerOperationOutcomeV1::Succeeded, None, 11, 7);
+    let error = append_receipt(&mut store, over_budget).unwrap_err();
+    assert!(error.to_string().contains("pinned policy"), "{error}");
+
+    append_receipt(
+        &mut store,
+        receipt(1, BrokerOperationOutcomeV1::Succeeded, None, 10, 7),
+    )
+    .unwrap();
+    let extra_call = receipt(2, BrokerOperationOutcomeV1::Succeeded, None, 4, 1);
+    let error = append_receipt(&mut store, extra_call).unwrap_err();
+    assert!(error.to_string().contains("pinned policy"), "{error}");
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptFencedV1,
+                serde_json::to_value(AttemptFencedPayloadV1 {
+                    reason: "under-settled broker fence".into(),
+                    charged: Some(9),
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("fence authority"), "{error}");
+    store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::AttemptFencedV1,
+                serde_json::to_value(AttemptFencedPayloadV1 {
+                    reason: "test fence".into(),
+                    charged: Some(10),
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt(&attempt)
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    let late_success = receipt(3, BrokerOperationOutcomeV1::Succeeded, None, 1, 1);
+    assert!(matches!(
+        append_receipt(&mut store, late_success),
+        Err(StoreError::AttemptNotCurrent)
+    ));
+    append_receipt(
+        &mut store,
+        receipt(
+            2,
+            BrokerOperationOutcomeV1::Revoked,
+            Some(BrokerFailureReasonV1::AuthorityRevoked),
+            3,
+            4,
+        ),
+    )
+    .expect("the fenced Attempt preserves a late observed overrun");
+    assert_eq!(
+        store
+            .round_committed_tokens("run", &round.event_id)
+            .unwrap(),
+        11
+    );
+    let replacement = authority(&cas, "replacement-broker");
+    let superseded = RoundInputSupersededPayloadV1 {
+        round: 1,
+        old_epoch: 1,
+        new_epoch: 2,
+        campaign_manifest_id: ids.manifest.clone(),
+        old_subject_id: ids.subject.clone(),
+        replacement_subject_id: replacement.subject.clone(),
+    };
+    let mut replacement_payload = round_payload(&replacement, 2);
+    replacement_payload.campaign_manifest_id = ids.manifest.clone();
+    let mut replacement_refs = round_refs(&replacement);
+    replacement_refs.push(ids.manifest.clone());
+    store
+        .append_batch(
+            "run",
+            &cas,
+            &[
+                NewEvent::new(
+                    EventType::RoundInputSupersededV1,
+                    serde_json::to_value(superseded).unwrap(),
+                )
+                .caused_by(&round.event_id),
+                NewEvent::new(
+                    EventType::RoundStartedV1,
+                    serde_json::to_value(replacement_payload).unwrap(),
+                )
+                .caused_by(&round.event_id)
+                .referencing(replacement_refs),
+            ],
+        )
+        .unwrap();
+    let error = append_receipt(
+        &mut store,
+        receipt(
+            3,
+            BrokerOperationOutcomeV1::Revoked,
+            Some(BrokerFailureReasonV1::AuthorityRevoked),
+            1,
+            1,
+        ),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("terminal handle"), "{error}");
+    append_receipt(
+        &mut store,
+        receipt(
+            3,
+            BrokerOperationOutcomeV1::Revoked,
+            Some(BrokerFailureReasonV1::AuthorityRevoked),
+            1,
+            0,
+        ),
+    )
+    .expect("a revoked handle may append only a zero-charge revoked acknowledgement");
+}
+
+#[test]
+fn terminal_broker_failures_allow_only_revoked_acknowledgements() {
+    let terminal_cases = [
+        (
+            "credential-exposure",
+            BrokerOperationOutcomeV1::Failed,
+            BrokerFailureReasonV1::CredentialExposure,
+            false,
+            10,
+            7,
+        ),
+        (
+            "usage-overrun",
+            BrokerOperationOutcomeV1::Failed,
+            BrokerFailureReasonV1::UsageOverrun,
+            true,
+            10,
+            11,
+        ),
+        (
+            "authority-revoked",
+            BrokerOperationOutcomeV1::Revoked,
+            BrokerFailureReasonV1::AuthorityRevoked,
+            true,
+            10,
+            7,
+        ),
+        (
+            "quota-exhausted",
+            BrokerOperationOutcomeV1::Refused,
+            BrokerFailureReasonV1::QuotaExceeded,
+            false,
+            0,
+            0,
+        ),
+    ];
+    for (label, outcome, failure_reason, has_response, reserved_usage, charged_usage) in
+        terminal_cases
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let ids = authority_with_pipeline(
+            &cas,
+            label,
+            br#"version = 4
+[subject]
+kind = "whole-tree"
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+[[checks]]
+name = "gate"
+program = "/bin/true"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = []
+outputs = ["result"]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "brokered", operations = [{ name = "model_inference", destination = "provider.test", method = "responses.create", max_request_bytes = 32, max_response_bytes = 32, max_calls = 3, max_usage = 100 }] }
+"#,
+        );
+        let round = opened_round(&mut store, &cas, "run", &ids);
+        let attempt = "a".repeat(26);
+        let handle = "b".repeat(26);
+        let operation = BrokerOperationPolicyV1 {
+            name: "model_inference".into(),
+            destination: "provider.test".into(),
+            method: "responses.create".into(),
+            max_request_bytes: 32,
+            max_response_bytes: 32,
+            max_calls: 3,
+            max_usage: 100,
+        };
+        store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(
+                    EventType::AttemptDispatchedV1,
+                    serde_json::to_value(AttemptDispatchedPayloadV1 {
+                        reserved: None,
+                        prior_findings: None,
+                    })
+                    .unwrap(),
+                )
+                .node("reviewer")
+                .attempt(&attempt)
+                .caused_by(&round.event_id),
+            )
+            .unwrap();
+        if label == "credential-exposure" {
+            let result = cas.put(b"result").unwrap();
+            let provenance = cas.put(b"provenance").unwrap();
+            let error = store
+                .append(
+                    "run",
+                    &cas,
+                    NewEvent::new(
+                        EventType::AttemptAdmittedV1,
+                        serde_json::to_value(AttemptAdmittedPayloadV1 {
+                            selection: "selected".into(),
+                            cost_tokens: 0,
+                            result_artifact: Some(result.clone()),
+                            provenance_artifact: Some(provenance.clone()),
+                        })
+                        .unwrap(),
+                    )
+                    .node("reviewer")
+                    .attempt(&attempt)
+                    .caused_by(&round.event_id)
+                    .referencing(vec![result, provenance]),
+                )
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("no durable Execution Binding"),
+                "{error}"
+            );
+        }
+        store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(
+                    EventType::ReviewerExecutionBoundV1,
+                    serde_json::to_value(ReviewerExecutionBindingV1 {
+                        node: "reviewer".into(),
+                        attempt_id: attempt.clone(),
+                        lease_epoch: 1,
+                        credential_mode: BrokerCredentialModeV1::Brokered,
+                        auto_apply: false,
+                        broker_handle: Some(handle.clone()),
+                        operations: vec![operation],
+                        admitted: true,
+                    })
+                    .unwrap(),
+                )
+                .node("reviewer")
+                .attempt(&attempt)
+                .caused_by(&round.event_id),
+            )
+            .unwrap();
+        let receipt = |ordinal: u32,
+                       outcome: BrokerOperationOutcomeV1,
+                       failure_reason: Option<BrokerFailureReasonV1>,
+                       has_response: bool,
+                       reserved_usage: u64,
+                       charged_usage: u64| {
+            BrokerOperationReceiptV1 {
+                handle_id: handle.clone(),
+                node: "reviewer".into(),
+                attempt_id: attempt.clone(),
+                lease_epoch: 1,
+                operation: "model_inference".into(),
+                destination: "provider.test".into(),
+                method: "responses.create".into(),
+                ordinal,
+                outcome,
+                failure_reason,
+                request_digest: format!("sha256:{}", "c".repeat(64)),
+                response_digest: has_response.then(|| format!("sha256:{}", "d".repeat(64))),
+                request_bytes: 7,
+                response_bytes: if has_response { 8 } else { 0 },
+                reserved_usage,
+                charged_usage,
+            }
+        };
+        let append = |store: &mut EventStore, receipt: BrokerOperationReceiptV1| {
+            store.append(
+                "run",
+                &cas,
+                NewEvent::new(
+                    EventType::BrokerOperationCompletedV1,
+                    serde_json::to_value(receipt).unwrap(),
+                )
+                .node("reviewer")
+                .attempt(&attempt)
+                .caused_by(&round.event_id),
+            )
+        };
+        if label == "credential-exposure" {
+            let error = append(
+                &mut store,
+                receipt(
+                    1,
+                    BrokerOperationOutcomeV1::Failed,
+                    Some(BrokerFailureReasonV1::CredentialExposure),
+                    false,
+                    10,
+                    11,
+                ),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("contradicts its outcome"),
+                "{error}"
+            );
+        }
+        append(
+            &mut store,
+            receipt(
+                1,
+                outcome,
+                Some(failure_reason),
+                has_response,
+                reserved_usage,
+                charged_usage,
+            ),
+        )
+        .unwrap();
+
+        let error = append(
+            &mut store,
+            receipt(2, BrokerOperationOutcomeV1::Succeeded, None, true, 10, 7),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("terminal handle"),
+            "{label}: {error}"
+        );
+        append(
+            &mut store,
+            receipt(
+                2,
+                BrokerOperationOutcomeV1::Revoked,
+                Some(BrokerFailureReasonV1::AuthorityRevoked),
+                false,
+                10,
+                0,
+            ),
+        )
+        .expect("terminal broker state accepts only a revoked acknowledgement");
+    }
 }

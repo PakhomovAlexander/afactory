@@ -244,4 +244,12 @@ fn a_hostile_filename_from_the_diff_cannot_become_an_option() {
     );
     assert!(result.stdout.is_none(), "nothing was executed");
     assert!(!GateDecision::evaluate(&[result]).passed());
+
+    let mut provider_called = false;
+    let contained = runner.run_with(&check, |_, _, _, _| {
+        provider_called = true;
+        unreachable!("an invalid typed command must never reach its execution provider")
+    });
+    assert_eq!(contained.status, CheckStatus::NotRun);
+    assert!(!provider_called);
 }

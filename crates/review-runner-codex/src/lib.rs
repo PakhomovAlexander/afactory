@@ -142,6 +142,10 @@ fn codex_command(
 }
 
 impl ReviewerAdapter for CodexAdapter {
+    fn credential_mode(&self) -> review_runner::BrokerCredentialModeV1 {
+        review_runner::BrokerCredentialModeV1::TrustedUnsafe
+    }
+
     fn invoke(
         &self,
         cas: &Cas,

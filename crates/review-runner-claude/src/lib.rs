@@ -131,6 +131,10 @@ fn claude_command(program: &str, model_flags: &[String]) -> Command {
 }
 
 impl ReviewerAdapter for ClaudeAdapter {
+    fn credential_mode(&self) -> review_runner::BrokerCredentialModeV1 {
+        review_runner::BrokerCredentialModeV1::TrustedUnsafe
+    }
+
     fn invoke(
         &self,
         cas: &Cas,

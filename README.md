@@ -65,6 +65,27 @@ and later Rounds. Afactory does not ask for separate per-call confirmation; chan
 publishing, delivery, and other remote side effects remain separate operations. See
 [`ADR-0033`](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md).
 
+## Inspect Campaign history
+
+`af review campaigns` lists the Campaigns under the default XDG review-state root without running
+a Worker. Each entry includes its opaque ID and human label, pinned Subject/authority summary,
+last closed Round and verdict, and the complete closed-Round history. Use `--format json` for the
+versioned `af/review-campaigns@1` projection. `--state-root DIR` inspects an explicit root, including
+legacy label-named state such as a repository's gitignored `.review/runs/` directory.
+Unreadable or non-conforming entries are skipped and reported in the projection's `problems`
+array, so one bad backup or stale directory never hides healthy Campaigns.
+
+```sh
+af review campaigns
+af review campaigns --format json
+af review campaigns --state-root .review/runs --format text
+```
+
+New default state uses a deterministic opaque Campaign ID beneath the configured root; the label
+is never interpolated into a new filesystem path. Existing label-named directories remain readable,
+while ambiguous or escaping layouts fail closed. See
+[`ADR-0035`](docs/adr/0035-address-campaign-state-by-opaque-id.md).
+
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
 authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
 quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude
@@ -329,21 +350,34 @@ does), the environment is rebuilt from an allowlist rather than filtered, and ev
 captured. Note what that is not — an absolute-path write to the checkout on disk is not
 prevented, and the case records that as open rather than calling it covered.
 
-A `ContainerProvider` also exists, for hosts with a usable runtime — but it has never run
-against a live daemon, so the probes that need one stay open. Its **detection** is the part worth
-knowing: finding `docker` on `PATH` proves nothing. On the machine it was written both `docker`
-and `podman` are installed and neither daemon is reachable, so a provider that stopped at `which`
-would have declared containment and delivered none. Detection runs the runtime's own `info` and
-requires it to succeed; an installed-but-unusable runtime reports `Isolation::None` and refuses to
-exec rather than falling back to the host. The invocation it builds is asserted exactly — one
-bind, `--network=none`, no inherited environment — which proves the plumbing and not containment.
+A `ContainerProvider` also exists for hosts with a usable runtime. Finding `docker` on `PATH`
+proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
+installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
+back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
+inherited environment. The image retains its own pinned `PATH`; only host-independent check
+variables (`LC_ALL=C`, `TZ=UTC`, and declared additions) are reintroduced. The workload runs as
+the caller's numeric UID:GID so writable-bind output remains usable and removable by the host.
+Each execution also has a unique runtime name: if the supervised client fails or times out,
+Afactory runs a bounded `rm -f` before sealing. An unconfirmed cleanup aborts the Gate and reports
+the preserved sandbox path rather than sealing or deleting the possibly live bind.
+`make review-kernel-container-probes` and its dedicated CI job carry the provider probes, live
+timeout/reap probe, ownership assertion, and v3 Gate route. This worktree could not run them
+because its local daemon is unavailable; the route remains unverified until that job is green on
+the candidate.
 
-The distinction is enforced, not documented. A sandbox declares the isolation it provides, a
-pipeline declares what it requires, and `admit` refuses the pairing — so a pipeline that needs
-containment cannot silently run on a directory. The design's own risk register names this failure
-("worktree mistaken for security sandbox"); the way not to make it is to make the weaker provider
-unable to claim the stronger property. Three of `malicious-check.md`'s probes are discharged and three stay open, recorded in the case
-itself rather than narrowed away.
+The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
+Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can
+satisfy `required_isolation = "container"` only after a successful runtime probe;
+`trusted_local` can satisfy only an explicit `none`
+requirement. Gate checks then execute through that admitted provider in an independent
+`ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
+pristine template. Each resolution attempt is durable before its Gate receipt; same-Round retry
+uses the latest observation while the append-only log retains failed admissions. `RunReport@4`
+records that latest provider, pinned image when applicable, required and provided isolation,
+mode, and admission result for every Gate node. Formats v1/v2 permanently retain their captured
+local, read-only behavior. `GateDecision@1` also references a bounded mutation summary plus the
+CAS digest of the complete v3 Gate mutation set, so permitted disposable writes remain observable
+after the clone is discarded without becoming graph output.
 
 ### Sealing
 
@@ -388,8 +422,8 @@ test of the boundaries underneath: if composing them had required new rules, the
 been wrong.
 
 ```text
-  capture ── snapshot ──> gate (checks, read-only sandbox) ──decision──┐
-                                                                       v
+  capture ── snapshot ──> gate (admitted, ephemeral-write clone) ──decision──┐
+                                                                              v
               architecture ┐   performance ┐   (each in its own ephemeral-write sandbox, gated)
                            └───────────────┴──> gather ──> ledger ──> convergence
 ```
@@ -425,6 +459,110 @@ input nothing feeds fails at load.
 Argument provenance defaults to `literal`, because a project writing its own check command is
 trusted; `untrusted` is the classification you have to type. The safe default is the one that
 cannot be reached by forgetting.
+
+New pipelines make Gate execution authority explicit:
+
+```toml
+version = 3
+
+[gate]
+provider = "trusted_local"       # use "container" for a safe pipeline
+required_isolation = "none"      # safe pipelines require "container"
+mode = "ephemeral-write"
+caches = ["cargo"]                # optional symbolic request; never a host path
+
+# A container binding instead uses:
+# provider = "container"
+# image = "registry.example/project-ci@sha256:<64 lowercase hex>"
+# required_isolation = "container"
+```
+
+The binding is part of the captured pipeline artifact, so a later Round cannot silently change
+its provider, image, or isolation policy. `af onboard` emits the explicit trusted-local form for
+its documented first-party workflow; upgrading that policy to safe containment is a reviewed
+edit with a project-toolchain image, never a generic moving tag.
+
+A cache request is resolved twice: project authority names only `cargo`, while machine-local
+operator policy selects the source and hard limits. The default policy path is
+`$XDG_CONFIG_HOME/afactory/caches.toml` (falling back to
+`$HOME/.config/afactory/caches.toml`); `AFACTORY_CACHE_POLICY_FILE` may select another absolute
+file. Its v1 shape is:
+
+```toml
+version = 1
+
+[cache.cargo]
+source = "/absolute/curated-cargo-cache"
+max_bytes = 4294967296
+max_files = 250000
+max_copy_bytes = 536870912
+```
+
+Pipeline format v4 also makes every reviewer credential boundary explicit. Formats v1–v3 keep
+their captured behavior and cannot acquire this claim retroactively:
+
+```toml
+version = 4
+
+# The v3 [gate] binding remains required.
+
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+package = "correctness"
+execution = { credential_mode = "brokered", operations = [
+  { name = "model_inference", destination = "provider.openai", method = "responses.create", max_request_bytes = 1048576, max_response_bytes = 1048576, max_calls = 2, max_usage = 300000 },
+] }
+```
+
+`credential_free` binds a reviewer that needs no credential. `brokered` requires a
+machine-local connector and gives the adapter only an opaque `BrokerClient`; project authority
+fixes each symbolic operation, destination, method, byte limit, call limit, and usage limit.
+`trusted_unsafe` is the explicit compatibility class for a runner that can read reusable
+credentials. It cannot authorize `auto_apply`. The current Codex and Claude CLI adapters report
+`trusted_unsafe`; a v4 brokered pipeline without a broker-capable adapter and machine-local
+provider is refused before any reviewer dispatch.
+
+For each admitted Attempt, `ReviewerExecutionBound@1` records the exact mode, lease epoch, handle,
+and operation policy; admission without that durable binding is invalid. The broker checks durable
+authority before and after every connector call. Public revocation marks the handle immediately,
+waits for an in-flight call, and prevents that call from releasing a response. A trusted connector
+consumes raw authenticated wire bytes and returns only its decoded application response. Before
+that response can cross the boundary, the broker rejects raw, base64/base64url, mixed-case hex,
+and mixed-case percent forms of the credential. Connector errors and panics become normalized
+charged receipts.
+
+`BrokerOperationCompleted@1` is durable before any response returns and records only digests,
+sizes, usage, and normalized outcomes. Fence races, credential exposure, numeric-domain overruns,
+receipt failures, and terminal handle revocation all withhold the response. Attempt settlement
+must cover durable broker usage; crash, timeout, and Round-supersession fences conservatively
+charge the complete broker authority bound, or higher already-observed usage, so a connector that
+finishes late can leave only a strictly validated revoked receipt. A late observed overrun raises
+the durable charge above the earlier fence instead of losing its receipt. One refused request is
+receipted before the handle becomes terminal, so repeated invalid or post-quota calls cannot grow
+durable state without a policy bound.
+
+The initial source is deliberately narrower than a complete Cargo home: it may contain package
+archives under `registry/cache/` and sparse-index data under `registry/index/`. Unpacked
+`registry/src/`, Cargo Git dependency caches, configuration, credential-shaped paths, symlinks,
+special files, excess bytes or filesystem entries, and an over-limit cross-filesystem copy are
+refused before check dispatch. Afactory walks through no-follow directory descriptors, retains
+each admitted file descriptor across materialization, and bounds every read to its preflight size
+plus one change-detection byte. macOS reflinks use the retained descriptor directly; before Gate
+dispatch, Afactory removes source-controlled extended attributes, named forks, and ACLs from the
+materialized file and applies fixed safe modes. It snapshots the admitted bytes under
+`.af-cache/cargo`, sets `CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache
+tree before sealing.
+
+`RunReport@5` records either one machine-path-free success receipt or an explicit failure for
+every requested Gate/cache pair. Its receipt references a versioned `CacheManifest@1` containing
+the sorted percent-encoded paths, content digests, and exact file sizes. Report publication
+reverifies every referenced manifest and cross-checks it against the durable receipt, including
+for incomplete reports. Machine policy is resolved only for an unresolved Gate, so replay of a
+completed Gate does not depend on the original policy file or source still existing. A missing
+mapping is an error, never an implicit read of `~/.cargo`; `max_files` counts directories and
+files so directory-only trees are bounded. Durable cache failures are typed and path-free;
+machine-local operator detail is emitted only to stderr.
 
 **Format note.** The design's examples are YAML and this is TOML. The shape is unchanged and the
 loader is serde types, so another syntax is a different `from_str`, not a different model. The

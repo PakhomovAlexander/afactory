@@ -11,9 +11,16 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1–M3.3 are complete. M4 implementation merged through PR #18; its exhausted
-verification Campaign has six fixed Findings and zero open. Follow-up `0361a7d` passes the full
-local gate and must integrate through PR #19 before M4 is done. V3.1 local delivery is
+verified. M3.1–M3.3 and M4 are complete. M4's exhausted verification Campaign has six fixed
+Findings and zero open; follow-up PR #19 merged at exact `main` `01147ce` and post-merge CI passed.
+M5 is complete: deliberate report formats, exact Round/reviewer spend, and safe Campaign
+enumeration/history are implemented and externally verified. M6.1 Gate Execution Bindings and
+M6.2 bounded Cache Snapshots retain their passed dogfood evidence. M6.3 adds v4
+credential-free, brokered, and trusted-unsafe reviewers; Brokered Attempts receive only a
+revocable handle, with durable bounded receipts, secret isolation, recovery settlement, and late
+revocation. Its final correctness Campaign findings are fixed and `make check` is green; M6 is
+complete. The Docker-backed M6.1 CI probe remains pending the first product-branch publication.
+Resume at M7.1 verified Proposals. V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
@@ -75,6 +82,10 @@ budget, or sandbox boundary to make a test or review pass.
 - Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
   output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
   convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
+- New default Campaign state is addressed by a domain-separated opaque ID derived from its
+  validated label. State resolution must remain beneath the configured root; legacy label-named
+  directories stay readable, ambiguous dual layouts and symlinked enumeration fail closed
+  ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

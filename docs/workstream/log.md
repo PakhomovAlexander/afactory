@@ -1,5 +1,126 @@
 # Review Kernel workstream log
 
+## 2026-08-31 — M6.3 Broker Handles
+
+Pipeline format v4 requires every reviewer to declare `credential_free`, `brokered`, or
+`trusted_unsafe`; v1–v3 remain frozen. A brokered Attempt publishes its exact lease and bounded
+symbolic operations in `ReviewerExecutionBound@1`, receives only an opaque handle, and keeps the
+connector plus reusable credential machine-local. Every operation leaves a secret-free
+`BrokerOperationCompleted@1` receipt before any response reaches the Worker. Current Codex and
+Claude CLI adapters are honestly `trusted_unsafe`; safe v4 execution needs a broker-capable
+adapter and machine-local connector.
+
+The deterministic boundary fixtures cover fixed egress, raw and encoded credential reflection,
+fence races, receipt failure, connector errors and panics, usage and call limits, durable terminal
+handle replay, missing bindings, crash recovery, and Round supersession. Attempt admission and
+budgets reconcile broker charges exactly; uncertain fences reserve the complete checked broker
+authority bound or higher observed usage. Late overruns raise terminal settlement; provider
+admission sees outstanding broker authority; public revocation synchronizes with in-flight calls;
+and a single refusal terminally bounds durable receipt growth. The full local `make check` gate
+passes.
+
+Correctness-only Campaign `m6-3-broker-lightweight-v1` spent 178,968 and 165,410 tokens across two
+Rounds and found five recovery/security defects. Confirmation Campaign
+`m6-3-broker-confirm-v1` first lost a zero-token epoch to restricted npm DNS, then spent 177,647
+and 219,510 tokens and found eight further defects. All thirteen have deterministic regressions
+and are fixed. Campaign `m6-3-broker-final-v1` then spent 205,663 and 183,633 tokens, exhausted,
+and found five more concurrency/accounting defects; all five now have deterministic regressions
+and are fixed. These v2 Campaign ledgers retain old open rows when the frozen pipeline omits exact
+prior-Finding dispositions. Final correctness Campaign `m6-3-broker-final-v2` spent 249,919 tokens
+and found a partial percent-encoding credential bypass plus Broker authority exceeding the
+pre-dispatch reservation. Recursive mixed literal/percent response scanning and config-load
+authority/budget validation fix both with regressions. Per owner direction, the final full
+`make check` gate is the closeout: it passes, M6 is complete, and M7.1 is next.
+
+## 2026-08-31 — M6.2 bounded Cache Snapshots
+
+Pipeline v3 Gates may now request the symbolic `cargo` cache kind. Machine-local policy resolves
+that request to one curated root and hard byte, filesystem-entry, and copy limits; project
+authority never contains the host path. Descriptor-relative no-follow traversal admits only
+Cargo package archives and sparse-index files, then one preflighted reflink-or-copy method seeds
+the private Gate clone. The Gate runs offline, and the cache subtree is removed before Subject
+sealing.
+
+`CacheManifest@1` freezes the admitted layout and kernel ceilings. `RunReport@5` covers every
+requested Gate/cache pair with a typed path-free failure or a manifest receipt that publication
+rehashes, validates, and cross-checks even for incomplete reports. Completed Gate replay is lazy
+with respect to machine policy. macOS uses descriptor-native `fclonefileat`, strips
+source-controlled xattrs, named forks, and ACLs before dispatch, and fixes file and directory
+modes. Focused regressions and the full `make check` gate pass at final candidate `980f761`.
+
+Codex-only Campaign `m6-2-cache-candidate-codex` spent 281,585 and 259,944 tokens across two
+Rounds, exhausted, and left ten fixed Findings with zero open. Fresh Codex-only Campaign
+`m6-2-cache-final-codex-v1` spent 305,220 tokens in Round 1, opened three further Findings, and
+confirmed all three fixed in a 335,930-token Round 2 `Pass`. Opus/Claude packages remain available
+but are not active reviewers. Resume at M6.3 Broker Handles.
+
+## 2026-08-30 — M6.1 Gate Execution Bindings
+
+Pipeline format v3 now requires explicit Gate provider, required isolation, and
+`ephemeral-write` mode. Every root Gate materializes through its provider, admits provided
+isolation before command dispatch, runs in an independent writable clone, and publishes the
+exact fact in structural `RunReport@4`; v1/v2 retain their frozen local read-only contract.
+Container live probes exercise the same typed `CheckRunner` route and compile locally, but the
+machine had no running Docker daemon, so only the trusted-local/none path was executed here. A
+dedicated CI job now runs provider containment controls, the live v3 Gate route, timeout reaping,
+and host-ownership assertions; it remains pending until this product branch is published.
+
+Disposable Campaign `m6-gate-binding-dogfood-fixed` ran project-hub's write-heavy scaffold and
+update smoke checks, then two machine-configured Codex Workers, and returned Pass with 30,060
+tokens, zero Findings, and zero Demands. Its report records an admitted
+`trusted_local`/`none`/`ephemeral-write` binding, and the candidate checkout retained no Gate
+mutations. Dogfood also exposed and fixed generated Codex manifests incorrectly repeating the
+adapter-owned `exec`/sandbox/stdin flags. Focused regressions and the full local `make check` gate
+pass.
+
+Pinned Campaign `m6-1-gate-bindings-v1` spent 202,163 and 180,236 tokens across its two Rounds,
+exhausted, and left five fixed Findings with zero open. Follow-up Campaign
+`m6-1-gate-bindings-final-v1` spent 217,695 and 174,419 tokens, exhausted, and left another five
+fixed Findings with zero open. Those reviews added replayable append-only binding observations,
+digest-pinned project images, provider-usability admission, durable Gate mutation summaries, an
+executed recording-runtime route, a real Docker CI target, portable environment forwarding, and
+bounded timeout reaping that refuses to seal an unreaped writable bind.
+
+Fresh final Campaign `m6-1-gate-bindings-final-v2` spent 223,179 tokens in Round 1 and 250,781 in
+Round 2 and returned Pass. Its four Findings are fixed with zero open: the image retains its own
+`PATH`, container writes use the caller's UID:GID, preserved unsafe sandboxes report their path,
+and the Unix-specific argv assertion is Unix-gated. Final candidate `6a22aaa` passes `make check`.
+Resume at M6.2 sandbox-local Cache Snapshots.
+
+## 2026-08-28 — M5.3 Campaign enumeration
+
+`af review campaigns` now renders deterministic text or `af/review-campaigns@1` JSON containing
+each Campaign's opaque ID, validated human label, pinned Subject/authority summary, last closed
+Round/verdict, and full closed-Round history. ADR-0035 separates the human-label and filesystem-ID
+namespaces, verifies legacy state ownership, proves root containment, and keeps existing labels
+readable without changing persisted kernel contracts. Enumeration opens existing SQLite/CAS state
+without creating storage, refuses symlinked durable state, and isolates malformed entries in an
+explicit `problems` projection so healthy Campaigns remain visible.
+
+Pinned Campaign `m5-campaign-enumeration-v1` spent 145,666 tokens in Round 1 and 121,475 in Round 2,
+then exhausted with seven Findings; all seven are fixed and its ledger has zero open. Fresh pinned
+Campaign `m5-campaign-enumeration-final-v1` spent 191,407 tokens and returned Pass. Its four
+follow-up Minors are also fixed: legacy-label symlinks are reported, ambiguity presentation matches
+direct command refusal, stale legacy-state errors name their path and role, and the live roadmap now
+resumes at M6.1. Focused regressions and the full `make check` gate pass.
+
+## 2026-08-28 — M5.1/M5.2 operator reports and spend
+
+`af review report` now renders one versioned operator projection as Markdown, explicit text, or
+JSON. It exposes every Round epoch, terminal verdict, selected/fenced/failed/released/outstanding
+Attempt, Provider Operation, and per-reviewer token total. The exact-Round budget query now reads
+admitted `cost_tokens`, counts only the first terminal Attempt lifecycle event, and retains crash
+reservations. Focused projection, durable-query, end-to-end format tests, the complete `reviewctl`
+suite, and focused Clippy pass. Resume at M5.3 safe Campaign enumeration and history.
+Pinned Campaign `m5-report-spend-v1` Round 1 spent 149,528 tokens and found one Major and one
+Minor. Their corrections keep the Markdown spend table contiguous, render Attempt detail in a
+separate section, and preserve causation-less frozen `RunReport@1` presentation with an explicit
+run ordinal and absent Round authority. The focused regressions and full kernel gate pass again.
+Round 2 spent 164,893 tokens, confirmed both corrections, and returned Pass. It also opened one
+Minor: the Provider preflight budget seed counted only the active epoch although kernel replay
+charges the entire superseded Round lineage. The query now derives the active Round number and
+Campaign Manifest, includes every matching epoch, and has a two-epoch regression.
+
 ## 2026-08-20 — M0 and M1
 
 Closed the append-only event vocabulary, structural run reports, typed invocation/output ports,
@@ -1179,3 +1300,7 @@ The owner approved the three exact fixed transitions. Campaign
 `m3-3-m4-verification-v1` now has six fixed Findings and zero open; its historical final verdict
 remains exhausted because immutable completed Rounds are not rewritten. Follow-up PR #19 opened
 from `0361a7d`, and its initial CI passed. Integration and exact-main verification remain.
+
+PR #19 merged at exact `main` commit `01147ce`; post-merge CI run `33185591446` passed the full
+workspace Check and CLI smoke. M4 is complete and issue #15 is closed. Resume at M5 operator
+visibility.

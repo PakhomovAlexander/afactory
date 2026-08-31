@@ -19,6 +19,7 @@
       "description": "Closed event type and semantic-version vocabulary. New event kinds and payload versions are explicit additive contract changes.",
       "type": "string",
       "enum": [
+        "BrokerOperationCompleted@1",
         "AttemptAdmitted@1",
         "AttemptDispatched@1",
         "AttemptFailed@1",
@@ -42,14 +43,19 @@
         "FindingsUngrouped@1",
         "FixVerified@1",
         "GateDecision@1",
+        "GateExecutionBound@1",
+        "CacheSnapshotMaterialized@1",
         "GenerationAdvanced@1",
         "NodeInvocation@1",
         "NodeOutputReceipt@1",
         "PolicyTimeAdvanced@1",
         "ProviderOperationTransition@1",
+        "ReviewerExecutionBound@1",
         "RunReport@1",
         "RunReport@2",
         "RunReport@3",
+        "RunReport@4",
+        "RunReport@5",
         "RoundInputSuperseded@1",
         "RoundStarted@1",
         "SourceCaptured@1"
@@ -85,6 +91,14 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "type": { "const": "BrokerOperationCompleted@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/broker_operation_receipt" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "CacheSnapshotMaterialized@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/cache_snapshot" } } }
+    },
+    {
       "if": { "properties": { "type": { "const": "CampaignOpened@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/campaign_opened" } } }
     },
@@ -99,6 +113,14 @@
     {
       "if": { "properties": { "type": { "const": "ProviderOperationTransition@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/provider_operation_transition" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "GateExecutionBound@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/gate_execution_bound" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "ReviewerExecutionBound@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/reviewer_execution_binding" } } }
     }
   ],
   "$defs": {
@@ -108,6 +130,105 @@
       "pattern": "^[0-9a-z]{26}$"
     },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "symbolic_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "broker_operation_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "destination", "method", "max_request_bytes", "max_response_bytes", "max_calls", "max_usage"],
+      "properties": {
+        "name": { "$ref": "#/$defs/symbolic_name" },
+        "destination": { "$ref": "#/$defs/symbolic_name" },
+        "method": { "$ref": "#/$defs/symbolic_name" },
+        "max_request_bytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "max_response_bytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "max_calls": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "max_usage": { "type": "integer", "minimum": 1, "maximum": 9007199254740990 }
+      }
+    },
+    "reviewer_execution_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "attempt_id", "lease_epoch", "credential_mode", "auto_apply", "admitted"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "lease_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "credential_mode": { "enum": ["credential_free", "brokered", "trusted_unsafe"] },
+        "auto_apply": { "type": "boolean" },
+        "broker_handle": { "$ref": "#/$defs/id" },
+        "operations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/broker_operation_policy" }
+        },
+        "admitted": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "credential_mode": { "const": "brokered" } }, "required": ["credential_mode"] },
+          "then": { "required": ["broker_handle", "operations"], "properties": { "operations": { "minItems": 1 } } },
+          "else": { "not": { "required": ["broker_handle"] }, "properties": { "operations": { "maxItems": 0 } } }
+        },
+        {
+          "if": { "properties": { "credential_mode": { "const": "trusted_unsafe" } }, "required": ["credential_mode"] },
+          "then": { "properties": { "auto_apply": { "const": false } } }
+        }
+      ]
+    },
+    "broker_operation_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle_id", "node", "attempt_id", "lease_epoch", "operation", "destination", "method", "ordinal", "outcome", "request_digest", "request_bytes", "response_bytes", "reserved_usage", "charged_usage"],
+      "properties": {
+        "handle_id": { "$ref": "#/$defs/id" },
+        "node": { "type": "string", "minLength": 1 },
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "lease_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "operation": { "$ref": "#/$defs/symbolic_name" },
+        "destination": { "$ref": "#/$defs/symbolic_name" },
+        "method": { "$ref": "#/$defs/symbolic_name" },
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "outcome": { "enum": ["succeeded", "refused", "failed", "revoked"] },
+        "failure_reason": { "enum": ["authority_revoked", "request_too_large", "quota_exceeded", "connector_failed", "credential_exposure", "response_too_large", "usage_overrun"] },
+        "request_digest": { "$ref": "#/$defs/digest" },
+        "response_digest": { "$ref": "#/$defs/digest" },
+        "request_bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "response_bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "reserved_usage": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "charged_usage": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "cache_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "kind", "source_digest", "bytes", "files", "materialization"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "kind": { "const": "cargo" },
+        "source_digest": { "$ref": "#/$defs/digest" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "files": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "materialization": { "enum": ["reflink", "copy"] }
+      }
+    },
+    "gate_execution_bound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "provider", "required_isolation", "provided_isolation", "mode", "admitted"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "provider": { "enum": ["trusted_local", "container"] },
+        "image": { "type": "string", "pattern": "^[^-\\s].*@sha256:[0-9a-f]{64}$" },
+        "required_isolation": { "enum": ["none", "container"] },
+        "provided_isolation": { "enum": ["none", "process", "container"] },
+        "mode": { "const": "ephemeral-write" },
+        "admitted": { "type": "boolean" }
+      }
+    },
     "campaign_opened": {
       "type": "object",
       "additionalProperties": false,

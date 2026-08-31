@@ -11,6 +11,8 @@
 //! - JSON payloads live in the I-JSON numeric domain ([`json::admit`]) before they are hashed,
 //!   so a value cannot change meaning between producer and consumer.
 
+pub mod broker;
+pub mod cache;
 pub mod campaign;
 pub mod change_set;
 pub mod demand;
@@ -29,6 +31,15 @@ pub mod resolution;
 pub mod snapshot;
 pub mod subject;
 
+pub use broker::{
+    BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, ReviewerExecutionBindingV1,
+    broker_authority_usage,
+};
+pub use cache::{
+    CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
+    MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,
+};
 pub use campaign::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
     CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1,
@@ -46,10 +57,12 @@ pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
     PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, RunEvent, RunFailureReasonV2, RunFailureReasonV3,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity, UnknownEventType,
-    is_artifact_type, run_report_closes_round,
+    ProviderOperationTransitionPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
+    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
+    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
+    SnapshotAffinity, UnknownEventType, is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
@@ -89,6 +102,7 @@ pub(crate) fn is_digest(value: &str) -> bool {
 
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {
+    pub const CACHE_MANIFEST_V1: &str = "review.kernel/CacheManifest@1";
     pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
     pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";

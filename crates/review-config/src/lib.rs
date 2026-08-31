@@ -50,7 +50,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1 and 2"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1, 2, 3, and 4"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -173,6 +173,68 @@ pub struct NodeSpec {
     /// then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,
+    /// Required for every reviewer in pipeline v4. Earlier formats permanently retain their
+    /// pre-M6.3 credential behavior and cannot claim this binding retroactively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ReviewerExecutionSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewerExecutionSpec {
+    pub credential_mode: review_core::BrokerCredentialModeV1,
+    #[serde(default)]
+    pub auto_apply: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
+}
+
+impl ReviewerExecutionSpec {
+    fn validate(&self, node: &str) -> Result<(), ConfigError> {
+        let mut names = std::collections::BTreeSet::new();
+        for operation in &self.operations {
+            operation.validate().map_err(|error| {
+                ConfigError::Binding(format!(
+                    "reviewer `{node}` has an invalid Broker operation: {error}"
+                ))
+            })?;
+            if !names.insert(operation.name.as_str()) {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` has duplicate Broker operation `{}`",
+                    operation.name
+                )));
+            }
+        }
+        review_core::broker_authority_usage(&self.operations).map_err(|error| {
+            ConfigError::Binding(format!(
+                "reviewer `{node}` has invalid aggregate Broker authority: {error}"
+            ))
+        })?;
+        match self.credential_mode {
+            review_core::BrokerCredentialModeV1::Brokered if !self.operations.is_empty() => {}
+            review_core::BrokerCredentialModeV1::CredentialFree
+            | review_core::BrokerCredentialModeV1::TrustedUnsafe
+                if self.operations.is_empty() => {}
+            review_core::BrokerCredentialModeV1::Brokered => {
+                return Err(ConfigError::Binding(format!(
+                    "brokered reviewer `{node}` must declare at least one bounded operation"
+                )));
+            }
+            _ => {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` declares Broker operations without brokered credentials"
+                )));
+            }
+        }
+        if self.auto_apply
+            && self.credential_mode == review_core::BrokerCredentialModeV1::TrustedUnsafe
+        {
+            return Err(ConfigError::Binding(format!(
+                "trusted_unsafe reviewer `{node}` cannot authorize auto_apply"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn default_outputs() -> Vec<PortContractSpec> {
@@ -509,6 +571,71 @@ pub struct SubjectSpec {
     pub kind: review_core::SubjectKind,
 }
 
+/// The machine-local provider selected by a Gate Execution Binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxProviderSpec {
+    TrustedLocal,
+    Container,
+}
+
+/// The weakest isolation a pipeline is willing to accept for its Gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolationSpec {
+    None,
+    Container,
+}
+
+/// M6.1 deliberately exposes one Gate mode. Adding another is a policy change, not a free-form
+/// string that a misspelled configuration may silently downgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GateModeSpec {
+    EphemeralWrite,
+}
+
+/// A cache request names behavior the kernel understands, never a host path or arbitrary
+/// environment variable. New package managers add a closed variant with their own safe target
+/// and offline controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheKindSpec {
+    Cargo,
+}
+
+fn is_pinned_container_image(image: &str) -> bool {
+    let Some((name, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().any(char::is_whitespace)
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The Gate slice of an Execution Binding. Reviewer bindings remain unchanged until their own
+/// milestone; this format makes the Gate's provider, isolation requirement, and write policy
+/// explicit and pins them inside the captured pipeline artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateExecutionSpec {
+    pub provider: SandboxProviderSpec,
+    pub required_isolation: IsolationSpec,
+    pub mode: GateModeSpec,
+    /// Required for the container provider and forbidden for trusted-local execution. The
+    /// digest pin is execution authority; a moving tag could otherwise change the Gate without
+    /// changing the captured pipeline artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Symbolic cache kinds resolved only through machine-local administrator policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caches: Vec<CacheKindSpec>,
+}
+
 /// A whole pipeline definition, as a project writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -522,6 +649,10 @@ pub struct Definition {
     /// the authority layer and persisted in CampaignManifest@1.
     #[serde(default)]
     pub check_timeout_seconds: Option<u64>,
+    /// Required by pipeline format v3. Formats v1/v2 permanently retain their legacy local,
+    /// read-only Gate behavior so pinned Campaign replay does not acquire new execution policy.
+    #[serde(default)]
+    pub gate: Option<GateExecutionSpec>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
@@ -538,11 +669,13 @@ pub struct Loaded {
     plan: Planned,
     checks: Vec<CheckDefinition>,
     check_timeout_seconds: u64,
+    gate: Option<GateExecutionSpec>,
     reviewers: BTreeMap<String, Command>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
     packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
+    reviewer_execution: BTreeMap<String, ReviewerExecutionSpec>,
     convergence: ConvergencePolicy,
     budgets: Option<BudgetSpec>,
 }
@@ -550,6 +683,14 @@ pub struct Loaded {
 /// A dispatcher that declares the Subject semantics it actually executes.
 pub trait SubjectDispatch: Dispatch + Sync {
     fn subject_kind(&self) -> review_core::SubjectKind;
+
+    fn reviewer_credential_mode(&self, _node: &str) -> Option<review_core::BrokerCredentialModeV1> {
+        None
+    }
+
+    fn broker_provider_available(&self, _node: &str) -> bool {
+        false
+    }
 }
 
 impl Loaded {
@@ -569,6 +710,10 @@ impl Loaded {
         self.check_timeout_seconds
     }
 
+    pub fn gate_execution(&self) -> Option<&GateExecutionSpec> {
+        self.gate.as_ref()
+    }
+
     pub fn reviewers(&self) -> &BTreeMap<String, Command> {
         &self.reviewers
     }
@@ -579,6 +724,10 @@ impl Loaded {
 
     pub fn packages(&self) -> &BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> {
         &self.packages
+    }
+
+    pub fn reviewer_execution(&self) -> &BTreeMap<String, ReviewerExecutionSpec> {
+        &self.reviewer_execution
     }
 
     pub fn convergence(&self) -> &ConvergencePolicy {
@@ -663,6 +812,26 @@ impl Loaded {
                 dispatcher.subject_kind()
             )));
         }
+        for (node, expected) in &self.reviewer_execution {
+            let actual = dispatcher.reviewer_credential_mode(node).ok_or_else(|| {
+                ConfigError::Binding(format!(
+                    "reviewer `{node}` has no runtime adapter for its v4 Execution Binding"
+                ))
+            })?;
+            if actual != expected.credential_mode {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` requires {:?} credentials but its runtime adapter is {:?}",
+                    expected.credential_mode, actual
+                )));
+            }
+            if expected.credential_mode == review_core::BrokerCredentialModeV1::Brokered
+                && !dispatcher.broker_provider_available(node)
+            {
+                return Err(ConfigError::Binding(format!(
+                    "brokered reviewer `{node}` has no machine-local Broker provider"
+                )));
+            }
+        }
         Ok(Scheduler::new(&self.plan).run(dispatcher))
     }
 }
@@ -696,24 +865,96 @@ impl Definition {
         self,
         resolver: Option<(&lock::Lockfile, &lock::Registry)>,
     ) -> Result<Loaded, ConfigError> {
-        let subject = match (self.version, self.subject) {
-            (1, None) => SubjectSpec {
-                kind: review_core::SubjectKind::WholeTree,
-            },
-            (1, Some(_)) => {
+        let (subject, gate) = match (self.version, self.subject, self.gate) {
+            (1, None, None) => (
+                SubjectSpec {
+                    kind: review_core::SubjectKind::WholeTree,
+                },
+                None,
+            ),
+            (1, Some(_), _) => {
                 return Err(ConfigError::Binding(
                     "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
                         .to_string(),
                 ));
             }
-            (2, Some(subject)) => subject,
-            (2, None) => {
+            (1 | 2, _, Some(_)) => {
                 return Err(ConfigError::Binding(
-                    "pipeline format version 2 requires `[subject]`".to_string(),
+                    "pipeline formats 1 and 2 have no `[gate]` Execution Binding; use version 3"
+                        .to_string(),
                 ));
             }
-            (version, _) => return Err(ConfigError::UnknownVersion(version)),
+            (2, Some(subject), None) => (subject, None),
+            (2..=4, None, _) => {
+                return Err(ConfigError::Binding(format!(
+                    "pipeline format version {} requires `[subject]`",
+                    self.version
+                )));
+            }
+            (3 | 4, Some(_), None) => {
+                return Err(ConfigError::Binding(format!(
+                    "pipeline format version {} requires an explicit `[gate]` Execution Binding",
+                    self.version
+                )));
+            }
+            (3 | 4, Some(subject), Some(gate)) => (subject, Some(gate)),
+            (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
+        if let Some(binding) = &gate {
+            let unique_caches: std::collections::BTreeSet<_> =
+                binding.caches.iter().copied().collect();
+            if unique_caches.len() != binding.caches.len() {
+                return Err(ConfigError::Binding(
+                    "Gate cache kinds must be unique".to_string(),
+                ));
+            }
+            match binding.provider {
+                SandboxProviderSpec::TrustedLocal => {
+                    if binding.required_isolation != IsolationSpec::None {
+                        return Err(ConfigError::Binding(
+                            "`trusted_local` can satisfy only explicit `required_isolation = \"none\"`"
+                                .to_string(),
+                        ));
+                    }
+                    if binding.image.is_some() {
+                        return Err(ConfigError::Binding(
+                            "`trusted_local` Gate bindings cannot declare a container image"
+                                .to_string(),
+                        ));
+                    }
+                }
+                SandboxProviderSpec::Container => {
+                    let image = binding.image.as_deref().ok_or_else(|| {
+                        ConfigError::Binding(
+                            "container Gate bindings require an `image` pinned by sha256 digest"
+                                .to_string(),
+                        )
+                    })?;
+                    if !is_pinned_container_image(image) {
+                        return Err(ConfigError::Binding(format!(
+                            "container Gate image `{image}` must be a non-option OCI reference pinned as `name@sha256:<64 lowercase hex>`"
+                        )));
+                    }
+                }
+            }
+        }
+        if gate.is_some() {
+            let gates: Vec<_> = self
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKindSpec::Gate)
+                .collect();
+            if gates.is_empty()
+                || gates
+                    .iter()
+                    .any(|node| !node.inputs.is_empty() || node.gated_by.is_some())
+            {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 3 requires every Gate node to be a root so every Gate Execution Binding is resolved"
+                        .to_string(),
+                ));
+            }
+        }
         validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
@@ -749,6 +990,7 @@ impl Definition {
         let mut reviewers = BTreeMap::new();
         let mut demand_requirements = BTreeMap::new();
         let mut packages = BTreeMap::new();
+        let mut reviewer_execution = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
@@ -758,9 +1000,44 @@ impl Definition {
                     spec.demands
                         .unwrap_or(review_core::DemandRequirement::Required),
                 );
+                match (self.version, &spec.execution) {
+                    (4, Some(execution)) => {
+                        execution.validate(&spec.id)?;
+                        if let Some(budgets) = &self.budgets {
+                            let authority =
+                                review_core::broker_authority_usage(&execution.operations)
+                                    .expect("validated Broker authority");
+                            if authority > budgets.attempt {
+                                return Err(ConfigError::Binding(format!(
+                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds the attempt cap ({}); the dispatch reservation would not cover its capability",
+                                    spec.id, budgets.attempt
+                                )));
+                            }
+                        }
+                        reviewer_execution.insert(spec.id.clone(), execution.clone());
+                    }
+                    (4, None) => {
+                        return Err(ConfigError::Binding(format!(
+                            "pipeline format version 4 requires reviewer `{}` to declare an Execution Binding",
+                            spec.id
+                        )));
+                    }
+                    (_, Some(_)) => {
+                        return Err(ConfigError::Binding(format!(
+                            "reviewer `{}` cannot declare an Execution Binding before pipeline version 4",
+                            spec.id
+                        )));
+                    }
+                    (_, None) => {}
+                }
             } else if spec.demands.is_some() {
                 return Err(ConfigError::Binding(format!(
                     "node `{}` is not a reviewer but classifies reviewer Demands",
+                    spec.id
+                )));
+            } else if spec.execution.is_some() {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` is not a reviewer but declares a reviewer Execution Binding",
                     spec.id
                 )));
             }
@@ -877,9 +1154,11 @@ impl Definition {
             plan,
             checks,
             check_timeout_seconds,
+            gate,
             reviewers,
             demand_requirements,
             packages,
+            reviewer_execution,
             budgets: self.budgets,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,
