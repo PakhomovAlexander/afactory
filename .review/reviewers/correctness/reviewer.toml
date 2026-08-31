@@ -4,6 +4,11 @@ subjects = ["diff", "whole-tree"]
 
 [runner]
 program = "codex"
-# Temporarily inherit the machine-configured Codex model. The adapter owns its
-# exec, sandbox, output-schema, and stdin arguments.
-args = []
+# Pin correctness independently of the machine-wide Codex profile. The adapter
+# still owns its exec, sandbox, output-schema, and stdin arguments.
+args = [
+  { value = "--model" },
+  { value = "gpt-5.6-terra" },
+  { value = "-c" },
+  { value = 'model_reasoning_effort="xhigh"' },
+]

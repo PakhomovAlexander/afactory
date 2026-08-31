@@ -4,7 +4,7 @@ version = 1
 
 [workers.correctness]
 version = "1.0.0"
-digest = "sha256:6b7aa7d562e3aa08b62ffd8ef0e4b117dfb27ae6bbbb093ba8db7dde930aed94"
+digest = "sha256:b164787386e6c53fca45042da0ee9c282092c1826e71ae59812cd9a32fcb6d5e"
 
 [workers.evaluator]
 version = "1.0.0"
