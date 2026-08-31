@@ -1,6 +1,6 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M4, private releases through `v0.4.0`, minimal product v1/v2, and their first
+**Status:** M0–M4, private releases through `v0.5.0`, minimal product v1/v2, and their first
 candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
 exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
 open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M5 now provides
@@ -13,9 +13,9 @@ snapshots and publishes `CacheManifest@1` receipts through `RunReport@5`; its fi
 returned Pass. M6.3 adds v4 reviewer credential modes, revocable broker handles,
 durable bounded operation receipts, secret isolation, charge reconciliation, and recovery-safe
 late revocation. Its final correctness Campaign findings are fixed and the final `make check`
-gate passes, completing M6. The Docker-backed M6.1 probe remains unexecuted on this daemon-less
-worktree and must be green when the product branch is first published. Resume at M7.1
-verified Proposals. The
+gate passes, completing M6. Private release `v0.5.0` points to exact `main` commit `c51601a`;
+exact-main CI, including container probes, passed, and both downloaded release archives verified.
+Resume at M7.1 verified Proposals. The
 accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
@@ -184,7 +184,8 @@ and verification prerequisites exist.
   - [x] M6.2 bounded sandbox-local Cache Snapshots; full local gate and final Codex-only Campaign
         passed with thirteen fixed Findings and zero open.
   - [x] M6.3 Broker Handles, receipts, revocation, secret isolation, recovery settlement, and
-        pre-dispatch budget coverage; final correctness findings fixed and `make check` green.
+        pre-dispatch budget coverage; final correctness findings fixed, `make check` green, and
+        shipped with default-light Campaigns in verified private release `v0.5.0`.
 - [ ] M7 — a Proposal unequal to the sealed diff is refused; export is by Proposal ID; stale
       export requires explicit override.
 - [ ] M8 — accepted SliceSets fan out losslessly under fan-out budgets; whole-Subject closeout and

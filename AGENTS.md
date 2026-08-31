@@ -19,9 +19,10 @@ M6.2 bounded Cache Snapshots retain their passed dogfood evidence. M6.3 adds v4
 credential-free, brokered, and trusted-unsafe reviewers; Brokered Attempts receive only a
 revocable handle, with durable bounded receipts, secret isolation, recovery settlement, and late
 revocation. Its final correctness Campaign findings are fixed and `make check` is green; M6 is
-complete. The Docker-backed M6.1 CI probe remains pending the first product-branch publication.
-Resume at M7.1 verified Proposals. V3.1 local delivery is
-implemented, proven against a real trusted repository, and passed a fresh pinned correctness
+complete. Private release `v0.5.0` points to exact `main` commit `c51601a`; exact-main CI,
+including the Docker-backed container probes, passed, and both supported release archives and
+checksum sidecars were downloaded and verified. Resume at M7.1 verified Proposals. V3.1 local
+delivery is implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
 clean-window Campaign.

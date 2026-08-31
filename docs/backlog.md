@@ -1,8 +1,8 @@
 # Afactory Review Kernel - backlog
 
 Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity, and M0–M2 are complete. Minimal product v1 and v2 now precede candidate dogfood
-and M3.1; they must not rename frozen persisted Review Kernel contracts.
+release parity through `v0.5.0`, and M0–M2 are complete. Minimal product v1 and v2 now precede
+candidate dogfood and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
@@ -640,6 +640,11 @@ is permitted only by an explicitly unsafe `trusted_local` execution policy and c
 pipeline requiring container isolation.
 
 ### M6.3 — Brokered external capabilities and revocation
+
+**Status: shipped in private release `v0.5.0` (2026-08-31).** Product PR #25 merged the
+default-light Campaign safeguard and PR #26 merged the release version at exact `main` commit
+`c51601a`; PR and exact-main CI, including container probes, passed. Both supported checksummed
+archives were downloaded and verified, and the packaged macOS binary reports `af 0.5.0`.
 
 A safe Attempt receives no reusable provider or service credential bytes through files,
 environment, argv, stdin, logs, or model context. Privileged operations go through a trusted

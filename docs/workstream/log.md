@@ -1,5 +1,20 @@
 # Review Kernel workstream log
 
+## 2026-08-31 — Private v0.5.0 M3–M6 release published
+
+[Product PR #25](https://github.com/PakhomovAlexander/afactory/pull/25) merged default-light
+Campaigns, and [release PR #26](https://github.com/PakhomovAlexander/afactory/pull/26) merged the
+workspace version at exact `main` commit `c51601a`. PR and exact-main CI passed, including the
+Docker-backed container probes. Lightweight tag `v0.5.0` points to that commit; private release
+workflow run `33432518747` completed its macOS, Linux, and publish jobs successfully.
+
+Freshly downloaded checksum sidecars passed: macOS arm64 archive
+`sha256:fb305ae48a30a4cfd6637a9b092af9746972f311a19971ee5b3ba4229a97f1c4` and Linux x86_64
+archive `sha256:af7edb12fbe4c386ae295bed1874126e3579c01f4f617b49eaa5de3fe5091902`. The extracted macOS
+binary reports `af 0.5.0`, and its review help exposes `--light|--heavy`. The release contains
+completed M3–M6 capability work and the one-Round default that prevents accidental repeated paid
+review Campaigns.
+
 ## 2026-08-31 — Light Campaigns become the default
 
 The M6.3 review retrospective found that four Campaigns and seven Terra/xhigh Attempts spent
