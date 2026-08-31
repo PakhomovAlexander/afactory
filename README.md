@@ -498,6 +498,50 @@ max_files = 250000
 max_copy_bytes = 536870912
 ```
 
+Pipeline format v4 also makes every reviewer credential boundary explicit. Formats v1–v3 keep
+their captured behavior and cannot acquire this claim retroactively:
+
+```toml
+version = 4
+
+# The v3 [gate] binding remains required.
+
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+package = "correctness"
+execution = { credential_mode = "brokered", operations = [
+  { name = "model_inference", destination = "provider.openai", method = "responses.create", max_request_bytes = 1048576, max_response_bytes = 1048576, max_calls = 2, max_usage = 300000 },
+] }
+```
+
+`credential_free` binds a reviewer that needs no credential. `brokered` requires a
+machine-local connector and gives the adapter only an opaque `BrokerClient`; project authority
+fixes each symbolic operation, destination, method, byte limit, call limit, and usage limit.
+`trusted_unsafe` is the explicit compatibility class for a runner that can read reusable
+credentials. It cannot authorize `auto_apply`. The current Codex and Claude CLI adapters report
+`trusted_unsafe`; a v4 brokered pipeline without a broker-capable adapter and machine-local
+provider is refused before any reviewer dispatch.
+
+For each admitted Attempt, `ReviewerExecutionBound@1` records the exact mode, lease epoch, handle,
+and operation policy; admission without that durable binding is invalid. The broker checks durable
+authority before and after every connector call. Public revocation marks the handle immediately,
+waits for an in-flight call, and prevents that call from releasing a response. A trusted connector
+consumes raw authenticated wire bytes and returns only its decoded application response. Before
+that response can cross the boundary, the broker rejects raw, base64/base64url, mixed-case hex,
+and mixed-case percent forms of the credential. Connector errors and panics become normalized
+charged receipts.
+
+`BrokerOperationCompleted@1` is durable before any response returns and records only digests,
+sizes, usage, and normalized outcomes. Fence races, credential exposure, numeric-domain overruns,
+receipt failures, and terminal handle revocation all withhold the response. Attempt settlement
+must cover durable broker usage; crash, timeout, and Round-supersession fences conservatively
+charge the complete broker authority bound, or higher already-observed usage, so a connector that
+finishes late can leave only a strictly validated revoked receipt. A late observed overrun raises
+the durable charge above the earlier fence instead of losing its receipt. One refused request is
+receipted before the handle becomes terminal, so repeated invalid or post-quota calls cannot grow
+durable state without a policy bound.
+
 The initial source is deliberately narrower than a complete Cargo home: it may contain package
 archives under `registry/cache/` and sparse-index data under `registry/index/`. Unpacked
 `registry/src/`, Cargo Git dependency caches, configuration, credential-shaped paths, symlinks,

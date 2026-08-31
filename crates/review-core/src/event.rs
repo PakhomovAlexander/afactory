@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 /// arbitrary strings cannot enter a new log through the typed API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EventType {
+    #[serde(rename = "BrokerOperationCompleted@1")]
+    BrokerOperationCompletedV1,
     #[serde(rename = "AttemptAdmitted@1")]
     AttemptAdmittedV1,
     #[serde(rename = "AttemptDispatched@1")]
@@ -69,6 +71,8 @@ pub enum EventType {
     PolicyTimeAdvancedV1,
     #[serde(rename = "ProviderOperationTransition@1")]
     ProviderOperationTransitionV1,
+    #[serde(rename = "ReviewerExecutionBound@1")]
+    ReviewerExecutionBoundV1,
     #[serde(rename = "RunReport@1")]
     RunReportV1,
     #[serde(rename = "RunReport@2")]
@@ -88,7 +92,8 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 40] = [
+        Self::BrokerOperationCompletedV1,
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
@@ -119,6 +124,7 @@ impl EventType {
         Self::NodeOutputReceiptV1,
         Self::PolicyTimeAdvancedV1,
         Self::ProviderOperationTransitionV1,
+        Self::ReviewerExecutionBoundV1,
         Self::RunReportV1,
         Self::RunReportV2,
         Self::RunReportV3,
@@ -131,6 +137,7 @@ impl EventType {
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
             Self::AttemptAdmittedV1 => "AttemptAdmitted@1",
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
             Self::AttemptFailedV1 => "AttemptFailed@1",
@@ -161,6 +168,7 @@ impl EventType {
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
             Self::PolicyTimeAdvancedV1 => "PolicyTimeAdvanced@1",
             Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
+            Self::ReviewerExecutionBoundV1 => "ReviewerExecutionBound@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
             Self::RunReportV3 => "RunReport@3",
@@ -194,6 +202,7 @@ impl EventType {
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
+            Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
             Self::AttemptAdmittedV1 => ("AttemptAdmitted", 1),
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
             Self::AttemptFailedV1 => ("AttemptFailed", 1),
@@ -224,6 +233,7 @@ impl EventType {
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
             Self::PolicyTimeAdvancedV1 => ("PolicyTimeAdvanced", 1),
             Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
+            Self::ReviewerExecutionBoundV1 => ("ReviewerExecutionBound", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
             Self::RunReportV3 => ("RunReport", 3),
@@ -277,6 +287,7 @@ impl std::str::FromStr for EventType {
             "AttemptFeedback@1" => Ok(Self::AttemptFeedbackV1),
             "AttemptInput@1" => Ok(Self::AttemptInputV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
+            "BrokerOperationCompleted@1" => Ok(Self::BrokerOperationCompletedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
             "ChangeAttested@1" => Ok(Self::ChangeAttestedV1),
@@ -307,6 +318,7 @@ impl std::str::FromStr for EventType {
             "RunReport@5" => Ok(Self::RunReportV5),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
+            "ReviewerExecutionBound@1" => Ok(Self::ReviewerExecutionBoundV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
@@ -1293,6 +1305,14 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::BrokerOperationCompletedV1 => {
+            let receipt =
+                serde_json::from_value::<crate::BrokerOperationReceiptV1>(payload.clone())
+                    .map_err(|error| format!("BrokerOperationCompleted@1: {error}"))?;
+            receipt
+                .validate()
+                .map_err(|error| format!("BrokerOperationCompleted@1: {error}"))
+        }
         EventType::AttemptDispatchedV1 => {
             let value: AttemptDispatchedPayloadV1 = serde_json::from_value(payload.clone())
                 .map_err(|error| format!("AttemptDispatched@1: {error}"))?;
@@ -1482,6 +1502,14 @@ pub fn validate_event_payload(
             transition
                 .validate()
                 .map_err(|error| format!("ProviderOperationTransition@1: {error}"))
+        }
+        EventType::ReviewerExecutionBoundV1 => {
+            let binding =
+                serde_json::from_value::<crate::ReviewerExecutionBindingV1>(payload.clone())
+                    .map_err(|error| format!("ReviewerExecutionBound@1: {error}"))?;
+            binding
+                .validate()
+                .map_err(|error| format!("ReviewerExecutionBound@1: {error}"))
         }
         EventType::RunReportV1 => {
             let report = serde_json::from_value::<LegacyRunReportV1>(payload.clone())

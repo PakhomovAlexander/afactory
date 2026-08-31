@@ -208,10 +208,107 @@ fn graph_validation_applies_to_definitions_too() {
 
 #[test]
 fn a_future_version_is_refused_rather_than_guessed_at() {
-    let future = MINIMAL.replace("version = 2", "version = 4");
+    let future = MINIMAL.replace("version = 2", "version = 5");
     assert!(matches!(
         Definition::from_toml(&future).unwrap().load(),
-        Err(ConfigError::UnknownVersion(4))
+        Err(ConfigError::UnknownVersion(5))
+    ));
+}
+
+fn version_four(mode: &str, operations: &str) -> String {
+    MINIMAL
+        .replace(
+            "version = 2",
+            "version = 4\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+        )
+        .replace(
+            "id = \"architecture\"\nkind = \"reviewer\"",
+            &format!(
+                "id = \"architecture\"\nkind = \"reviewer\"\nexecution = {{ credential_mode = \"{mode}\"{operations} }}"
+            ),
+        )
+}
+
+#[test]
+fn version_four_requires_an_explicit_reviewer_execution_binding() {
+    let missing = MINIMAL.replace(
+        "version = 2",
+        "version = 4\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("version 4") && message.contains("architecture")
+    ));
+
+    let loaded = Definition::from_toml(&version_four("credential_free", ""))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(
+        loaded.reviewer_execution()["architecture"].credential_mode,
+        review_core::BrokerCredentialModeV1::CredentialFree
+    );
+
+    let retroactive = MINIMAL.replace(
+        "kind = \"reviewer\"",
+        "kind = \"reviewer\"\nexecution = { credential_mode = \"credential_free\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&retroactive).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("before pipeline version 4")
+    ));
+}
+
+#[test]
+fn brokered_reviewer_authority_is_bounded_and_trusted_unsafe_cannot_auto_apply() {
+    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 2, max_usage = 300000 }]";
+    let loaded = Definition::from_toml(&version_four("brokered", operation))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(
+        loaded.reviewer_execution()["architecture"].operations[0].destination,
+        "provider.openai"
+    );
+
+    assert!(matches!(
+        Definition::from_toml(&version_four("brokered", "")).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("at least one bounded operation")
+    ));
+    let max_domain = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 9007199254740991 }]";
+    assert!(matches!(
+        Definition::from_toml(&version_four("brokered", max_domain))
+            .unwrap()
+            .load(),
+        Err(ConfigError::Binding(message)) if message.contains("invalid Broker operation")
+    ));
+    let aggregate = ", operations = [{ name = \"first\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 5000000000000000 }, { name = \"second\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 5000000000000000 }]";
+    assert!(matches!(
+        Definition::from_toml(&version_four("brokered", aggregate))
+            .unwrap()
+            .load(),
+        Err(ConfigError::Binding(message)) if message.contains("aggregate Broker authority")
+    ));
+    let unsafe_auto = version_four("trusted_unsafe", ", auto_apply = true");
+    assert!(matches!(
+        Definition::from_toml(&unsafe_auto).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("cannot authorize auto_apply")
+    ));
+}
+
+#[test]
+fn brokered_authority_must_fit_the_pre_dispatch_budget_reservation() {
+    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 200 }]";
+    let over_budget = version_four("brokered", operation).replace(
+        "version = 4",
+        "version = 4\n\n[budgets]\nunit = \"tokens\"\nattempt = 100\nrun = 150",
+    );
+
+    assert!(matches!(
+        Definition::from_toml(&over_budget).unwrap().load(),
+        Err(ConfigError::Binding(message))
+            if message.contains("aggregate Broker authority (200)")
+                && message.contains("attempt cap (100)")
     ));
 }
 

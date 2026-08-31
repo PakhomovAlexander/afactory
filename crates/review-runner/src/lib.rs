@@ -29,6 +29,8 @@ pub use model::{
     estimate_tokens, extract_result, parse_stage_output, parse_stage_output_for, result_contract,
     unfence,
 };
+pub use review_broker::BrokerClient;
+pub use review_core::BrokerCredentialModeV1;
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{
     ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,

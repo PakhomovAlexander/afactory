@@ -11,6 +11,7 @@
 //! - JSON payloads live in the I-JSON numeric domain ([`json::admit`]) before they are hashed,
 //!   so a value cannot change meaning between producer and consumer.
 
+pub mod broker;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
@@ -30,6 +31,11 @@ pub mod resolution;
 pub mod snapshot;
 pub mod subject;
 
+pub use broker::{
+    BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, ReviewerExecutionBindingV1,
+    broker_authority_usage,
+};
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
     MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,

@@ -7,22 +7,24 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1,
-    CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
-    ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, DEMAND_REDUCER_VERSION,
-    DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus, DemandV1, DemandWaiverV1,
-    EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
-    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
-    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
-    FixVerificationV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
-    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
-    ResolutionChallengeKind, ResolutionChallengeV1, ReviewerPackageV1, RunCacheFailureReasonV5,
-    RunCacheFailureV5, RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent,
-    RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3,
-    RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2,
-    RunVerdictV3, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    ArtifactEnvelope, AuthorityFileV1, BrokerCredentialModeV1, BrokerOperationOutcomeV1,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, CacheManifestEntryV1, CacheManifestV1,
+    CachePathEncodingV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
+    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind,
+    DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
+    DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1,
+    EvidenceV1, FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction,
+    FindingGroupingV1, FindingReport, FindingResolutionOutcome, FindingResolutionV1,
+    FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location, MissingNodeV2,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1,
+    PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
+    ProviderOperationTransitionPayloadV1, ResolutionChallengeKind, ResolutionChallengeV1,
+    ReviewerExecutionBindingV1, ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5,
+    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
+    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
+    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
@@ -778,7 +780,112 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
         .map(|event_type| serde_json::to_value(event_type).unwrap())
         .collect();
     assert_eq!(declared, &rust);
+    for event_type in EventType::ALL {
+        assert_eq!(
+            event_type.as_str().parse::<EventType>().unwrap(),
+            event_type
+        );
+    }
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
+}
+
+#[test]
+fn broker_binding_and_receipt_payloads_match_the_event_schema() {
+    let policy = BrokerOperationPolicyV1 {
+        name: "model_inference".into(),
+        destination: "provider.test".into(),
+        method: "responses.create".into(),
+        max_request_bytes: 1024,
+        max_response_bytes: 2048,
+        max_calls: 1,
+        max_usage: 10_000,
+    };
+    let attempt_id = "a".repeat(26);
+    let handle_id = "b".repeat(26);
+    let binding = ReviewerExecutionBindingV1 {
+        node: "correctness".into(),
+        attempt_id: attempt_id.clone(),
+        lease_epoch: 1,
+        credential_mode: BrokerCredentialModeV1::Brokered,
+        auto_apply: false,
+        broker_handle: Some(handle_id.clone()),
+        operations: vec![policy.clone()],
+        admitted: true,
+    };
+    binding.validate().unwrap();
+    let binding_payload = serde_json::to_value(binding).unwrap();
+    review_core::event::validate_event_payload(
+        EventType::ReviewerExecutionBoundV1,
+        &binding_payload,
+    )
+    .unwrap();
+
+    let receipt = BrokerOperationReceiptV1 {
+        handle_id,
+        node: "correctness".into(),
+        attempt_id: attempt_id.clone(),
+        lease_epoch: 1,
+        operation: policy.name,
+        destination: policy.destination,
+        method: policy.method,
+        ordinal: 1,
+        outcome: BrokerOperationOutcomeV1::Succeeded,
+        failure_reason: None,
+        request_digest: format!("sha256:{}", "c".repeat(64)),
+        response_digest: Some(format!("sha256:{}", "d".repeat(64))),
+        request_bytes: 128,
+        response_bytes: 256,
+        reserved_usage: 1000,
+        charged_usage: 900,
+    };
+    receipt.validate().unwrap();
+    let contradictory = BrokerOperationReceiptV1 {
+        outcome: review_core::BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
+        ..receipt.clone()
+    };
+    assert!(contradictory.validate().is_err());
+    let redacted_overrun = BrokerOperationReceiptV1 {
+        outcome: review_core::BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
+        response_digest: None,
+        response_bytes: 0,
+        charged_usage: 1_001,
+        ..receipt.clone()
+    };
+    redacted_overrun.validate().unwrap();
+    let overcharged_exposure = BrokerOperationReceiptV1 {
+        failure_reason: Some(review_core::BrokerFailureReasonV1::CredentialExposure),
+        charged_usage: 1_001,
+        ..redacted_overrun
+    };
+    assert!(overcharged_exposure.validate().is_err());
+    let receipt_payload = serde_json::to_value(receipt).unwrap();
+    review_core::event::validate_event_payload(
+        EventType::BrokerOperationCompletedV1,
+        &receipt_payload,
+    )
+    .unwrap();
+
+    for (event_type, payload) in [
+        (EventType::ReviewerExecutionBoundV1, binding_payload),
+        (EventType::BrokerOperationCompletedV1, receipt_payload),
+    ] {
+        let event = RunEvent {
+            event_id: "e".repeat(26),
+            run_id: "f".repeat(26),
+            sequence: 1,
+            event_type,
+            occurred_at: "2026-08-31T12:00:00Z".into(),
+            node_id: Some("correctness".into()),
+            attempt_id: Some(attempt_id.clone()),
+            causation_id: Some("g".repeat(26)),
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload,
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
+    }
 }
 
 #[test]

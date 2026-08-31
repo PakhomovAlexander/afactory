@@ -1080,6 +1080,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-broker"
+version = "0.4.0"
+dependencies = [
+ "base64",
+ "review-core",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "review-check"
 version = "0.4.0"
 dependencies = [
@@ -1137,6 +1147,7 @@ name = "review-pipeline"
 version = "0.4.0"
 dependencies = [
  "review-attempt",
+ "review-broker",
  "review-check",
  "review-config",
  "review-core",
@@ -1161,6 +1172,7 @@ name = "review-runner"
 version = "0.4.0"
 dependencies = [
  "jsonschema",
+ "review-broker",
  "review-core",
  "review-process",
  "review-store",

@@ -661,6 +661,71 @@ struct RoundCaptureRequest<'a> {
     ledger_projection: LedgerProjection,
 }
 
+fn outstanding_attempts_for_supersession(
+    events: &[review_core::RunEvent],
+    round_event_id: &str,
+) -> Result<Vec<(String, String, Option<u64>)>, String> {
+    let mut live = BTreeMap::new();
+    for event in events
+        .iter()
+        .filter(|event| event.causation_id.as_deref() == Some(round_event_id))
+    {
+        let Some(attempt) = event.attempt_id.clone() else {
+            continue;
+        };
+        match event.event_type {
+            EventType::AttemptDispatchedV1 => {
+                live.insert(
+                    attempt,
+                    (
+                        event
+                            .node_id
+                            .clone()
+                            .ok_or("AttemptDispatched@1 has no node ID")?,
+                        event.payload["reserved"].as_u64(),
+                        0_u64,
+                    ),
+                );
+            }
+            EventType::ReviewerExecutionBoundV1 => {
+                let binding: review_core::ReviewerExecutionBindingV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let authorized = review_core::broker_authority_usage(&binding.operations)?;
+                if let Some((_, charged, _)) = live.get_mut(&attempt) {
+                    *charged = Some(charged.unwrap_or(0).max(authorized));
+                }
+            }
+            EventType::BrokerOperationCompletedV1 => {
+                let receipt: review_core::BrokerOperationReceiptV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                if let Some((_, _, observed)) = live.get_mut(&attempt) {
+                    *observed = observed
+                        .checked_add(receipt.charged_usage)
+                        .ok_or("broker receipt usage overflow")?;
+                }
+            }
+            EventType::AttemptAdmittedV1
+            | EventType::AttemptFailedV1
+            | EventType::AttemptFencedV1
+            | EventType::AttemptReleasedV1 => {
+                live.remove(&attempt);
+            }
+            _ => {}
+        }
+    }
+    Ok(live
+        .into_iter()
+        .map(|(attempt, (node, charged, observed))| {
+            let charged = charged
+                .map(|charged| charged.max(observed))
+                .or((observed > 0).then_some(observed));
+            (node, attempt, charged)
+        })
+        .collect())
+}
+
 fn capture_round(
     options: &Options,
     cas: &Cas,
@@ -690,36 +755,7 @@ fn capture_round(
                     .into(),
             );
         }
-        let mut live = BTreeMap::new();
-        for event in events
-            .into_iter()
-            .filter(|event| event.causation_id.as_deref() == Some(old_event.event_id.as_str()))
-        {
-            let Some(attempt) = event.attempt_id.clone() else {
-                continue;
-            };
-            match event.event_type {
-                EventType::AttemptDispatchedV1 => {
-                    live.insert(
-                        attempt,
-                        (
-                            event.node_id.ok_or("AttemptDispatched@1 has no node ID")?,
-                            event.payload["reserved"].as_u64(),
-                        ),
-                    );
-                }
-                EventType::AttemptAdmittedV1
-                | EventType::AttemptFailedV1
-                | EventType::AttemptFencedV1
-                | EventType::AttemptReleasedV1 => {
-                    live.remove(&attempt);
-                }
-                _ => {}
-            }
-        }
-        live.into_iter()
-            .map(|(attempt, (node, charged))| (node, attempt, charged))
-            .collect()
+        outstanding_attempts_for_supersession(&events, &old_event.event_id)?
     } else {
         Vec::new()
     };
@@ -1449,6 +1485,26 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    fn attempt_event(
+        sequence: u64,
+        event_type: review_core::EventType,
+        payload: serde_json::Value,
+    ) -> review_core::RunEvent {
+        review_core::RunEvent {
+            event_id: format!("event-{sequence}"),
+            run_id: "run".into(),
+            sequence,
+            event_type,
+            occurred_at: "2026-08-31T00:00:00Z".into(),
+            node_id: Some("reviewer".into()),
+            attempt_id: Some("a".repeat(26)),
+            causation_id: Some("round".into()),
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload,
+        }
+    }
+
     #[test]
     fn omitted_git_timeout_resolves_to_the_capture_default() {
         assert_eq!(
@@ -1486,6 +1542,70 @@ mod tests {
         assert_eq!(
             super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
             (serde_json::Value::Null, serde_json::Value::Null, false)
+        );
+    }
+
+    #[test]
+    fn supersession_fence_covers_observed_usage_above_broker_authority() {
+        let attempt = "a".repeat(26);
+        let operation = review_core::BrokerOperationPolicyV1 {
+            name: "model_inference".into(),
+            destination: "provider.test".into(),
+            method: "responses.create".into(),
+            max_request_bytes: 1024,
+            max_response_bytes: 1024,
+            max_calls: 1,
+            max_usage: 100,
+        };
+        let events = vec![
+            attempt_event(
+                1,
+                review_core::EventType::AttemptDispatchedV1,
+                serde_json::json!({"reserved": null}),
+            ),
+            attempt_event(
+                2,
+                review_core::EventType::ReviewerExecutionBoundV1,
+                serde_json::to_value(review_core::ReviewerExecutionBindingV1 {
+                    node: "reviewer".into(),
+                    attempt_id: attempt.clone(),
+                    lease_epoch: 1,
+                    credential_mode: review_core::BrokerCredentialModeV1::Brokered,
+                    auto_apply: false,
+                    broker_handle: Some("b".repeat(26)),
+                    operations: vec![operation],
+                    admitted: true,
+                })
+                .unwrap(),
+            ),
+            attempt_event(
+                3,
+                review_core::EventType::BrokerOperationCompletedV1,
+                serde_json::to_value(review_core::BrokerOperationReceiptV1 {
+                    handle_id: "b".repeat(26),
+                    node: "reviewer".into(),
+                    attempt_id: attempt.clone(),
+                    lease_epoch: 1,
+                    operation: "model_inference".into(),
+                    destination: "provider.test".into(),
+                    method: "responses.create".into(),
+                    ordinal: 1,
+                    outcome: review_core::BrokerOperationOutcomeV1::Failed,
+                    failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
+                    request_digest: format!("sha256:{}", "c".repeat(64)),
+                    response_digest: Some(format!("sha256:{}", "d".repeat(64))),
+                    request_bytes: 7,
+                    response_bytes: 8,
+                    reserved_usage: 100,
+                    charged_usage: 101,
+                })
+                .unwrap(),
+            ),
+        ];
+
+        assert_eq!(
+            super::outstanding_attempts_for_supersession(&events, "round").unwrap(),
+            vec![("reviewer".into(), attempt, Some(101))]
         );
     }
 }

@@ -29,6 +29,10 @@ use std::time::Duration;
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
 };
+use review_broker::{
+    AuthorityError, Broker, BrokerClient, BrokerHandle, Connector, Credential, LeaseAuthority,
+    ReceiptError, ReceiptSink,
+};
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
 use review_core::event::{
     AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFailedPayloadV1,
@@ -36,9 +40,10 @@ use review_core::event::{
     AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignManifestV1, CampaignOpenedPayloadV1, EventType, LegacyStageOutput,
-    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, ReviewerResultContract, ReviewerResultRejection,
+    BrokerCredentialModeV1, BrokerLeaseV1, BrokerOperationReceiptV1, CampaignManifestV1,
+    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
+    MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
+    PortArtifactsV1, ReviewerExecutionBindingV1, ReviewerResultContract, ReviewerResultRejection,
     RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4,
     RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
@@ -59,10 +64,31 @@ use review_sandbox::{
 use review_source_git::Manifest;
 use review_store::{
     Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, LedgerProjection, NewEvent,
-    Verdict,
+    StoreError, Verdict,
 };
 
 type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync;
+
+/// Machine-local capability material for one brokered reviewer. Neither field is captured in
+/// project authority or durable evidence; only bounded symbolic operation policy is.
+pub struct BrokerProvider {
+    credential: Vec<u8>,
+    connector: Arc<dyn Connector>,
+}
+
+impl BrokerProvider {
+    pub fn new(
+        credential: impl Into<Vec<u8>>,
+        connector: Arc<dyn Connector>,
+    ) -> Result<Self, String> {
+        let credential = credential.into();
+        Credential::new(credential.clone()).map_err(|error| error.to_string())?;
+        Ok(Self {
+            credential,
+            connector,
+        })
+    }
+}
 
 fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u32) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
@@ -629,7 +655,10 @@ fn replay_execution(
     let mut replayed = ReplayedExecution::default();
     let mut reservations = BTreeMap::new();
     let mut terminal_attempts = BTreeSet::new();
+    let mut terminal_charges = BTreeMap::new();
     let mut provider_operations = BTreeMap::new();
+    let mut broker_authorized_usage = BTreeMap::new();
+    let mut broker_observed_usage = BTreeMap::new();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut round_lineage = BTreeSet::new();
     for event in &events {
@@ -771,6 +800,27 @@ fn replay_execution(
                     return Err("attempt has duplicate durable dispatch events".into());
                 }
             }
+            EventType::ReviewerExecutionBoundV1 => {
+                let binding: ReviewerExecutionBindingV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let authorized = review_core::broker_authority_usage(&binding.operations)?;
+                if broker_authorized_usage
+                    .insert(binding.attempt_id, authorized)
+                    .is_some()
+                {
+                    return Err("attempt has duplicate reviewer Execution Bindings".into());
+                }
+            }
+            EventType::BrokerOperationCompletedV1 => {
+                let receipt: BrokerOperationReceiptV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let observed = broker_observed_usage
+                    .entry(receipt.attempt_id)
+                    .or_insert(0_u64);
+                *observed = observed
+                    .checked_add(receipt.charged_usage)
+                    .ok_or("broker receipt usage overflow")?;
+            }
             EventType::AttemptInputV1 if active_epoch => {
                 let payload: AttemptInputPayloadV1 =
                     serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
@@ -799,10 +849,7 @@ fn replay_execution(
                     return Err("attempt has duplicate selected terminal lifecycle events".into());
                 }
                 reservations.remove(&attempt);
-                replayed.committed_tokens = replayed
-                    .committed_tokens
-                    .checked_add(payload.cost_tokens)
-                    .ok_or("replayed token charge overflow")?;
+                terminal_charges.insert(attempt.clone(), payload.cost_tokens);
                 if active_epoch && payload.selection == "selected" {
                     let result_artifact = payload
                         .result_artifact
@@ -842,10 +889,7 @@ fn replay_execution(
                     return Err("attempt has duplicate terminal lifecycle events".into());
                 }
                 reservations.remove(&attempt);
-                replayed.committed_tokens = replayed
-                    .committed_tokens
-                    .checked_add(payload.charged.unwrap_or(0))
-                    .ok_or("replayed token charge overflow")?;
+                terminal_charges.insert(attempt, payload.charged.unwrap_or(0));
             }
             EventType::AttemptFencedV1 => {
                 let payload: AttemptFencedPayloadV1 =
@@ -860,10 +904,7 @@ fn replay_execution(
                     return Err("attempt has duplicate terminal lifecycle events".into());
                 }
                 reservations.remove(&attempt);
-                replayed.committed_tokens = replayed
-                    .committed_tokens
-                    .checked_add(payload.charged.unwrap_or(0))
-                    .ok_or("replayed token charge overflow")?;
+                terminal_charges.insert(attempt, payload.charged.unwrap_or(0));
             }
             EventType::AttemptFeedbackV1 if active_epoch => {
                 let payload: AttemptFeedbackPayloadV1 =
@@ -889,6 +930,7 @@ fn replay_execution(
                     return Err("attempt has duplicate terminal lifecycle events".into());
                 }
                 reservations.remove(&attempt);
+                terminal_charges.insert(attempt, 0);
             }
             EventType::ProviderOperationTransitionV1 => {
                 let payload: review_core::ProviderOperationTransitionPayloadV1 =
@@ -912,15 +954,27 @@ fn replay_execution(
                 .ok_or("replayed provider reservation overflow")?;
         }
     }
-    for (attempt, (node, reserved, active_epoch)) in reservations {
+    for (attempt, settled) in terminal_charges {
+        let charged = settled.max(broker_observed_usage.get(&attempt).copied().unwrap_or(0));
         replayed.committed_tokens = replayed
             .committed_tokens
-            .checked_add(reserved)
+            .checked_add(charged)
+            .ok_or("replayed token charge overflow")?;
+    }
+    for (attempt, (node, reserved, active_epoch)) in reservations {
+        // A fenced attempt charges conservatively. The dispatch reservation covers ordinary
+        // reviewers; a Broker binding is also a durable reservation because an in-flight
+        // connector can finish after another process fences the attempt. Observed receipts are
+        // included explicitly so recovery remains correct even for older or partial bindings.
+        let charged = reserved
+            .max(broker_authorized_usage.get(&attempt).copied().unwrap_or(0))
+            .max(broker_observed_usage.get(&attempt).copied().unwrap_or(0));
+        replayed.committed_tokens = replayed
+            .committed_tokens
+            .checked_add(charged)
             .ok_or("replayed token charge overflow")?;
         if active_epoch {
-            replayed
-                .outstanding_attempts
-                .push((node, attempt, reserved));
+            replayed.outstanding_attempts.push((node, attempt, charged));
         }
     }
     for (node, receipt) in &replayed.outputs {
@@ -1036,6 +1090,8 @@ pub struct Kernel<'a> {
     cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
     cache_failures: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheFailureV5>>,
     reviewers: BTreeMap<String, Box<dyn ReviewerAdapter>>,
+    reviewer_execution: BTreeMap<String, review_config::ReviewerExecutionSpec>,
+    broker_providers: BTreeMap<String, BrokerProvider>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
@@ -1081,6 +1137,100 @@ pub struct Kernel<'a> {
     /// canonical reducers consult only this map plus the validated graph when binding artifacts.
     node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
     replayed_spent: u64,
+}
+
+struct KernelBrokerBoundary<'kernel, 'store> {
+    kernel: &'kernel Kernel<'store>,
+}
+
+impl LeaseAuthority for KernelBrokerBoundary<'_, '_> {
+    fn ensure_current(
+        &self,
+        lease: &BrokerLeaseV1,
+        handle: &BrokerHandle,
+    ) -> Result<(), AuthorityError> {
+        if lease.campaign_id != self.kernel.run_id
+            || lease.round_event_id != self.kernel.authority.round_event_id
+            || lease.node_id.trim().is_empty()
+        {
+            return Err(AuthorityError);
+        }
+        let events = self
+            .kernel
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.kernel.run_id)
+            .map_err(|_| AuthorityError)?;
+        let latest_round = events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == EventType::RoundStartedV1)
+            .map(|event| event.event_id.as_str());
+        if latest_round != Some(lease.round_event_id.as_str()) {
+            return Err(AuthorityError);
+        }
+        let mut latest_attempt = None;
+        let mut bound = false;
+        let mut terminal = false;
+        for event in events.iter().filter(|event| {
+            event.causation_id.as_deref() == Some(lease.round_event_id.as_str())
+                && event.node_id.as_deref() == Some(lease.node_id.as_str())
+        }) {
+            if event.event_type == EventType::AttemptDispatchedV1 {
+                latest_attempt = event.attempt_id.as_deref();
+            }
+            if event.attempt_id.as_deref() != Some(lease.attempt_id.as_str()) {
+                continue;
+            }
+            if event.event_type == EventType::ReviewerExecutionBoundV1 {
+                let binding: ReviewerExecutionBindingV1 =
+                    serde_json::from_value(event.payload.clone()).map_err(|_| AuthorityError)?;
+                bound = binding.admitted
+                    && binding.lease_epoch == lease.lease_epoch
+                    && binding.broker_handle.as_deref() == Some(handle.as_str());
+            }
+            if matches!(
+                event.event_type,
+                EventType::AttemptAdmittedV1
+                    | EventType::AttemptFailedV1
+                    | EventType::AttemptFencedV1
+                    | EventType::AttemptReleasedV1
+            ) {
+                terminal = true;
+            }
+        }
+        (latest_attempt == Some(lease.attempt_id.as_str()) && bound && !terminal)
+            .then_some(())
+            .ok_or(AuthorityError)
+    }
+}
+
+impl ReceiptSink for KernelBrokerBoundary<'_, '_> {
+    fn record(&self, receipt: &BrokerOperationReceiptV1) -> Result<(), ReceiptError> {
+        let event = NewEvent::new(
+            EventType::BrokerOperationCompletedV1,
+            serde_json::to_value(receipt).map_err(|_| ReceiptError::Unavailable)?,
+        )
+        .node(&receipt.node)
+        .attempt(&receipt.attempt_id)
+        .correlating(&receipt.handle_id);
+        let event = self.kernel.bind_authority(event);
+        let appended = self.kernel.store.lock().expect("event store").append(
+            &self.kernel.run_id,
+            self.kernel.cas,
+            event,
+        );
+        match appended {
+            Ok(event) => {
+                self.kernel
+                    .fold_appended_into_ledger_cache(std::slice::from_ref(&event));
+                Ok(())
+            }
+            Err(StoreError::AttemptNotCurrent) => Err(ReceiptError::AuthorityRevoked),
+            Err(_) => Err(ReceiptError::Unavailable),
+        }
+    }
 }
 
 fn persisted_verdict(
@@ -1200,6 +1350,8 @@ impl<'a> Kernel<'a> {
             cache_snapshots: Mutex::new(replayed.cache_snapshots),
             cache_failures: Mutex::new(BTreeMap::new()),
             reviewers: BTreeMap::new(),
+            reviewer_execution: BTreeMap::new(),
+            broker_providers: BTreeMap::new(),
             demand_requirements: BTreeMap::new(),
             attempts: Mutex::new(attempts),
             budgets: None,
@@ -1268,6 +1420,7 @@ impl<'a> Kernel<'a> {
         kernel.input_bindings = loaded.input_bindings();
         kernel.demand_requirements = loaded.demand_requirements().clone();
         kernel.gate_execution = loaded.gate_execution().cloned();
+        kernel.reviewer_execution = loaded.reviewer_execution().clone();
         Ok(kernel)
     }
 
@@ -1312,6 +1465,18 @@ impl<'a> Kernel<'a> {
         adapter: Box<dyn ReviewerAdapter>,
     ) -> Self {
         self.reviewers.insert(node_id.into(), adapter);
+        self
+    }
+
+    /// Bind machine-local connector and credential material for one v4 brokered reviewer.
+    /// Project authority names only the operation policy; these bytes remain outside snapshots,
+    /// events, reviewer context, and release artifacts.
+    pub fn with_broker_provider(
+        mut self,
+        node_id: impl Into<String>,
+        provider: BrokerProvider,
+    ) -> Self {
+        self.broker_providers.insert(node_id.into(), provider);
         self
     }
 
@@ -2582,6 +2747,15 @@ impl<'a> Kernel<'a> {
         inputs.prior_findings_artifact_id = prior_findings_artifact.clone();
 
         let mut retry_failures: Vec<String> = Vec::new();
+        let broker_fence_authority = self
+            .reviewer_execution
+            .get(node_id)
+            .filter(|execution| {
+                execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
+            })
+            .map(|execution| review_core::broker_authority_usage(&execution.operations))
+            .transpose()?
+            .unwrap_or(0);
         for _ in 0..=self.timeout_retries {
             // The scheduler prepares the first attempt in plan order before spawning this
             // worker. Retries are prepared here only after the predecessor is terminal.
@@ -2645,6 +2819,74 @@ impl<'a> Kernel<'a> {
                 reserved_tokens: reservation.as_ref().map(|reservation| reservation.amount),
             });
 
+            let boundary = KernelBrokerBoundary { kernel: self };
+            let brokered = (|| -> Result<Option<Broker<'_>>, String> {
+                let Some(execution) = self.reviewer_execution.get(node_id) else {
+                    return Ok(None);
+                };
+                let lease_epoch = self
+                    .attempts
+                    .lock()
+                    .expect("attempt ledger")
+                    .attempt(&attempt)
+                    .and_then(|attempt| attempt.epoch.checked_add(1))
+                    .ok_or_else(|| "reviewer Attempt has no broker lease epoch".to_string())?;
+                let mut broker = None;
+                let broker_handle = if execution.credential_mode == BrokerCredentialModeV1::Brokered
+                {
+                    let provider = self.broker_providers.get(node_id).ok_or_else(|| {
+                        format!("brokered reviewer `{node_id}` has no machine-local provider")
+                    })?;
+                    let issued = Broker::issue(
+                        BrokerLeaseV1 {
+                            campaign_id: self.run_id.clone(),
+                            round_event_id: self.authority.round_event_id.clone(),
+                            node_id: node_id.to_string(),
+                            attempt_id: attempt.to_string(),
+                            lease_epoch,
+                        },
+                        execution.operations.clone(),
+                        Credential::new(provider.credential.clone())
+                            .map_err(|error| error.to_string())?,
+                        &boundary,
+                        provider.connector.as_ref(),
+                        &boundary,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let handle = issued.handle().as_str().to_string();
+                    broker = Some(issued);
+                    Some(handle)
+                } else {
+                    None
+                };
+                let binding = ReviewerExecutionBindingV1 {
+                    node: node_id.to_string(),
+                    attempt_id: attempt.to_string(),
+                    lease_epoch,
+                    credential_mode: execution.credential_mode,
+                    auto_apply: execution.auto_apply,
+                    broker_handle,
+                    operations: execution.operations.clone(),
+                    admitted: true,
+                };
+                self.append(
+                    NewEvent::new(
+                        EventType::ReviewerExecutionBoundV1,
+                        serde_json::to_value(binding).map_err(|error| error.to_string())?,
+                    )
+                    .node(node_id)
+                    .attempt(attempt.to_string()),
+                )?;
+                Ok(broker)
+            })();
+            let broker = match brokered {
+                Ok(broker) => broker,
+                Err(error) => {
+                    self.release_prepared_attempt(node_id, &attempt, reservation.as_ref(), &error)?;
+                    return Err(error);
+                }
+            };
+
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
             // snapshot, or a retry of themselves.
@@ -2657,15 +2899,22 @@ impl<'a> Kernel<'a> {
             };
 
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                adapter.invoke_receipted(self.cas, sandbox.root(), &inputs)
+                adapter.invoke_with_broker(
+                    self.cas,
+                    sandbox.root(),
+                    &inputs,
+                    broker.as_ref().map(|broker| broker as &dyn BrokerClient),
+                )
             }));
+            let broker_charged = broker.as_ref().map_or(0, Broker::charged_usage);
             let invoked = match invoked {
                 Ok(invoked) => invoked,
                 Err(_) => {
                     let error = format!("reviewer adapter panicked for node {node_id}");
                     let charged = reservation
                         .as_ref()
-                        .map_or(0, |reservation| reservation.amount);
+                        .map_or(broker_charged, |reservation| reservation.amount)
+                        .max(broker_charged);
                     self.fail_started_attempt(
                         node_id,
                         &attempt,
@@ -2680,6 +2929,31 @@ impl<'a> Kernel<'a> {
 
             match invoked {
                 Ok(receipted) => {
+                    let reported_charge = receipted
+                        .returned
+                        .cost_tokens
+                        .max(receipted.usage.chargeable_tokens);
+                    if broker.is_some()
+                        && (receipted.returned.cost_tokens != broker_charged
+                            || receipted.usage.chargeable_tokens != broker_charged)
+                    {
+                        let error = format!(
+                            "brokered reviewer usage mismatch: Broker charged {broker_charged}, adapter reported cost_tokens={} and chargeable_tokens={}",
+                            receipted.returned.cost_tokens, receipted.usage.chargeable_tokens
+                        );
+                        self.fail_started_attempt(
+                            node_id,
+                            &attempt,
+                            reservation.as_ref(),
+                            &error,
+                            broker_charged.max(reported_charge),
+                            AttemptFailureEvidence {
+                                raw_artifact: Some(&receipted.returned.raw_artifact),
+                                refusal_history: None,
+                            },
+                        )?;
+                        return Err(error);
+                    }
                     let returned = receipted.returned;
                     let assigned_finding_ids = inputs
                         .prior_findings
@@ -2713,7 +2987,7 @@ impl<'a> Kernel<'a> {
                                 &attempt,
                                 reservation.as_ref(),
                                 &detail,
-                                returned.cost_tokens,
+                                returned.cost_tokens.max(broker_charged),
                                 AttemptFailureEvidence {
                                     raw_artifact: Some(&returned.raw_artifact),
                                     refusal_history: Some(&retry_failures),
@@ -2764,7 +3038,7 @@ impl<'a> Kernel<'a> {
                                 &attempt,
                                 reservation.as_ref(),
                                 &error,
-                                returned.cost_tokens,
+                                returned.cost_tokens.max(broker_charged),
                                 AttemptFailureEvidence {
                                     raw_artifact: Some(&returned.raw_artifact),
                                     refusal_history: None,
@@ -2848,7 +3122,8 @@ impl<'a> Kernel<'a> {
                     ));
                     let charged = reservation
                         .as_ref()
-                        .map_or(0, |reservation| reservation.amount);
+                        .map_or(broker_charged, |reservation| reservation.amount)
+                        .max(broker_charged);
                     self.fail_started_attempt(
                         node_id,
                         &attempt,
@@ -2870,19 +3145,22 @@ impl<'a> Kernel<'a> {
                     // so the full reservation is charged — the conservative reading of "a
                     // fenced attempt charges", and the one that keeps a hang from being a
                     // free retry.
+                    let charged = reservation
+                        .as_ref()
+                        .map_or(broker_charged, |reservation| reservation.amount)
+                        .max(broker_charged)
+                        .max(broker_fence_authority);
                     self.attempts.lock().expect("attempt ledger").fence(node_id);
-                    if let Some(reservation) = &reservation {
-                        self.attempts
-                            .lock()
-                            .expect("attempt ledger")
-                            .charge(&attempt, reservation.amount);
-                    }
+                    self.attempts
+                        .lock()
+                        .expect("attempt ledger")
+                        .charge(&attempt, charged);
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
                             .lock()
                             .expect("budget ledger")
-                            .charge(reservation, reservation.amount);
+                            .charge(reservation, charged);
                     }
                     let reason = format!("timed out after {after_ms}ms");
                     retry_failures.push(fenced_retry_context(&attempt.to_string(), &reason));
@@ -2890,7 +3168,10 @@ impl<'a> Kernel<'a> {
                         EventType::AttemptFencedV1,
                         serde_json::json!({
                             "reason": reason,
-                            "charged": reservation.as_ref().map(|r| r.amount),
+                            "charged": reservation
+                                .as_ref()
+                                .map(|_| charged)
+                                .or((broker_charged > 0).then_some(charged)),
                         }),
                     )
                     .node(node_id)
@@ -2900,8 +3181,20 @@ impl<'a> Kernel<'a> {
                     self.append_batch(&[fenced, feedback])?;
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
-                    // Nothing executed, so nothing was spent: the reservation is released,
-                    // not charged.
+                    if broker_charged > 0 {
+                        let detail = error.to_string();
+                        self.fail_started_attempt(
+                            node_id,
+                            &attempt,
+                            reservation.as_ref(),
+                            &detail,
+                            broker_charged,
+                            AttemptFailureEvidence::default(),
+                        )?;
+                        return Err(detail);
+                    }
+                    // No Broker operation or model execution spent anything, so release rather
+                    // than turning a structural refusal into a charge.
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
@@ -2926,25 +3219,30 @@ impl<'a> Kernel<'a> {
                     // Failed: the reviewer did execute, its spend is unreported, and forgiving
                     // it would make crashing cheaper than answering. Full reservation, same
                     // rule as a timeout. Malformed answers took the durable correction loop above.
+                    let charged = reservation
+                        .as_ref()
+                        .map_or(broker_charged, |reservation| reservation.amount)
+                        .max(broker_charged);
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
                             .lock()
                             .expect("budget ledger")
-                            .charge(reservation, reservation.amount);
+                            .charge(reservation, charged);
                     }
-                    if let Some(reservation) = &reservation {
-                        self.attempts
-                            .lock()
-                            .expect("attempt ledger")
-                            .charge(&attempt, reservation.amount);
-                    }
+                    self.attempts
+                        .lock()
+                        .expect("attempt ledger")
+                        .charge(&attempt, charged);
                     self.append(
                         NewEvent::new(
                             EventType::AttemptFailedV1,
                             serde_json::json!({
                                 "error": error.to_string(),
-                                "charged": reservation.as_ref().map(|r| r.amount),
+                                "charged": reservation
+                                    .as_ref()
+                                    .map(|_| charged)
+                                    .or((broker_charged > 0).then_some(charged)),
                             }),
                         )
                         .node(node_id)
@@ -3968,6 +4266,16 @@ impl Dispatch for Kernel<'_> {
 impl review_config::SubjectDispatch for Kernel<'_> {
     fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject
+    }
+
+    fn reviewer_credential_mode(&self, node: &str) -> Option<BrokerCredentialModeV1> {
+        self.reviewers
+            .get(node)
+            .map(|adapter| adapter.credential_mode())
+    }
+
+    fn broker_provider_available(&self, node: &str) -> bool {
+        self.broker_providers.contains_key(node)
     }
 }
 

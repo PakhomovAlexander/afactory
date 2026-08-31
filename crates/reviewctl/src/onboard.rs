@@ -636,6 +636,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let generation = NodeSpec {
         id: "generation".into(),
@@ -649,6 +650,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let reviewers: Vec<NodeSpec> = ["correctness", "architecture"]
         .into_iter()
@@ -665,6 +667,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             gated_by: Some("gate".into()),
             runner: None,
             package: Some(id.into()),
+            execution: None,
         })
         .collect();
     let gather = NodeSpec {
@@ -679,6 +682,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
     let ledger = NodeSpec {
         id: "ledger".into(),
@@ -692,6 +696,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         gated_by: None,
         runner: None,
         package: None,
+        execution: None,
     };
 
     let mut nodes = vec![gate, generation];

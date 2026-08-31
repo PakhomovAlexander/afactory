@@ -50,7 +50,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1, 2, and 3"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1, 2, 3, and 4"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -173,6 +173,68 @@ pub struct NodeSpec {
     /// then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,
+    /// Required for every reviewer in pipeline v4. Earlier formats permanently retain their
+    /// pre-M6.3 credential behavior and cannot claim this binding retroactively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ReviewerExecutionSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewerExecutionSpec {
+    pub credential_mode: review_core::BrokerCredentialModeV1,
+    #[serde(default)]
+    pub auto_apply: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
+}
+
+impl ReviewerExecutionSpec {
+    fn validate(&self, node: &str) -> Result<(), ConfigError> {
+        let mut names = std::collections::BTreeSet::new();
+        for operation in &self.operations {
+            operation.validate().map_err(|error| {
+                ConfigError::Binding(format!(
+                    "reviewer `{node}` has an invalid Broker operation: {error}"
+                ))
+            })?;
+            if !names.insert(operation.name.as_str()) {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` has duplicate Broker operation `{}`",
+                    operation.name
+                )));
+            }
+        }
+        review_core::broker_authority_usage(&self.operations).map_err(|error| {
+            ConfigError::Binding(format!(
+                "reviewer `{node}` has invalid aggregate Broker authority: {error}"
+            ))
+        })?;
+        match self.credential_mode {
+            review_core::BrokerCredentialModeV1::Brokered if !self.operations.is_empty() => {}
+            review_core::BrokerCredentialModeV1::CredentialFree
+            | review_core::BrokerCredentialModeV1::TrustedUnsafe
+                if self.operations.is_empty() => {}
+            review_core::BrokerCredentialModeV1::Brokered => {
+                return Err(ConfigError::Binding(format!(
+                    "brokered reviewer `{node}` must declare at least one bounded operation"
+                )));
+            }
+            _ => {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` declares Broker operations without brokered credentials"
+                )));
+            }
+        }
+        if self.auto_apply
+            && self.credential_mode == review_core::BrokerCredentialModeV1::TrustedUnsafe
+        {
+            return Err(ConfigError::Binding(format!(
+                "trusted_unsafe reviewer `{node}` cannot authorize auto_apply"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn default_outputs() -> Vec<PortContractSpec> {
@@ -613,6 +675,7 @@ pub struct Loaded {
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
     packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
+    reviewer_execution: BTreeMap<String, ReviewerExecutionSpec>,
     convergence: ConvergencePolicy,
     budgets: Option<BudgetSpec>,
 }
@@ -620,6 +683,14 @@ pub struct Loaded {
 /// A dispatcher that declares the Subject semantics it actually executes.
 pub trait SubjectDispatch: Dispatch + Sync {
     fn subject_kind(&self) -> review_core::SubjectKind;
+
+    fn reviewer_credential_mode(&self, _node: &str) -> Option<review_core::BrokerCredentialModeV1> {
+        None
+    }
+
+    fn broker_provider_available(&self, _node: &str) -> bool {
+        false
+    }
 }
 
 impl Loaded {
@@ -653,6 +724,10 @@ impl Loaded {
 
     pub fn packages(&self) -> &BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> {
         &self.packages
+    }
+
+    pub fn reviewer_execution(&self) -> &BTreeMap<String, ReviewerExecutionSpec> {
+        &self.reviewer_execution
     }
 
     pub fn convergence(&self) -> &ConvergencePolicy {
@@ -737,6 +812,26 @@ impl Loaded {
                 dispatcher.subject_kind()
             )));
         }
+        for (node, expected) in &self.reviewer_execution {
+            let actual = dispatcher.reviewer_credential_mode(node).ok_or_else(|| {
+                ConfigError::Binding(format!(
+                    "reviewer `{node}` has no runtime adapter for its v4 Execution Binding"
+                ))
+            })?;
+            if actual != expected.credential_mode {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` requires {:?} credentials but its runtime adapter is {:?}",
+                    expected.credential_mode, actual
+                )));
+            }
+            if expected.credential_mode == review_core::BrokerCredentialModeV1::Brokered
+                && !dispatcher.broker_provider_available(node)
+            {
+                return Err(ConfigError::Binding(format!(
+                    "brokered reviewer `{node}` has no machine-local Broker provider"
+                )));
+            }
+        }
         Ok(Scheduler::new(&self.plan).run(dispatcher))
     }
 }
@@ -790,19 +885,19 @@ impl Definition {
                 ));
             }
             (2, Some(subject), None) => (subject, None),
-            (2 | 3, None, _) => {
+            (2..=4, None, _) => {
                 return Err(ConfigError::Binding(format!(
                     "pipeline format version {} requires `[subject]`",
                     self.version
                 )));
             }
-            (3, Some(_), None) => {
-                return Err(ConfigError::Binding(
-                    "pipeline format version 3 requires an explicit `[gate]` Execution Binding"
-                        .to_string(),
-                ));
+            (3 | 4, Some(_), None) => {
+                return Err(ConfigError::Binding(format!(
+                    "pipeline format version {} requires an explicit `[gate]` Execution Binding",
+                    self.version
+                )));
             }
-            (3, Some(subject), Some(gate)) => (subject, Some(gate)),
+            (3 | 4, Some(subject), Some(gate)) => (subject, Some(gate)),
             (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
         if let Some(binding) = &gate {
@@ -895,6 +990,7 @@ impl Definition {
         let mut reviewers = BTreeMap::new();
         let mut demand_requirements = BTreeMap::new();
         let mut packages = BTreeMap::new();
+        let mut reviewer_execution = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
@@ -904,9 +1000,44 @@ impl Definition {
                     spec.demands
                         .unwrap_or(review_core::DemandRequirement::Required),
                 );
+                match (self.version, &spec.execution) {
+                    (4, Some(execution)) => {
+                        execution.validate(&spec.id)?;
+                        if let Some(budgets) = &self.budgets {
+                            let authority =
+                                review_core::broker_authority_usage(&execution.operations)
+                                    .expect("validated Broker authority");
+                            if authority > budgets.attempt {
+                                return Err(ConfigError::Binding(format!(
+                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds the attempt cap ({}); the dispatch reservation would not cover its capability",
+                                    spec.id, budgets.attempt
+                                )));
+                            }
+                        }
+                        reviewer_execution.insert(spec.id.clone(), execution.clone());
+                    }
+                    (4, None) => {
+                        return Err(ConfigError::Binding(format!(
+                            "pipeline format version 4 requires reviewer `{}` to declare an Execution Binding",
+                            spec.id
+                        )));
+                    }
+                    (_, Some(_)) => {
+                        return Err(ConfigError::Binding(format!(
+                            "reviewer `{}` cannot declare an Execution Binding before pipeline version 4",
+                            spec.id
+                        )));
+                    }
+                    (_, None) => {}
+                }
             } else if spec.demands.is_some() {
                 return Err(ConfigError::Binding(format!(
                     "node `{}` is not a reviewer but classifies reviewer Demands",
+                    spec.id
+                )));
+            } else if spec.execution.is_some() {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` is not a reviewer but declares a reviewer Execution Binding",
                     spec.id
                 )));
             }
@@ -1027,6 +1158,7 @@ impl Definition {
             reviewers,
             demand_requirements,
             packages,
+            reviewer_execution,
             budgets: self.budgets,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,

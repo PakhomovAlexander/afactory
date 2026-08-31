@@ -1,5 +1,37 @@
 # Review Kernel workstream log
 
+## 2026-08-31 — M6.3 Broker Handles
+
+Pipeline format v4 requires every reviewer to declare `credential_free`, `brokered`, or
+`trusted_unsafe`; v1–v3 remain frozen. A brokered Attempt publishes its exact lease and bounded
+symbolic operations in `ReviewerExecutionBound@1`, receives only an opaque handle, and keeps the
+connector plus reusable credential machine-local. Every operation leaves a secret-free
+`BrokerOperationCompleted@1` receipt before any response reaches the Worker. Current Codex and
+Claude CLI adapters are honestly `trusted_unsafe`; safe v4 execution needs a broker-capable
+adapter and machine-local connector.
+
+The deterministic boundary fixtures cover fixed egress, raw and encoded credential reflection,
+fence races, receipt failure, connector errors and panics, usage and call limits, durable terminal
+handle replay, missing bindings, crash recovery, and Round supersession. Attempt admission and
+budgets reconcile broker charges exactly; uncertain fences reserve the complete checked broker
+authority bound or higher observed usage. Late overruns raise terminal settlement; provider
+admission sees outstanding broker authority; public revocation synchronizes with in-flight calls;
+and a single refusal terminally bounds durable receipt growth. The full local `make check` gate
+passes.
+
+Correctness-only Campaign `m6-3-broker-lightweight-v1` spent 178,968 and 165,410 tokens across two
+Rounds and found five recovery/security defects. Confirmation Campaign
+`m6-3-broker-confirm-v1` first lost a zero-token epoch to restricted npm DNS, then spent 177,647
+and 219,510 tokens and found eight further defects. All thirteen have deterministic regressions
+and are fixed. Campaign `m6-3-broker-final-v1` then spent 205,663 and 183,633 tokens, exhausted,
+and found five more concurrency/accounting defects; all five now have deterministic regressions
+and are fixed. These v2 Campaign ledgers retain old open rows when the frozen pipeline omits exact
+prior-Finding dispositions. Final correctness Campaign `m6-3-broker-final-v2` spent 249,919 tokens
+and found a partial percent-encoding credential bypass plus Broker authority exceeding the
+pre-dispatch reservation. Recursive mixed literal/percent response scanning and config-load
+authority/budget validation fix both with regressions. Per owner direction, the final full
+`make check` gate is the closeout: it passes, M6 is complete, and M7.1 is next.
+
 ## 2026-08-31 — M6.2 bounded Cache Snapshots
 
 Pipeline v3 Gates may now request the symbolic `cargo` cache kind. Machine-local policy resolves

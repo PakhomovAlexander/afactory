@@ -646,6 +646,29 @@ satisfy a safe pipeline or an `auto_apply` binding. Complete the transformed-sec
 allowed-egress, and post-fence broker fixtures before M7/M9 claim those boundaries. Decision
 recorded in [ADR-0015](adr/0015-safe-attempts-receive-handles-not-secrets.md).
 
+Implemented in pipeline format v4: every reviewer declares `credential_free`, `brokered`, or
+`trusted_unsafe`; formats v1–v3 remain unchanged. Brokered authority fixes symbolic routes and
+hard request, response, call, and usage limits. `ReviewerExecutionBound@1` and
+`BrokerOperationCompleted@1` make the lease and every authorized completion durable before a
+response reaches the Worker. The store independently revalidates epochs and cumulative policy.
+The Codex and Claude CLI adapters are classified `trusted_unsafe`; safe v4 execution requires a
+broker-capable adapter plus a machine-local connector. The transformed-secret, fixed-egress,
+post-fence, failed-receipt, forged-authority, and end-to-end replay fixtures are complete. Receipt
+commit atomically checks current authority, credential-echo responses are discarded, broker usage
+is reconciled with Attempt settlement, and recovery/supersession fences cover both observed usage
+and the durable broker authority bound so late work can leave only a validated revoked receipt.
+The decoded connector response rejects raw and common encoded credential forms before either a
+fence check or response digest; connector panics are receipted, aggregate usage remains in the
+durable numeric domain, admission requires its exact binding, and replay enforces terminal handle
+state plus the full fence reservation. Percent decoding covers mixed literal/escaped bytes,
+malformed-prefix continuation, and nested escapes. Budgeted pipeline authority must fit the exact
+pre-dispatch Attempt reservation. Public revocation synchronizes with in-flight calls;
+refusals become terminal after one bounded receipt. Provider admission, recovery replay, and
+operator reports all count a live Attempt as the maximum of dispatch reservation, broker
+authority, and observed usage, then count a terminal Attempt as the maximum of settlement and
+observed usage. A late provider overrun therefore remains durable and charged above an earlier
+fence.
+
 ---
 
 ## M7 · Patch proposals

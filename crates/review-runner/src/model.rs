@@ -24,9 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use review_broker::BrokerClient;
 use review_core::{
-    Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES,
-    ReviewerResultContract,
+    BrokerCredentialModeV1, Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
+    MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract,
 };
 use review_store::Cas;
 
@@ -821,6 +822,12 @@ fn patch_fence(patch: &str) -> String {
 /// threads, and an adapter is plain configuration plus an `invoke` — it holds no mutable
 /// state between calls.
 pub trait ReviewerAdapter: Send + Sync {
+    /// Credential boundary this adapter actually provides. Pipeline v4 compares this fact with
+    /// captured project authority before any reviewer dispatch.
+    fn credential_mode(&self) -> BrokerCredentialModeV1 {
+        BrokerCredentialModeV1::CredentialFree
+    }
+
     fn invoke(
         &self,
         cas: &Cas,
@@ -842,6 +849,24 @@ pub trait ReviewerAdapter: Send + Sync {
             returned,
             context_manifest,
         })
+    }
+
+    /// Invoke under an optional broker capability. Credential-free and legacy trusted adapters
+    /// retain their existing path; a broker-capable adapter must override this method and consume
+    /// the opaque client without receiving the broker's credential.
+    fn invoke_with_broker(
+        &self,
+        cas: &Cas,
+        sandbox_root: &Path,
+        inputs: &ReviewerInputs,
+        broker: Option<&dyn BrokerClient>,
+    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
+        if broker.is_some() {
+            return Err(RunnerError::Refused(
+                "reviewer adapter does not consume Broker Handles".into(),
+            ));
+        }
+        self.invoke_receipted(cas, sandbox_root, inputs)
     }
 }
 

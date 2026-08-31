@@ -91,6 +91,10 @@ fn adapter_for(
 fn a_real_success_stream_yields_the_answer_and_the_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (adapter, cas, sandbox) = adapter_for(dir.path(), ANSWER, SUCCESS_EVENTS, 0);
+    assert_eq!(
+        adapter.credential_mode(),
+        review_runner::BrokerCredentialModeV1::TrustedUnsafe
+    );
 
     let receipt = adapter
         .invoke_receipted(&cas, &sandbox, &Default::default())

@@ -1769,6 +1769,7 @@ struct ReviewerSpendAccumulator {
 struct AttemptSpendAccumulator {
     outcome: String,
     spent_tokens: u64,
+    broker_observed_tokens: u64,
     detail: Option<String>,
     terminal: bool,
 }
@@ -1906,10 +1907,42 @@ fn report_spend(
                         AttemptSpendAccumulator {
                             outcome: "running".to_string(),
                             spent_tokens: payload.reserved.unwrap_or(0),
+                            broker_observed_tokens: 0,
                             detail: None,
                             terminal: false,
                         },
                     );
+            }
+            EventType::ReviewerExecutionBoundV1 => {
+                let binding: review_core::ReviewerExecutionBindingV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let authority = review_core::broker_authority_usage(&binding.operations)?;
+                let (node, attempt_id) = event_attempt_identity(event)?;
+                let attempt = round
+                    .reviewers
+                    .get_mut(node)
+                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
+                    .ok_or("Reviewer Execution Binding has no dispatched Attempt")?;
+                if !attempt.terminal {
+                    attempt.spent_tokens = attempt.spent_tokens.max(authority);
+                }
+            }
+            EventType::BrokerOperationCompletedV1 => {
+                let receipt: review_core::BrokerOperationReceiptV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let (node, attempt_id) = event_attempt_identity(event)?;
+                let attempt = round
+                    .reviewers
+                    .get_mut(node)
+                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
+                    .ok_or("Broker operation receipt has no dispatched Attempt")?;
+                attempt.broker_observed_tokens = attempt
+                    .broker_observed_tokens
+                    .checked_add(receipt.charged_usage)
+                    .ok_or("reported Broker spend overflow")?;
+                attempt.spent_tokens = attempt.spent_tokens.max(attempt.broker_observed_tokens);
             }
             EventType::AttemptAdmittedV1 => {
                 let payload: review_core::event::AttemptAdmittedPayloadV1 =
@@ -2013,6 +2046,7 @@ fn settle_attempt(
         .or_insert_with(|| AttemptSpendAccumulator {
             outcome: "running".to_string(),
             spent_tokens: 0,
+            broker_observed_tokens: 0,
             detail: None,
             terminal: false,
         });
@@ -2022,7 +2056,7 @@ fn settle_attempt(
         return Ok(());
     }
     attempt.outcome = outcome;
-    attempt.spent_tokens = spent_tokens;
+    attempt.spent_tokens = spent_tokens.max(attempt.broker_observed_tokens);
     attempt.detail = detail;
     attempt.terminal = true;
     Ok(())
@@ -3991,12 +4025,73 @@ mod option_tests {
                     "next_action": "retry_explicitly"
                 }),
             ),
+            attempt(
+                10,
+                review_core::EventType::AttemptDispatchedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({"reserved": null, "prior_findings": null}),
+            ),
+            attempt(
+                11,
+                review_core::EventType::ReviewerExecutionBoundV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({
+                    "node": "correctness",
+                    "attempt_id": "brokered",
+                    "lease_epoch": 1,
+                    "credential_mode": "brokered",
+                    "auto_apply": false,
+                    "broker_handle": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "operations": [{
+                        "name": "model_inference",
+                        "destination": "provider.test",
+                        "method": "responses.create",
+                        "max_request_bytes": 32,
+                        "max_response_bytes": 32,
+                        "max_calls": 1,
+                        "max_usage": 100
+                    }],
+                    "admitted": true
+                }),
+            ),
+            attempt(
+                12,
+                review_core::EventType::AttemptFencedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({"reason": "recovery", "charged": 100}),
+            ),
+            attempt(
+                13,
+                review_core::EventType::BrokerOperationCompletedV1,
+                "correctness",
+                "brokered",
+                serde_json::json!({
+                    "handle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "node": "correctness",
+                    "attempt_id": "brokered",
+                    "lease_epoch": 1,
+                    "operation": "model_inference",
+                    "destination": "provider.test",
+                    "method": "responses.create",
+                    "ordinal": 1,
+                    "outcome": "revoked",
+                    "failure_reason": "authority_revoked",
+                    "request_digest": format!("sha256:{}", "c".repeat(64)),
+                    "request_bytes": 7,
+                    "response_bytes": 0,
+                    "reserved_usage": 100,
+                    "charged_usage": 101
+                }),
+            ),
         ];
 
         let authority = report_round_authority(&events).unwrap();
         let spend = report_spend(&events, &authority).unwrap();
         assert_eq!(spend.len(), 1);
-        assert_eq!(spend[0].spent_tokens, 51);
+        assert_eq!(spend[0].spent_tokens, 152);
         let architecture = &spend[0].reviewers[0];
         assert_eq!(architecture.reviewer, "architecture");
         assert_eq!(architecture.attempt_tokens, 42);
@@ -4009,11 +4104,20 @@ mod option_tests {
         assert_eq!(fenced.outcome, "fenced");
         assert_eq!(fenced.spent_tokens, 11);
         let correctness = &spend[0].reviewers[1];
-        assert_eq!(correctness.attempt_tokens, 7);
-        assert_eq!(correctness.attempts[0].outcome, "released");
-        assert_eq!(correctness.attempts[0].spent_tokens, 0);
-        assert_eq!(correctness.attempts[1].outcome, "running");
-        assert_eq!(correctness.attempts[1].spent_tokens, 7);
+        assert_eq!(correctness.attempt_tokens, 108);
+        let attempt = |id| {
+            correctness
+                .attempts
+                .iter()
+                .find(|attempt| attempt.attempt_id == id)
+                .unwrap()
+        };
+        assert_eq!(attempt("released").outcome, "released");
+        assert_eq!(attempt("released").spent_tokens, 0);
+        assert_eq!(attempt("running").outcome, "running");
+        assert_eq!(attempt("running").spent_tokens, 7);
+        assert_eq!(attempt("brokered").outcome, "fenced");
+        assert_eq!(attempt("brokered").spent_tokens, 101);
     }
 
     #[test]
