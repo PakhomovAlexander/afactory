@@ -401,7 +401,10 @@ fn draw_reviewer_body(
                 5,
                 content_x,
                 content_width,
-                "Run the selected campaign through committed, pinned configuration",
+                &format!(
+                    "Run the selected campaign in {} mode through committed, pinned configuration",
+                    app.options.mode.as_str()
+                ),
                 Paint::Normal,
             )?;
             paint(

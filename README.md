@@ -65,6 +65,19 @@ and later Rounds. Afactory does not ask for separate per-call confirmation; chan
 publishing, delivery, and other remote side effects remain separate operations. See
 [`ADR-0033`](docs/adr/0033-configured-workers-authorize-declared-input-delivery.md).
 
+Review Campaigns are light by default:
+
+```sh
+af review run --campaign pr-123 --authority origin/main --uncommitted --json
+af review run --campaign release-audit --heavy --authority origin/main --uncommitted --json
+```
+
+Light mode permits one closed review Round. If it finds defects, fix them and run the project's
+deterministic gate; do not start another Campaign. `--heavy` preserves the pipeline's full
+convergence window and is appropriate only when a human explicitly requests deep convergence
+review. A Campaign must be resumed with the mode that opened it. See
+[`ADR-0037`](docs/adr/0037-default-campaigns-to-one-round-light-review.md).
+
 ## Inspect Campaign history
 
 `af review campaigns` lists the Campaigns under the default XDG review-state root without running

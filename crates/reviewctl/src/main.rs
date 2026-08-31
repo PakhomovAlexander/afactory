@@ -45,6 +45,21 @@ mod providers;
 mod task;
 mod tui;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CampaignMode {
+    Light,
+    Heavy,
+}
+
+impl CampaignMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Heavy => "heavy",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Options {
     repo: PathBuf,
@@ -55,6 +70,7 @@ struct Options {
     authority: Option<String>,
     uncommitted: bool,
     restart_round: bool,
+    mode: CampaignMode,
     timeout: Option<Duration>,
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
@@ -441,10 +457,10 @@ struct DemandWaiveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: af review [run]   [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
+         [--campaign NAME] [--light|--heavy] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH] [--json]\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
+         [--campaign NAME] [--light|--heavy] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
@@ -497,12 +513,14 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
         authority: None,
         uncommitted: false,
         restart_round: false,
+        mode: CampaignMode::Light,
         timeout: None,
         git_timeout: None,
         provider_bindings: std::collections::BTreeMap::new(),
         provider_resumes: std::collections::BTreeMap::new(),
         json: false,
     };
+    let mut explicit_mode = false;
     while let Some(flag) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
@@ -514,6 +532,20 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
             "--authority" => options.authority = Some(value()),
             "--uncommitted" => options.uncommitted = true,
             "--restart-round" => options.restart_round = true,
+            "--light" => {
+                if explicit_mode {
+                    usage();
+                }
+                options.mode = CampaignMode::Light;
+                explicit_mode = true;
+            }
+            "--heavy" => {
+                if explicit_mode {
+                    usage();
+                }
+                options.mode = CampaignMode::Heavy;
+                explicit_mode = true;
+            }
             "--json" => options.json = true,
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
@@ -2939,6 +2971,42 @@ fn verdict_value(verdict: &RunVerdict) -> serde_json::Value {
     }
 }
 
+fn next_action_value(mode: CampaignMode, verdict: &RunVerdict) -> serde_json::Value {
+    match (mode, verdict) {
+        (_, RunVerdict::Pass) => serde_json::json!({
+            "kind": "done",
+            "start_another_campaign": false,
+        }),
+        (CampaignMode::Light, RunVerdict::Fail(_)) => serde_json::json!({
+            "kind": "fix_then_gate",
+            "start_another_campaign": false,
+            "message": "Fix the concrete findings, run the deterministic project gate, then stop. Do not start another review Campaign; --heavy requires an explicit human choice.",
+        }),
+        (CampaignMode::Light, RunVerdict::Incomplete { .. }) => serde_json::json!({
+            "kind": "resume_incomplete_round",
+            "start_another_campaign": false,
+            "message": "Resume this exact incomplete light Round. Do not start a replacement Campaign.",
+        }),
+        (CampaignMode::Heavy, RunVerdict::Fail(Verdict::NotConverged)) => serde_json::json!({
+            "kind": "continue_campaign",
+            "start_another_campaign": false,
+        }),
+        (CampaignMode::Heavy, RunVerdict::Fail(Verdict::Exhausted)) => serde_json::json!({
+            "kind": "human_decision",
+            "start_another_campaign": false,
+            "message": "The heavy Campaign exhausted its pinned convergence window. Do not start another Campaign without an explicit human decision.",
+        }),
+        (CampaignMode::Heavy, RunVerdict::Fail(Verdict::Converged)) => serde_json::json!({
+            "kind": "invalid_verdict",
+            "start_another_campaign": false,
+        }),
+        (CampaignMode::Heavy, RunVerdict::Incomplete { .. }) => serde_json::json!({
+            "kind": "resume_incomplete_round",
+            "start_another_campaign": false,
+        }),
+    }
+}
+
 fn aggregate_usage(attempts: &[review_pipeline::AttemptEvidence]) -> review_runner::TokenUsage {
     fn sum(
         attempts: &[review_pipeline::AttemptEvidence],
@@ -3214,6 +3282,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         timeout,
         check_timeout,
         git_timeout,
+        convergence,
         authority,
         ledger_projection,
     } = authority::prepare(options, &cas, &mut store, &repo)?;
@@ -3225,6 +3294,16 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         round: authority.round(),
         epoch: authority.epoch(),
     };
+    run_progress(
+        options,
+        format_args!(
+            "mode     {} ({} clean, {} max Round{})",
+            options.mode.as_str(),
+            convergence.clean_rounds,
+            convergence.max_rounds,
+            if convergence.max_rounds == 1 { "" } else { "s" }
+        ),
+    );
     run_progress(options, format_args!("run      {run_id}"));
     run_progress(
         options,
@@ -3463,7 +3542,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         run_progress(options, format_args!("spent    {spent} tokens"));
     }
 
-    let verdict = kernel.publish_report(&report, *loaded.convergence())?;
+    let verdict = kernel.publish_report(&report, convergence)?;
     let attempts = kernel.selected_attempt_evidence()?;
     drop(kernel);
     let events = store.replay(&run_id).map_err(|error| error.to_string())?;
@@ -3568,6 +3647,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             .collect::<Vec<_>>();
         let mut outcome_value = serde_json::json!({
             "schema": "af/review-outcome@1",
+            "campaign_mode": options.mode.as_str(),
             "candidate": {
                 "version": candidate.version,
                 "executable": candidate.executable,
@@ -3597,6 +3677,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             },
             "findings": findings,
             "outcome": verdict_value(&verdict),
+            "next_action": next_action_value(options.mode, &verdict),
         });
         if let Some(evidence) = latest_evidence
             && evidence.ledger_was_not_produced()
@@ -3619,6 +3700,19 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     } else {
         run_progress(options, format_args!("verdict  {verdict:?}"));
     }
+    match (options.mode, &verdict) {
+        (CampaignMode::Light, RunVerdict::Fail(_)) => run_progress(
+            options,
+            format_args!(
+                "next     fix the findings, run the deterministic project gate, then stop; do not start another Campaign (use --heavy only by explicit human choice)"
+            ),
+        ),
+        (CampaignMode::Light, RunVerdict::Incomplete { .. }) => run_progress(
+            options,
+            format_args!("next     resume this exact incomplete light Round"),
+        ),
+        _ => {}
+    }
     Ok(verdict)
 }
 
@@ -3635,9 +3729,9 @@ mod option_tests {
     use std::ffi::OsStr;
 
     use super::{
-        Options, campaign_id, campaign_state_beneath, enumerate_campaigns, last_closed_summary,
-        latest_round_evidence, report_round_authority, report_rounds, report_spend,
-        resolve_codex_home, validate_campaign_name,
+        CampaignMode, Options, campaign_id, campaign_state_beneath, enumerate_campaigns,
+        last_closed_summary, latest_round_evidence, report_round_authority, report_rounds,
+        report_spend, resolve_codex_home, validate_campaign_name,
     };
 
     fn event(
@@ -4160,6 +4254,7 @@ mod option_tests {
             authority: None,
             uncommitted: false,
             restart_round: false,
+            mode: CampaignMode::Light,
             timeout: None,
             git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),

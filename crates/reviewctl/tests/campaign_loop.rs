@@ -26,7 +26,12 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
     );
 }
 
-fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+fn invoke_reviewctl(
+    repo: &Path,
+    home: &Path,
+    args: &[&str],
+    default_mode: Option<&str>,
+) -> (i32, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
     command
         .arg("review")
@@ -35,15 +40,16 @@ fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
         .env("USER", "loop-test");
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
-        actual.splice(
-            1..1,
-            [
-                "--authority",
-                "HEAD",
-                "--pipeline",
-                ".review/pipelines/heavy.toml",
-            ],
-        );
+        let mut authority = vec![
+            "--authority",
+            "HEAD",
+            "--pipeline",
+            ".review/pipelines/heavy.toml",
+        ];
+        if let Some(mode) = default_mode {
+            authority.push(mode);
+        }
+        actual.splice(1..1, authority);
     }
     let out = command.args(actual).output().unwrap();
     (
@@ -51,6 +57,15 @@ fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// Existing Campaign lifecycle tests exercise the explicit convergence workflow.
+fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+    invoke_reviewctl(repo, home, args, Some("--heavy"))
+}
+
+fn reviewctl_light(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+    invoke_reviewctl(repo, home, args, None)
 }
 
 /// A pipeline whose one reviewer answers from the sandbox content: a finding while the
@@ -243,6 +258,102 @@ fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
 }
 
 #[test]
+fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+
+    let (code, stdout, stderr) = reviewctl_light(
+        &repo,
+        &home,
+        &["run", "--campaign", "light", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    assert!(stdout.contains("mode     light (1 clean, 1 max Round)"));
+    assert!(stdout.contains("fix the findings"), "{stdout}");
+    assert!(stdout.contains("do not start another Campaign"), "{stdout}");
+
+    let (code, stdout, stderr) = reviewctl_light(
+        &repo,
+        &home,
+        &["run", "--campaign", "light", "--state", &state],
+    );
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(stderr.contains("already completed its single review Round"));
+    assert!(stderr.contains("deterministic project gate"));
+
+    let (code, report, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "light",
+            "--state",
+            &state,
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{report}\n{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report["runs_recorded"], 1);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "light", "--state", &state],
+    );
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(stderr.contains("differs from requested heavy mode"));
+}
+
+#[test]
+fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, _) = fixture(dir.path());
+    let state = dir.path().join("explicit-light");
+    let state = state.to_string_lossy().into_owned();
+
+    let (code, stdout, stderr) = reviewctl_light(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "explicit-light",
+            "--state",
+            &state,
+            "--light",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["campaign_mode"], "light");
+    assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
+    assert_eq!(outcome["next_action"]["start_another_campaign"], false);
+    assert!(stderr.contains("do not start another Campaign"));
+
+    let invalid_state = dir.path().join("invalid-mode");
+    let invalid_state = invalid_state.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl_light(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "invalid-mode",
+            "--state",
+            &invalid_state,
+            "--light",
+            "--heavy",
+        ],
+    );
+    assert_eq!(code, 2, "{stdout}\n{stderr}");
+    assert!(stderr.contains("[--light|--heavy]"));
+}
+
+#[test]
 fn campaign_enumeration_reads_legacy_state_and_round_history() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, _) = fixture(dir.path());
@@ -326,6 +437,9 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     assert_eq!(code, 3, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(outcome["schema"], "af/review-outcome@1");
+    assert_eq!(outcome["campaign_mode"], "light");
+    assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
+    assert_eq!(outcome["next_action"]["start_another_campaign"], false);
     assert_eq!(outcome["outcome"]["kind"], "fail");
     assert_eq!(outcome["findings"].as_array().unwrap().len(), 1);
     let attempts = outcome["attempts"].as_array().unwrap();

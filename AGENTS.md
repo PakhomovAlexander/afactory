@@ -60,6 +60,11 @@ budget, or sandbox boundary to make a test or review pass.
   manifest. Parent transcripts, whole Ledgers, repository dumps, unrelated documents, and other
   Workers' private reasoning are absent by default; bounded Tool retrieval is recorded
   ([ADR-0028](docs/adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
+- Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the
+  deterministic project gate. Do not start a follow-up Campaign. Use `--heavy` only when a human
+  explicitly requests convergence review; the selected effective convergence authority is pinned
+  and cannot change on resume
+  ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)).
 - Complete minimal v1 and v2 before candidate dogfood. v1 is final local review; v2 is sequential
   implementation ending at a verified internal Snapshot with no working-tree, branch, or PR
   delivery. Scale and optional integrations are v3; `make check` remains independent
