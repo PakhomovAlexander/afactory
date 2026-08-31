@@ -1,5 +1,15 @@
 # Review Kernel workstream log
 
+## 2026-08-31 — Light Campaigns become the default
+
+The M6.3 review retrospective found that four Campaigns and seven Terra/xhigh Attempts spent
+1,380,750 chargeable tokens because the agent repeatedly treated a fresh clean review as implicit
+closeout after lightweight dogfood. `af review run` now defaults to `--light`: effective Campaign
+authority is one clean/maximum Round, a second closed-Round dispatch is refused, and human/JSON
+output says to fix Findings, run the deterministic project gate, and stop. Explicit `--heavy`
+retains the pipeline's full convergence policy, must match on resume, and is reserved for a human
+request. ADR-0037 records the accepted boundary.
+
 ## 2026-08-31 — M6.3 Broker Handles
 
 Pipeline format v4 requires every reviewer to declare `credential_free`, `brokered`, or

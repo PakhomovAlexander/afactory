@@ -17,7 +17,7 @@ use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
-use crate::{Options, campaign_run_id};
+use crate::{CampaignMode, Options, campaign_run_id};
 
 pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
     configured.unwrap_or(Duration::from_secs(
@@ -33,6 +33,7 @@ pub(super) struct PreparedRun {
     pub timeout: Duration,
     pub check_timeout: Duration,
     pub git_timeout: Duration,
+    pub convergence: review_store::ConvergencePolicy,
     pub authority: RoundAuthority,
     pub ledger_projection: LedgerProjection,
 }
@@ -84,6 +85,7 @@ pub(super) fn prepare(
         .manifest
         .git_timeout_seconds
         .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
+    let convergence = selected_convergence(options.mode, campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
         snapshot: round.snapshot,
@@ -92,6 +94,7 @@ pub(super) fn prepare(
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
         check_timeout: Duration::from_secs(check_timeout_seconds),
         git_timeout: Duration::from_secs(git_timeout_seconds),
+        convergence,
         authority,
         ledger_projection: round.ledger_projection,
     })
@@ -207,7 +210,7 @@ fn open_new(
             .iter()
             .map(|reviewer| reviewer.package_artifact_id.clone()),
     );
-    let convergence = loaded.convergence();
+    let convergence = selected_convergence(options.mode, loaded.convergence());
     let budgets = loaded.budgets().map(|budget| CampaignBudgetV1 {
         attempt_tokens: budget.attempt,
         run_tokens: budget.run,
@@ -411,7 +414,7 @@ fn resume(
     if loaded.subject_kind() != manifest.subject_kind {
         return Err("captured pipeline disagrees with CampaignManifest Subject kind".into());
     }
-    validate_manifest_authority(cas, &manifest, &loaded, &captured)?;
+    validate_manifest_authority(cas, &manifest, &loaded, &captured, options.mode)?;
     super::run_progress(
         options,
         format_args!("authority {} (pinned)", manifest.authority_snapshot_id),
@@ -433,13 +436,17 @@ fn validate_manifest_authority(
     manifest: &CampaignManifestV1,
     loaded: &review_config::Loaded,
     captured: &BTreeMap<String, (ReviewerPackageV1, BTreeMap<String, Vec<u8>>)>,
+    mode: CampaignMode,
 ) -> Result<(), String> {
-    let convergence = loaded.convergence();
+    let convergence = selected_convergence(mode, loaded.convergence());
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds
         || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
     {
-        return Err("CampaignManifest convergence differs from captured pipeline authority".into());
+        return Err(format!(
+            "CampaignManifest convergence differs from requested {} mode; resume with the mode that opened this Campaign",
+            mode.as_str()
+        ));
     }
     let budgets = loaded.budgets().map(|budget| CampaignBudgetV1 {
         attempt_tokens: budget.attempt,
@@ -545,6 +552,20 @@ fn validate_manifest_authority(
     Ok(())
 }
 
+fn selected_convergence(
+    mode: CampaignMode,
+    configured: &review_store::ConvergencePolicy,
+) -> review_store::ConvergencePolicy {
+    match mode {
+        CampaignMode::Light => review_store::ConvergencePolicy {
+            clean_rounds: 1,
+            max_rounds: 1,
+            gate: configured.gate,
+        },
+        CampaignMode::Heavy => *configured,
+    }
+}
+
 fn require_demand_set_output(
     loaded: &review_config::Loaded,
     pipeline_path: &str,
@@ -588,6 +609,18 @@ fn prepare_round(
         }
     }
     let target_round = closed_rounds + 1;
+    if closed_rounds >= campaign.manifest.convergence.max_rounds {
+        return match options.mode {
+            CampaignMode::Light => Err(
+                "light Campaign already completed its single review Round; fix its concrete findings and run the deterministic project gate, then stop. Do not start another Campaign; --heavy requires a new Campaign and an explicit human choice"
+                    .into(),
+            ),
+            CampaignMode::Heavy => Err(
+                "heavy Campaign already exhausted its pinned Round limit; do not start another Campaign without an explicit human decision"
+                    .into(),
+            ),
+        };
+    }
     let mut starts: Vec<(&review_core::RunEvent, RoundStartedPayloadV1)> = events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)

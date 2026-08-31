@@ -251,6 +251,13 @@ XDG state outside the repository, shorthand `af review` emits one typed JSON res
 Attempts persist exact context manifests plus available Provider token dimensions. Legacy
 `.review/` authority remains readable only when selected explicitly.
 
+Campaign intensity is now executable policy. Plain `af review run` and explicit `--light` pin one
+clean/maximum Round, refuse a second closed-Round dispatch, and return `fix_then_gate` guidance
+without suggesting another Campaign. Explicit `--heavy` retains the pipeline's complete
+convergence window and is reserved for a human-requested deep review. Mode changes on resume fail
+before dispatch. Decision recorded in
+[ADR-0037](adr/0037-default-campaigns-to-one-round-light-review.md).
+
 Expose non-interactive `af review` for exact committed and uncommitted Subjects through
 `.af/af.toml` and `.af/af.lock`. State lives outside the repository behind a local Store with
 embedded SQLite. Task, Pipeline, and Worker execute sequentially; the existing Review Kernel and

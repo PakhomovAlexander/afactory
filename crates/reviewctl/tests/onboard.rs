@@ -66,6 +66,9 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     let readme = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
     assert!(readme.contains("## Worker data authorization"));
     assert!(readme.contains("should not ask for additional per-Worker"));
+    assert!(readme.contains("Plain `af review run` is light"));
+    assert!(readme.contains("Do not open a follow-up review Campaign"));
+    assert!(readme.contains("human-requested `--heavy`"));
     assert!(repo.join(".af/pipelines/review.toml").is_file());
     let pipeline = std::fs::read_to_string(repo.join(".af/pipelines/review.toml")).unwrap();
     assert_eq!(pipeline.matches("demands = \"required\"").count(), 2);
@@ -166,5 +169,7 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
     assert!(help.status.success(), "{}", stderr(&help));
     assert!(stdout(&help).contains("never calls a model"));
     assert!(stdout(&help).contains("does not ask for per-call confirmation"));
+    assert!(stdout(&help).contains("Review Campaigns are light by default"));
+    assert!(stdout(&help).contains("Use `--heavy` only when a human"));
     assert!(stdout(&help).contains("--refresh-lock"));
 }

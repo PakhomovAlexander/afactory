@@ -43,6 +43,10 @@ Trusting configured Worker authority and intentionally running `af review run` o
 authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or stages
 of that Campaign or Task. Afactory does not ask for per-call confirmation.
 
+Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the
+deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human
+explicitly requests convergence review, and repeat that explicit mode when resuming it.
+
 Runner profiles:
   mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)
   claude  both Workers = Claude Opus/high
@@ -917,6 +921,11 @@ They do not receive one another's transcript. Results meet at the deterministic 
 The Campaign stops after one clean Round or two Rounds total, with caps of 300,000 tokens per
 Attempt and 1,000,000 tokens per Campaign.
 
+Plain `af review run` is light regardless of that maximum: it permits one closed Round, then tells
+the agent to fix Findings and run the deterministic project gate without another Campaign. Only a
+human-requested `--heavy` Campaign uses the complete two-Round convergence window. The selected
+mode is pinned and must be repeated when resuming the Campaign.
+
 ## Worker data authorization
 
 Trusting this configured authority and intentionally running `af review run` authorizes Afactory
@@ -953,6 +962,10 @@ Required Gate commands (declared as literal trusted argv; onboarding does not ex
 
 5. Read the Ledger and report. Do not comment on the pull request, commit, push, merge, or mutate
    external state unless a human explicitly authorizes that separate action.
+
+The command above is light by default. After a finding-bearing result, fix the Findings, run the
+project's deterministic Gate command, and stop. Do not open a follow-up review Campaign. Add
+`--heavy` only when a human explicitly requests convergence review.
 
 `--authority` must name a trusted committed revision containing this `.af/` directory. The review
 command captures authority immutably; uncommitted pull-request content cannot alter its Gate,

@@ -29,6 +29,11 @@ lets `af` implement a real change and return a verified internal Snapshot.
 
 ## Summary
 
+Campaign review is light by default and mechanically limited to one closed Round; explicit
+human-requested `--heavy` retains full pipeline convergence. A light finding-bearing result says
+`fix_then_gate` and refuses a second dispatch, preventing the repeated-Campaign M6.3 dogfood
+mistake. ADR-0037 records the policy.
+
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and an indexed ADR history; ADR-0003 and

@@ -92,6 +92,14 @@ one Ledger.
 _Avoid_: starting a second Campaign to escape an inconvenient Ledger; re-invoking the same
 name continues the same review.
 
+**Campaign Mode**:
+The trusted invocation choice that bounds how many closed Rounds a Campaign may dispatch.
+`light` is the default and closes after exactly one completed review Round; its next step after
+Findings is deterministic repair and project Gates, not another Campaign. `heavy` is explicit
+human-directed opt-in and retains the pipeline's full convergence window. The effective policy is
+pinned in the Campaign Manifest and cannot change on resume.
+_Avoid_: interpreting a finding-bearing light result as a request to open a fresh Campaign.
+
 **Round**:
 One immutable Subject/input-Set execution of the pipeline within a Campaign. Only a Round that
 reaches a real verdict *closes*; an incomplete one resumes those exact inputs unless explicitly

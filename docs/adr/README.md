@@ -82,3 +82,5 @@ options you rejected and why — that is the part future-you needs.
   ID](0035-address-campaign-state-by-opaque-id.md)
 - [0036 — Resolve Gate caches through machine-local bounded
   policy](0036-resolve-gate-caches-through-machine-local-bounded-policy.md)
+- [0037 — Default Campaigns to one-Round light
+  review](0037-default-campaigns-to-one-round-light-review.md)
