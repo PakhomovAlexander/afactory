@@ -50,7 +50,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1, 2, 3, and 4"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1 through 5"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -133,6 +133,8 @@ pub enum NodeKindSpec {
     Generation,
     Gate,
     Reviewer,
+    Slicer,
+    Scatter,
     Gather,
     Ledger,
 }
@@ -143,6 +145,8 @@ impl From<NodeKindSpec> for NodeKind {
             NodeKindSpec::Generation => NodeKind::Generation,
             NodeKindSpec::Gate => NodeKind::Gate,
             NodeKindSpec::Reviewer => NodeKind::Reviewer,
+            NodeKindSpec::Slicer => NodeKind::Slicer,
+            NodeKindSpec::Scatter => NodeKind::Scatter,
             NodeKindSpec::Gather => NodeKind::Gather,
             NodeKindSpec::Ledger => NodeKind::Ledger,
         }
@@ -177,6 +181,84 @@ pub struct NodeSpec {
     /// pre-M6.3 credential behavior and cannot claim this binding retroactively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ReviewerExecutionSpec>,
+    /// Required only on a pipeline-v5 Slicer. The outer graph stays static; this policy fixes
+    /// the exact Scatter owner and every dynamic bound before the Round starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slicing: Option<SlicingSpec>,
+    /// Marks a whole-Subject reviewer as the closeout for exactly one Scatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closeout_for: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseoutModeSpec {
+    Required,
+    Waived,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlicingSpec {
+    pub scatter: String,
+    pub max_paths_per_slice: usize,
+    pub max_fanout: u32,
+    #[serde(default = "complete_coverage")]
+    pub coverage: review_core::SliceCoverageV1,
+    #[serde(default = "default_true")]
+    pub all_shards_required: bool,
+    #[serde(default = "required_closeout")]
+    pub closeout: CloseoutModeSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiver_policy_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiver_reason: Option<String>,
+}
+
+fn complete_coverage() -> review_core::SliceCoverageV1 {
+    review_core::SliceCoverageV1::Complete
+}
+
+fn required_closeout() -> CloseoutModeSpec {
+    CloseoutModeSpec::Required
+}
+
+impl SlicingSpec {
+    pub fn closeout_policy(&self) -> Result<review_core::CloseoutPolicyV1, ConfigError> {
+        match self.closeout {
+            CloseoutModeSpec::Required => {
+                if self.waiver_policy_id.is_some() || self.waiver_reason.is_some() {
+                    return Err(ConfigError::Binding(
+                        "required closeout cannot carry waiver authority".into(),
+                    ));
+                }
+                Ok(review_core::CloseoutPolicyV1::Required)
+            }
+            CloseoutModeSpec::Waived => {
+                let policy_id = self.waiver_policy_id.clone().ok_or_else(|| {
+                    ConfigError::Binding("waived closeout requires waiver_policy_id".into())
+                })?;
+                let reason = self
+                    .waiver_reason
+                    .clone()
+                    .filter(|reason| !reason.trim().is_empty())
+                    .ok_or_else(|| {
+                        ConfigError::Binding("waived closeout requires waiver_reason".into())
+                    })?;
+                let digest = policy_id.strip_prefix("sha256:").unwrap_or_default();
+                if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ConfigError::Binding(
+                        "waiver_policy_id must be a sha256 artifact ID from Authority Snapshot policy".into(),
+                    ));
+                }
+                Ok(review_core::CloseoutPolicyV1::Waived { policy_id, reason })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,7 +357,7 @@ fn validate_diff_change_set_wiring(
     }
     for reviewer in nodes
         .iter()
-        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+        .filter(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
     {
         let inputs: Vec<_> = reviewer
             .inputs
@@ -438,6 +520,203 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
     Ok(())
 }
 
+fn validate_dynamic_wiring(
+    version: u32,
+    nodes: &[NodeSpec],
+    edges: &[EdgeSpec],
+) -> Result<(), ConfigError> {
+    let uses_dynamic = nodes.iter().any(|node| {
+        matches!(node.kind, NodeKindSpec::Slicer | NodeKindSpec::Scatter)
+            || node.slicing.is_some()
+            || node.closeout_for.is_some()
+    });
+    if version != 5 {
+        if uses_dynamic {
+            return Err(ConfigError::Binding(
+                "Slicer, Scatter, slicing, and closeout_for require pipeline format version 5"
+                    .into(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let by_id = nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    for node in nodes {
+        if node.closeout_for.is_some() && node.kind != NodeKindSpec::Reviewer {
+            return Err(ConfigError::Binding(format!(
+                "node `{}` marks closeout_for but is not a whole-Subject reviewer",
+                node.id
+            )));
+        }
+        if node.kind != NodeKindSpec::Slicer && node.slicing.is_some() {
+            return Err(ConfigError::Binding(format!(
+                "node `{}` declares slicing but is not a Slicer",
+                node.id
+            )));
+        }
+        if node.kind != NodeKindSpec::Slicer {
+            continue;
+        }
+        let policy = node.slicing.as_ref().ok_or_else(|| {
+            ConfigError::Binding(format!("Slicer `{}` has no slicing policy", node.id))
+        })?;
+        if policy.max_paths_per_slice == 0 || policy.max_fanout == 0 {
+            return Err(ConfigError::Binding(format!(
+                "Slicer `{}` has a zero path or fan-out bound",
+                node.id
+            )));
+        }
+        let closeout = policy.closeout_policy()?;
+        if policy.coverage == review_core::SliceCoverageV1::Complete && !policy.all_shards_required
+        {
+            return Err(ConfigError::Binding(format!(
+                "complete Slicer `{}` cannot make shards optional",
+                node.id
+            )));
+        }
+        let scatter = by_id.get(policy.scatter.as_str()).ok_or_else(|| {
+            ConfigError::Binding(format!(
+                "Slicer `{}` names absent Scatter `{}`",
+                node.id, policy.scatter
+            ))
+        })?;
+        if scatter.kind != NodeKindSpec::Scatter {
+            return Err(ConfigError::Binding(format!(
+                "Slicer `{}` target `{}` is not a Scatter",
+                node.id, policy.scatter
+            )));
+        }
+        let slice_outputs: Vec<_> = node
+            .outputs
+            .iter()
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
+            .collect();
+        let slice_inputs: Vec<_> = scatter
+            .inputs
+            .iter()
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
+            .collect();
+        let ([slice_output], [slice_input]) = (slice_outputs.as_slice(), slice_inputs.as_slice())
+        else {
+            return Err(ConfigError::Binding(format!(
+                "Slicer `{}` and Scatter `{}` must expose exactly one SliceSet@1 route",
+                node.id, scatter.id
+            )));
+        };
+        if slice_output.cardinality != PortCardinality::One
+            || slice_output.optional
+            || slice_output.snapshot_affinity != SnapshotAffinity::SameSubject
+            || slice_input.cardinality != PortCardinality::One
+            || slice_input.optional
+            || slice_input.snapshot_affinity != SnapshotAffinity::SameSubject
+            || !edges.iter().any(|edge| {
+                edge.from.node == node.id
+                    && edge.from.port == slice_output.name
+                    && edge.to.node == scatter.id
+                    && edge.to.port == slice_input.name
+            })
+        {
+            return Err(ConfigError::Binding(format!(
+                "Slicer `{}` must durably feed its required same-Subject SliceSet@1 to Scatter `{}`",
+                node.id, scatter.id
+            )));
+        }
+        let shard_outputs: Vec<_> = scatter
+            .outputs
+            .iter()
+            .map(PortContractSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
+            .collect();
+        let [shard_output] = shard_outputs.as_slice() else {
+            return Err(ConfigError::Binding(format!(
+                "Scatter `{}` must expose exactly one ShardSet@1 output",
+                scatter.id
+            )));
+        };
+        let ledger_route = nodes.iter().any(|candidate| {
+            if candidate.kind != NodeKindSpec::Ledger {
+                return false;
+            }
+            candidate
+                .inputs
+                .iter()
+                .map(PortContractSpec::build)
+                .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
+                .any(|input| {
+                    input.cardinality == PortCardinality::One
+                        && !input.optional
+                        && edges.iter().any(|edge| {
+                            edge.from.node == scatter.id
+                                && edge.from.port == shard_output.name
+                                && edge.to.node == candidate.id
+                                && edge.to.port == input.name
+                        })
+                })
+        });
+        if !ledger_route {
+            return Err(ConfigError::Binding(format!(
+                "Scatter `{}` must route its lossless ShardSet@1 directly to a Ledger",
+                scatter.id
+            )));
+        }
+        let closeouts: Vec<_> = nodes
+            .iter()
+            .filter(|candidate| candidate.closeout_for.as_deref() == Some(scatter.id.as_str()))
+            .collect();
+        match closeout {
+            review_core::CloseoutPolicyV1::Required => {
+                let [reviewer] = closeouts.as_slice() else {
+                    return Err(ConfigError::Binding(format!(
+                        "Scatter `{}` requires exactly one whole-Subject closeout reviewer",
+                        scatter.id
+                    )));
+                };
+                let shard_inputs: Vec<_> = reviewer
+                    .inputs
+                    .iter()
+                    .map(PortContractSpec::build)
+                    .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
+                    .collect();
+                let [shard_input] = shard_inputs.as_slice() else {
+                    return Err(ConfigError::Binding(format!(
+                        "closeout reviewer `{}` must accept exactly one ShardSet@1",
+                        reviewer.id
+                    )));
+                };
+                if shard_output.cardinality != PortCardinality::One
+                    || shard_output.optional
+                    || shard_input.cardinality != PortCardinality::One
+                    || shard_input.optional
+                    || !edges.iter().any(|edge| {
+                        edge.from.node == scatter.id
+                            && edge.from.port == shard_output.name
+                            && edge.to.node == reviewer.id
+                            && edge.to.port == shard_input.name
+                    })
+                {
+                    return Err(ConfigError::Binding(format!(
+                        "Scatter `{}` must feed its lossless ShardSet@1 to closeout reviewer `{}`",
+                        scatter.id, reviewer.id
+                    )));
+                }
+            }
+            review_core::CloseoutPolicyV1::Waived { .. } if !closeouts.is_empty() => {
+                return Err(ConfigError::Binding(format!(
+                    "Scatter `{}` has both a closeout waiver and an executing closeout reviewer",
+                    scatter.id
+                )));
+            }
+            review_core::CloseoutPolicyV1::Waived { .. } => {}
+        }
+    }
+    Ok(())
+}
+
 /// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
 /// explicit opaque/one/required/any contract. It remains valid for non-Generation nodes;
 /// built-in Generation outputs require the typed arm because execution dispatches by contract.
@@ -556,6 +835,21 @@ pub struct BudgetSpec {
     pub attempt: u64,
     /// Cap per run, across every attempt including fenced ones.
     pub run: u64,
+    /// Aggregate cap for every dynamic shard owned by one Scatter. Absent retains the run cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_out: Option<u64>,
+}
+
+/// Captured opt-in policy for internal automatic Integration. Proposal nomination alone never
+/// enables this path; the reviewer Execution Binding must independently grant `auto_apply`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationSpec {
+    #[serde(default)]
+    pub protected_paths: Vec<String>,
+    pub post_apply_checks: Vec<String>,
+    #[serde(default)]
+    pub reviewer_priority: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,6 +954,8 @@ pub struct Definition {
     pub convergence: ConvergenceSpec,
     #[serde(default)]
     pub budgets: Option<BudgetSpec>,
+    #[serde(default)]
+    pub integration: Option<IntegrationSpec>,
 }
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
@@ -676,8 +972,11 @@ pub struct Loaded {
     /// run manifest records so replay can prove which reviewer bytes were used.
     packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
     reviewer_execution: BTreeMap<String, ReviewerExecutionSpec>,
+    slicing: BTreeMap<String, SlicingSpec>,
+    closeouts: BTreeMap<String, String>,
     convergence: ConvergencePolicy,
     budgets: Option<BudgetSpec>,
+    integration: Option<IntegrationSpec>,
 }
 
 /// A dispatcher that declares the Subject semantics it actually executes.
@@ -730,12 +1029,24 @@ impl Loaded {
         &self.reviewer_execution
     }
 
+    pub fn slicing(&self) -> &BTreeMap<String, SlicingSpec> {
+        &self.slicing
+    }
+
+    pub fn closeouts(&self) -> &BTreeMap<String, String> {
+        &self.closeouts
+    }
+
     pub fn convergence(&self) -> &ConvergencePolicy {
         &self.convergence
     }
 
     pub fn budgets(&self) -> Option<&BudgetSpec> {
         self.budgets.as_ref()
+    }
+
+    pub fn integration(&self) -> Option<&IntegrationSpec> {
+        self.integration.as_ref()
     }
 
     pub fn plan_order(&self) -> &[String] {
@@ -865,6 +1176,7 @@ impl Definition {
         self,
         resolver: Option<(&lock::Lockfile, &lock::Registry)>,
     ) -> Result<Loaded, ConfigError> {
+        let integration = self.integration.clone();
         let (subject, gate) = match (self.version, self.subject, self.gate) {
             (1, None, None) => (
                 SubjectSpec {
@@ -885,19 +1197,19 @@ impl Definition {
                 ));
             }
             (2, Some(subject), None) => (subject, None),
-            (2..=4, None, _) => {
+            (2..=5, None, _) => {
                 return Err(ConfigError::Binding(format!(
                     "pipeline format version {} requires `[subject]`",
                     self.version
                 )));
             }
-            (3 | 4, Some(_), None) => {
+            (3..=5, Some(_), None) => {
                 return Err(ConfigError::Binding(format!(
                     "pipeline format version {} requires an explicit `[gate]` Execution Binding",
                     self.version
                 )));
             }
-            (3 | 4, Some(subject), Some(gate)) => (subject, Some(gate)),
+            (3..=5, Some(subject), Some(gate)) => (subject, Some(gate)),
             (version, _, _) => return Err(ConfigError::UnknownVersion(version)),
         };
         if let Some(binding) = &gate {
@@ -957,11 +1269,12 @@ impl Definition {
         }
         validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
+        validate_dynamic_wiring(self.version, &self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
             validate_diff_change_set_wiring(&self.nodes, &self.edges)?;
         }
         if let Some(budgets) = &self.budgets {
-            if budgets.attempt == 0 || budgets.run == 0 {
+            if budgets.attempt == 0 || budgets.run == 0 || budgets.fan_out == Some(0) {
                 return Err(ConfigError::Binding(
                     "a zero-token budget cap means nothing can ever dispatch; omit [budgets] to run uncapped"
                         .to_string(),
@@ -972,6 +1285,14 @@ impl Definition {
                     "the attempt cap ({}) exceeds the run cap ({}); no attempt could ever reserve",
                     budgets.attempt, budgets.run
                 )));
+            }
+            if budgets
+                .fan_out
+                .is_some_and(|limit| limit < budgets.attempt || limit > budgets.run)
+            {
+                return Err(ConfigError::Binding(
+                    "the fan_out cap must cover one attempt and cannot exceed the run cap".into(),
+                ));
             }
         }
         if self.convergence.clean_rounds == 0 || self.convergence.max_rounds == 0 {
@@ -985,23 +1306,83 @@ impl Definition {
                 self.convergence.clean_rounds, self.convergence.max_rounds
             )));
         }
+        if let Some(policy) = &integration {
+            if self.version != 5 {
+                return Err(ConfigError::Binding(
+                    "automatic Integration requires pipeline format version 5".into(),
+                ));
+            }
+            if self.convergence.max_rounds < 2 {
+                return Err(ConfigError::Binding(
+                    "automatic Integration requires at least two Rounds for later verification"
+                        .into(),
+                ));
+            }
+            if self.nodes.iter().all(|node| node.slicing.is_none()) {
+                return Err(ConfigError::Binding(
+                    "automatic Integration requires a captured Slicer/Scatter semantic-closure route"
+                        .into(),
+                ));
+            }
+            if policy.post_apply_checks.is_empty() {
+                return Err(ConfigError::Binding(
+                    "automatic Integration requires at least one post-apply check".into(),
+                ));
+            }
+            let check_names: std::collections::BTreeSet<_> = self
+                .checks
+                .iter()
+                .map(|check| check.name.as_str())
+                .collect();
+            let mut selected_checks = std::collections::BTreeSet::new();
+            if policy.post_apply_checks.iter().any(|name| {
+                !check_names.contains(name.as_str()) || !selected_checks.insert(name.as_str())
+            }) {
+                return Err(ConfigError::Binding(
+                    "Integration post_apply_checks must be unique declared checks".into(),
+                ));
+            }
+            let node_ids: std::collections::BTreeSet<_> =
+                self.nodes.iter().map(|node| node.id.as_str()).collect();
+            let mut priorities = std::collections::BTreeSet::new();
+            if policy
+                .reviewer_priority
+                .iter()
+                .any(|node| !node_ids.contains(node.as_str()) || !priorities.insert(node.as_str()))
+            {
+                return Err(ConfigError::Binding(
+                    "Integration reviewer_priority must name unique pipeline nodes".into(),
+                ));
+            }
+            let mut protected = std::collections::BTreeSet::new();
+            if policy.protected_paths.iter().any(|path| {
+                !review_core::is_valid_repo_path(path) || !protected.insert(path.as_str())
+            }) {
+                return Err(ConfigError::Binding(
+                    "Integration protected_paths must be unique canonical repository paths".into(),
+                ));
+            }
+        }
 
         let mut pipeline = Pipeline::default();
         let mut reviewers = BTreeMap::new();
         let mut demand_requirements = BTreeMap::new();
         let mut packages = BTreeMap::new();
         let mut reviewer_execution = BTreeMap::new();
+        let mut slicing = BTreeMap::new();
+        let mut closeouts = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
-            if spec.kind == NodeKindSpec::Reviewer {
+            let reviewer_like = matches!(spec.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter);
+            if reviewer_like {
                 demand_requirements.insert(
                     spec.id.clone(),
                     spec.demands
                         .unwrap_or(review_core::DemandRequirement::Required),
                 );
                 match (self.version, &spec.execution) {
-                    (4, Some(execution)) => {
+                    (4 | 5, Some(execution)) => {
                         execution.validate(&spec.id)?;
                         if let Some(budgets) = &self.budgets {
                             let authority =
@@ -1016,10 +1397,10 @@ impl Definition {
                         }
                         reviewer_execution.insert(spec.id.clone(), execution.clone());
                     }
-                    (4, None) => {
+                    (4 | 5, None) => {
                         return Err(ConfigError::Binding(format!(
-                            "pipeline format version 4 requires reviewer `{}` to declare an Execution Binding",
-                            spec.id
+                            "pipeline format version {} requires reviewer-capable node `{}` to declare an Execution Binding",
+                            self.version, spec.id
                         )));
                     }
                     (_, Some(_)) => {
@@ -1041,6 +1422,12 @@ impl Definition {
                     spec.id
                 )));
             }
+            if let Some(policy) = &spec.slicing {
+                slicing.insert(spec.id.clone(), policy.clone());
+            }
+            if let Some(scatter) = &spec.closeout_for {
+                closeouts.insert(scatter.clone(), spec.id.clone());
+            }
             let mut node = Node::new(&spec.id, spec.kind.into())
                 .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
                 .emitting_contracts(spec.outputs.iter().map(PortContractSpec::build).collect());
@@ -1050,21 +1437,21 @@ impl Definition {
             pipeline = pipeline.node(node);
 
             match (spec.kind, &spec.runner, &spec.package) {
-                (NodeKindSpec::Reviewer, None, None) => {
+                (NodeKindSpec::Reviewer | NodeKindSpec::Scatter, None, None) => {
                     return Err(ConfigError::Binding(format!(
                         "reviewer node `{}` binds neither a runner nor a package; a reviewer \
                          with nothing to run would be a node that always reports nothing",
                         spec.id
                     )));
                 }
-                (NodeKindSpec::Reviewer, Some(_), Some(_)) => {
+                (NodeKindSpec::Reviewer | NodeKindSpec::Scatter, Some(_), Some(_)) => {
                     return Err(ConfigError::Binding(format!(
                         "reviewer node `{}` binds both a runner and a package; exactly one \
                          must say what runs",
                         spec.id
                     )));
                 }
-                (NodeKindSpec::Reviewer, Some(command), None) => {
+                (NodeKindSpec::Reviewer | NodeKindSpec::Scatter, Some(command), None) => {
                     if subject.kind == review_core::SubjectKind::Diff {
                         return Err(ConfigError::Binding(format!(
                             "reviewer node `{}` uses an inline runner, which has no package \
@@ -1074,7 +1461,7 @@ impl Definition {
                     }
                     reviewers.insert(spec.id.clone(), command.build());
                 }
-                (NodeKindSpec::Reviewer, None, Some(package)) => {
+                (NodeKindSpec::Reviewer | NodeKindSpec::Scatter, None, Some(package)) => {
                     let Some((lockfile, registry)) = resolver else {
                         return Err(ConfigError::Binding(format!(
                             "reviewer node `{}` names package `{package}`, which needs the \
@@ -1159,7 +1546,10 @@ impl Definition {
             demand_requirements,
             packages,
             reviewer_execution,
+            slicing,
+            closeouts,
             budgets: self.budgets,
+            integration,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,
                 max_rounds: self.convergence.max_rounds,

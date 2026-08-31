@@ -52,6 +52,91 @@ from = { node = "architecture", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
 
+const DYNAMIC_V5: &str = r#"
+version = 5
+
+[subject]
+kind = "whole-tree"
+
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+
+[budgets]
+unit = "tokens"
+attempt = 100
+fan_out = 200
+run = 400
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "slicer"
+kind = "slicer"
+outputs = [{ name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+slicing = { scatter = "scatter", max_paths_per_slice = 1, max_fanout = 2, coverage = "complete", all_shards_required = true, closeout = "required" }
+
+[[nodes]]
+id = "scatter"
+kind = "scatter"
+inputs = [
+  { name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "closeout"
+kind = "reviewer"
+closeout_for = "scatter"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "closeout", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "scatter", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "closeout", port = "prior_findings" }
+[[edges]]
+from = { node = "slicer", port = "slices" }
+to = { node = "scatter", port = "slices" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "closeout", port = "shards" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "ledger", port = "shards" }
+[[edges]]
+from = { node = "closeout", port = "result" }
+to = { node = "ledger", port = "closeout" }
+"#;
+
 #[test]
 fn a_definition_loads_into_a_plan_with_bindings() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
@@ -73,6 +158,103 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
     assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
     assert_eq!(loaded.check_timeout_seconds(), 3600);
+}
+
+#[test]
+fn version_five_captures_bounded_scatter_and_requires_closeout() {
+    let loaded = Definition::from_toml(DYNAMIC_V5).unwrap().load().unwrap();
+    assert_eq!(loaded.slicing()["slicer"].scatter, "scatter");
+    assert_eq!(loaded.closeouts()["scatter"], "closeout");
+    assert_eq!(loaded.budgets().unwrap().fan_out, Some(200));
+    assert!(loaded.reviewers().contains_key("scatter"));
+
+    let missing = DYNAMIC_V5.replace("closeout_for = \"scatter\"\n", "");
+    assert!(matches!(
+        Definition::from_toml(&missing).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("closeout")
+    ));
+}
+
+#[test]
+fn version_five_captures_closed_automatic_integration_policy() {
+    let configured = DYNAMIC_V5.replace(
+        "[budgets]\n",
+        "[[checks]]\nname = \"postapply\"\nprogram = \"/usr/bin/true\"\n\n[integration]\nprotected_paths = [\".github\"]\npost_apply_checks = [\"postapply\"]\nreviewer_priority = [\"scatter\"]\n\n[budgets]\n",
+    );
+    let loaded = Definition::from_toml(&configured).unwrap().load().unwrap();
+    let integration = loaded.integration().unwrap();
+    assert_eq!(integration.post_apply_checks, ["postapply"]);
+    assert_eq!(integration.reviewer_priority, ["scatter"]);
+
+    let unknown = configured.replace("[\"postapply\"]", "[\"missing\"]");
+    assert!(matches!(
+        Definition::from_toml(&unknown).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("post_apply_checks")
+    ));
+    let unsafe_path = configured.replace("[\".github\"]", "[\"../outside\"]");
+    assert!(matches!(
+        Definition::from_toml(&unsafe_path).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("protected_paths")
+    ));
+
+    let static_pipeline = r#"
+version = 5
+[subject]
+kind = "whole-tree"
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+[integration]
+post_apply_checks = ["postapply"]
+[[checks]]
+name = "postapply"
+program = "/usr/bin/true"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free", auto_apply = true }
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "correctness", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "correctness", port = "prior_findings" }
+[[edges]]
+from = { node = "correctness", port = "result" }
+to = { node = "ledger", port = "result" }
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
+"#;
+    assert!(matches!(
+        Definition::from_toml(static_pipeline).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("semantic-closure route")
+    ));
 }
 
 #[test]
@@ -208,10 +390,10 @@ fn graph_validation_applies_to_definitions_too() {
 
 #[test]
 fn a_future_version_is_refused_rather_than_guessed_at() {
-    let future = MINIMAL.replace("version = 2", "version = 5");
+    let future = MINIMAL.replace("version = 2", "version = 6");
     assert!(matches!(
         Definition::from_toml(&future).unwrap().load(),
-        Err(ConfigError::UnknownVersion(5))
+        Err(ConfigError::UnknownVersion(6))
     ));
 }
 

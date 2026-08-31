@@ -18,5 +18,5 @@
 pub mod budget;
 pub mod fencing;
 
-pub use budget::{Budget, BudgetError, BudgetLedger, Reservation, Scope};
+pub use budget::{Budget, BudgetError, BudgetLedger, BudgetScope, Reservation, Scope};
 pub use fencing::{Attempt, AttemptId, AttemptLedger, AttemptState, Epoch, Receipt, Selection};

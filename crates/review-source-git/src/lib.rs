@@ -18,6 +18,7 @@ pub mod materialize;
 pub use capture::{Capture, CaptureError, CaptureObserver, NoObserver, Snapshot, worktree_state};
 pub use git::{
     DEFAULT_GIT_TIMEOUT_SECONDS, GitError, Repo, TreeChange, TreeChangeKind, TreeDiff, TreeId,
+    manifest_diff,
 };
 pub use manifest::{
     Entry, EntryKind, Manifest, ManifestError, PathEncoding, decode_path, digest_bytes,

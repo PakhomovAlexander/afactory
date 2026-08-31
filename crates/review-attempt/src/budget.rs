@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where a limit applies. Ordered from tightest to widest for error reporting.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Scope {
+pub enum BudgetScope {
     Attempt(String),
     Node(String),
     /// A group of nodes sharing one limit — a scatter's shards, or every binding of one reviewer.
@@ -28,7 +28,7 @@ pub enum Scope {
     Run,
 }
 
-impl std::fmt::Display for Scope {
+impl std::fmt::Display for BudgetScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Scope::Attempt(id) => write!(f, "attempt {id}"),
@@ -38,6 +38,10 @@ impl std::fmt::Display for Scope {
         }
     }
 }
+
+/// Source-compatible name for pre-M8 embedders. New code uses [`BudgetScope`] so the fan-out
+/// authority is explicit at call sites.
+pub type Scope = BudgetScope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Budget {

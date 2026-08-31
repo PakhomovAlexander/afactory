@@ -138,6 +138,8 @@ pub struct CanonicalReduction {
     pub summary: AddSummary,
     /// Domain-separated typed Report IDs recorded in `FindingSet@1`.
     pub selected_report_ids: Vec<String>,
+    /// Same-result Report index authority for post-reduction Proposal finalization.
+    pub report_ids_by_source: std::collections::BTreeMap<String, Vec<String>>,
     /// Domain-separated relation IDs recorded in `FindingSet@1`.
     pub relation_ids: Vec<String>,
     /// Domain-separated typed Demand artifacts selected by this reduction.
@@ -427,6 +429,7 @@ impl<'a> Ingest<'a> {
             .collect();
         let mut pending_reports: BTreeSet<(String, String, u32, String)> = BTreeSet::new();
         let mut selected_report_ids = Vec::new();
+        let mut report_ids_by_source = std::collections::BTreeMap::new();
         let mut relation_ids = Vec::new();
         let mut input_artifact_ids = Vec::new();
         let mut selected_demand_artifact_ids = Vec::new();
@@ -649,6 +652,10 @@ impl<'a> Ingest<'a> {
 
                 if stage.provenance.is_some() {
                     selected_report_ids.push(semantic_id.clone());
+                    report_ids_by_source
+                        .entry(source.to_string())
+                        .or_insert_with(Vec::new)
+                        .push(semantic_id.clone());
                     input_artifact_ids.push(report_id.clone());
                 }
 
@@ -675,6 +682,7 @@ impl<'a> Ingest<'a> {
                             .map(|resolution| (kind, resolution))
                     });
                 let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+                    .node(source)
                     .correlating(key.clone())
                     .referencing(vec![report_id.clone()]);
                 apply_candidate(&mut projected, &event, self.cas)?;
@@ -879,6 +887,7 @@ impl<'a> Ingest<'a> {
         Ok(CanonicalReduction {
             summary,
             selected_report_ids,
+            report_ids_by_source,
             relation_ids,
             selected_demand_artifact_ids,
             input_artifact_ids,

@@ -56,6 +56,7 @@ impl ReviewerAdapter for Recorder {
                 r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#,
             )
             .unwrap(),
+            proposal: Ok(None),
             cost_tokens: 1,
             raw_artifact: cas.put(b"stub").unwrap(),
         })

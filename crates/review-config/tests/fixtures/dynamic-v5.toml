@@ -1,0 +1,82 @@
+version = 5
+
+[subject]
+kind = "whole-tree"
+
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+
+[budgets]
+unit = "tokens"
+attempt = 100
+fan_out = 200
+run = 400
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "slicer"
+kind = "slicer"
+outputs = [{ name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+slicing = { scatter = "scatter", max_paths_per_slice = 1, max_fanout = 2, coverage = "complete", all_shards_required = true, closeout = "required" }
+
+[[nodes]]
+id = "scatter"
+kind = "scatter"
+inputs = [
+  { name = "slices", type = "review.kernel/SliceSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "closeout"
+kind = "reviewer"
+closeout_for = "scatter"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+runner = { program = "/bin/true" }
+execution = { credential_mode = "credential_free" }
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [
+  { name = "shards", type = "review.kernel/ShardSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "closeout", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "scatter", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "closeout", port = "prior_findings" }
+[[edges]]
+from = { node = "slicer", port = "slices" }
+to = { node = "scatter", port = "slices" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "closeout", port = "shards" }
+[[edges]]
+from = { node = "scatter", port = "shards" }
+to = { node = "ledger", port = "shards" }
+[[edges]]
+from = { node = "closeout", port = "result" }
+to = { node = "ledger", port = "closeout" }

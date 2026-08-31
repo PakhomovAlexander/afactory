@@ -14,6 +14,7 @@ review-check = { path = "../review-check" }
 review-config = { path = "../review-config" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
+review-parallel = { path = "../review-parallel" }
 review-runner = { path = "../review-runner" }
 review-sandbox = { path = "../review-sandbox" }
 review-source-git = { path = "../review-source-git" }

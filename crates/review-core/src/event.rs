@@ -63,6 +63,14 @@ pub enum EventType {
     CacheSnapshotMaterializedV1,
     #[serde(rename = "GenerationAdvanced@1")]
     GenerationAdvancedV1,
+    #[serde(rename = "IntegrationPrepared@1")]
+    IntegrationPreparedV1,
+    #[serde(rename = "IntegrationConflict@1")]
+    IntegrationConflictV1,
+    #[serde(rename = "IntegrationChecksCompleted@1")]
+    IntegrationChecksCompletedV1,
+    #[serde(rename = "IntegrationCommitted@1")]
+    IntegrationCommittedV1,
     #[serde(rename = "NodeInvocation@1")]
     NodeInvocationV1,
     #[serde(rename = "NodeOutputReceipt@1")]
@@ -71,6 +79,12 @@ pub enum EventType {
     PolicyTimeAdvancedV1,
     #[serde(rename = "ProviderOperationTransition@1")]
     ProviderOperationTransitionV1,
+    #[serde(rename = "ProposalAccepted@1")]
+    ProposalAcceptedV1,
+    #[serde(rename = "ProposalPrepared@1")]
+    ProposalPreparedV1,
+    #[serde(rename = "ProposalRefused@1")]
+    ProposalRefusedV1,
     #[serde(rename = "ReviewerExecutionBound@1")]
     ReviewerExecutionBoundV1,
     #[serde(rename = "RunReport@1")]
@@ -89,10 +103,16 @@ pub enum EventType {
     RoundStartedV1,
     #[serde(rename = "SourceCaptured@1")]
     SourceCapturedV1,
+    #[serde(rename = "SliceSetAccepted@1")]
+    SliceSetAcceptedV1,
+    #[serde(rename = "ShardSetRecorded@1")]
+    ShardSetRecordedV1,
+    #[serde(rename = "SemanticClosureChecked@1")]
+    SemanticClosureCheckedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 50] = [
         Self::BrokerOperationCompletedV1,
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
@@ -120,10 +140,17 @@ impl EventType {
         Self::GateExecutionBoundV1,
         Self::CacheSnapshotMaterializedV1,
         Self::GenerationAdvancedV1,
+        Self::IntegrationPreparedV1,
+        Self::IntegrationConflictV1,
+        Self::IntegrationChecksCompletedV1,
+        Self::IntegrationCommittedV1,
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
         Self::PolicyTimeAdvancedV1,
         Self::ProviderOperationTransitionV1,
+        Self::ProposalAcceptedV1,
+        Self::ProposalPreparedV1,
+        Self::ProposalRefusedV1,
         Self::ReviewerExecutionBoundV1,
         Self::RunReportV1,
         Self::RunReportV2,
@@ -133,6 +160,9 @@ impl EventType {
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
         Self::SourceCapturedV1,
+        Self::SliceSetAcceptedV1,
+        Self::ShardSetRecordedV1,
+        Self::SemanticClosureCheckedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -164,10 +194,17 @@ impl EventType {
             Self::GateExecutionBoundV1 => "GateExecutionBound@1",
             Self::CacheSnapshotMaterializedV1 => "CacheSnapshotMaterialized@1",
             Self::GenerationAdvancedV1 => "GenerationAdvanced@1",
+            Self::IntegrationPreparedV1 => "IntegrationPrepared@1",
+            Self::IntegrationConflictV1 => "IntegrationConflict@1",
+            Self::IntegrationChecksCompletedV1 => "IntegrationChecksCompleted@1",
+            Self::IntegrationCommittedV1 => "IntegrationCommitted@1",
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
             Self::PolicyTimeAdvancedV1 => "PolicyTimeAdvanced@1",
             Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
+            Self::ProposalAcceptedV1 => "ProposalAccepted@1",
+            Self::ProposalPreparedV1 => "ProposalPrepared@1",
+            Self::ProposalRefusedV1 => "ProposalRefused@1",
             Self::ReviewerExecutionBoundV1 => "ReviewerExecutionBound@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
@@ -177,6 +214,9 @@ impl EventType {
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
+            Self::SliceSetAcceptedV1 => "SliceSetAccepted@1",
+            Self::ShardSetRecordedV1 => "ShardSetRecorded@1",
+            Self::SemanticClosureCheckedV1 => "SemanticClosureChecked@1",
         }
     }
 
@@ -229,10 +269,17 @@ impl EventType {
             Self::GateExecutionBoundV1 => ("GateExecutionBound", 1),
             Self::CacheSnapshotMaterializedV1 => ("CacheSnapshotMaterialized", 1),
             Self::GenerationAdvancedV1 => ("GenerationAdvanced", 1),
+            Self::IntegrationPreparedV1 => ("IntegrationPrepared", 1),
+            Self::IntegrationConflictV1 => ("IntegrationConflict", 1),
+            Self::IntegrationChecksCompletedV1 => ("IntegrationChecksCompleted", 1),
+            Self::IntegrationCommittedV1 => ("IntegrationCommitted", 1),
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
             Self::PolicyTimeAdvancedV1 => ("PolicyTimeAdvanced", 1),
             Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
+            Self::ProposalAcceptedV1 => ("ProposalAccepted", 1),
+            Self::ProposalPreparedV1 => ("ProposalPrepared", 1),
+            Self::ProposalRefusedV1 => ("ProposalRefused", 1),
             Self::ReviewerExecutionBoundV1 => ("ReviewerExecutionBound", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
@@ -242,6 +289,9 @@ impl EventType {
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
+            Self::SliceSetAcceptedV1 => ("SliceSetAccepted", 1),
+            Self::ShardSetRecordedV1 => ("ShardSetRecorded", 1),
+            Self::SemanticClosureCheckedV1 => ("SemanticClosureChecked", 1),
         }
     }
 }
@@ -307,10 +357,17 @@ impl std::str::FromStr for EventType {
             "GateExecutionBound@1" => Ok(Self::GateExecutionBoundV1),
             "CacheSnapshotMaterialized@1" => Ok(Self::CacheSnapshotMaterializedV1),
             "GenerationAdvanced@1" => Ok(Self::GenerationAdvancedV1),
+            "IntegrationPrepared@1" => Ok(Self::IntegrationPreparedV1),
+            "IntegrationConflict@1" => Ok(Self::IntegrationConflictV1),
+            "IntegrationChecksCompleted@1" => Ok(Self::IntegrationChecksCompletedV1),
+            "IntegrationCommitted@1" => Ok(Self::IntegrationCommittedV1),
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
             "PolicyTimeAdvanced@1" => Ok(Self::PolicyTimeAdvancedV1),
             "ProviderOperationTransition@1" => Ok(Self::ProviderOperationTransitionV1),
+            "ProposalAccepted@1" => Ok(Self::ProposalAcceptedV1),
+            "ProposalPrepared@1" => Ok(Self::ProposalPreparedV1),
+            "ProposalRefused@1" => Ok(Self::ProposalRefusedV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
             "RunReport@3" => Ok(Self::RunReportV3),
@@ -320,6 +377,9 @@ impl std::str::FromStr for EventType {
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "ReviewerExecutionBound@1" => Ok(Self::ReviewerExecutionBoundV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
+            "SliceSetAccepted@1" => Ok(Self::SliceSetAcceptedV1),
+            "ShardSetRecorded@1" => Ok(Self::ShardSetRecordedV1),
+            "SemanticClosureChecked@1" => Ok(Self::SemanticClosureCheckedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -1503,6 +1563,30 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("ProviderOperationTransition@1: {error}"))
         }
+        EventType::ProposalAcceptedV1 => {
+            let accepted =
+                serde_json::from_value::<crate::ProposalAcceptedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("ProposalAccepted@1: {error}"))?;
+            accepted
+                .validate()
+                .map_err(|error| format!("ProposalAccepted@1: {error}"))
+        }
+        EventType::ProposalPreparedV1 => {
+            let prepared =
+                serde_json::from_value::<crate::ProposalPreparedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("ProposalPrepared@1: {error}"))?;
+            prepared
+                .validate()
+                .map_err(|error| format!("ProposalPrepared@1: {error}"))
+        }
+        EventType::ProposalRefusedV1 => {
+            let refused =
+                serde_json::from_value::<crate::ProposalRefusedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("ProposalRefused@1: {error}"))?;
+            refused
+                .validate()
+                .map_err(|error| format!("ProposalRefused@1: {error}"))
+        }
         EventType::ReviewerExecutionBoundV1 => {
             let binding =
                 serde_json::from_value::<crate::ReviewerExecutionBindingV1>(payload.clone())
@@ -1547,7 +1631,55 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("RunReport@5: {error}"))
         }
+        EventType::IntegrationPreparedV1 => {
+            let value =
+                serde_json::from_value::<crate::IntegrationPreparedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("IntegrationPrepared@1: {error}"))?;
+            value
+                .validate()
+                .map_err(|error| format!("IntegrationPrepared@1: {error}"))
+        }
+        EventType::IntegrationConflictV1 => {
+            let value =
+                serde_json::from_value::<crate::IntegrationConflictPayloadV1>(payload.clone())
+                    .map_err(|error| format!("IntegrationConflict@1: {error}"))?;
+            value
+                .validate()
+                .map_err(|error| format!("IntegrationConflict@1: {error}"))
+        }
+        EventType::IntegrationChecksCompletedV1 => {
+            let value = serde_json::from_value::<crate::IntegrationChecksCompletedPayloadV1>(
+                payload.clone(),
+            )
+            .map_err(|error| format!("IntegrationChecksCompleted@1: {error}"))?;
+            value
+                .validate()
+                .map_err(|error| format!("IntegrationChecksCompleted@1: {error}"))
+        }
+        EventType::IntegrationCommittedV1 => {
+            let value =
+                serde_json::from_value::<crate::IntegrationCommittedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("IntegrationCommitted@1: {error}"))?;
+            value
+                .validate()
+                .map_err(|error| format!("IntegrationCommitted@1: {error}"))
+        }
         EventType::SourceCapturedV1 => Ok(()),
+        EventType::SliceSetAcceptedV1 => {
+            let accepted =
+                serde_json::from_value::<crate::SliceSetAcceptedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("SliceSetAccepted@1: {error}"))?;
+            accepted
+                .validate()
+                .map_err(|error| format!("SliceSetAccepted@1: {error}"))
+        }
+        EventType::ShardSetRecordedV1 | EventType::SemanticClosureCheckedV1 => {
+            let recorded = serde_json::from_value::<crate::RecordedSetPayloadV1>(payload.clone())
+                .map_err(|error| format!("{event_type}: {error}"))?;
+            recorded
+                .validate()
+                .map_err(|error| format!("{event_type}: {error}"))
+        }
     }
 }
 

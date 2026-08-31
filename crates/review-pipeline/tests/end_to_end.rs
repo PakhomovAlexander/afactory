@@ -2048,16 +2048,14 @@ fn the_event_log_tells_the_whole_story() {
             .filter(|e| e.node_id.as_deref() == Some(node))
             .map(|e| e.event_type.as_str())
             .collect();
-        assert_eq!(
-            lifecycle,
-            vec![
-                "NodeInvocation@1",
-                "AttemptDispatched@1",
-                "AttemptAdmitted@1",
-                "NodeOutputReceipt@1"
-            ],
-            "{node}'s own lifecycle stays ordered"
-        );
+        let mut expected = vec![
+            "NodeInvocation@1",
+            "AttemptDispatched@1",
+            "AttemptAdmitted@1",
+            "NodeOutputReceipt@1",
+        ];
+        expected.push("FindingReported@1");
+        assert_eq!(lifecycle, expected, "{node}'s own lifecycle stays ordered");
     }
     let run_report = events.last().unwrap();
     assert_eq!(run_report.payload["verdict"]["kind"], "fail");

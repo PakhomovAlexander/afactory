@@ -1,21 +1,14 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M4, private releases through `v0.4.0`, minimal product v1/v2, and their first
-candidate implementation dogfood are complete. PR #18 merged the M4 implementation at `cea50aa`;
-exact-main CI passed. Its exhausted verification Campaign now has all six Findings fixed and zero
-open; follow-up PR #19 merged at exact `main` `01147ce`, and post-merge CI passed. M5 now provides
-deliberate JSON/text reports, exact Round/reviewer spend, and safe Campaign enumeration/history;
-fresh pinned verification returned Pass. M6.1 now routes v3 Gates through explicit admitted
-Execution Bindings in independent writable clones and reports the fact through `RunReport@4`; a
-real dogfood Campaign passed, final pinned Campaign `m6-1-gate-bindings-final-v2` returned Pass,
-and its four Findings are fixed with zero open. M6.2 materializes bounded machine-policy cache
-snapshots and publishes `CacheManifest@1` receipts through `RunReport@5`; its final Campaign
-returned Pass. M6.3 adds v4 reviewer credential modes, revocable broker handles,
-durable bounded operation receipts, secret isolation, charge reconciliation, and recovery-safe
-late revocation. Its final correctness Campaign findings are fixed and the final `make check`
-gate passes, completing M6. The Docker-backed M6.1 probe remains unexecuted on this daemon-less
-worktree and must be green when the product branch is first published. Resume at M7.1
-verified Proposals. The
+**Status:** M0–M9 are implemented and locally verified. M7 adds base-bound, seal-checked Proposal
+transport and exact export; M8 adds typed bounded Scatter, lossless Shard Sets, whole-Subject
+closeout, and semantic closure; M9 adds opt-in deterministic Integration that checks an
+unpromoted derived Snapshot before one atomic internal-head commit. Pinned `v0.5.0` light dogfood
+Campaign `m7-m9-light-v1` found five authority/replay defects; all five have deterministic
+regressions and are fixed. The full `make check` gate passes. Static automatic Integration is
+deliberately refused until a captured semantic-closure route exists. Product-branch publication,
+CI, merge, and exact-main verification remain. The Docker-backed M6.1 probe remains unexecuted on
+this daemon-less worktree and must be green when the product branch is first published. The
 accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
@@ -100,8 +93,13 @@ corrections from the second audit are:
   `RunReport@3` reason `authority_unavailable`; frozen @1/@2 readers remain permanent.
 - Safe caches are sandbox-local snapshots; ADR-0008 supersedes host passthrough ADR-0003.
 - Proposals are base-bound and exported by Proposal ID; ADR-0010 supersedes ADR-0004.
+- Proposal declarations are transported beside unchanged flat Reviewer Results, verified at seal,
+  durably prepared with selected Attempts, and finalized after canonical Report reduction under
+  ADR-0038.
 - Dynamic scatter/semantic closure and internal derived-Snapshot Integration are restored as M8
   and M9 rather than silently omitted.
+- Pipeline v5 keeps the authority DAG static while typed Scatter nodes own durable tagged shard
+  sub-invocations and lossless Shard Sets under ADR-0039.
 - Wise token use and minimum Worker context are the first two design values; Inputs carry a
   measured context manifest and context expands only through bounded recorded retrieval
   ([ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)).
@@ -185,16 +183,20 @@ and verification prerequisites exist.
         passed with thirteen fixed Findings and zero open.
   - [x] M6.3 Broker Handles, receipts, revocation, secret isolation, recovery settlement, and
         pre-dispatch budget coverage; final correctness findings fixed and `make check` green.
-- [ ] M7 — a Proposal unequal to the sealed diff is refused; export is by Proposal ID; stale
+- [x] M7 — a Proposal unequal to the sealed diff is refused; export is by Proposal ID; stale
       export requires explicit override.
-- [ ] M8 — accepted SliceSets fan out losslessly under fan-out budgets; whole-Subject closeout and
+- [x] M8 — accepted SliceSets fan out losslessly under fan-out budgets; whole-Subject closeout and
       semantic-output closure prevent omitted shard output from passing.
-- [ ] M9 — automatic Integration is opt-in, advances only an internal derived Snapshot at one
+- [x] M9 — automatic Integration is opt-in, advances only an internal derived Snapshot at one
       transactional boundary, and leaves claims pending until a later verified Round.
-- [ ] `make check` stays green throughout; candidate `make dogfood` becomes available only after
+- [x] `make check` stays green throughout; candidate `make dogfood` becomes available only after
       v2 and never replaces the deterministic gate.
 
 ## Open work (resume here)
+
+M0–M9 are complete on local branch `agent/m7-m9`. Resume at product-branch publication, CI,
+merge, and exact-main verification. Do not add static automatic Integration by bypassing closure:
+pipeline v5 refuses it until a captured Slicer/Scatter semantic-closure route exists.
 
 M0 and M1 are complete. M2.1-M2.6 reached dogfood. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,
@@ -363,8 +365,8 @@ recovery or supersession fences reserve enough authority to persist only a late 
 Late overruns raise terminal commitment, provider admission counts outstanding broker authority,
 one refusal terminally bounds receipt growth, partially percent-encoded credentials are withheld,
 and broker authority must fit the pre-dispatch reservation. The final correctness Campaign's two
-findings have deterministic regressions and are fixed; the final `make check` gate passes. Resume
-at M7.1 verified Proposals.
+findings have deterministic regressions and are fixed; the final `make check` gate passes. M7–M9
+then completed on `agent/m7-m9`; their publication and exact-main verification remain.
 ADR-0031 separately authorizes the narrow V3.1 delivery slice for trusted
 design-partner pilots; it does not weaken the M3.1 convergence requirement or pull broader v3
 work forward. Commit `fdaf37f` implements that slice: exact source/derived authority checks,
@@ -422,3 +424,5 @@ isolation, and verification prerequisites.
 - **Candidate dogfood cannot be its own only safety story.** `make check` remains independent;
   pinned `v0.2.0` remains the last-green reviewer while v1/v2 are built and during the first real
   candidate implementation run.
+- Automatic Integration never applies patch text to a checkout: it composes M7's sealed candidate
+  Manifests and promotes only a checked internal derived Snapshot ([ADR-0040](adr/0040-promote-only-checked-derived-snapshots.md)).

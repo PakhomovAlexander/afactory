@@ -23,11 +23,13 @@ pub mod exec;
 pub mod finding;
 pub mod finding_set;
 pub mod grouping;
+pub mod integration;
 pub mod json;
 pub mod legacy;
 pub mod patch;
 pub mod path;
 pub mod resolution;
+pub mod slice;
 pub mod snapshot;
 pub mod subject;
 
@@ -70,17 +72,30 @@ pub use finding_set::{
     FINDING_REDUCER_VERSION, FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1,
 };
 pub use grouping::{FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1};
+pub use integration::{
+    IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksCompletedPayloadV1,
+    IntegrationChecksV1, IntegrationCommittedPayloadV1, IntegrationConflictPayloadV1,
+    IntegrationPlanV1, IntegrationPreparedPayloadV1,
+};
 pub use json::{NumericDomainError, admit};
 pub use legacy::{
     LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
     validate_reviewer_result, validate_reviewer_result_classified, validate_reviewer_result_v2,
     validate_reviewer_result_v2_classified,
 };
-pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
+pub use patch::{
+    ClaimRef, ClaimRefKind, PatchProposal, ProposalAcceptedPayloadV1, ProposalCandidateV1,
+    ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
+};
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use resolution::{
     ChangeAttestationV1, ChangedRegionV1, FindingResolutionOutcome, FindingResolutionV1,
     FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,
+};
+pub use slice::{
+    CloseoutPolicyV1, RecordedSetPayloadV1, ReviewSliceV1, SemanticClosureV1,
+    SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1, ShardSetV1, SliceCoverageV1,
+    SliceSetAcceptedPayloadV1, SliceSetV1,
 };
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
 pub use subject::{SubjectKind, SubjectV1};
@@ -109,6 +124,8 @@ pub mod contract {
     pub const FINDING_DISPOSITION_V1: &str = "review.kernel/FindingDisposition@1";
     pub const FINDING_GROUPING_V1: &str = "review.kernel/FindingGrouping@1";
     pub const FINDING_SET_V1: &str = "review.kernel/FindingSet@1";
+    pub const INTEGRATION_CHECKS_V1: &str = "review.kernel/IntegrationChecks@1";
+    pub const INTEGRATION_PLAN_V1: &str = "review.kernel/IntegrationPlan@1";
     pub const DEMAND_V1: &str = "review.kernel/Demand@1";
     pub const DEMAND_SET_V1: &str = "review.kernel/DemandSet@1";
     pub const DEMAND_WAIVER_V1: &str = "review.kernel/DemandWaiver@1";
@@ -126,9 +143,13 @@ pub mod contract {
     pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
     pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
+    pub const REVIEW_SLICE_V1: &str = "review.kernel/ReviewSlice@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const REVIEWER_RESULT_V2: &str = "review.kernel/ReviewerResult@2";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
     pub const SUBJECT_V1: &str = "review.kernel/Subject@1";
+    pub const SLICE_SET_V1: &str = "review.kernel/SliceSet@1";
+    pub const SHARD_SET_V1: &str = "review.kernel/ShardSet@1";
+    pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
     pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
 }

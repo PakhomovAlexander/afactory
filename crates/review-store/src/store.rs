@@ -809,6 +809,19 @@ struct AuthorityDefinition {
     budgets: Option<toml::Value>,
     #[serde(default)]
     convergence: Option<toml::Value>,
+    #[serde(default)]
+    integration: Option<AuthorityIntegration>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityIntegration {
+    #[serde(default)]
+    protected_paths: Vec<String>,
+    post_apply_checks: Vec<String>,
+    #[serde(default)]
+    reviewer_priority: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -820,7 +833,7 @@ struct AuthorityGate {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorityNode {
     id: String,
@@ -839,6 +852,33 @@ struct AuthorityNode {
     runner: Option<toml::Value>,
     #[serde(default)]
     execution: Option<AuthorityReviewerExecution>,
+    #[serde(default)]
+    slicing: Option<AuthoritySlicing>,
+    #[serde(default)]
+    closeout_for: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritySlicing {
+    scatter: String,
+    max_paths_per_slice: usize,
+    max_fanout: u32,
+    coverage: review_core::SliceCoverageV1,
+    all_shards_required: bool,
+    closeout: AuthorityCloseoutMode,
+    #[serde(default)]
+    waiver_policy_id: Option<String>,
+    #[serde(default)]
+    waiver_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AuthorityCloseoutMode {
+    Required,
+    Waived,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -851,14 +891,14 @@ struct AuthorityReviewerExecution {
     operations: Vec<review_core::BrokerOperationPolicyV1>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(untagged)]
 enum AuthorityPort {
     Name(String),
     Detailed(AuthorityPortDetails),
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorityPortDetails {
     name: String,
@@ -908,12 +948,139 @@ impl AuthorityPort {
 }
 
 struct AuthorityPlan {
+    version: u32,
+    pipeline_policy_id: String,
     nodes: std::collections::BTreeMap<String, AuthorityNode>,
     budgeted: bool,
     gate_bound: bool,
     gate_nodes: std::collections::BTreeSet<String>,
     cache_kinds: std::collections::BTreeSet<String>,
     reviewer_execution: std::collections::BTreeMap<String, AuthorityReviewerExecution>,
+    integration: Option<AuthorityIntegration>,
+    check_names: Vec<String>,
+}
+
+impl AuthorityPlan {
+    fn reviewer_execution_for(&self, node: &str) -> Option<&AuthorityReviewerExecution> {
+        self.reviewer_execution.get(node).or_else(|| {
+            let (owner, _) = node.split_once("#slice:")?;
+            (self.nodes.get(owner)?.kind == "scatter")
+                .then(|| self.reviewer_execution.get(owner))
+                .flatten()
+        })
+    }
+}
+
+struct DynamicNodeAuthority {
+    slice: review_core::ReviewSliceV1,
+    inputs: Vec<AuthorityPort>,
+    outputs: Vec<AuthorityPort>,
+}
+
+fn dynamic_node_authority(
+    tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
+    run_id: &str,
+    round_event_id: &str,
+    plan: &AuthorityPlan,
+    runtime_node: &str,
+) -> Result<Option<DynamicNodeAuthority>, StoreError> {
+    if plan.nodes.contains_key(runtime_node) {
+        return Ok(None);
+    }
+    let mut statement = tx.prepare(
+        "SELECT node_id, payload FROM events
+         WHERE run_id = ?1 AND causation_id = ?2 AND type = 'SliceSetAccepted@1'
+         ORDER BY sequence",
+    )?;
+    let rows = statement.query_map(params![run_id, round_event_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut resolved = None;
+    for row in rows {
+        let (slicer_id, payload) = row?;
+        let payload: review_core::SliceSetAcceptedPayloadV1 = serde_json::from_str(&payload)?;
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&payload.slice_set_artifact_id)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+        )?;
+        crate::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+        if envelope.artifact_type != review_core::contract::SLICE_SET_V1
+            || envelope.artifact_id != payload.slice_set_id
+        {
+            return Err(StoreError::Conflict(
+                "durable SliceSet authority contradicts its accepted payload".into(),
+            ));
+        }
+        let set: review_core::SliceSetV1 = serde_json::from_value(envelope.payload)?;
+        set.validate().map_err(StoreError::Conflict)?;
+        let Some(slice) = set
+            .slices
+            .iter()
+            .find(|slice| slice.runtime_node_id == runtime_node)
+        else {
+            continue;
+        };
+        if resolved.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "runtime node `{runtime_node}` is authorized by multiple Slice Sets"
+            )));
+        }
+        let slicer = plan.nodes.get(&slicer_id).ok_or_else(|| {
+            StoreError::Conflict("SliceSetAccepted@1 names a non-plan Slicer".into())
+        })?;
+        if slicer.kind != "slicer" {
+            return Err(StoreError::Conflict(
+                "SliceSetAccepted@1 producer is not a pinned Slicer".into(),
+            ));
+        }
+        let owner = slicer
+            .slicing
+            .as_ref()
+            .map(|policy| policy.scatter.clone())
+            .ok_or_else(|| StoreError::Conflict("pinned Slicer has no Scatter owner".into()))?;
+        let scatter = plan.nodes.get(&owner).ok_or_else(|| {
+            StoreError::Conflict("pinned Slicer names an absent Scatter owner".into())
+        })?;
+        if scatter.kind != "scatter" || !runtime_node.starts_with(&format!("{owner}#slice:")) {
+            return Err(StoreError::Conflict(
+                "runtime node identity disagrees with its pinned Scatter".into(),
+            ));
+        }
+        let mut inputs = scatter
+            .inputs
+            .iter()
+            .filter(|port| port.artifact_type() != review_core::contract::SLICE_SET_V1)
+            .cloned()
+            .collect::<Vec<_>>();
+        inputs.push(AuthorityPort::Detailed(AuthorityPortDetails {
+            name: "slice".into(),
+            artifact_type: review_core::contract::REVIEW_SLICE_V1.into(),
+            cardinality: "one".into(),
+            optional: false,
+            snapshot_affinity: "same_subject".into(),
+        }));
+        let result_type = if inputs
+            .iter()
+            .any(|port| port.artifact_type() == review_core::contract::FINDING_SET_V1)
+        {
+            review_core::contract::REVIEWER_RESULT_V2
+        } else {
+            review_core::contract::REVIEWER_RESULT_V1
+        };
+        resolved = Some(DynamicNodeAuthority {
+            slice: slice.clone(),
+            inputs,
+            outputs: vec![AuthorityPort::Detailed(AuthorityPortDetails {
+                name: "out".into(),
+                artifact_type: result_type.into(),
+                cardinality: "one".into(),
+                optional: false,
+                snapshot_affinity: "same_subject".into(),
+            })],
+        });
+    }
+    Ok(resolved)
 }
 
 fn default_authority_outputs() -> Vec<AuthorityPort> {
@@ -963,11 +1130,19 @@ fn load_authority_plan_id(
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is not UTF-8: {error}")))?;
     let definition: AuthorityDefinition = toml::from_str(pipeline)
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is invalid: {error}")))?;
-    if !(1..=4).contains(&definition.version) {
+    if !(1..=5).contains(&definition.version) {
         return Err(StoreError::Conflict(
             "pinned pipeline has no supported version".into(),
         ));
     }
+    let version = definition.version;
+    let integration = definition.integration.clone();
+    let check_names = definition
+        .checks
+        .iter()
+        .filter_map(|check| check.get("name").and_then(toml::Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let gate_bound = definition.gate.is_some();
     let cache_kinds: std::collections::BTreeSet<String> = definition
         .gate
@@ -1004,7 +1179,7 @@ fn load_authority_plan_id(
     let mut reviewer_execution = std::collections::BTreeMap::new();
     for node in nodes.values() {
         match (definition.version, node.kind.as_str(), &node.execution) {
-            (4, "reviewer", Some(execution)) => {
+            (4, "reviewer", Some(execution)) | (5, "reviewer" | "scatter", Some(execution)) => {
                 let mut names = std::collections::BTreeSet::new();
                 for operation in &execution.operations {
                     operation.validate().map_err(StoreError::Conflict)?;
@@ -1036,12 +1211,17 @@ fn load_authority_plan_id(
                 }
                 reviewer_execution.insert(node.id.clone(), execution.clone());
             }
-            (4, "reviewer", None) => {
+            (4, "reviewer", None) | (5, "reviewer" | "scatter", None) => {
                 return Err(StoreError::Conflict(
-                    "pinned v4 reviewer has no Execution Binding".into(),
+                    "pinned reviewer-capable node has no Execution Binding".into(),
                 ));
             }
-            (_, _, Some(_)) if definition.version != 4 || node.kind != "reviewer" => {
+            (_, _, Some(_))
+                if !matches!(
+                    (definition.version, node.kind.as_str()),
+                    (4, "reviewer") | (5, "reviewer" | "scatter")
+                ) =>
+            {
                 return Err(StoreError::Conflict(
                     "pinned reviewer Execution Binding is not valid for this pipeline version or node kind"
                         .into(),
@@ -1051,12 +1231,16 @@ fn load_authority_plan_id(
         }
     }
     Ok(AuthorityPlan {
+        version,
+        pipeline_policy_id: manifest.pipeline.artifact_id,
         nodes,
         budgeted,
         gate_bound,
         gate_nodes,
         cache_kinds,
         reviewer_execution,
+        integration,
+        check_names,
     })
 }
 
@@ -1118,6 +1302,47 @@ fn typed_json_artifacts(
                         review_core::contract::CACHE_MANIFEST_V1.into(),
                     )?;
                 }
+                continue;
+            }
+            EventType::SliceSetAcceptedV1 => {
+                let payload: review_core::SliceSetAcceptedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.slice_set_artifact_id,
+                    review_core::contract::SLICE_SET_V1.into(),
+                )?;
+                continue;
+            }
+            EventType::ShardSetRecordedV1 | EventType::SemanticClosureCheckedV1 => {
+                let payload: review_core::RecordedSetPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                let artifact_type = if event.event_type == EventType::ShardSetRecordedV1 {
+                    review_core::contract::SHARD_SET_V1
+                } else {
+                    review_core::contract::SEMANTIC_CLOSURE_V1
+                };
+                insert_artifact_type(&mut artifacts, payload.record_id, artifact_type.into())?;
+                continue;
+            }
+            EventType::IntegrationPreparedV1 => {
+                let payload: review_core::IntegrationPreparedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.plan_artifact_id,
+                    review_core::contract::INTEGRATION_PLAN_V1.into(),
+                )?;
+                continue;
+            }
+            EventType::IntegrationChecksCompletedV1 => {
+                let payload: review_core::IntegrationChecksCompletedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    payload.checks_artifact_id,
+                    review_core::contract::INTEGRATION_CHECKS_V1.into(),
+                )?;
                 continue;
             }
             EventType::DemandRecordedV1
@@ -1361,6 +1586,34 @@ fn validate_artifact_payload(
         review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
         review_core::contract::REVIEWER_RESULT_V2 => {
             review_core::validate_reviewer_result_v2(value).map_err(StoreError::Conflict)?
+        }
+        review_core::contract::REVIEW_SLICE_V1 => {
+            let payload: review_core::ReviewSliceV1 =
+                validated_envelope_payload(value, review_core::contract::REVIEW_SLICE_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::SLICE_SET_V1 => {
+            let payload: review_core::SliceSetV1 =
+                validated_envelope_payload(value, review_core::contract::SLICE_SET_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::SHARD_SET_V1 => {
+            let payload: review_core::ShardSetV1 =
+                validated_envelope_payload(value, review_core::contract::SHARD_SET_V1)?;
+            payload.validate_shape().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::SEMANTIC_CLOSURE_V1 => {
+            let payload: review_core::SemanticClosureV1 =
+                validated_envelope_payload(value, review_core::contract::SEMANTIC_CLOSURE_V1)?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::INTEGRATION_PLAN_V1 => {
+            let payload: review_core::IntegrationPlanV1 = serde_json::from_value(value.clone())?;
+            payload.validate().map_err(StoreError::Conflict)?;
+        }
+        review_core::contract::INTEGRATION_CHECKS_V1 => {
+            let payload: review_core::IntegrationChecksV1 = serde_json::from_value(value.clone())?;
+            payload.validate().map_err(StoreError::Conflict)?;
         }
         review_core::contract::FINDING_DISPOSITION_V1 => {
             if value.get("type").is_none() {
@@ -1884,10 +2137,22 @@ fn validate_campaign_transition(
         std::collections::BTreeMap::new();
     let mut batch_terminal_nodes = std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
+    let mut batch_proposal_attempts = std::collections::BTreeSet::new();
+    let mut batch_prepared_proposals = std::collections::BTreeMap::new();
+    let mut batch_accepted_proposals = std::collections::BTreeSet::new();
     let mut batch_invocations = std::collections::BTreeSet::new();
     let mut batch_receipts = std::collections::BTreeSet::new();
     let mut batch_findings = std::collections::BTreeSet::new();
     let mut batch_demands = std::collections::BTreeSet::new();
+    let batch_integration_attestations: std::collections::BTreeSet<String> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::ChangeAttestedV1)
+        .filter_map(|event| {
+            serde_json::from_value::<review_core::RecordedArtifactPayloadV1>(event.payload.clone())
+                .ok()
+                .map(|payload| payload.artifact_id)
+        })
+        .collect();
     let mut active_groupings = load_active_groupings(tx, run_id)?;
     let mut batch_provider_operations: std::collections::BTreeMap<
         String,
@@ -2143,7 +2408,7 @@ fn validate_campaign_transition(
                                 ));
                             }
                             let expected = plan
-                                .and_then(|plan| plan.reviewer_execution.get(node))
+                                .and_then(|plan| plan.reviewer_execution_for(node))
                                 .ok_or_else(|| {
                                     StoreError::Conflict(format!(
                                         "reviewer Execution Binding node '{node}' is absent from pinned v4 authority"
@@ -2561,19 +2826,61 @@ fn validate_campaign_transition(
                                 ));
                             }
                             if let Some(plan) = plan {
-                                let expected = plan.nodes.get(node).ok_or_else(|| {
-                                    StoreError::Conflict(format!(
-                                        "node '{node}' is absent from the pinned Campaign plan"
-                                    ))
-                                })?;
-                                validate_plan_ports(
-                                    prepared,
-                                    &expected.inputs,
-                                    &invocation.inputs,
-                                    subject_snapshot_id,
-                                    subject_base_snapshot_id.as_deref(),
-                                    subject_change_set_id.as_deref(),
-                                )?;
+                                if let Some(expected) = plan.nodes.get(node) {
+                                    validate_plan_ports(
+                                        prepared,
+                                        &expected.inputs,
+                                        &invocation.inputs,
+                                        subject_snapshot_id,
+                                        subject_base_snapshot_id.as_deref(),
+                                        subject_change_set_id.as_deref(),
+                                    )?;
+                                } else {
+                                    let dynamic = dynamic_node_authority(
+                                        tx, cas, run_id, active_id, plan, node,
+                                    )?
+                                    .ok_or_else(|| {
+                                        StoreError::Conflict(format!(
+                                            "node '{node}' is absent from the pinned Campaign plan and accepted Slice Sets"
+                                        ))
+                                    })?;
+                                    validate_plan_ports(
+                                        prepared,
+                                        &dynamic.inputs,
+                                        &invocation.inputs,
+                                        subject_snapshot_id,
+                                        subject_base_snapshot_id.as_deref(),
+                                        subject_change_set_id.as_deref(),
+                                    )?;
+                                    let slice_record = invocation
+                                        .inputs
+                                        .iter()
+                                        .find(|port| port.port == "slice")
+                                        .and_then(|port| port.artifact_ids.first())
+                                        .ok_or_else(|| {
+                                            StoreError::Conflict(
+                                                "dynamic invocation has no exact Slice artifact"
+                                                    .into(),
+                                            )
+                                        })?;
+                                    let value =
+                                        prepared.json.get(slice_record).ok_or_else(|| {
+                                            StoreError::Conflict(
+                                                "dynamic invocation Slice was not prepared".into(),
+                                            )
+                                        })?;
+                                    let slice: review_core::ReviewSliceV1 =
+                                        validated_envelope_payload(
+                                            value,
+                                            review_core::contract::REVIEW_SLICE_V1,
+                                        )?;
+                                    if slice != dynamic.slice {
+                                        return Err(StoreError::Conflict(
+                                            "dynamic invocation Slice contradicts accepted SliceSet authority"
+                                                .into(),
+                                        ));
+                                    }
+                                }
                             }
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
@@ -2789,7 +3096,7 @@ fn validate_campaign_transition(
                                 }
                             }
                             let expected_execution =
-                                plan.and_then(|plan| plan.reviewer_execution.get(node));
+                                plan.and_then(|plan| plan.reviewer_execution_for(node));
                             let execution_binding = if expected_execution.is_some() {
                                 tx.query_row(
                                     "SELECT payload FROM events
@@ -2983,20 +3290,39 @@ fn validate_campaign_transition(
                                 ));
                             }
                             if let Some(plan) = plan {
-                                let expected = plan.nodes.get(node).ok_or_else(|| {
-                                    StoreError::Conflict(format!(
-                                        "node '{node}' is absent from the pinned Campaign plan"
-                                    ))
-                                })?;
-                                validate_plan_ports(
-                                    prepared,
-                                    &expected.outputs,
-                                    &receipt.outputs,
-                                    subject_snapshot_id,
-                                    subject_base_snapshot_id.as_deref(),
-                                    subject_change_set_id.as_deref(),
-                                )?;
-                                if expected.kind == "reviewer" && event.attempt_id.is_none() {
+                                let reviewer = match plan.nodes.get(node) {
+                                    Some(expected) => {
+                                        validate_plan_ports(
+                                            prepared,
+                                            &expected.outputs,
+                                            &receipt.outputs,
+                                            subject_snapshot_id,
+                                            subject_base_snapshot_id.as_deref(),
+                                            subject_change_set_id.as_deref(),
+                                        )?;
+                                        expected.kind == "reviewer"
+                                    }
+                                    None => {
+                                        let dynamic = dynamic_node_authority(
+                                            tx, cas, run_id, active_id, plan, node,
+                                        )?
+                                        .ok_or_else(|| {
+                                            StoreError::Conflict(format!(
+                                                "node '{node}' is absent from the pinned Campaign plan and accepted Slice Sets"
+                                            ))
+                                        })?;
+                                        validate_plan_ports(
+                                            prepared,
+                                            &dynamic.outputs,
+                                            &receipt.outputs,
+                                            subject_snapshot_id,
+                                            subject_base_snapshot_id.as_deref(),
+                                            subject_change_set_id.as_deref(),
+                                        )?;
+                                        true
+                                    }
+                                };
+                                if reviewer && event.attempt_id.is_none() {
                                     return Err(StoreError::Conflict(
                                         "reviewer receipt has no selected attempt ID".into(),
                                     ));
@@ -3073,6 +3399,237 @@ fn validate_campaign_transition(
                                 }
                             }
                         }
+                        EventType::ProposalPreparedV1 | EventType::ProposalRefusedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict(format!("{event_type} has no node ID"))
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict(format!("{event_type} has no Attempt ID"))
+                            })?;
+                            let selected_result = selected_attempt_result(
+                                tx,
+                                run_id,
+                                active_id,
+                                &batch_selected,
+                                node,
+                                attempt,
+                            )?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events
+                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3
+                                   AND type IN ('ProposalPrepared@1', 'ProposalRefused@1')",
+                                params![run_id, active_id, attempt],
+                                |row| row.get(0),
+                            )?;
+                            if existing != 0 || !batch_proposal_attempts.insert(attempt.to_string())
+                            {
+                                return Err(StoreError::Conflict(
+                                    "selected Attempt has duplicate Proposal disposition".into(),
+                                ));
+                            }
+                            if event_type == EventType::ProposalPreparedV1 {
+                                let payload: review_core::ProposalPreparedPayloadV1 =
+                                    serde_json::from_value(event.payload.clone())?;
+                                let candidate = proposal_candidate(
+                                    cas,
+                                    prepared,
+                                    &payload.candidate_artifact_id,
+                                )?;
+                                if payload.result_artifact_id != selected_result
+                                    || candidate.result_artifact_id != selected_result
+                                    || candidate.base_snapshot_id != subject_snapshot_id.as_str()
+                                {
+                                    return Err(StoreError::Conflict(
+                                        "ProposalPrepared@1 contradicts its selected Attempt or Subject"
+                                            .into(),
+                                    ));
+                                }
+                                validate_candidate_manifest(cas, subject, &candidate)?;
+                                let mut expected = vec![
+                                    payload.candidate_artifact_id.clone(),
+                                    selected_result.clone(),
+                                    candidate.patch_artifact_id.clone(),
+                                    candidate.derived_manifest_artifact_id.clone(),
+                                ];
+                                expected.extend(candidate.evidence_ids.iter().cloned());
+                                require_exact_round_artifact_refs(
+                                    tx,
+                                    run_id,
+                                    active_payload,
+                                    subject,
+                                    event,
+                                    expected,
+                                    "ProposalPrepared@1",
+                                )?;
+                                batch_prepared_proposals.insert(
+                                    payload.candidate_artifact_id,
+                                    (node.to_string(), attempt.to_string(), selected_result),
+                                );
+                            } else {
+                                let payload: review_core::ProposalRefusedPayloadV1 =
+                                    serde_json::from_value(event.payload.clone())?;
+                                if payload.result_artifact_id != selected_result {
+                                    return Err(StoreError::Conflict(
+                                        "ProposalRefused@1 contradicts its selected Attempt".into(),
+                                    ));
+                                }
+                                require_exact_round_artifact_refs(
+                                    tx,
+                                    run_id,
+                                    active_payload,
+                                    subject,
+                                    event,
+                                    vec![selected_result],
+                                    "ProposalRefused@1",
+                                )?;
+                            }
+                        }
+                        EventType::ProposalAcceptedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("ProposalAccepted@1 has no node ID".into())
+                            })?;
+                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("ProposalAccepted@1 has no Attempt ID".into())
+                            })?;
+                            let payload: review_core::ProposalAcceptedPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            payload
+                                .validate()
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            let selected_result = selected_attempt_result(
+                                tx,
+                                run_id,
+                                active_id,
+                                &batch_selected,
+                                node,
+                                attempt,
+                            )?;
+                            let prepared_authority = prepared_proposal_authority(
+                                tx,
+                                run_id,
+                                active_id,
+                                &batch_prepared_proposals,
+                                &payload.candidate_artifact_id,
+                            )?;
+                            if prepared_authority
+                                != (
+                                    node.to_string(),
+                                    attempt.to_string(),
+                                    selected_result.clone(),
+                                )
+                            {
+                                return Err(StoreError::Conflict(
+                                    "ProposalAccepted@1 contradicts its durable preparation".into(),
+                                ));
+                            }
+                            let candidate =
+                                proposal_candidate(cas, prepared, &payload.candidate_artifact_id)?;
+                            validate_candidate_manifest(cas, subject, &candidate)?;
+                            let envelope_value = prepared
+                                .json
+                                .get(&payload.proposal_artifact_id)
+                                .cloned()
+                                .map(Ok)
+                                .unwrap_or_else(|| {
+                                    cas.get_json(&payload.proposal_artifact_id)
+                                        .map_err(|error| StoreError::Conflict(error.to_string()))
+                                })?;
+                            let envelope: review_core::ArtifactEnvelope =
+                                serde_json::from_value(envelope_value)?;
+                            crate::canonical::validate_envelope(&envelope)
+                                .map_err(StoreError::Conflict)?;
+                            if envelope.artifact_type != review_core::contract::PATCH_PROPOSAL_V1
+                                || envelope.artifact_id != payload.proposal_id
+                                || envelope.subject_snapshot_id.as_deref()
+                                    != Some(subject_snapshot_id.as_str())
+                            {
+                                return Err(StoreError::Conflict(
+                                    "ProposalAccepted@1 contradicts its typed Proposal envelope"
+                                        .into(),
+                                ));
+                            }
+                            match &envelope.producer {
+                                review_core::Producer::Attempt {
+                                    run_id: producer_run,
+                                    node_id: producer_node,
+                                    attempt_id: producer_attempt,
+                                } if producer_run == run_id
+                                    && producer_node == node
+                                    && producer_attempt == attempt => {}
+                                _ => {
+                                    return Err(StoreError::Conflict(
+                                        "accepted Proposal producer is not its selected Attempt"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                            let proposal: review_core::PatchProposal =
+                                serde_json::from_value(envelope.payload.clone())?;
+                            proposal
+                                .check_shape()
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            validate_accepted_proposal_claims(
+                                tx, run_id, active_id, node, &candidate, &proposal,
+                            )?;
+                            if proposal.base_snapshot_id != candidate.base_snapshot_id
+                                || proposal.patch_artifact_id != candidate.patch_artifact_id
+                                || proposal.evidence_ids != candidate.evidence_ids
+                                || proposal.paths != candidate.paths
+                                || proposal.description != candidate.description
+                                || proposal.auto_apply_nominated != candidate.auto_apply_nominated
+                            {
+                                return Err(StoreError::Conflict(
+                                    "accepted Proposal contradicts its sealed candidate".into(),
+                                ));
+                            }
+                            let mut expected_inputs = vec![
+                                payload.candidate_artifact_id.clone(),
+                                candidate.result_artifact_id.clone(),
+                                candidate.patch_artifact_id.clone(),
+                                candidate.derived_manifest_artifact_id.clone(),
+                            ];
+                            expected_inputs.extend(candidate.evidence_ids.iter().cloned());
+                            if normalized_ids(envelope.input_artifacts.clone())
+                                != normalized_ids(expected_inputs)
+                            {
+                                return Err(StoreError::Conflict(
+                                    "accepted Proposal envelope omits exact candidate inputs"
+                                        .into(),
+                                ));
+                            }
+                            require_exact_round_artifact_refs(
+                                tx,
+                                run_id,
+                                active_payload,
+                                subject,
+                                event,
+                                vec![
+                                    payload.proposal_artifact_id.clone(),
+                                    payload.candidate_artifact_id.clone(),
+                                ],
+                                "ProposalAccepted@1",
+                            )?;
+                            let existing: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                                 AND causation_id = ?2 AND type = 'ProposalAccepted@1'
+                                 AND (json_extract(payload, '$.proposal_id') = ?3
+                                   OR json_extract(payload, '$.candidate_artifact_id') = ?4)",
+                                params![
+                                    run_id,
+                                    active_id,
+                                    payload.proposal_id,
+                                    payload.candidate_artifact_id
+                                ],
+                                |row| row.get(0),
+                            )?;
+                            if existing != 0
+                                || !batch_accepted_proposals.insert(payload.proposal_id)
+                            {
+                                return Err(StoreError::Conflict(
+                                    "Proposal was accepted more than once".into(),
+                                ));
+                            }
+                        }
                         EventType::FindingReportedV1 => {
                             let key = event.payload["key"].as_str().ok_or_else(|| {
                                 StoreError::Conflict("FindingReported@1 has no finding key".into())
@@ -3120,6 +3677,115 @@ fn validate_campaign_transition(
                             }
                             batch_demands.insert(demand.demand_id);
                         }
+                        EventType::SliceSetAcceptedV1 => {
+                            let node = event.node_id.as_deref().ok_or_else(|| {
+                                StoreError::Conflict("SliceSetAccepted@1 has no Slicer node".into())
+                            })?;
+                            let payload: review_core::SliceSetAcceptedPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            payload
+                                .validate()
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            if payload.slice_set_id != payload.slice_set_artifact_id
+                                || !event.artifact_refs.contains(&payload.slice_set_artifact_id)
+                                || plan
+                                    .and_then(|plan| plan.nodes.get(node))
+                                    .is_none_or(|node| node.kind != "slicer")
+                            {
+                                return Err(StoreError::Conflict(
+                                    "SliceSetAccepted@1 contradicts pinned Slicer authority".into(),
+                                ));
+                            }
+                            let value = prepared
+                                .json
+                                .get(&payload.slice_set_artifact_id)
+                                .ok_or_else(|| {
+                                    StoreError::Conflict(
+                                        "SliceSetAccepted@1 artifact was not prepared".into(),
+                                    )
+                                })?;
+                            let set: review_core::SliceSetV1 = validated_envelope_payload(
+                                value,
+                                review_core::contract::SLICE_SET_V1,
+                            )?;
+                            set.validate().map_err(StoreError::Conflict)?;
+                            let plan = plan.ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "SliceSetAccepted@1 has no captured pipeline authority".into(),
+                                )
+                            })?;
+                            let slicer = plan.nodes.get(node).ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "SliceSetAccepted@1 Slicer is absent from the captured plan"
+                                        .into(),
+                                )
+                            })?;
+                            let policy = slicer.slicing.as_ref().ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "SliceSetAccepted@1 Slicer has no captured slicing policy"
+                                        .into(),
+                                )
+                            })?;
+                            let expected = expected_slice_set(
+                                cas,
+                                plan,
+                                policy,
+                                &active_payload.subject_id,
+                                subject,
+                            )?;
+                            if set.subject_id != active_payload.subject_id || set != expected {
+                                return Err(StoreError::Conflict(
+                                    "SliceSetAccepted@1 contradicts the exact captured slicing policy"
+                                        .into(),
+                                ));
+                            }
+                        }
+                        EventType::ShardSetRecordedV1 | EventType::SemanticClosureCheckedV1 => {
+                            let payload: review_core::RecordedSetPayloadV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            payload
+                                .validate()
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                            if payload.artifact_id != payload.record_id
+                                || !event.artifact_refs.contains(&payload.record_id)
+                            {
+                                return Err(StoreError::Conflict(format!(
+                                    "{} contradicts its recorded artifact",
+                                    event.event_type
+                                )));
+                            }
+                            let value = prepared.json.get(&payload.record_id).ok_or_else(|| {
+                                StoreError::Conflict(format!(
+                                    "{} artifact was not prepared",
+                                    event.event_type
+                                ))
+                            })?;
+                            if event.event_type == EventType::ShardSetRecordedV1 {
+                                let set: review_core::ShardSetV1 = validated_envelope_payload(
+                                    value,
+                                    review_core::contract::SHARD_SET_V1,
+                                )?;
+                                set.validate_shape().map_err(StoreError::Conflict)?;
+                                if set.subject_id != active_payload.subject_id {
+                                    return Err(StoreError::Conflict(
+                                        "ShardSetRecorded@1 belongs to another Subject".into(),
+                                    ));
+                                }
+                            } else {
+                                let closure: review_core::SemanticClosureV1 =
+                                    validated_envelope_payload(
+                                        value,
+                                        review_core::contract::SEMANTIC_CLOSURE_V1,
+                                    )?;
+                                closure.validate().map_err(StoreError::Conflict)?;
+                                if closure.subject_id != active_payload.subject_id {
+                                    return Err(StoreError::Conflict(
+                                        "SemanticClosureChecked@1 belongs to another Subject"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     if event_type.is_run_report() {
@@ -3156,6 +3822,7 @@ fn validate_campaign_transition(
                             }
                             validate_report_receipts(
                                 tx,
+                                cas,
                                 run_id,
                                 active_id,
                                 event_type,
@@ -3269,6 +3936,283 @@ fn validate_campaign_transition(
                         }
                         active_groupings.remove(&payload.from);
                     }
+                }
+            }
+            EventType::IntegrationPreparedV1
+            | EventType::IntegrationConflictV1
+            | EventType::IntegrationChecksCompletedV1
+            | EventType::IntegrationCommittedV1 => {
+                let Some((_, active_payload)) = &active else {
+                    return Err(StoreError::Conflict(format!(
+                        "{} requires an existing Campaign Round",
+                        event.event_type
+                    )));
+                };
+                if !terminal || event.causation_id.is_some() {
+                    return Err(StoreError::Conflict(format!(
+                        "{} is an internal transition allowed only after a closed Round",
+                        event.event_type
+                    )));
+                }
+                let integration_authority = authority_plan
+                    .as_ref()
+                    .filter(|plan| plan.version == 5 && plan.integration.is_some())
+                    .ok_or_else(|| {
+                        StoreError::Conflict(format!(
+                            "{} has no captured automatic-Integration authority",
+                            event.event_type
+                        ))
+                    })?;
+                match event.event_type {
+                    EventType::IntegrationPreparedV1 => {
+                        let payload: review_core::IntegrationPreparedPayloadV1 =
+                            serde_json::from_value(event.payload.clone())?;
+                        let plan = validate_artifact_payload(
+                            prepared,
+                            review_core::contract::INTEGRATION_PLAN_V1,
+                            &payload.plan_artifact_id,
+                        )?;
+                        if plan.is_some() {
+                            unreachable!("IntegrationPlan validation never returns a Change Set")
+                        }
+                        let plan: review_core::IntegrationPlanV1 = serde_json::from_value(
+                            prepared
+                                .json
+                                .get(&payload.plan_artifact_id)
+                                .expect("validated IntegrationPlan")
+                                .clone(),
+                        )?;
+                        if plan.subject_id != active_payload.subject_id
+                            || event.correlation_id.as_deref()
+                                != Some(active_payload.subject_id.as_str())
+                        {
+                            return Err(StoreError::Conflict(
+                                "IntegrationPrepared@1 contradicts the active Subject or its references"
+                                    .into(),
+                            ));
+                        }
+                        let source: review_core::SourceSnapshot = serde_json::from_value(
+                            cas.get_json(&payload.derived_snapshot_id)
+                                .map_err(|error| {
+                                    StoreError::Conflict(format!(
+                                        "prepared derived Snapshot was not readable: {error}"
+                                    ))
+                                })?,
+                        )?;
+                        if !source.is_derived()
+                            || source.parent_snapshot_id.as_deref()
+                                != Some(plan.base_snapshot_id.as_str())
+                            || source.artifact_manifest.as_deref()
+                                != Some(plan.derived_manifest_artifact_id.as_str())
+                        {
+                            return Err(StoreError::Conflict(
+                                "IntegrationPrepared@1 derived Snapshot contradicts its plan"
+                                    .into(),
+                            ));
+                        }
+                        validate_integration_plan_authority(
+                            tx,
+                            cas,
+                            run_id,
+                            active_payload,
+                            integration_authority,
+                            &plan,
+                            IntegrationTarget {
+                                batch_id: &payload.batch_id,
+                                derived_snapshot_id: &payload.derived_snapshot_id,
+                            },
+                        )?;
+                        require_exact_artifact_refs(
+                            event,
+                            vec![
+                                payload.plan_artifact_id.clone(),
+                                payload.derived_snapshot_id.clone(),
+                                plan.derived_manifest_artifact_id.clone(),
+                            ],
+                            "IntegrationPrepared@1",
+                        )?;
+                        let duplicate: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationPrepared@1'
+                             AND (json_extract(payload, '$.batch_id') = ?2
+                               OR json_extract(payload, '$.plan_artifact_id') = ?3)",
+                            params![run_id, payload.batch_id, payload.plan_artifact_id],
+                            |row| row.get(0),
+                        )?;
+                        if duplicate != 0 {
+                            return Err(StoreError::Conflict(
+                                "Integration preparation is duplicated".into(),
+                            ));
+                        }
+                    }
+                    EventType::IntegrationConflictV1 => {
+                        let payload: review_core::IntegrationConflictPayloadV1 =
+                            serde_json::from_value(event.payload.clone())?;
+                        payload.validate().map_err(StoreError::Conflict)?;
+                        let subject: review_core::SubjectV1 = serde_json::from_value(
+                            cas.get_json(&active_payload.subject_id)
+                                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                        )?;
+                        if payload.base_snapshot_id != subject.head_snapshot_id {
+                            return Err(StoreError::Conflict(
+                                "IntegrationConflict@1 is not bound to the active head".into(),
+                            ));
+                        }
+                    }
+                    EventType::IntegrationChecksCompletedV1 => {
+                        let payload: review_core::IntegrationChecksCompletedPayloadV1 =
+                            serde_json::from_value(event.payload.clone())?;
+                        validate_artifact_payload(
+                            prepared,
+                            review_core::contract::INTEGRATION_CHECKS_V1,
+                            &payload.checks_artifact_id,
+                        )?;
+                        let checks: review_core::IntegrationChecksV1 = serde_json::from_value(
+                            prepared
+                                .json
+                                .get(&payload.checks_artifact_id)
+                                .expect("validated IntegrationChecks")
+                                .clone(),
+                        )?;
+                        if checks.passed() != payload.passed {
+                            return Err(StoreError::Conflict(
+                                "IntegrationChecksCompleted@1 contradicts its exact results".into(),
+                            ));
+                        }
+                        let prepared_raw: String = tx.query_row(
+                            "SELECT payload FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationPrepared@1'
+                             AND json_extract(payload, '$.batch_id') = ?2",
+                            params![run_id, payload.batch_id],
+                            |row| row.get(0),
+                        )?;
+                        let integration_prepared: review_core::IntegrationPreparedPayloadV1 =
+                            serde_json::from_str(&prepared_raw)?;
+                        let policy = integration_authority
+                            .integration
+                            .as_ref()
+                            .expect("checked Integration authority");
+                        let check_names = checks
+                            .checks
+                            .iter()
+                            .map(|check| check.name.as_str())
+                            .collect::<Vec<_>>();
+                        let expected_names = policy
+                            .post_apply_checks
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>();
+                        if checks.derived_snapshot_id != integration_prepared.derived_snapshot_id
+                            || check_names != expected_names
+                            || expected_names.iter().any(|name| {
+                                !integration_authority
+                                    .check_names
+                                    .iter()
+                                    .any(|check| check == name)
+                            })
+                        {
+                            return Err(StoreError::Conflict(
+                                "Integration checks contradict the prepared Snapshot or captured check policy"
+                                    .into(),
+                            ));
+                        }
+                        let mut expected_refs = vec![
+                            payload.checks_artifact_id.clone(),
+                            integration_prepared.derived_snapshot_id,
+                        ];
+                        expected_refs.extend(
+                            checks
+                                .checks
+                                .iter()
+                                .map(|check| check.result_artifact_id.clone()),
+                        );
+                        require_exact_artifact_refs(
+                            event,
+                            expected_refs,
+                            "IntegrationChecksCompleted@1",
+                        )?;
+                        let prepared_count: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationPrepared@1'
+                             AND json_extract(payload, '$.batch_id') = ?2",
+                            params![run_id, payload.batch_id],
+                            |row| row.get(0),
+                        )?;
+                        if prepared_count != 1 {
+                            return Err(StoreError::Conflict(
+                                "Integration checks have no unique durable preparation".into(),
+                            ));
+                        }
+                    }
+                    EventType::IntegrationCommittedV1 => {
+                        let payload: review_core::IntegrationCommittedPayloadV1 =
+                            serde_json::from_value(event.payload.clone())?;
+                        if payload.prior_subject_id != active_payload.subject_id {
+                            return Err(StoreError::Conflict(
+                                "IntegrationCommitted@1 expected Subject is stale".into(),
+                            ));
+                        }
+                        let prepared_count: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationPrepared@1'
+                             AND json_extract(payload, '$.batch_id') = ?2",
+                            params![run_id, payload.batch_id],
+                            |row| row.get(0),
+                        )?;
+                        let passed_count: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationChecksCompleted@1'
+                             AND json_extract(payload, '$.batch_id') = ?2
+                             AND json_extract(payload, '$.passed') = 1",
+                            params![run_id, payload.batch_id],
+                            |row| row.get(0),
+                        )?;
+                        let committed_count: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                             AND type = 'IntegrationCommitted@1'
+                             AND json_extract(payload, '$.batch_id') = ?2",
+                            params![run_id, payload.batch_id],
+                            |row| row.get(0),
+                        )?;
+                        if prepared_count != 1 || passed_count != 1 || committed_count != 0 {
+                            return Err(StoreError::Conflict(
+                                "Integration commit lacks unique preparation and passing checks, or is duplicated"
+                                    .into(),
+                            ));
+                        }
+                        validate_integration_commit_authority(
+                            tx,
+                            cas,
+                            run_id,
+                            active_payload,
+                            &payload,
+                            &batch_integration_attestations,
+                            integration_authority,
+                        )?;
+                        let subject: review_core::SubjectV1 = serde_json::from_value(
+                            cas.get_json(&payload.derived_subject_id).map_err(|error| {
+                                StoreError::Conflict(format!(
+                                    "derived Subject was not readable at commit: {error}"
+                                ))
+                            })?,
+                        )?;
+                        subject.validate().map_err(StoreError::Conflict)?;
+                        if subject.head_snapshot_id != payload.derived_snapshot_id
+                            || !event.artifact_refs.contains(&payload.derived_subject_id)
+                            || !event.artifact_refs.contains(&payload.derived_snapshot_id)
+                            || !event.artifact_refs.contains(&payload.semantic_closure_id)
+                            || payload
+                                .attestation_ids
+                                .iter()
+                                .any(|id| !event.artifact_refs.contains(id))
+                        {
+                            return Err(StoreError::Conflict(
+                                "IntegrationCommitted@1 does not expose its complete atomic authority"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             EventType::EvidenceAddedV1
@@ -3589,6 +4533,472 @@ fn validate_recorded_event_artifact<T: serde::de::DeserializeOwned>(
     validated_envelope_payload(value, expected_type)
 }
 
+fn exact_subject_paths(
+    cas: &Cas,
+    subject: &review_core::SubjectV1,
+) -> Result<Vec<String>, StoreError> {
+    match subject.kind {
+        review_core::SubjectKind::Diff => {
+            let change_set_id = subject.change_set_id.as_deref().ok_or_else(|| {
+                StoreError::Conflict("diff Subject has no ChangeSet authority".into())
+            })?;
+            let change_set: review_core::ChangeSetV1 = serde_json::from_value(
+                cas.get_json(change_set_id)
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
+            )?;
+            change_set.validate().map_err(StoreError::Conflict)?;
+            if change_set.head_snapshot_id != subject.head_snapshot_id
+                || Some(change_set.base_snapshot_id.as_str()) != subject.base_snapshot_id.as_deref()
+            {
+                return Err(StoreError::Conflict(
+                    "Subject path authority contradicts its ChangeSet".into(),
+                ));
+            }
+            Ok(change_set.changed_paths)
+        }
+        review_core::SubjectKind::WholeTree => {
+            let snapshot: review_core::SourceSnapshot = serde_json::from_value(
+                cas.get_json(&subject.head_snapshot_id)
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
+            )?;
+            let manifest_id = snapshot.artifact_manifest.as_deref().ok_or_else(|| {
+                StoreError::Conflict("whole-tree Subject Snapshot has no Manifest".into())
+            })?;
+            let manifest = cas
+                .get_json(manifest_id)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            Ok(manifest_entries(&manifest)?.into_keys().collect())
+        }
+    }
+}
+
+fn expected_slice_set(
+    cas: &Cas,
+    plan: &AuthorityPlan,
+    policy: &AuthoritySlicing,
+    subject_id: &str,
+    subject: &review_core::SubjectV1,
+) -> Result<review_core::SliceSetV1, StoreError> {
+    if policy.max_paths_per_slice == 0 || policy.max_fanout == 0 {
+        return Err(StoreError::Conflict(
+            "captured slicing policy has a zero bound".into(),
+        ));
+    }
+    let paths = exact_subject_paths(cas, subject)?;
+    if paths.is_empty()
+        || paths.len().div_ceil(policy.max_paths_per_slice) > policy.max_fanout as usize
+    {
+        return Err(StoreError::Conflict(
+            "captured slicing policy cannot cover the exact Subject paths".into(),
+        ));
+    }
+    let closeout = match policy.closeout {
+        AuthorityCloseoutMode::Required => {
+            if policy.waiver_policy_id.is_some() || policy.waiver_reason.is_some() {
+                return Err(StoreError::Conflict(
+                    "captured required closeout carries waiver authority".into(),
+                ));
+            }
+            review_core::CloseoutPolicyV1::Required
+        }
+        AuthorityCloseoutMode::Waived => review_core::CloseoutPolicyV1::Waived {
+            policy_id: policy.waiver_policy_id.clone().ok_or_else(|| {
+                StoreError::Conflict("captured closeout waiver has no policy ID".into())
+            })?,
+            reason: policy
+                .waiver_reason
+                .clone()
+                .filter(|reason| !reason.trim().is_empty())
+                .ok_or_else(|| {
+                    StoreError::Conflict("captured closeout waiver has no reason".into())
+                })?,
+        },
+    };
+    let slices = paths
+        .chunks(policy.max_paths_per_slice)
+        .enumerate()
+        .map(|(ordinal, paths)| {
+            let slice_id = crate::canonical::content_id(&serde_json::json!({
+                "domain": "review.kernel/slice-id@1",
+                "subject_id": subject_id,
+                "paths": paths,
+            }))
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            let runtime_node_id = format!(
+                "{}#slice:{}:{}",
+                policy.scatter,
+                ordinal + 1,
+                &slice_id[7..23]
+            );
+            if plan.nodes.contains_key(&runtime_node_id) {
+                return Err(StoreError::Conflict(
+                    "captured Slice runtime identity collides with a static node".into(),
+                ));
+            }
+            Ok(review_core::ReviewSliceV1 {
+                slice_id,
+                runtime_node_id,
+                paths: paths.to_vec(),
+                overlaps: vec![],
+            })
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let set = review_core::SliceSetV1 {
+        subject_id: subject_id.to_string(),
+        coverage: policy.coverage,
+        max_fanout: policy.max_fanout,
+        all_shards_required: policy.all_shards_required,
+        closeout,
+        slices,
+    };
+    set.validate_coverage(&paths)
+        .map_err(StoreError::Conflict)?;
+    Ok(set)
+}
+
+fn normalized_ids(mut ids: Vec<String>) -> Vec<String> {
+    ids.sort();
+    ids
+}
+
+fn require_exact_artifact_refs(
+    event: &NewEvent,
+    expected: Vec<String>,
+    label: &str,
+) -> Result<(), StoreError> {
+    if normalized_ids(event.artifact_refs.clone()) != normalized_ids(expected) {
+        return Err(StoreError::Conflict(format!(
+            "{label} does not reference its exact authority"
+        )));
+    }
+    Ok(())
+}
+
+fn require_exact_round_artifact_refs(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    active: &review_core::RoundStartedPayloadV1,
+    subject: &review_core::SubjectV1,
+    event: &NewEvent,
+    mut expected: Vec<String>,
+    label: &str,
+) -> Result<(), StoreError> {
+    let opened_raw: String = tx.query_row(
+        "SELECT payload FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1'
+         ORDER BY sequence LIMIT 1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_str(&opened_raw)?;
+    expected.extend([
+        opened.authority_snapshot_id,
+        active.campaign_manifest_id.clone(),
+        active.subject_id.clone(),
+        subject.head_snapshot_id.clone(),
+    ]);
+    expected.sort();
+    expected.dedup();
+    require_exact_artifact_refs(event, expected, label)
+}
+
+fn selected_attempt_result(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    batch_selected: &std::collections::BTreeMap<String, (String, String)>,
+    node: &str,
+    attempt: &str,
+) -> Result<String, StoreError> {
+    if let Some((selected_node, result)) = batch_selected.get(attempt) {
+        if selected_node == node {
+            return Ok(result.clone());
+        }
+        return Err(StoreError::Conflict(
+            "Proposal Attempt metadata disagrees with selected admission".into(),
+        ));
+    }
+    let rows = tx
+        .prepare(
+            "SELECT payload FROM events
+             WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3 AND attempt_id = ?4
+               AND type = 'AttemptAdmitted@1' ORDER BY sequence",
+        )?
+        .query_map(params![run_id, round_event_id, node, attempt], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let [raw] = rows.as_slice() else {
+        return Err(StoreError::Conflict(
+            "Proposal has no unique selected Attempt admission".into(),
+        ));
+    };
+    let admitted: review_core::event::AttemptAdmittedPayloadV1 = serde_json::from_str(raw)?;
+    if admitted.selection != "selected" {
+        return Err(StoreError::Conflict(
+            "Proposal belongs to an unselected Attempt".into(),
+        ));
+    }
+    admitted.result_artifact.ok_or_else(|| {
+        StoreError::Conflict("Proposal's selected Attempt has no result artifact".into())
+    })
+}
+
+fn proposal_candidate(
+    cas: &Cas,
+    prepared: &PreparedArtifacts,
+    artifact_id: &str,
+) -> Result<review_core::ProposalCandidateV1, StoreError> {
+    let value = prepared
+        .json
+        .get(artifact_id)
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(|| {
+            cas.get_json(artifact_id)
+                .map_err(|error| StoreError::Conflict(error.to_string()))
+        })?;
+    let candidate: review_core::ProposalCandidateV1 = serde_json::from_value(value)?;
+    candidate
+        .validate()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    Ok(candidate)
+}
+
+fn prepared_proposal_authority(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    batch: &std::collections::BTreeMap<String, (String, String, String)>,
+    candidate_id: &str,
+) -> Result<(String, String, String), StoreError> {
+    if let Some(authority) = batch.get(candidate_id) {
+        return Ok(authority.clone());
+    }
+    let rows = tx
+        .prepare(
+            "SELECT node_id, attempt_id, payload FROM events
+             WHERE run_id = ?1 AND causation_id = ?2 AND type = 'ProposalPrepared@1'
+               AND json_extract(payload, '$.candidate_artifact_id') = ?3
+             ORDER BY sequence",
+        )?
+        .query_map(params![run_id, round_event_id, candidate_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let [(node, attempt, raw)] = rows.as_slice() else {
+        return Err(StoreError::Conflict(
+            "accepted Proposal has no unique durable preparation".into(),
+        ));
+    };
+    let payload: review_core::ProposalPreparedPayloadV1 = serde_json::from_str(raw)?;
+    Ok((node.clone(), attempt.clone(), payload.result_artifact_id))
+}
+
+fn manifest_entries(
+    value: &Value,
+) -> Result<std::collections::BTreeMap<String, Value>, StoreError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| StoreError::Conflict("Snapshot Manifest is not an object".into()))?;
+    if object
+        .keys()
+        .any(|key| key != "entries" && key != "path_encoding")
+        || object
+            .get("path_encoding")
+            .is_some_and(|encoding| !matches!(encoding.as_str(), Some("legacy_v1" | "percent_v2")))
+    {
+        return Err(StoreError::Conflict(
+            "Snapshot Manifest has an unsupported shape or path encoding".into(),
+        ));
+    }
+    let entries = object
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::Conflict("Snapshot Manifest has no entries".into()))?;
+    let mut mapped = std::collections::BTreeMap::new();
+    let mut prior: Option<&str> = None;
+    for entry in entries {
+        let entry_object = entry.as_object().ok_or_else(|| {
+            StoreError::Conflict("Snapshot Manifest entry is not an object".into())
+        })?;
+        if entry_object.len() != 4
+            || entry_object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "path" | "kind" | "content" | "size"))
+        {
+            return Err(StoreError::Conflict(
+                "Snapshot Manifest entry has an unsupported shape".into(),
+            ));
+        }
+        let path = entry_object
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| StoreError::Conflict("Snapshot Manifest entry has no path".into()))?;
+        if prior.is_some_and(|prior| prior.as_bytes() >= path.as_bytes())
+            || !matches!(
+                entry_object.get("kind").and_then(Value::as_str),
+                Some("file" | "executable" | "symlink")
+            )
+            || !entry_object
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(is_digest)
+            || entry_object.get("size").and_then(Value::as_u64).is_none()
+        {
+            return Err(StoreError::Conflict(
+                "Snapshot Manifest entry is invalid or not canonically ordered".into(),
+            ));
+        }
+        prior = Some(path);
+        mapped.insert(path.to_string(), entry.clone());
+    }
+    Ok(mapped)
+}
+
+fn manifest_value(
+    path_encoding: Option<Value>,
+    entries: std::collections::BTreeMap<String, Value>,
+) -> Value {
+    let mut object = serde_json::Map::new();
+    if let Some(path_encoding) = path_encoding {
+        object.insert("path_encoding".into(), path_encoding);
+    }
+    object.insert(
+        "entries".into(),
+        Value::Array(entries.into_values().collect()),
+    );
+    Value::Object(object)
+}
+
+fn validate_candidate_manifest(
+    cas: &Cas,
+    subject: &review_core::SubjectV1,
+    candidate: &review_core::ProposalCandidateV1,
+) -> Result<(), StoreError> {
+    if candidate.base_snapshot_id != subject.head_snapshot_id {
+        return Err(StoreError::Conflict(
+            "Proposal candidate is stale for the active Subject".into(),
+        ));
+    }
+    let base_snapshot: review_core::SourceSnapshot = serde_json::from_value(
+        cas.get_json(&candidate.base_snapshot_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    let base_manifest_id = base_snapshot
+        .artifact_manifest
+        .as_deref()
+        .ok_or_else(|| StoreError::Conflict("Proposal Base Snapshot has no Manifest".into()))?;
+    let base = cas
+        .get_json(base_manifest_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let derived = cas
+        .get_json(&candidate.derived_manifest_artifact_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let base_entries = manifest_entries(&base)?;
+    let derived_entries = manifest_entries(&derived)?;
+    if base.get("path_encoding") != derived.get("path_encoding") {
+        return Err(StoreError::Conflict(
+            "Proposal candidate changed the Manifest path encoding".into(),
+        ));
+    }
+    let changed = base_entries
+        .keys()
+        .chain(derived_entries.keys())
+        .filter(|path| base_entries.get(*path) != derived_entries.get(*path))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if changed
+        != candidate
+            .paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+    {
+        return Err(StoreError::Conflict(
+            "Proposal candidate Manifest changes paths outside its declaration".into(),
+        ));
+    }
+    cas.verify(&candidate.patch_artifact_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    Ok(())
+}
+
+fn validate_accepted_proposal_claims(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    node: &str,
+    candidate: &review_core::ProposalCandidateV1,
+    proposal: &review_core::PatchProposal,
+) -> Result<(), StoreError> {
+    let report_rows = tx
+        .prepare(
+            "SELECT payload FROM events WHERE run_id = ?1 AND causation_id = ?2
+             AND type = 'FindingReported@1' AND node_id = ?3 ORDER BY sequence",
+        )?
+        .query_map(params![run_id, round_event_id, node], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let report_ids = report_rows
+        .iter()
+        .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter_map(|payload| {
+            payload
+                .get("report_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut findings = Vec::new();
+    let mut reports = Vec::new();
+    let mut unique = std::collections::BTreeSet::new();
+    for claim in &proposal.finding_refs {
+        let kind = match claim.kind {
+            review_core::ClaimRefKind::Finding => "finding",
+            review_core::ClaimRefKind::Report => "report",
+        };
+        if !is_digest(&claim.id) || !unique.insert((kind, claim.id.as_str())) {
+            return Err(StoreError::Conflict(
+                "accepted Proposal repeats or malforms a claim reference".into(),
+            ));
+        }
+        match claim.kind {
+            review_core::ClaimRefKind::Finding => findings.push(claim.id.clone()),
+            review_core::ClaimRefKind::Report => reports.push(claim.id.clone()),
+        }
+    }
+    findings.sort();
+    reports.sort();
+    if findings != candidate.finding_ids
+        || reports.len() != candidate.report_indexes.len()
+        || reports.iter().any(|report| !report_ids.contains(report))
+    {
+        return Err(StoreError::Conflict(
+            "accepted Proposal claim links contradict its selected Attempt reduction".into(),
+        ));
+    }
+    for finding in &findings {
+        let known: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?1
+             AND type = 'FindingReported@1' AND correlation_id = ?2",
+            params![run_id, finding],
+            |row| row.get(0),
+        )?;
+        if known == 0 {
+            return Err(StoreError::Conflict(
+                "accepted Proposal names an unknown Finding".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn round_runtime_event(event_type: EventType) -> bool {
     event_type.is_run_report()
         || matches!(
@@ -3612,6 +5022,12 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::NodeInvocationV1
                 | EventType::NodeOutputReceiptV1
                 | EventType::ProviderOperationTransitionV1
+                | EventType::ProposalPreparedV1
+                | EventType::ProposalRefusedV1
+                | EventType::ProposalAcceptedV1
+                | EventType::SliceSetAcceptedV1
+                | EventType::ShardSetRecordedV1
+                | EventType::SemanticClosureCheckedV1
         )
 }
 
@@ -3630,6 +5046,16 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
                 | EventType::CacheSnapshotMaterializedV1
                 | EventType::AttemptDispatchedV1
                 | EventType::NodeOutputReceiptV1
+                | EventType::ProposalPreparedV1
+                | EventType::ProposalRefusedV1
+                | EventType::ProposalAcceptedV1
+                | EventType::SliceSetAcceptedV1
+                | EventType::ShardSetRecordedV1
+                | EventType::SemanticClosureCheckedV1
+                | EventType::IntegrationPreparedV1
+                | EventType::IntegrationConflictV1
+                | EventType::IntegrationChecksCompletedV1
+                | EventType::IntegrationCommittedV1
         )
 }
 
@@ -3700,14 +5126,527 @@ fn round_has_terminal_report(
     Ok(false)
 }
 
+fn integration_binding_node<'a>(plan: &'a AuthorityPlan, node: &'a str) -> Option<&'a str> {
+    if plan.nodes.contains_key(node) {
+        return Some(node);
+    }
+    let (owner, _) = node.split_once("#slice:")?;
+    plan.nodes
+        .get(owner)
+        .is_some_and(|node| node.kind == "scatter")
+        .then_some(owner)
+}
+
+#[derive(Clone, Copy)]
+struct IntegrationTarget<'a> {
+    batch_id: &'a str,
+    derived_snapshot_id: &'a str,
+}
+
+fn authority_paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn integration_finding_ids(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    round_event_id: &str,
+    proposal: &review_core::PatchProposal,
+) -> Result<Vec<String>, StoreError> {
+    let mut findings = std::collections::BTreeSet::new();
+    for claim in &proposal.finding_refs {
+        match claim.kind {
+            review_core::ClaimRefKind::Finding => {
+                let known: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM events WHERE run_id = ?1
+                     AND type = 'FindingReported@1' AND correlation_id = ?2",
+                    params![run_id, claim.id],
+                    |row| row.get(0),
+                )?;
+                if known == 0 {
+                    return Err(StoreError::Conflict(
+                        "Integration Proposal names an unknown Finding".into(),
+                    ));
+                }
+                findings.insert(claim.id.clone());
+            }
+            review_core::ClaimRefKind::Report => {
+                let rows = tx
+                    .prepare(
+                        "SELECT correlation_id FROM events WHERE run_id = ?1
+                         AND causation_id = ?2 AND type = 'FindingReported@1'
+                         AND json_extract(payload, '$.report_id') = ?3",
+                    )?
+                    .query_map(params![run_id, round_event_id, claim.id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let [finding] = rows.as_slice() else {
+                    return Err(StoreError::Conflict(
+                        "Integration Proposal Report does not resolve uniquely in the current Round"
+                            .into(),
+                    ));
+                };
+                findings.insert(finding.clone());
+            }
+        }
+    }
+    Ok(findings.into_iter().collect())
+}
+
+fn validate_integration_plan_authority(
+    tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
+    run_id: &str,
+    active: &review_core::RoundStartedPayloadV1,
+    authority: &AuthorityPlan,
+    integration_plan: &review_core::IntegrationPlanV1,
+    target: IntegrationTarget<'_>,
+) -> Result<(), StoreError> {
+    let policy = authority.integration.as_ref().ok_or_else(|| {
+        StoreError::Conflict("captured pipeline has no automatic-Integration policy".into())
+    })?;
+    let subject: review_core::SubjectV1 = serde_json::from_value(
+        cas.get_json(&active.subject_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    subject.validate().map_err(StoreError::Conflict)?;
+    integration_plan.validate().map_err(StoreError::Conflict)?;
+    if integration_plan.subject_id != active.subject_id
+        || integration_plan.base_snapshot_id != subject.head_snapshot_id
+        || integration_plan.policy_id != authority.pipeline_policy_id
+        || integration_plan.protected_paths != policy.protected_paths
+    {
+        return Err(StoreError::Conflict(
+            "Integration plan contradicts the captured Subject or policy".into(),
+        ));
+    }
+    let plan_value = serde_json::to_value(integration_plan)?;
+    let plan_id = crate::canonical::content_id(&plan_value)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    if target.batch_id != format!("integration-{}", &plan_id[7..23]) {
+        return Err(StoreError::Conflict(
+            "Integration batch identity is not derived from its exact plan".into(),
+        ));
+    }
+
+    let round_event_id: String = tx.query_row(
+        "SELECT event_id FROM events WHERE run_id = ?1 AND type = 'RoundStarted@1'
+         ORDER BY sequence DESC LIMIT 1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let priorities = policy
+        .reviewer_priority
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.as_str(), index as u32))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let default_priority = u32::try_from(priorities.len()).unwrap_or(u32::MAX);
+    let mut prior_paths = Vec::<String>::new();
+    let mut seen_patches = std::collections::BTreeSet::new();
+
+    let base_snapshot: review_core::SourceSnapshot = serde_json::from_value(
+        cas.get_json(&subject.head_snapshot_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    let base_manifest_id = base_snapshot
+        .artifact_manifest
+        .as_deref()
+        .ok_or_else(|| StoreError::Conflict("Integration Base Snapshot has no Manifest".into()))?;
+    let base_manifest = cas
+        .get_json(base_manifest_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let path_encoding = base_manifest.get("path_encoding").cloned();
+    let mut composed_entries = manifest_entries(&base_manifest)?;
+
+    for candidate in &integration_plan.candidates {
+        let rows = tx
+            .prepare(
+                "SELECT node_id, attempt_id, payload FROM events
+                 WHERE run_id = ?1 AND causation_id = ?2 AND type = 'ProposalAccepted@1'
+                   AND json_extract(payload, '$.proposal_id') = ?3 ORDER BY sequence",
+            )?
+            .query_map(
+                params![run_id, round_event_id, candidate.proposal_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let [(node, attempt, raw)] = rows.as_slice() else {
+            return Err(StoreError::Conflict(
+                "Integration candidate has no unique current-Round accepted Proposal".into(),
+            ));
+        };
+        let accepted: review_core::ProposalAcceptedPayloadV1 = serde_json::from_str(raw)?;
+        if accepted.candidate_artifact_id != candidate.candidate_artifact_id
+            || node != &candidate.node_id
+        {
+            return Err(StoreError::Conflict(
+                "Integration candidate contradicts its accepted Proposal event".into(),
+            ));
+        }
+        let binding_node = integration_binding_node(authority, node).ok_or_else(|| {
+            StoreError::Conflict(
+                "Integration candidate node is absent from captured authority".into(),
+            )
+        })?;
+        let execution = authority.reviewer_execution_for(node).ok_or_else(|| {
+            StoreError::Conflict("Integration candidate has no reviewer Execution Binding".into())
+        })?;
+        if !execution.auto_apply
+            || candidate.priority
+                != priorities
+                    .get(binding_node)
+                    .copied()
+                    .unwrap_or(default_priority)
+        {
+            return Err(StoreError::Conflict(
+                "Integration candidate lacks captured auto-apply or priority authority".into(),
+            ));
+        }
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&accepted.proposal_artifact_id)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+        )?;
+        crate::canonical::validate_envelope(&envelope).map_err(StoreError::Conflict)?;
+        match &envelope.producer {
+            review_core::Producer::Attempt {
+                run_id: producer_run,
+                node_id: producer_node,
+                attempt_id: producer_attempt,
+            } if producer_run == run_id && producer_node == node && producer_attempt == attempt => {
+            }
+            _ => {
+                return Err(StoreError::Conflict(
+                    "Integration Proposal producer is not its selected Attempt".into(),
+                ));
+            }
+        }
+        if envelope.artifact_type != review_core::contract::PATCH_PROPOSAL_V1
+            || envelope.artifact_id != accepted.proposal_id
+            || envelope.subject_snapshot_id.as_deref() != Some(subject.head_snapshot_id.as_str())
+        {
+            return Err(StoreError::Conflict(
+                "Integration candidate has an invalid Proposal envelope".into(),
+            ));
+        }
+        let proposal: review_core::PatchProposal = serde_json::from_value(envelope.payload)?;
+        proposal
+            .check_shape()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let prepared_candidate: review_core::ProposalCandidateV1 = serde_json::from_value(
+            cas.get_json(&candidate.candidate_artifact_id)
+                .map_err(|error| StoreError::Conflict(error.to_string()))?,
+        )?;
+        prepared_candidate
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        validate_candidate_manifest(cas, &subject, &prepared_candidate)?;
+        let finding_ids = integration_finding_ids(tx, run_id, &round_event_id, &proposal)?;
+        if !proposal.auto_apply_nominated
+            || proposal.base_snapshot_id != subject.head_snapshot_id
+            || proposal.patch_artifact_id != candidate.patch_artifact_id
+            || proposal.patch_artifact_id != prepared_candidate.patch_artifact_id
+            || proposal.paths != candidate.paths
+            || proposal.paths != prepared_candidate.paths
+            || proposal.evidence_ids != candidate.evidence_ids
+            || proposal.evidence_ids != prepared_candidate.evidence_ids
+            || prepared_candidate.derived_manifest_artifact_id
+                != candidate.derived_manifest_artifact_id
+            || finding_ids != candidate.finding_ids
+            || !seen_patches.insert(candidate.patch_artifact_id.clone())
+        {
+            return Err(StoreError::Conflict(
+                "Integration candidate contradicts its sealed Proposal authority".into(),
+            ));
+        }
+        if candidate.paths.iter().any(|path| {
+            policy
+                .protected_paths
+                .iter()
+                .any(|protected| authority_paths_overlap(path, protected))
+                || prior_paths
+                    .iter()
+                    .any(|prior| authority_paths_overlap(path, prior))
+        }) {
+            return Err(StoreError::Conflict(
+                "Integration plan changes a protected or overlapping path".into(),
+            ));
+        }
+        prior_paths.extend(candidate.paths.iter().cloned());
+        let candidate_manifest = cas
+            .get_json(&candidate.derived_manifest_artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if candidate_manifest.get("path_encoding") != path_encoding.as_ref() {
+            return Err(StoreError::Conflict(
+                "Integration candidate changed the Manifest path encoding".into(),
+            ));
+        }
+        let candidate_entries = manifest_entries(&candidate_manifest)?;
+        for path in &candidate.paths {
+            match candidate_entries.get(path).cloned() {
+                Some(entry) => {
+                    composed_entries.insert(path.clone(), entry);
+                }
+                None => {
+                    composed_entries.remove(path);
+                }
+            }
+        }
+    }
+
+    let expected_manifest = manifest_value(path_encoding, composed_entries);
+    let expected_manifest_id = crate::canonical::content_id(&expected_manifest)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let recorded_manifest = cas
+        .get_json(&integration_plan.derived_manifest_artifact_id)
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    if expected_manifest_id != integration_plan.derived_manifest_artifact_id
+        || recorded_manifest != expected_manifest
+    {
+        return Err(StoreError::Conflict(
+            "Integration derived Manifest is not the deterministic Proposal composition".into(),
+        ));
+    }
+    let derived: review_core::SourceSnapshot = serde_json::from_value(
+        cas.get_json(target.derived_snapshot_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    let capture_matches = matches!(
+        &derived.capture,
+        review_core::Capture::Derived {
+            tree_id,
+            parent_snapshot_id,
+            integration_batch_id,
+        } if tree_id == &derived.content_digest
+            && parent_snapshot_id == &subject.head_snapshot_id
+            && integration_batch_id == target.batch_id
+    );
+    if !capture_matches
+        || derived.repository_id != base_snapshot.repository_id
+        || derived.vcs != base_snapshot.vcs
+        || derived.parent_snapshot_id.as_deref() != Some(subject.head_snapshot_id.as_str())
+        || derived.artifact_manifest.as_deref()
+            != Some(integration_plan.derived_manifest_artifact_id.as_str())
+        || derived.source_revision != base_snapshot.source_revision
+        || derived.submodules != base_snapshot.submodules
+    {
+        return Err(StoreError::Conflict(
+            "Integration derived Snapshot is not the exact sealed child of its Base".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_integration_commit_authority(
+    tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
+    run_id: &str,
+    active: &review_core::RoundStartedPayloadV1,
+    committed: &review_core::IntegrationCommittedPayloadV1,
+    batch_attestations: &std::collections::BTreeSet<String>,
+    authority: &AuthorityPlan,
+) -> Result<(), StoreError> {
+    let subject: review_core::SubjectV1 = serde_json::from_value(
+        cas.get_json(&active.subject_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    if subject.head_snapshot_id != committed.prior_snapshot_id {
+        return Err(StoreError::Conflict(
+            "Integration commit expected head is stale".into(),
+        ));
+    }
+    let opened: String = tx.query_row(
+        "SELECT payload FROM events WHERE run_id = ?1 AND type = 'CampaignOpened@1' LIMIT 1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let opened: review_core::CampaignOpenedPayloadV1 = serde_json::from_str(&opened)?;
+    let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+        cas.get_json(&opened.campaign_manifest_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    if committed.policy_id != manifest.pipeline.artifact_id
+        || !manifest
+            .execution_policy_ids
+            .iter()
+            .any(|policy| policy == &committed.policy_id)
+    {
+        return Err(StoreError::Conflict(
+            "Integration commit policy is absent from captured Campaign authority".into(),
+        ));
+    }
+
+    let prepared_raw: String = tx.query_row(
+        "SELECT payload FROM events WHERE run_id = ?1
+         AND type = 'IntegrationPrepared@1'
+         AND json_extract(payload, '$.batch_id') = ?2",
+        params![run_id, committed.batch_id],
+        |row| row.get(0),
+    )?;
+    let prepared: review_core::IntegrationPreparedPayloadV1 = serde_json::from_str(&prepared_raw)?;
+    let plan: review_core::IntegrationPlanV1 = serde_json::from_value(
+        cas.get_json(&prepared.plan_artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    plan.validate().map_err(StoreError::Conflict)?;
+    let planned_proposals: Vec<&str> = plan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.proposal_id.as_str())
+        .collect();
+    let committed_proposals: Vec<&str> =
+        committed.proposal_ids.iter().map(String::as_str).collect();
+    if plan.subject_id != active.subject_id
+        || plan.base_snapshot_id != committed.prior_snapshot_id
+        || plan.policy_id != committed.policy_id
+        || prepared.derived_snapshot_id != committed.derived_snapshot_id
+        || planned_proposals != committed_proposals
+    {
+        return Err(StoreError::Conflict(
+            "Integration commit contradicts its exact prepared plan".into(),
+        ));
+    }
+    validate_integration_plan_authority(
+        tx,
+        cas,
+        run_id,
+        active,
+        authority,
+        &plan,
+        IntegrationTarget {
+            batch_id: &committed.batch_id,
+            derived_snapshot_id: &committed.derived_snapshot_id,
+        },
+    )?;
+
+    let checks_raw: String = tx.query_row(
+        "SELECT payload FROM events WHERE run_id = ?1
+         AND type = 'IntegrationChecksCompleted@1'
+         AND json_extract(payload, '$.batch_id') = ?2
+         AND json_extract(payload, '$.passed') = 1",
+        params![run_id, committed.batch_id],
+        |row| row.get(0),
+    )?;
+    let checked: review_core::IntegrationChecksCompletedPayloadV1 =
+        serde_json::from_str(&checks_raw)?;
+    let checks: review_core::IntegrationChecksV1 = serde_json::from_value(
+        cas.get_json(&checked.checks_artifact_id)
+            .map_err(|error| StoreError::Conflict(error.to_string()))?,
+    )?;
+    if !checks.passed() || checks.derived_snapshot_id != committed.derived_snapshot_id {
+        return Err(StoreError::Conflict(
+            "Integration commit is not bound to passing checks on its exact Snapshot".into(),
+        ));
+    }
+
+    let mut finding_set = None;
+    let mut demand_set = None;
+    let mut statement = tx.prepare(
+        "SELECT payload FROM events WHERE run_id = ?1 AND causation_id = (
+             SELECT event_id FROM events WHERE run_id = ?1 AND type = 'RoundStarted@1'
+             ORDER BY sequence DESC LIMIT 1
+         ) AND type = 'NodeOutputReceipt@1' ORDER BY sequence",
+    )?;
+    for raw in statement
+        .query_map(params![run_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?
+    {
+        let receipt: review_core::NodeOutputReceiptPayloadV1 = serde_json::from_str(&raw)?;
+        for port in receipt.outputs {
+            let [artifact] = port.artifact_ids.as_slice() else {
+                continue;
+            };
+            if port.artifact_type == review_core::contract::FINDING_SET_V1 {
+                finding_set = Some(artifact.clone());
+            } else if port.artifact_type == review_core::contract::DEMAND_SET_V1 {
+                demand_set = Some(artifact.clone());
+            }
+        }
+    }
+    if finding_set.as_deref() != Some(committed.expected_finding_set_id.as_str())
+        || demand_set.as_deref() != Some(committed.expected_demand_set_id.as_str())
+    {
+        return Err(StoreError::Conflict(
+            "Integration commit expected Finding or Demand view is stale".into(),
+        ));
+    }
+
+    let closure_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM events WHERE run_id = ?1
+         AND causation_id = (SELECT event_id FROM events WHERE run_id = ?1
+             AND type = 'RoundStarted@1' ORDER BY sequence DESC LIMIT 1)
+         AND type = 'SemanticClosureChecked@1'
+         AND json_extract(payload, '$.record_id') = ?2",
+        params![run_id, committed.semantic_closure_id],
+        |row| row.get(0),
+    )?;
+    if closure_count != 1 {
+        return Err(StoreError::Conflict(
+            "Integration commit lacks the current Round semantic-closure proof".into(),
+        ));
+    }
+    let mut accepted = std::collections::BTreeSet::new();
+    let mut statement = tx.prepare(
+        "SELECT payload FROM events WHERE run_id = ?1
+         AND causation_id = (SELECT event_id FROM events WHERE run_id = ?1
+             AND type = 'RoundStarted@1' ORDER BY sequence DESC LIMIT 1)
+         AND type = 'ProposalAccepted@1'",
+    )?;
+    for raw in statement
+        .query_map(params![run_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?
+    {
+        let payload: review_core::ProposalAcceptedPayloadV1 = serde_json::from_str(&raw)?;
+        accepted.insert(payload.proposal_id);
+    }
+    if committed
+        .proposal_ids
+        .iter()
+        .any(|proposal| !accepted.contains(proposal))
+        || committed
+            .attestation_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            != batch_attestations.iter().collect()
+    {
+        return Err(StoreError::Conflict(
+            "Integration commit names unselected Proposals or non-atomic attestations".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_report_receipts(
     tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
     run_id: &str,
     round_event_id: &str,
     event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
     let outcomes = report_outcomes(event_type, payload)?;
+    let reported_outputs: std::collections::BTreeMap<String, Vec<String>> = outcomes
+        .iter()
+        .filter_map(|outcome| match &outcome.outcome {
+            review_core::RunNodeOutcomeV2::Completed { output_artifacts } => {
+                Some((outcome.node.clone(), output_artifacts.clone()))
+            }
+            _ => None,
+        })
+        .collect();
     let mut receipts = std::collections::BTreeMap::new();
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
@@ -3760,9 +5699,77 @@ fn validate_report_receipts(
         }
     }
     if !receipts.is_empty() {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} omits nodes with durable output receipts"
-        )));
+        // Dynamic shard nodes are owned by one static Scatter and therefore are not top-level
+        // plan outcomes. They are nevertheless complete only when every exact receipt is
+        // represented in that Scatter's reported ShardSet; this is transitive receipt coverage,
+        // not an exception to it.
+        let plan = load_authority_plan(tx, cas, run_id)?;
+        for (node, receipt) in receipts {
+            let authority = dynamic_node_authority(tx, cas, run_id, round_event_id, &plan, &node)?
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "{event_type} omits static node `{node}` with a durable output receipt"
+                    ))
+                })?;
+            let owner = node
+                .split_once("#slice:")
+                .map(|(owner, _)| owner)
+                .ok_or_else(|| {
+                    StoreError::Conflict("dynamic receipt has no tagged Scatter owner".into())
+                })?;
+            let shard_set_record = reported_outputs
+                .get(owner)
+                .into_iter()
+                .flatten()
+                .find_map(|artifact| {
+                    let value = cas.get_json(artifact).ok()?;
+                    let envelope =
+                        serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok()?;
+                    (envelope.artifact_type == review_core::contract::SHARD_SET_V1)
+                        .then_some(envelope)
+                })
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "dynamic receipt `{node}` has no reported owner ShardSet"
+                    ))
+                })?;
+            crate::validate_envelope(&shard_set_record).map_err(StoreError::Conflict)?;
+            let shard_set: review_core::ShardSetV1 =
+                serde_json::from_value(shard_set_record.payload)?;
+            shard_set.validate_shape().map_err(StoreError::Conflict)?;
+            let shard = shard_set
+                .shards
+                .iter()
+                .find(|shard| {
+                    shard.runtime_node_id == node && shard.slice_id == authority.slice.slice_id
+                })
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "dynamic receipt `{node}` is absent from its owner ShardSet"
+                    ))
+                })?;
+            let review_core::ShardOutcomeV1::Completed {
+                result_artifact_ids,
+            } = &shard.outcome
+            else {
+                return Err(StoreError::Conflict(format!(
+                    "dynamic receipt `{node}` contradicts a non-completed Shard outcome"
+                )));
+            };
+            let mut durable: Vec<String> = receipt
+                .outputs
+                .into_iter()
+                .flat_map(|port| port.artifact_ids)
+                .collect();
+            durable.sort();
+            let mut represented = result_artifact_ids.clone();
+            represented.sort();
+            if durable != represented {
+                return Err(StoreError::Conflict(format!(
+                    "dynamic receipt `{node}` contradicts its exact Shard outcome"
+                )));
+            }
+        }
     }
     Ok(())
 }

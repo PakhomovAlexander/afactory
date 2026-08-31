@@ -10,27 +10,29 @@ use review_core::{
     ArtifactEnvelope, AuthorityFileV1, BrokerCredentialModeV1, BrokerOperationOutcomeV1,
     BrokerOperationPolicyV1, BrokerOperationReceiptV1, CacheManifestEntryV1, CacheManifestV1,
     CachePathEncodingV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
-    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind,
+    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, CloseoutPolicyV1,
     DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
     DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1,
     EvidenceV1, FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction,
     FindingGroupingV1, FindingReport, FindingResolutionOutcome, FindingResolutionV1,
-    FindingSetEntryV1, FindingSetV1, FixVerificationV1, Location, MissingNodeV2,
-    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1,
-    PortArtifactsV1, PortCardinality, Producer, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, ResolutionChallengeKind, ResolutionChallengeV1,
-    ReviewerExecutionBindingV1, ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5,
-    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    FindingSetEntryV1, FindingSetV1, FixVerificationV1, IntegrationCandidateV1, IntegrationCheckV1,
+    IntegrationChecksV1, IntegrationPlanV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
+    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
+    ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1, ReviewerExecutionBindingV1,
+    ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
+    RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
     RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
     RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
     RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1, ShardSetV1,
+    SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 36] = [
+const SCHEMAS: [&str; 42] = [
     "artifact-envelope-v1.json",
     "cache-manifest-v1.json",
     "campaign-manifest-v1.json",
@@ -49,11 +51,14 @@ const SCHEMAS: [&str; 36] = [
     "finding-resolution-v1.json",
     "finding-set-v1.json",
     "fix-verification-v1.json",
+    "integration-checks-v1.json",
+    "integration-plan-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "policy-time-v1.json",
     "provider-operation-transition-v1.json",
+    "review-slice-v1.json",
     "reviewer-package-v1.json",
     "reviewer-result-v1.json",
     "reviewer-result-v2.json",
@@ -65,6 +70,9 @@ const SCHEMAS: [&str; 36] = [
     "run-report-v3.json",
     "run-report-v4.json",
     "run-report-v5.json",
+    "semantic-closure-v1.json",
+    "shard-set-v1.json",
+    "slice-set-v1.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
 ];
@@ -747,6 +755,113 @@ fn patch_proposal_must_name_a_claim() {
         "patch-proposal-v1.json",
         &value,
         "a patch that names no claim cannot be verified",
+    );
+}
+
+#[test]
+fn slice_shard_and_semantic_closure_contracts_roundtrip() {
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let slices = SliceSetV1 {
+        subject_id: digest('a'),
+        coverage: SliceCoverageV1::Complete,
+        max_fanout: 2,
+        all_shards_required: true,
+        closeout: CloseoutPolicyV1::Required,
+        slices: vec![
+            ReviewSliceV1 {
+                slice_id: digest('b'),
+                runtime_node_id: "correctness#slice-b".into(),
+                paths: vec!["src/a.rs".into()],
+                overlaps: vec![],
+            },
+            ReviewSliceV1 {
+                slice_id: digest('c'),
+                runtime_node_id: "correctness#slice-c".into(),
+                paths: vec!["src/b.rs".into()],
+                overlaps: vec![],
+            },
+        ],
+    };
+    slices
+        .validate_coverage(&["src/a.rs".into(), "src/b.rs".into()])
+        .unwrap();
+    assert_valid("slice-set-v1.json", &serde_json::to_value(&slices).unwrap());
+
+    let shards = ShardSetV1 {
+        subject_id: slices.subject_id.clone(),
+        slice_set_id: digest('d'),
+        all_shards_required: true,
+        shards: slices
+            .slices
+            .iter()
+            .map(|slice| ShardReceiptV1 {
+                slice_id: slice.slice_id.clone(),
+                runtime_node_id: slice.runtime_node_id.clone(),
+                outcome: ShardOutcomeV1::Completed {
+                    result_artifact_ids: vec![digest('e')],
+                },
+            })
+            .collect(),
+    };
+    shards.validate_against(&slices).unwrap();
+    assert_valid("shard-set-v1.json", &serde_json::to_value(&shards).unwrap());
+
+    let closure = SemanticClosureV1 {
+        subject_id: slices.subject_id.clone(),
+        required_artifact_ids: vec![digest('e')],
+        dispositions: vec![SemanticDispositionV1 {
+            artifact_id: digest('e'),
+            sink: "ledger".into(),
+        }],
+        closeout_result_id: Some(digest('f')),
+        closeout_waiver_policy_id: None,
+    };
+    closure.validate().unwrap();
+    assert_valid(
+        "semantic-closure-v1.json",
+        &serde_json::to_value(&closure).unwrap(),
+    );
+}
+
+#[test]
+fn integration_contracts_roundtrip() {
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let plan = IntegrationPlanV1 {
+        subject_id: digest('a'),
+        base_snapshot_id: digest('b'),
+        policy_id: digest('c'),
+        protected_paths: vec![".github/workflows/release.yml".into()],
+        candidates: vec![IntegrationCandidateV1 {
+            proposal_id: digest('d'),
+            candidate_artifact_id: digest('e'),
+            node_id: "correctness".into(),
+            priority: 0,
+            patch_artifact_id: digest('f'),
+            derived_manifest_artifact_id: digest('1'),
+            paths: vec!["src/lib.rs".into()],
+            finding_ids: vec![digest('2')],
+            evidence_ids: vec![digest('3')],
+        }],
+        derived_manifest_artifact_id: digest('4'),
+    };
+    plan.validate().unwrap();
+    assert_valid(
+        "integration-plan-v1.json",
+        &serde_json::to_value(&plan).unwrap(),
+    );
+    let checks = IntegrationChecksV1 {
+        derived_snapshot_id: digest('5'),
+        checks: vec![IntegrationCheckV1 {
+            name: "check".into(),
+            passed: true,
+            result_artifact_id: digest('6'),
+        }],
+    };
+    checks.validate().unwrap();
+    assert!(checks.passed());
+    assert_valid(
+        "integration-checks-v1.json",
+        &serde_json::to_value(checks).unwrap(),
     );
 }
 

@@ -8,9 +8,9 @@ use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
-    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
-    run_report_closes_round,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType,
+    IntegrationCommittedPayloadV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
+    RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1, run_report_closes_round,
 };
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
@@ -646,19 +646,40 @@ fn prepare_round(
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
-        (existing, _restart) => capture_round(
-            options,
-            cas,
-            store,
-            repo,
-            run_id,
-            campaign,
-            RoundCaptureRequest {
-                round: target_round,
-                superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
-                ledger_projection,
-            },
-        )?,
+        (existing, _restart) => {
+            let integrated = existing
+                .is_none()
+                .then(|| next_integrated_head(events))
+                .flatten();
+            match integrated {
+                Some((event_id, committed)) => start_integrated_round(
+                    options,
+                    cas,
+                    store,
+                    run_id,
+                    campaign,
+                    IntegratedRoundRequest {
+                        round: target_round,
+                        committed_event_id: event_id,
+                        committed,
+                        ledger_projection,
+                    },
+                )?,
+                None => capture_round(
+                    options,
+                    cas,
+                    store,
+                    repo,
+                    run_id,
+                    campaign,
+                    RoundCaptureRequest {
+                        round: target_round,
+                        superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+                        ledger_projection,
+                    },
+                )?,
+            }
+        }
     };
 
     let mut round = round;
@@ -691,6 +712,13 @@ fn prepare_round(
 struct RoundCaptureRequest<'a> {
     round: u32,
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
+    ledger_projection: LedgerProjection,
+}
+
+struct IntegratedRoundRequest {
+    round: u32,
+    committed_event_id: String,
+    committed: IntegrationCommittedPayloadV1,
     ledger_projection: LedgerProjection,
 }
 
@@ -757,6 +785,148 @@ fn outstanding_attempts_for_supersession(
             (node, attempt, charged)
         })
         .collect())
+}
+
+fn next_integrated_head(
+    events: &[review_core::RunEvent],
+) -> Option<(String, IntegrationCommittedPayloadV1)> {
+    let latest_subject_id = events.iter().rev().find_map(|event| {
+        (event.event_type == EventType::RoundStartedV1)
+            .then(|| {
+                serde_json::from_value::<RoundStartedPayloadV1>(event.payload.clone())
+                    .ok()
+                    .map(|payload| payload.subject_id)
+            })
+            .flatten()
+    })?;
+    events.iter().rev().find_map(|event| {
+        (event.event_type == EventType::IntegrationCommittedV1)
+            .then(|| {
+                serde_json::from_value::<IntegrationCommittedPayloadV1>(event.payload.clone())
+                    .ok()
+                    .filter(|payload| payload.prior_subject_id == latest_subject_id)
+                    .map(|payload| (event.event_id.clone(), payload))
+            })
+            .flatten()
+    })
+}
+
+fn start_integrated_round(
+    options: &Options,
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    campaign: &OpenCampaign,
+    request: IntegratedRoundRequest,
+) -> Result<RoundInput, String> {
+    let IntegratedRoundRequest {
+        round,
+        committed_event_id,
+        committed,
+        mut ledger_projection,
+    } = request;
+    committed.validate()?;
+    let subject: SubjectV1 = serde_json::from_value(
+        cas.get_json(&committed.derived_subject_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    subject.validate()?;
+    if subject.head_snapshot_id != committed.derived_snapshot_id
+        || subject.kind != campaign.loaded.subject_kind()
+    {
+        return Err("committed Integration derived Subject contradicts Campaign authority".into());
+    }
+    let snapshot: SourceSnapshot = serde_json::from_value(
+        cas.get_json(&subject.head_snapshot_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if !snapshot.is_derived()
+        || snapshot.parent_snapshot_id.as_deref() != Some(committed.prior_snapshot_id.as_str())
+    {
+        return Err("committed Integration does not name a derived child of its prior head".into());
+    }
+    let manifest_id = snapshot
+        .artifact_manifest
+        .as_deref()
+        .ok_or("derived Snapshot has no exact Manifest")?;
+    let manifest: Manifest = serde_json::from_value(
+        cas.get_json(manifest_id)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    manifest.validate().map_err(|error| error.to_string())?;
+    if manifest.content_digest() != snapshot.content_digest {
+        return Err("derived Snapshot Manifest contradicts its content digest".into());
+    }
+    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
+    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
+    let prior_finding_set = serde_json::json!({
+        "subject_id": committed.derived_subject_id,
+        "round": round,
+        "prior_findings": prior_findings,
+    });
+    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
+        .map_err(|error| error.to_string())?
+        .len();
+    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
+        return Err(format!(
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+        ));
+    }
+    let prior_finding_set_id = cas
+        .put_json(&prior_finding_set)
+        .map_err(|error| error.to_string())?;
+    let prior_demand_set_id =
+        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?;
+    let payload = RoundStartedPayloadV1 {
+        round,
+        epoch: 1,
+        campaign_manifest_id: campaign.manifest_id.clone(),
+        subject_id: committed.derived_subject_id.clone(),
+        prior_finding_set_id,
+        prior_demand_set_id,
+    };
+    payload.validate()?;
+    let mut refs = vec![
+        campaign.manifest.authority_snapshot_id.clone(),
+        campaign.manifest_id.clone(),
+        subject.head_snapshot_id.clone(),
+        payload.subject_id.clone(),
+        payload.prior_finding_set_id.clone(),
+        payload.prior_demand_set_id.clone(),
+        manifest_id.to_string(),
+    ];
+    refs.extend(subject.base_snapshot_id.clone());
+    refs.extend(subject.change_set_id.clone());
+    let started = store
+        .append(
+            run_id,
+            cas,
+            NewEvent::new(
+                EventType::RoundStartedV1,
+                serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+            )
+            .caused_by(committed_event_id)
+            .correlating(&payload.subject_id)
+            .referencing(refs),
+        )
+        .map_err(|error| error.to_string())?;
+    ledger_projection
+        .apply_event(&started, cas)
+        .map_err(|error| error.to_string())?;
+    super::run_progress(
+        options,
+        format_args!("snapshot {} (integrated)", snapshot.content_digest),
+    );
+    Ok(RoundInput {
+        payload,
+        event_id: started.event_id,
+        snapshot: manifest,
+        prior_count,
+        ledger_projection,
+    })
 }
 
 fn capture_round(
@@ -1518,6 +1688,8 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
+
     fn attempt_event(
         sequence: u64,
         event_type: review_core::EventType,
@@ -1640,5 +1812,72 @@ mod tests {
             super::outstanding_attempts_for_supersession(&events, "round").unwrap(),
             vec![("reviewer".into(), attempt, Some(101))]
         );
+    }
+
+    #[test]
+    fn only_an_integration_from_the_latest_subject_becomes_the_next_head() {
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let round = |sequence: u64, subject_id: String| review_core::RunEvent {
+            event_id: format!("round-{sequence}"),
+            run_id: "run".into(),
+            sequence,
+            event_type: review_core::EventType::RoundStartedV1,
+            occurred_at: "2026-09-01T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: sequence as u32,
+                epoch: 1,
+                campaign_manifest_id: digest('1'),
+                subject_id,
+                prior_finding_set_id: digest('2'),
+                prior_demand_set_id: digest('3'),
+            })
+            .unwrap(),
+        };
+        let commit = |sequence: u64, prior: String, derived: String| review_core::RunEvent {
+            event_id: format!("commit-{sequence}"),
+            run_id: "run".into(),
+            sequence,
+            event_type: review_core::EventType::IntegrationCommittedV1,
+            occurred_at: "2026-09-01T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload: serde_json::to_value(IntegrationCommittedPayloadV1 {
+                batch_id: format!("batch-{sequence}"),
+                prior_subject_id: prior,
+                derived_subject_id: derived,
+                prior_snapshot_id: digest('4'),
+                derived_snapshot_id: digest('5'),
+                proposal_ids: vec![digest('6')],
+                attestation_ids: vec![digest('7')],
+                expected_finding_set_id: digest('8'),
+                expected_demand_set_id: digest('9'),
+                policy_id: digest('a'),
+                semantic_closure_id: digest('b'),
+            })
+            .unwrap(),
+        };
+        let subject_one = digest('c');
+        let subject_two = digest('d');
+        let mut events = vec![
+            round(1, subject_one.clone()),
+            commit(2, subject_one, subject_two.clone()),
+        ];
+        assert_eq!(
+            super::next_integrated_head(&events)
+                .unwrap()
+                .1
+                .derived_subject_id,
+            subject_two
+        );
+        events.push(round(3, subject_two));
+        assert!(super::next_integrated_head(&events).is_none());
     }
 }

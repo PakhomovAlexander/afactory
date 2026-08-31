@@ -1314,3 +1314,26 @@ from `0361a7d`, and its initial CI passed. Integration and exact-main verificati
 PR #19 merged at exact `main` commit `01147ce`; post-merge CI run `33185591446` passed the full
 workspace Check and CLI smoke. M4 is complete and issue #15 is closed. Resume at M5 operator
 visibility.
+
+## 2026-09-01 — M7–M9 implemented, light-dogfooded, and locally verified
+
+Branch `agent/m7-m9` completes the dependency-ordered kernel roadmap. M7 transports at most one
+optional Proposal beside the unchanged flat Reviewer Result, validates its complete sealed diff,
+binds its lifecycle to the selected durable Attempt and canonical Ledger, and exports exact or
+explicitly stale Proposal IDs. M8 adds pipeline-v5 Slice, Slice Set, Shard Set, and Semantic
+Closure contracts; a typed Scatter owns deterministic bounded shard Attempts, lossless gather,
+fan-out accounting and replay, and whole-Subject closeout. M9 composes only selected, accepted,
+disjoint Proposal Manifests from `auto_apply` bindings, checks an unpromoted derived Snapshot,
+and atomically records attestation plus the new internal Campaign head. The next Round consumes
+that exact derived Subject. Static automatic Integration is refused until a captured semantic
+closure route exists.
+
+The hub's checksummed `v0.5.0` launcher ran one correctness-only light Campaign,
+`m7-m9-light-v1`, with Codex `gpt-5.6-terra` at `xhigh`; no Claude or Opus Worker ran. It spent
+350,595 chargeable tokens and reported two blockers and three majors: Proposal lifecycle events
+lacked durable Attempt authority; Integration was insufficiently bound to selected sealed
+Manifests and opt-in; Slice Sets were not reconstructed from captured policy; fan-out spend was
+lost on replay; and static Integration could terminate without Semantic Closure. Each issue now
+has a fail-closed implementation and adversarial regression. Per the light-review contract no
+second Campaign was dispatched; the independent final `make check` passed formatting,
+warnings-denied Clippy, all workspace tests and doctests, and byte-identical fixture reproduction.

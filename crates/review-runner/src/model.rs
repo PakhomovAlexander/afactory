@@ -43,9 +43,13 @@ after, no markdown fence. Shape:\n\
 \"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
 \"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
-\"disputes\":[{\"claim_id\":string,\"position\":\"confirm\"|\"refute\",\"reason\":string}]}\n\
+\"disputes\":[{\"claim_id\":string,\"position\":\"confirm\"|\"refute\",\"reason\":string}],\
+\"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
+\"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
 An empty findings list is a valid answer. Every finding needs a concrete fix. Use exactly \
-these fields and no others - an extra field is discarded, a missing one fails the answer. \
+these fields and no others - an extra field is discarded, a missing required result field fails \
+the answer. A proposal is optional, but when present it is one atomic patch and must equal the \
+complete final sandbox diff; name at least one same-result report index or assigned Finding ID. \
 Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
 from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
 path component. An empty `file` means the claim is change-wide.";
@@ -58,11 +62,15 @@ after, no markdown fence. Shape:\n\
 \"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
 \"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
-\"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}]}\n\
+\"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}],\
+\"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
+\"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
 Return exactly one disposition for every assigned prior Finding and no others. Omission is \
 incomplete work, not evidence that a Finding disappeared. An empty findings list is valid. Every \
 finding needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
-a missing one fails the answer. Every non-empty `file` must be a canonical repository-relative \
+a missing required result field fails the answer. A proposal is optional, but when present it is \
+one atomic patch and must equal the complete final sandbox diff; name at least one same-result \
+report index or assigned Finding ID. Every non-empty `file` must be a canonical repository-relative \
 path: use its exact spelling from the Change Set, without an absolute prefix, leading `./`, `.` or \
 `..` component, or empty path component. An empty `file` means the claim is change-wide.";
 
@@ -168,6 +176,42 @@ pub fn parse_stage_output_for(
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
+/// One optional code change declaration transported beside an otherwise unchanged Reviewer
+/// Result. It is intentionally not part of `LegacyStageOutput`: the kernel validates it against
+/// the sealed sandbox and publishes a separate `PatchProposal@1` only after canonical reduction.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewerProposalDeclaration {
+    pub patch: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_indexes: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
+    pub paths: Vec<String>,
+    pub description: String,
+    #[serde(default)]
+    pub auto_apply_nominated: bool,
+}
+
+/// Extract the proposal transport field without changing Reviewer Result normalization.
+pub fn parse_proposal_declaration(
+    text: &str,
+) -> Result<Option<ReviewerProposalDeclaration>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(extract_result(text)).map_err(|error| error.to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "reviewer response is not an object".to_string())?;
+    object
+        .get("proposal")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("proposal declaration is malformed: {error}"))
+}
+
 fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
     fn keep(value: &mut serde_json::Value, fields: &[&str]) {
         if let Some(object) = value.as_object_mut() {
@@ -227,7 +271,7 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_stage_output;
+    use super::{parse_proposal_declaration, parse_stage_output};
 
     #[test]
     fn extra_fields_are_dropped_and_the_findings_survive() {
@@ -301,6 +345,24 @@ mod tests {
             "a finding without a severity must not be normalized into one"
         );
     }
+
+    #[test]
+    fn proposal_transport_is_extracted_but_not_part_of_the_result() {
+        let answer = r#"{"verdict":"block","summary":null,"findings":[
+  {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
+],"benchmark_demands":[],"disputes":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
+        let output = parse_stage_output(answer).unwrap();
+        assert_eq!(output.findings.len(), 1);
+        let proposal = parse_proposal_declaration(answer).unwrap().unwrap();
+        assert_eq!(proposal.report_indexes, vec![0]);
+        assert_eq!(proposal.paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn more_than_one_proposal_cannot_fit_the_transport_shape() {
+        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"proposal":[]}"#;
+        assert!(parse_proposal_declaration(answer).is_err());
+    }
 }
 
 /// A credential granted to the reviewer process by name and value. The value is what gets
@@ -316,6 +378,9 @@ pub struct Grant {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReviewerReturn {
     pub output: LegacyStageOutput,
+    /// Optional transport declaration extracted from the same final answer. It is not part of
+    /// the persisted Reviewer Result and has no authority until the kernel verifies it.
+    pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
     /// Chargeable tokens: uncached input plus output when the provider distinguishes cache
     /// reads. Zero for a deterministic `command` reviewer.
     pub cost_tokens: u64,
@@ -886,6 +951,7 @@ impl CommandAdapter {
 fn invoke_command(
     command: &Command,
     runner: crate::CommandRunner<'_>,
+    cas: &Cas,
     inputs: &ReviewerInputs,
 ) -> Result<ReviewerReturn, RunnerError> {
     inputs
@@ -900,8 +966,15 @@ fn invoke_command(
     } else {
         runner.invoke_raw_with_input_for(command, encoded, inputs.result_contract)?
     };
+    let raw = cas
+        .get(&raw_artifact)
+        .map_err(|error| RunnerError::Unavailable(error.to_string()))?;
+    let proposal = std::str::from_utf8(&raw)
+        .map_err(|error| error.to_string())
+        .and_then(parse_proposal_declaration);
     Ok(ReviewerReturn {
         output,
+        proposal,
         cost_tokens: 0,
         raw_artifact,
     })
@@ -917,6 +990,7 @@ impl ReviewerAdapter for CommandAdapter {
         invoke_command(
             &self.command,
             crate::CommandRunner::new(cas, sandbox_root).with_timeout(self.timeout),
+            cas,
             inputs,
         )
     }
@@ -931,7 +1005,12 @@ impl ReviewerAdapter for Command {
         sandbox_root: &Path,
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError> {
-        invoke_command(self, crate::CommandRunner::new(cas, sandbox_root), inputs)
+        invoke_command(
+            self,
+            crate::CommandRunner::new(cas, sandbox_root),
+            cas,
+            inputs,
+        )
     }
 }
 

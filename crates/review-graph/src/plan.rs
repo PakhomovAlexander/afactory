@@ -81,6 +81,10 @@ pub enum NodeKind {
     Gate,
     /// A model-backed or command-backed reviewer.
     Reviewer,
+    /// Deterministically publishes the complete bounded Slice Set for one Subject.
+    Slicer,
+    /// Owns dynamic reviewer sub-invocations while the outer graph stays static.
+    Scatter,
     /// Collects several upstream outputs at a barrier.
     Gather,
     /// Reduces reports into the ledger projection.

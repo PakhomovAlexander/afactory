@@ -25,9 +25,9 @@ pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
     CommandAdapter, ContextEntry, ContextManifest, Grant, ModelRunner, RESULT_CONTRACT,
     RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn, ReviewerAdapter,
-    ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, TokenUsage,
-    estimate_tokens, extract_result, parse_stage_output, parse_stage_output_for, result_contract,
-    unfence,
+    ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerProposalDeclaration,
+    ReviewerReturn, TokenUsage, estimate_tokens, extract_result, parse_proposal_declaration,
+    parse_stage_output, parse_stage_output_for, result_contract, unfence,
 };
 pub use review_broker::BrokerClient;
 pub use review_core::BrokerCredentialModeV1;
