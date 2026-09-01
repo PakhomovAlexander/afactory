@@ -62,10 +62,8 @@ impl CodexAdapter {
                 package.name, package.runner.program
             ));
         }
-        let model_flags = package
-            .runner
-            .resolve()
-            .map_err(|e| format!("package `{}` runner args: {e}", package.name))?;
+        let model_flags = codex_model_flags(&package.runner)
+            .map_err(|error| format!("package `{}` runner args: {error}", package.name))?;
         // From the verified bytes, never a fresh disk read: the prompt is the one file that
         // decides what the reviewer does, so it must be exactly what the digest covered.
         let prompt = String::from_utf8(
@@ -104,7 +102,7 @@ impl CodexAdapter {
 /// Build the adapter-owned capability smoke invocation. The production builder supplies the
 /// same global/subcommand ordering, with a read-only scratch root and no output file.
 pub fn smoke_command(runner: &Command, scratch: &Path) -> Result<Command, String> {
-    let model_flags = runner.resolve().map_err(|error| error.to_string())?;
+    let model_flags = codex_model_flags(runner)?;
     Ok(codex_command(
         &runner.program,
         &model_flags,
@@ -112,6 +110,45 @@ pub fn smoke_command(runner: &Command, scratch: &Path) -> Result<Command, String
         "read-only",
         None,
     ))
+}
+
+fn codex_model_flags(runner: &Command) -> Result<Vec<String>, String> {
+    let values = runner.resolve().map_err(|error| error.to_string())?;
+    let mut model = None;
+    let mut effort = None;
+    let mut index = 0;
+    while index < values.len() {
+        let option = &values[index];
+        let value = values
+            .get(index + 1)
+            .ok_or_else(|| format!("Codex model option `{option}` has no value"))?;
+        match option.as_str() {
+            "--model" | "-m" => {
+                if model.replace(value.clone()).is_some() {
+                    return Err("duplicate Codex package model option".into());
+                }
+            }
+            "-c" if value.starts_with("model_reasoning_effort=") => {
+                if effort.replace(value.clone()).is_some() {
+                    return Err("duplicate Codex package reasoning-effort option".into());
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported Codex package argument `{option}`; packages may set only one model and one model_reasoning_effort"
+                ));
+            }
+        }
+        index += 2;
+    }
+    let mut flags = Vec::new();
+    if let Some(model) = model {
+        flags.extend(["--model".into(), model]);
+    }
+    if let Some(effort) = effort {
+        flags.extend(["-c".into(), effort]);
+    }
+    Ok(flags)
 }
 
 fn codex_command(

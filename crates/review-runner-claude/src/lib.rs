@@ -5,7 +5,10 @@
 //! content digest — but a different provider surface, pinned by fixtures captured from a real
 //! `claude` 2.1.234 run on 2026-08-18: `-p --output-format json` prints one JSON envelope
 //! with `is_error`, the final text in `result`, and cumulative token usage in `usage`; the
-//! prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling.
+//! prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. The
+//! adapter appends `--safe-mode --restricted` and an explicit read-only tool grant after package
+//! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot
+//! widen reviewer authority.
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
@@ -61,10 +64,8 @@ impl ClaudeAdapter {
                 package.name, package.runner.program
             ));
         }
-        let model_flags = package
-            .runner
-            .resolve()
-            .map_err(|e| format!("package `{}` runner args: {e}", package.name))?;
+        let model_flags = claude_model_flags(&package.runner)
+            .map_err(|error| format!("package `{}` runner args: {error}", package.name))?;
         // From the verified bytes, never a fresh disk read: the prompt is the one file that
         // decides what the reviewer does, so it must be exactly what the digest covered.
         let prompt = String::from_utf8(
@@ -117,8 +118,42 @@ impl ClaudeAdapter {
 /// Build the adapter-owned capability smoke invocation. It shares the production argument
 /// ordering while disabling tools: admission proves auth/model inference, not filesystem access.
 pub fn smoke_command(runner: &Command) -> Result<Command, String> {
-    let model_flags = runner.resolve().map_err(|error| error.to_string())?;
+    let model_flags = claude_model_flags(runner)?;
     Ok(claude_command(&runner.program, &model_flags))
+}
+
+fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
+    let values = runner.resolve().map_err(|error| error.to_string())?;
+    let mut model = None;
+    let mut effort = None;
+    let mut index = 0;
+    while index < values.len() {
+        let option = &values[index];
+        let value = values
+            .get(index + 1)
+            .ok_or_else(|| format!("Claude model option `{option}` has no value"))?;
+        let slot = match option.as_str() {
+            "--model" => &mut model,
+            "--effort" => &mut effort,
+            _ => {
+                return Err(format!(
+                    "unsupported Claude package argument `{option}`; packages may set only one --model and one --effort"
+                ));
+            }
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("duplicate Claude package option `{option}`"));
+        }
+        index += 2;
+    }
+    let mut flags = Vec::new();
+    if let Some(model) = model {
+        flags.extend(["--model".into(), model]);
+    }
+    if let Some(effort) = effort {
+        flags.extend(["--effort".into(), effort]);
+    }
+    Ok(flags)
 }
 
 fn claude_command(program: &str, model_flags: &[String]) -> Command {
@@ -128,6 +163,21 @@ fn claude_command(program: &str, model_flags: &[String]) -> Command {
         Arg::literal("json"),
     ];
     args.extend(model_flags.iter().map(Arg::literal));
+    // Security flags are adapter-owned and deliberately follow package-controlled model flags.
+    // Claude applies the last value for valued flags; packages therefore cannot replace the
+    // permission mode or tool set. Safe/restricted modes disable repository customizations and
+    // confine built-in file access to the sandbox supplied by ModelRunner.
+    args.extend([
+        Arg::literal("--safe-mode"),
+        Arg::literal("--restricted"),
+        Arg::literal("--permission-mode"),
+        Arg::literal("dontAsk"),
+        Arg::literal("--strict-mcp-config"),
+        Arg::literal("--tools"),
+        Arg::literal("Read,Glob,Grep"),
+        Arg::literal("--allowedTools"),
+        Arg::literal("Read,Glob,Grep"),
+    ]);
     Command::new(program, args)
 }
 

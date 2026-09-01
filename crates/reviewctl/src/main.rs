@@ -21,7 +21,6 @@
 //! explicit action.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,7 +32,7 @@ use review_core::{
     RunReportPayloadV4, RunReportPayloadV5, RunVerdictV2, RunVerdictV3, Severity,
 };
 use review_graph::NodeOutcome;
-use review_pipeline::{Kernel, RunVerdict};
+use review_pipeline::{Kernel, RoundAuthority, RunVerdict};
 use review_runner::ReviewerAdapter;
 use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
@@ -42,6 +41,7 @@ use sha2::{Digest, Sha256};
 mod authority;
 mod caches;
 mod onboard;
+mod project;
 mod providers;
 mod task;
 mod tui;
@@ -68,6 +68,10 @@ struct Options {
     state: Option<PathBuf>,
     campaign: Option<String>,
     focus: Option<String>,
+    policy_rev: Option<String>,
+    base: Option<String>,
+    candidate: Option<String>,
+    /// Compatibility alias: expands to policy_rev + base for a new diff Campaign.
     authority: Option<String>,
     uncommitted: bool,
     restart_round: bool,
@@ -319,17 +323,6 @@ fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
-fn resolve_codex_home(home: &str, configured: Option<&OsStr>) -> Result<String, String> {
-    match configured {
-        Some(value) if value.is_empty() => Err("CODEX_HOME is empty".to_string()),
-        Some(value) => value
-            .to_str()
-            .map(str::to_string)
-            .ok_or_else(|| "CODEX_HOME must be valid UTF-8".to_string()),
-        None => Ok(format!("{home}/.codex")),
-    }
-}
-
 struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
@@ -466,10 +459,12 @@ struct DemandWaiveOptions {
 fn usage() -> ! {
     eprintln!(
         "usage: af review [run]   [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--light|--heavy] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
+         [--campaign NAME] [--light|--heavy] [--policy-rev REV --base REV] [--candidate REV|--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
+        \x20                       [--authority REV] (compatibility: policy + diff Base)\n\
         \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH] [--json]\n\
+        \x20      af review plan    [run selector options] [--json] (token-free; no Campaign state)\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--light|--heavy] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
+         [--campaign NAME] [--light|--heavy] [--policy-rev REV --base REV] [--candidate REV|--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
         \x20      af review export  --campaign NAME [--state DIR] PROPOSAL_ID [--allow-stale]\n\
@@ -487,6 +482,7 @@ fn usage() -> ! {
         \x20      af review evidence satisfy --campaign NAME [--state DIR] DEMAND EVIDENCE --policy REV --reason TEXT [--admit-reuse] [--actor ACTOR]\n\
         \x20      af review demand waive --campaign NAME [--state DIR] DEMAND --policy REV --reason TEXT [--actor ACTOR]\n\
         \x20      af provider status\n\
+        \x20      af provider doctor [review selector options] --provider NODE=PROVIDER_ID...\n\
         \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock] [--json]\n\
         \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
         \x20      af task deliver TASK_ID --repo DIR --branch NAME --worktree DIR --confirm TASK_ID [--state DIR] [--json]\n\
@@ -521,6 +517,9 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
         state: None,
         campaign: None,
         focus: None,
+        policy_rev: None,
+        base: None,
+        candidate: None,
         authority: None,
         uncommitted: false,
         restart_round: false,
@@ -540,6 +539,9 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
             "--state" => options.state = Some(PathBuf::from(value())),
             "--campaign" => options.campaign = Some(value()),
             "--focus" => options.focus = Some(value()),
+            "--policy-rev" => options.policy_rev = Some(value()),
+            "--base" => options.base = Some(value()),
+            "--candidate" => options.candidate = Some(value()),
             "--authority" => options.authority = Some(value()),
             "--uncommitted" => options.uncommitted = true,
             "--restart-round" => options.restart_round = true,
@@ -600,6 +602,12 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
             }
             _ => usage(),
         }
+    }
+    if options.authority.is_some() && (options.policy_rev.is_some() || options.base.is_some()) {
+        usage();
+    }
+    if options.candidate.is_some() && options.uncommitted {
+        usage();
     }
     options
 }
@@ -1070,10 +1078,16 @@ fn main() {
         return;
     }
     if namespace.as_deref() == Some("provider") {
-        if args.next().as_deref() != Some("status") || args.next().is_some() {
-            usage();
+        match args.next().as_deref() {
+            Some("status") if args.next().is_none() => providers::print_status(),
+            Some("doctor") => {
+                if let Err(error) = provider_doctor(&parse_run(args)) {
+                    eprintln!("af provider: {error}");
+                    std::process::exit(1);
+                }
+            }
+            _ => usage(),
         }
-        providers::print_status();
         return;
     }
     if namespace.as_deref() == Some("onboard") {
@@ -1117,6 +1131,7 @@ fn main() {
     }
     let command = args.next();
     let result = match command.as_deref() {
+        Some("plan") => print_plan(&parse_run(args)),
         Some("run") => {
             init_review_workers();
             run(&parse_run(args)).map(exit_for_verdict)
@@ -1159,6 +1174,131 @@ fn main() {
         eprintln!("af review: {error}");
         std::process::exit(1);
     }
+}
+
+fn print_plan(options: &Options) -> Result<(), String> {
+    let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let git_home = scratch.path().join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let repo = Repo::open(repository, git_home)
+        .with_timeout(authority::requested_git_timeout(options.git_timeout));
+    let plan = authority::plan(options, &cas, &repo)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&plan).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+    let selectors = &plan["selectors"];
+    let resolved = &plan["resolved"];
+    println!("review plan (token-free; no Campaign state)");
+    if let Some(authority) = selectors["compatibility_authority"].as_str() {
+        if plan["subject"]["kind"].as_str() == Some("diff") {
+            println!(
+                "compat   --authority {authority} => --policy-rev {authority} --base {authority}"
+            );
+        } else {
+            println!("compat   --authority {authority} => --policy-rev {authority}");
+        }
+    }
+    println!(
+        "policy   {} => {}",
+        selectors["policy_rev"].as_str().unwrap_or("?"),
+        resolved["policy_snapshot_id"].as_str().unwrap_or("?")
+    );
+    if let Some(base) = selectors["base"].as_str() {
+        println!(
+            "base     {base} => {}",
+            resolved["base_snapshot_id"].as_str().unwrap_or("?")
+        );
+    }
+    println!(
+        "candidate {} => {}",
+        selectors["candidate"].as_str().unwrap_or("?"),
+        resolved["candidate_snapshot_id"].as_str().unwrap_or("?")
+    );
+    println!(
+        "subject  {} ({} paths, {} patch bytes{})",
+        plan["subject"]["kind"].as_str().unwrap_or("?"),
+        plan["subject"]["changed_paths"]
+            .as_array()
+            .map_or(0, Vec::len),
+        plan["subject"]["patch_bytes"].as_u64().unwrap_or(0),
+        if plan["subject"]["empty"].as_bool() == Some(true) {
+            "; EMPTY — run will refuse"
+        } else {
+            ""
+        }
+    );
+    for path in plan["subject"]["changed_paths"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        println!("  change  {}", path.as_str().unwrap_or("?"));
+    }
+    println!("topology");
+    for node in plan["pipeline"]["topology"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  node {} [{}]",
+            node["id"].as_str().unwrap_or("?"),
+            node["kind"].as_str().unwrap_or("?")
+        );
+    }
+    for edge in plan["pipeline"]["topology"]["edges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  {}.{} -> {}.{}",
+            edge["from"]["node"].as_str().unwrap_or("?"),
+            edge["from"]["port"].as_str().unwrap_or("?"),
+            edge["to"]["node"].as_str().unwrap_or("?"),
+            edge["to"]["port"].as_str().unwrap_or("?")
+        );
+    }
+    for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
+        println!(
+            "gate     {} ({})",
+            gate["name"].as_str().unwrap_or("?"),
+            if gate["required"].as_bool() == Some(true) {
+                "required"
+            } else {
+                "optional"
+            }
+        );
+    }
+    if let Some(budgets) = plan["pipeline"]["budgets"].as_object() {
+        println!(
+            "budgets  {} tokens/Attempt; {} tokens/Round",
+            budgets
+                .get("attempt")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            budgets
+                .get("run")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        );
+    }
+    for provider in plan["providers"].as_array().into_iter().flatten() {
+        println!(
+            "provider {} -> {}",
+            provider["node"].as_str().unwrap_or("?"),
+            provider["binding"].as_str().unwrap_or("MISSING")
+        );
+    }
+    println!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    Ok(())
 }
 
 fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
@@ -3485,6 +3625,199 @@ fn latest_round_evidence(
     }))
 }
 
+fn packaged_runner(command: &review_core::Command) -> String {
+    Path::new(&command.program)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn require_static_attempt_capacity(
+    attempt_tokens: u64,
+    run_tokens: u64,
+    static_workers: usize,
+    committed_tokens: u64,
+) -> Result<(), String> {
+    let attempts = project::static_run_requirement(attempt_tokens, static_workers, 0)?;
+    let required = committed_tokens
+        .checked_add(attempts)
+        .ok_or("Provider spend plus static Worker budget arithmetic overflow")?;
+    if required > run_tokens {
+        return Err(format!(
+            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for one {attempt_tokens}-token Attempt for each of {static_workers} required static Workers: cap {run_tokens}, required {required}"
+        ));
+    }
+    Ok(())
+}
+
+fn admit_review_providers(
+    options: &Options,
+    state: &Path,
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    loaded: &review_config::Loaded,
+    authority: &RoundAuthority,
+) -> Result<BTreeMap<String, providers::ProviderAdmission>, String> {
+    for node in options.provider_bindings.keys() {
+        if !loaded.reviewers().contains_key(node) {
+            return Err(format!("--provider names unknown reviewer node `{node}`"));
+        }
+        if !loaded.packages().contains_key(node) {
+            return Err(format!(
+                "node `{node}` is an inline command; --provider is only valid for packaged Workers"
+            ));
+        }
+    }
+    for (node, package) in loaded.packages() {
+        let runner = packaged_runner(&package.runner);
+        if matches!(runner.as_str(), "claude" | "codex")
+            && !options.provider_bindings.contains_key(node)
+        {
+            return Err(format!(
+                "model-backed Worker `{node}` ({runner}) requires explicit `--provider {node}=PROVIDER_ID`; run `af provider doctor` with the same Campaign and selectors first"
+            ));
+        }
+    }
+    for node in store
+        .provider_operation_nodes(run_id, authority.round_event_id())
+        .map_err(|error| error.to_string())?
+    {
+        if !options.provider_bindings.contains_key(&node) {
+            return Err(format!(
+                "node `{node}` has Provider Admission state in this Round; repeat its explicit --provider binding"
+            ));
+        }
+    }
+    let expected_operations = options
+        .provider_bindings
+        .iter()
+        .map(|(node, provider_id)| {
+            let reviewer = loaded
+                .reviewers()
+                .get(node)
+                .expect("provider binding node was validated");
+            providers::operation_id_for(provider_id, node, reviewer, authority)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if let Some(stale) = options
+        .provider_resumes
+        .keys()
+        .find(|operation| !expected_operations.contains(*operation))
+    {
+        return Err(format!(
+            "--resume-provider `{stale}` is stale or does not belong to a configured provider operation"
+        ));
+    }
+    let replayed_spend = store
+        .round_committed_tokens(run_id, authority.round_event_id())
+        .map_err(|error| error.to_string())?;
+    let mut provider_budget = BudgetLedger::default().with_committed(Scope::Run, replayed_spend);
+    if let Some(budgets) = loaded.budgets() {
+        provider_budget = provider_budget.with_limit(Scope::Run, Budget::of(budgets.run));
+    }
+    let mut resumes = options.provider_resumes.clone();
+    let mut structural_probes = BTreeSet::new();
+    let mut admissions = BTreeMap::new();
+    for (node, provider_id) in &options.provider_bindings {
+        let command = loaded
+            .reviewers()
+            .get(node)
+            .expect("provider binding node was validated");
+        let admission = providers::admit(
+            provider_id,
+            providers::AdmissionRequest {
+                node_id: node,
+                reviewer: command,
+                state_dir: state,
+                run_id,
+                authority,
+                cas,
+                store,
+                resumes: &mut resumes,
+                budget: &mut provider_budget,
+                structural_probes: &mut structural_probes,
+            },
+        )?;
+        admissions.insert(node.clone(), admission);
+    }
+    if let Some((operation, _)) = resumes.first_key_value() {
+        return Err(format!(
+            "--resume-provider `{operation}` is stale or does not belong to a configured provider operation"
+        ));
+    }
+    let has_dispatched_worker = store
+        .replay(run_id)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|event| {
+            event.event_type == EventType::AttemptDispatchedV1
+                && event.causation_id.as_deref() == Some(authority.round_event_id())
+        });
+    if !has_dispatched_worker && let Some(budgets) = loaded.budgets() {
+        let committed = store
+            .round_committed_tokens(run_id, authority.round_event_id())
+            .map_err(|error| error.to_string())?;
+        require_static_attempt_capacity(
+            budgets.attempt,
+            budgets.run,
+            loaded.reviewers().len(),
+            committed,
+        )?;
+    }
+    Ok(admissions)
+}
+
+fn provider_doctor(options: &Options) -> Result<(), String> {
+    if options.campaign.is_none() {
+        return Err("provider doctor requires `--campaign NAME` so admission evidence can be reused by review run".into());
+    }
+    let state = options.resolved_state_dir()?;
+    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
+    let mut store =
+        EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
+    let git_home = state.join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let repo = Repo::open(&options.repo, &git_home)
+        .with_timeout(authority::requested_git_timeout(options.git_timeout));
+    let authority::PreparedRun {
+        loaded,
+        run_id,
+        authority,
+        ..
+    } = authority::prepare(options, &cas, &mut store, &repo)?;
+    let admissions = admit_review_providers(
+        options, &state, &cas, &mut store, &run_id, &loaded, &authority,
+    )?;
+    let spent = store
+        .round_committed_tokens(&run_id, authority.round_event_id())
+        .map_err(|error| error.to_string())?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema": "af/provider-doctor@1",
+                "ready": true,
+                "run_id": run_id,
+                "round": authority.round(),
+                "epoch": authority.epoch(),
+                "admitted_nodes": admissions.keys().collect::<Vec<_>>(),
+                "committed_tokens": spent,
+                "gates_run": false,
+                "workers_dispatched": false,
+            })
+        );
+    } else {
+        println!("provider doctor: ready");
+        for node in admissions.keys() {
+            println!("  admitted {node}");
+        }
+        println!("  committed {spent} tokens; no Gates or Workers ran");
+    }
+    Ok(())
+}
+
 fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
@@ -3538,93 +3871,11 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         ),
     );
 
-    for node in options.provider_bindings.keys() {
-        if !loaded.reviewers().contains_key(node) {
-            return Err(format!("--provider names unknown reviewer node `{node}`"));
-        }
-        if !loaded.packages().contains_key(node) {
-            return Err(format!(
-                "node `{node}` is an inline command; --provider is only valid for packaged reviewers"
-            ));
-        }
-    }
-    for node in store
-        .provider_operation_nodes(&run_id, authority.round_event_id())
-        .map_err(|error| error.to_string())?
-    {
-        if !options.provider_bindings.contains_key(&node) {
-            return Err(format!(
-                "node `{node}` has Provider Admission state in this Round; repeat its explicit --provider binding"
-            ));
-        }
-    }
-    let expected_operations = options
-        .provider_bindings
-        .iter()
-        .map(|(node, provider_id)| {
-            let reviewer = loaded
-                .reviewers()
-                .get(node)
-                .expect("provider binding node was validated");
-            providers::operation_id_for(provider_id, node, reviewer, &authority)
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if let Some(stale) = options
-        .provider_resumes
-        .keys()
-        .find(|operation| !expected_operations.contains(*operation))
-    {
-        return Err(format!(
-            "--resume-provider `{stale}` is stale or does not belong to a configured provider operation"
-        ));
-    }
-    let replayed_spend = if options.provider_bindings.is_empty() {
-        0
-    } else {
-        store
-            .round_committed_tokens(&run_id, authority.round_event_id())
-            .map_err(|error| error.to_string())?
-    };
-    let mut provider_budget = BudgetLedger::default().with_committed(Scope::Run, replayed_spend);
-    if let Some(budgets) = loaded.budgets() {
-        provider_budget = provider_budget.with_limit(Scope::Run, Budget::of(budgets.run));
-    }
-    let mut resumes = options.provider_resumes.clone();
-    let mut structural_probes = BTreeSet::new();
-    let mut admissions = BTreeMap::new();
-    for (node, provider_id) in &options.provider_bindings {
-        let command = loaded
-            .reviewers()
-            .get(node)
-            .expect("provider binding node was validated");
-        let admission = providers::admit(
-            provider_id,
-            providers::AdmissionRequest {
-                node_id: node,
-                reviewer: command,
-                state_dir: &state,
-                run_id: &run_id,
-                authority: &authority,
-                cas: &cas,
-                store: &mut store,
-                resumes: &mut resumes,
-                budget: &mut provider_budget,
-                structural_probes: &mut structural_probes,
-            },
-        )?;
-        admissions.insert(node.clone(), admission);
-    }
-    if let Some((operation, _)) = resumes.first_key_value() {
-        return Err(format!(
-            "--resume-provider `{operation}` is stale or does not belong to a configured provider operation"
-        ));
-    }
+    let admissions = admit_review_providers(
+        options, &state, &cas, &mut store, &run_id, &loaded, &authority,
+    )?;
 
-    let auth = (
-        std::env::var("CLAUDE_CONFIG_DIR").ok(),
-        std::env::var("USER").ok(),
-        home.clone(),
-    );
+    let auth = (std::env::var("USER").ok(), home.clone());
     let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
         .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec())
@@ -3645,26 +3896,24 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     for (node, command) in loaded.reviewers() {
         let adapter: Box<dyn ReviewerAdapter> = match loaded.packages().get(node) {
             Some(package) => {
-                let program = std::path::Path::new(&command.program)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                let program = packaged_runner(command);
                 match program.as_str() {
                     "claude" => {
-                        let user = auth.1.clone().ok_or_else(|| {
+                        let user = auth.0.clone().ok_or_else(|| {
                             format!("node `{node}`: Claude subscription auth requires USER")
                         })?;
                         let mut adapter =
                             review_runner_claude::ClaudeAdapter::from_package(package, timeout)
                                 .map_err(|error| format!("{node}: {error}"))?
                                 .with_auth(
-                                    admissions
-                                        .get(node)
-                                        .map(|provider| provider.auth_dir_string())
-                                        .transpose()?
-                                        .or_else(|| auth.0.clone()),
+                                    Some(
+                                        admissions
+                                            .get(node)
+                                            .expect("model-backed package was explicitly admitted")
+                                            .auth_dir_string()?,
+                                    ),
                                     user,
-                                    auth.2.clone(),
+                                    auth.1.clone(),
                                 );
                         if let Some(focus) = &focus {
                             adapter = adapter.with_focus(focus);
@@ -3672,13 +3921,10 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                         Box::new(adapter)
                     }
                     "codex" => {
-                        let codex_home = match admissions.get(node) {
-                            Some(provider) => provider.auth_dir_string()?,
-                            None => resolve_codex_home(
-                                &home,
-                                std::env::var_os("CODEX_HOME").as_deref(),
-                            )?,
-                        };
+                        let codex_home = admissions
+                            .get(node)
+                            .expect("model-backed package was explicitly admitted")
+                            .auth_dir_string()?;
                         let mut adapter =
                             review_runner_codex::CodexAdapter::from_package(package, timeout)
                                 .map_err(|error| format!("{node}: {error}"))?
@@ -3949,12 +4195,10 @@ fn exit_for_verdict(verdict: RunVerdict) {
 
 #[cfg(test)]
 mod option_tests {
-    use std::ffi::OsStr;
-
     use super::{
         CampaignMode, Options, campaign_id, campaign_state_beneath, enumerate_campaigns,
         last_closed_summary, latest_round_evidence, report_round_authority, report_rounds,
-        report_spend, resolve_codex_home, validate_campaign_name,
+        report_spend, require_static_attempt_capacity, validate_campaign_name,
     };
 
     fn event(
@@ -4046,22 +4290,6 @@ mod option_tests {
                 .referencing(vec![manifest.authority_snapshot_id, manifest_id]),
             )
             .unwrap();
-    }
-
-    #[test]
-    fn codex_runner_uses_the_ambient_auth_context() {
-        assert_eq!(
-            resolve_codex_home("/home/operator", Some(OsStr::new("/contexts/codex"))).unwrap(),
-            "/contexts/codex"
-        );
-        assert_eq!(
-            resolve_codex_home("/home/operator", None).unwrap(),
-            "/home/operator/.codex"
-        );
-        assert_eq!(
-            resolve_codex_home("/home/operator", Some(OsStr::new(""))).unwrap_err(),
-            "CODEX_HOME is empty"
-        );
     }
 
     #[test]
@@ -4474,6 +4702,9 @@ mod option_tests {
             state: Some(repository.path().join(".af/state/architecture")),
             campaign: Some("architecture".to_string()),
             focus: None,
+            policy_rev: None,
+            base: None,
+            candidate: None,
             authority: None,
             uncommitted: false,
             restart_round: false,
@@ -4486,6 +4717,13 @@ mod option_tests {
         };
         let error = options.resolved_state_dir().unwrap_err();
         assert!(error.contains("state must live under XDG state"));
+    }
+
+    #[test]
+    fn provider_smoke_spend_cannot_consume_static_attempt_capacity() {
+        let error = require_static_attempt_capacity(300_000, 600_000, 2, 2).unwrap_err();
+        assert!(error.contains("cap 600000, required 600002"), "{error}");
+        require_static_attempt_capacity(300_000, 600_002, 2, 2).unwrap();
     }
 
     #[test]

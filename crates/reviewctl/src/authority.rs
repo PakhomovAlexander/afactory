@@ -25,6 +25,210 @@ pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
     ))
 }
 
+/// Resolve review authority and Subject without creating Campaign state or executing external
+/// work. CAS writes live only in the caller's temporary directory.
+pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_json::Value, String> {
+    if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
+        return Err(
+            "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
+                .into(),
+        );
+    }
+    let policy_ref = options
+        .policy_rev
+        .as_deref()
+        .or(options.authority.as_deref())
+        .ok_or("review plan requires `--policy-rev REV`")?;
+    let capture = Capture::new(repo, cas);
+    let policy = capture
+        .committed(policy_ref)
+        .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
+    let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
+    let pipeline_path = authority_path(&options.repo, &options.pipeline)?;
+    let layout = authority_layout(&pipeline_path)?;
+    let pipeline_bytes = authority_bytes(&policy.manifest, cas, &pipeline_path)?;
+    let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
+    let pipeline_text = std::str::from_utf8(&pipeline_bytes)
+        .map_err(|error| format!("authority pipeline `{pipeline_path}` is not UTF-8: {error}"))?;
+    let lock_text = std::str::from_utf8(&lock_bytes)
+        .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
+    let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
+    if layout.root == ".af" {
+        validate_af_pipeline_pin(&lockfile, &pipeline_path, &pipeline_bytes)?;
+        let project_bytes = authority_bytes(&policy.manifest, cas, ".af/af.toml")?;
+        validate_af_project(&project_bytes, &pipeline_path)?;
+    }
+    let registry = Registry::captured(captured_registry(&policy.manifest, cas, &layout.registry)?);
+    let definition = Definition::from_toml(pipeline_text).map_err(|error| error.to_string())?;
+    let topology = serde_json::json!({
+        "nodes": &definition.nodes,
+        "edges": &definition.edges,
+    });
+    let loaded = definition
+        .load_with(&lockfile, &registry)
+        .map_err(|error| error.to_string())?;
+    require_demand_set_output(&loaded, &pipeline_path)?;
+
+    let (base_ref, base, base_snapshot_id) = if loaded.subject_kind() == SubjectKind::Diff {
+        let base_ref = options
+            .base
+            .as_deref()
+            .or(options.authority.as_deref())
+            .ok_or("diff review plan requires `--base REV`")?;
+        let base = if base_ref == policy_ref {
+            policy.clone()
+        } else {
+            capture
+                .committed(base_ref)
+                .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?
+        };
+        if base.repository_id != policy.repository_id {
+            return Err("Campaign Base belongs to a different repository than policy".into());
+        }
+        let (base_snapshot_id, _) = publish_snapshot(&base, cas)?;
+        (
+            Some(base_ref.to_string()),
+            Some(base),
+            Some(base_snapshot_id),
+        )
+    } else {
+        if options.base.is_some() {
+            return Err("whole-tree review plan does not accept `--base`".into());
+        }
+        (None, None, None)
+    };
+
+    let candidate_selector = if options.uncommitted {
+        "worktree".to_string()
+    } else {
+        options.candidate.as_deref().unwrap_or("HEAD").to_string()
+    };
+    let mut candidate = if options.uncommitted {
+        capture
+            .dirty()
+            .map_err(|error| format!("capturing revalidated worktree: {error}"))?
+    } else {
+        capture
+            .committed(&candidate_selector)
+            .map_err(|error| format!("capturing candidate `{candidate_selector}`: {error}"))?
+    };
+    if candidate.repository_id != policy.repository_id {
+        return Err("candidate belongs to a different repository than policy".into());
+    }
+    let mut change_set = None;
+    if let Some(base) = &base {
+        if candidate.submodules != base.submodules {
+            return Err(
+                "diff plan refuses changed gitlinks until submodule sandbox policy is explicit"
+                    .into(),
+            );
+        }
+        let base_tree = base.tree_id.as_ref().ok_or("Base has no tree authority")?;
+        let diff = if candidate.dirty {
+            let (head_tree, diff) = repo
+                .tree_diff_synthetic_head(base_tree, &candidate.manifest, cas)
+                .map_err(|error| error.to_string())?;
+            candidate.tree_id = Some(head_tree);
+            diff
+        } else {
+            repo.tree_diff(
+                base_tree,
+                candidate
+                    .tree_id
+                    .as_ref()
+                    .ok_or("candidate has no tree authority")?,
+            )
+            .map_err(|error| error.to_string())?
+        };
+        let (candidate_snapshot_id, _) = publish_snapshot(&candidate, cas)?;
+        change_set = Some(
+            diff.change_set(
+                base_snapshot_id
+                    .as_deref()
+                    .expect("diff plan has Base Snapshot"),
+                &candidate_snapshot_id,
+            )?,
+        );
+    }
+    let (candidate_snapshot_id, _) = publish_snapshot(&candidate, cas)?;
+
+    let mut providers = Vec::new();
+    for (node, package) in loaded.packages() {
+        let runner = Path::new(&package.runner.program)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        providers.push(serde_json::json!({
+            "node": node,
+            "runner": runner,
+            "required": matches!(runner.as_str(), "claude" | "codex"),
+            "binding": options.provider_bindings.get(node),
+            "ready": !matches!(runner.as_str(), "claude" | "codex") || options.provider_bindings.contains_key(node),
+        }));
+    }
+    let checks = loaded
+        .checks()
+        .iter()
+        .map(|check| {
+            serde_json::json!({
+                "name": check.name,
+                "required": check.required,
+                "command": check.command,
+            })
+        })
+        .collect::<Vec<_>>();
+    let convergence = selected_convergence(options.mode, loaded.convergence());
+    Ok(serde_json::json!({
+        "schema": "af/review-plan@1",
+        "token_free": true,
+        "selectors": {
+            "compatibility_authority": options.authority,
+            "policy_rev": policy_ref,
+            "base": base_ref,
+            "candidate": candidate_selector,
+            "uncommitted": options.uncommitted,
+        },
+        "resolved": {
+            "policy_revision": policy.source_revision,
+            "policy_snapshot_id": policy_snapshot_id,
+            "base_revision": base.as_ref().and_then(|snapshot| snapshot.source_revision.clone()),
+            "base_snapshot_id": base_snapshot_id,
+            "candidate_revision": candidate.source_revision,
+            "candidate_snapshot_id": candidate_snapshot_id,
+        },
+        "subject": {
+            "kind": match loaded.subject_kind() {
+                SubjectKind::Diff => "diff",
+                SubjectKind::WholeTree => "whole-tree",
+            },
+            "empty": change_set.as_ref().is_some_and(|change_set| change_set.changed_paths.is_empty()),
+            "changed_paths": change_set.as_ref().map(|change_set| &change_set.changed_paths).cloned().unwrap_or_default(),
+            "renames": change_set.as_ref().map(|change_set| &change_set.renames).cloned().unwrap_or_default(),
+            "patch_bytes": change_set.as_ref().map(|change_set| change_set.canonical_patch().map(|patch| patch.len())).transpose()?.unwrap_or(0),
+        },
+        "pipeline": {
+            "path": pipeline_path,
+            "topology": topology,
+            "gates": checks,
+            "budgets": loaded.budgets(),
+            "convergence": {
+                "mode": options.mode.as_str(),
+                "clean_rounds": convergence.clean_rounds,
+                "max_rounds": convergence.max_rounds,
+                "gate": format!("{:?}", convergence.gate).to_lowercase(),
+            },
+        },
+        "providers": providers,
+        "external_effects": {
+            "campaign_state": false,
+            "gates": false,
+            "provider_admission": false,
+            "worker_dispatch": false,
+            "token_spend": false,
+        },
+    }))
+}
+
 pub(super) struct PreparedRun {
     pub loaded: review_config::Loaded,
     pub snapshot: Manifest,
@@ -108,10 +312,15 @@ fn open_new(
     run_id: &str,
     pipeline_path: &str,
 ) -> Result<OpenCampaign, String> {
-    let authority_ref = options.authority.as_deref().ok_or(
-        "a new Campaign requires trusted invocation policy `--authority REV`; continuation \
-         reuses the stored authority and does not resolve the ref again",
-    )?;
+    let authority_ref = options
+        .policy_rev
+        .as_deref()
+        .or(options.authority.as_deref())
+        .ok_or(
+            "a new Campaign requires trusted invocation policy `--policy-rev REV`; \
+             compatibility `--authority REV` expands to policy and Base; continuation reuses \
+             stored authority and does not resolve the ref again",
+        )?;
     let snapshot = Capture::new(repo, cas)
         .committed(authority_ref)
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
@@ -139,6 +348,54 @@ fn open_new(
         .load_with(&lockfile, &registry)
         .map_err(|error| error.to_string())?;
     require_demand_set_output(&loaded, pipeline_path)?;
+
+    let (base_snapshot_id, base_manifest_id) = if loaded.subject_kind() == SubjectKind::Diff {
+        let base_ref = options
+            .base
+            .as_deref()
+            .or(options.authority.as_deref())
+            .ok_or("a new diff Campaign requires `--base REV`")?;
+        if base_ref == authority_ref {
+            (
+                Some(authority_snapshot_id.clone()),
+                Some(authority_manifest_id.clone()),
+            )
+        } else {
+            let base = Capture::new(repo, cas)
+                .committed(base_ref)
+                .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?;
+            if base.repository_id != snapshot.repository_id {
+                return Err("Campaign Base belongs to a different repository than policy".into());
+            }
+            let (snapshot_id, manifest_id) = publish_snapshot(&base, cas)?;
+            (Some(snapshot_id), Some(manifest_id))
+        }
+    } else {
+        if options.base.is_some() {
+            return Err(
+                "whole-tree review does not accept a Base; select a whole-tree pipeline with --policy-rev only"
+                    .into(),
+            );
+        }
+        (None, None)
+    };
+    super::run_progress(
+        options,
+        format_args!(
+            "selectors policy={} base={} candidate={}",
+            authority_ref,
+            options
+                .base
+                .as_deref()
+                .or(options.authority.as_deref())
+                .unwrap_or("-"),
+            if options.uncommitted {
+                "worktree"
+            } else {
+                options.candidate.as_deref().unwrap_or("HEAD")
+            }
+        ),
+    );
 
     let pipeline_artifact_id = cas
         .put(&pipeline_bytes)
@@ -218,8 +475,7 @@ fn open_new(
     let manifest = CampaignManifestV1 {
         authority_snapshot_id: authority_snapshot_id.clone(),
         subject_kind: loaded.subject_kind(),
-        base_snapshot_id: (loaded.subject_kind() == SubjectKind::Diff)
-            .then(|| authority_snapshot_id.clone()),
+        base_snapshot_id,
         pipeline: AuthorityFileV1 {
             path: pipeline_path.to_string(),
             artifact_id: pipeline_artifact_id.clone(),
@@ -261,6 +517,8 @@ fn open_new(
         manifest.finding_genesis_id.clone(),
         manifest.demand_genesis_id.clone(),
     ];
+    refs.extend(base_manifest_id);
+    refs.extend(manifest.base_snapshot_id.clone());
     refs.extend(project_policy_ids);
     for (package_id, file_ids) in package_artifacts.values() {
         refs.push(package_id.clone());
@@ -963,14 +1221,15 @@ fn capture_round(
         Vec::new()
     };
     let capture = Capture::new(repo, cas);
+    let candidate_ref = options.candidate.as_deref().unwrap_or("HEAD");
     let mut snapshot = if options.uncommitted {
         capture
             .dirty()
             .map_err(|error| format!("capturing revalidated worktree: {error}"))?
     } else {
         capture
-            .committed("HEAD")
-            .map_err(|error| format!("capturing HEAD: {error}"))?
+            .committed(candidate_ref)
+            .map_err(|error| format!("capturing candidate `{candidate_ref}`: {error}"))?
     };
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
@@ -982,13 +1241,30 @@ fn capture_round(
             "candidate HEAD belongs to a different repository than the Campaign authority".into(),
         );
     }
-    if campaign.loaded.subject_kind() == SubjectKind::Diff
-        && snapshot.submodules != authority_snapshot.submodules
+    let base_snapshot = if campaign.loaded.subject_kind() == SubjectKind::Diff {
+        Some(
+            serde_json::from_value::<SourceSnapshot>(
+                cas.get_json(
+                    campaign
+                        .manifest
+                        .base_snapshot_id
+                        .as_deref()
+                        .ok_or("diff Campaign has no pinned Base Snapshot")?,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    if let Some(base_snapshot) = &base_snapshot
+        && snapshot.submodules != base_snapshot.submodules
     {
         let mut paths: Vec<String> = snapshot
             .submodules
             .iter()
-            .chain(&authority_snapshot.submodules)
+            .chain(&base_snapshot.submodules)
             .map(|submodule| submodule.path.clone())
             .collect();
         paths.sort();
@@ -999,7 +1275,8 @@ fn capture_round(
         ));
     }
     let tree_diff = if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        let base_manifest_id = authority_snapshot
+        let base_snapshot = base_snapshot.as_ref().expect("diff Base was loaded");
+        let base_manifest_id = base_snapshot
             .artifact_manifest
             .as_deref()
             .ok_or("Campaign Base Snapshot has no artifact manifest")?;
@@ -1009,7 +1286,7 @@ fn capture_round(
         )
         .map_err(|error| error.to_string())?;
         let base_tree = capture
-            .rehydrate_committed(&authority_snapshot, &base_manifest)
+            .rehydrate_committed(base_snapshot, &base_manifest)
             .map_err(|error| format!("rehydrating pinned Base: {error}"))?;
         if snapshot.dirty {
             let (head_tree, diff) = repo
@@ -1038,6 +1315,26 @@ fn capture_round(
         }
         None
     };
+    if tree_diff
+        .as_ref()
+        .is_some_and(|diff| diff.changes.is_empty())
+    {
+        return Err(
+            "refusing empty Diff before Gates, Provider admission, or Worker dispatch; select a different Base/candidate or a whole-tree pipeline"
+                .into(),
+        );
+    }
+    match &tree_diff {
+        Some(diff) => super::run_progress(
+            options,
+            format_args!(
+                "subject   Diff ({} changed records, {} patch bytes)",
+                diff.changes.len(),
+                diff.patch().len()
+            ),
+        ),
+        None => super::run_progress(options, format_args!("subject   WholeTree")),
+    }
     let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
     let change_set_id = match tree_diff {
         Some(diff) => {
@@ -1603,23 +1900,8 @@ pub(crate) fn review_dir(pipeline: &str) -> Result<String, String> {
 fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
-    let project: toml::Value = toml::from_str(text)
-        .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
-    if project.get("version").and_then(toml::Value::as_integer) != Some(1) {
-        return Err("authority project `.af/af.toml` must declare `version = 1`".to_string());
-    }
-    let selected = project
-        .get("defaults")
-        .and_then(|value| value.get("pipeline"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("review");
-    if selected.is_empty()
-        || !selected.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
-        })
-    {
-        return Err("authority project default pipeline must be one safe name".to_string());
-    }
+    let project = crate::project::ProjectFile::parse(text)?;
+    let selected = project.review_pipeline();
     let selected_path = format!(".af/pipelines/{selected}.toml");
     if selected_path != pipeline_path {
         return Err(format!(

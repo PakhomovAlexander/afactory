@@ -192,11 +192,17 @@ and verification prerequisites exist.
 - [x] `make check` stays green throughout; candidate `make dogfood` becomes available only after
       v2 and never replaces the deterministic gate.
 
-## Open work (resume here)
+## Post-roadmap safety hardening
 
-M0–M9 are complete and shipped in private release `v0.6.0`. Resume only with a separately scoped
-post-roadmap capability or maintenance item. Do not add static automatic Integration by bypassing
-closure: pipeline v5 refuses it until a captured Slicer/Scatter semantic-closure route exists.
+M0–M9 are complete and shipped in private release `v0.6.0`. The first post-roadmap safety slice
+implements ADR-0041 and ADR-0042: explicit review selectors and token-free planning, empty-Diff
+refusal, exact Provider admission/doctor, adapter-owned Claude isolation, strict `.af/af.toml`, and
+onboarding validation for real topology, budget arithmetic, stale pins, and runner model flags. It
+passed the full deterministic gate and one pinned light review; both review Findings have
+regressions and are fixed. Installer/self-update and provider model-alias resolution remain
+separate work.
+Do not add static automatic Integration by bypassing closure: pipeline v5 refuses it until a
+captured Slicer/Scatter semantic-closure route exists.
 
 M0 and M1 are complete. M2.1-M2.6 reached dogfood. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,

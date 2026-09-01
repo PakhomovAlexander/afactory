@@ -209,6 +209,8 @@ struct Report {
     run_tokens: Option<u64>,
     clean_rounds: u32,
     max_rounds: u32,
+    topology: Vec<String>,
+    warnings: Vec<String>,
     files: Vec<String>,
     next_steps: Vec<String>,
 }
@@ -379,9 +381,10 @@ fn print_human(report: &Report) {
     println!("repository  {}", report.repository);
     println!("profile     {}", report.profile);
     println!("pipeline    {}", report.pipeline);
-    println!("topology    gate + exact ChangeSet");
-    println!("              +--> correctness --+");
-    println!("              +--> architecture -+--> gather --> Ledger");
+    println!("topology");
+    for line in &report.topology {
+        println!("  {line}");
+    }
     println!("reviewers");
     for reviewer in &report.reviewers {
         println!(
@@ -395,7 +398,7 @@ fn print_human(report: &Report) {
     }
     match (report.attempt_tokens, report.run_tokens) {
         (Some(attempt), Some(run)) => {
-            println!("budget      {attempt} tokens/Attempt; {run} tokens/Campaign")
+            println!("budget      {attempt} tokens/Attempt; {run} tokens/Round")
         }
         _ => println!("budget      uncapped by pipeline authority"),
     }
@@ -403,6 +406,9 @@ fn print_human(report: &Report) {
         "convergence {} clean Round; {} Round maximum",
         report.clean_rounds, report.max_rounds
     );
+    for warning in &report.warnings {
+        println!("warning     {warning}");
+    }
     if !report.files.is_empty() {
         println!("files");
         for path in &report.files {
@@ -530,6 +536,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         .filter(|name| !name.is_empty())
         .unwrap_or("project");
     let definition = build_definition(&gates);
+    let warnings = validate_budget_arithmetic(&definition)?;
     let pipeline = toml::to_string_pretty(&definition).map_err(|error| error.to_string())?;
 
     let mut worker_files = BTreeMap::new();
@@ -593,6 +600,8 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         run_tokens: Some(1_000_000),
         clean_rounds: 1,
         max_rounds: 2,
+        topology: topology_lines(&definition),
+        warnings,
         files: files.keys().cloned().collect(),
         next_steps: vec![
             format!(
@@ -791,6 +800,56 @@ fn edge(from_node: &str, from_port: &str, to_node: &str, to_port: &str) -> EdgeS
     }
 }
 
+fn topology_lines(definition: &Definition) -> Vec<String> {
+    let mut lines = definition
+        .nodes
+        .iter()
+        .map(|node| format!("node {} [{:?}]", node.id, node.kind).to_lowercase())
+        .collect::<Vec<_>>();
+    lines.extend(definition.edges.iter().map(|edge| {
+        format!(
+            "{}.{} -> {}.{}",
+            edge.from.node, edge.from.port, edge.to.node, edge.to.port
+        )
+    }));
+    lines
+}
+
+fn validate_budget_arithmetic(definition: &Definition) -> Result<Vec<String>, String> {
+    let Some(budget) = definition.budgets else {
+        return Ok(Vec::new());
+    };
+    let static_workers = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+        .count();
+    let model_workers = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer && node.package.is_some())
+        .count();
+    let required =
+        crate::project::static_run_requirement(budget.attempt, static_workers, model_workers)?;
+    if required > budget.run {
+        return Err(format!(
+            "run budget {} cannot admit one {}-token Attempt for each of {static_workers} static Workers (requires {required})",
+            budget.run, budget.attempt
+        ));
+    }
+    let with_one_retry = required
+        .checked_add(budget.attempt)
+        .ok_or("static Worker retry budget arithmetic overflow")?;
+    if with_one_retry > budget.run {
+        Ok(vec![format!(
+            "run budget {} admits the initial {static_workers} Workers but has no headroom for one {}-token retry",
+            budget.run, budget.attempt
+        )])
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 fn worker_manifest(name: &str, runner: RunnerKind) -> String {
     #[derive(Serialize)]
     struct Manifest<'a> {
@@ -877,7 +936,7 @@ fn project_file(project_name: &str) -> String {
         version: 1,
         project: Project {
             name: project_name,
-            min_af: "0.3",
+            min_af: "0.6",
         },
         defaults: Defaults {
             pipeline: PIPELINE_NAME,
@@ -931,7 +990,7 @@ exact Base..head Change Set + prior Findings       required acceptance Gate
 The reviewers receive the exact Diff Subject, bounded kernel artifacts, and their own package.
 They do not receive one another's transcript. Results meet at the deterministic gather barrier.
 The Campaign stops after one clean Round or two Rounds total, with caps of 300,000 tokens per
-Attempt and 1,000,000 tokens per Campaign.
+Attempt and 1,000,000 tokens per Round.
 
 Plain `af review run` is light regardless of that maximum: it permits one closed Round, then tells
 the agent to fix Findings and run the deterministic project gate without another Campaign. Only a
@@ -960,14 +1019,21 @@ Required Gate commands (declared as literal trusted argv; onboarding does not ex
 ## Agent workflow for an existing pull request
 
 1. Run `af onboard` at the trusted base checkout. It validates the graph and every exact digest.
-2. Run `af provider status`; fix machine-local Provider authentication without writing a token
-   into this repository.
+2. Run `af provider status`; choose the machine-local Provider ID for each Worker without writing
+   a token into this repository.
 3. Fetch the pull request with the normal repository tooling, create a disposable worktree at its
    head, and identify the trusted base revision.
 4. From that worktree run:
 
    ```sh
-   af review run --campaign pr-<number> --authority <trusted-base-revision> --uncommitted --json
+   af review plan --policy-rev <trusted-policy-revision> --base <trusted-base-revision> --uncommitted \
+     --provider correctness=<provider-id> --provider architecture=<provider-id>
+   af provider doctor --campaign pr-<number> --policy-rev <trusted-policy-revision> \
+     --base <trusted-base-revision> --uncommitted \
+     --provider correctness=<provider-id> --provider architecture=<provider-id>
+   af review run --campaign pr-<number> --policy-rev <trusted-policy-revision> \
+     --base <trusted-base-revision> --uncommitted \
+     --provider correctness=<provider-id> --provider architecture=<provider-id> --json
    af review ledger --campaign pr-<number> --long
    af review report --campaign pr-<number> --format md
    ```
@@ -979,9 +1045,11 @@ The command above is light by default. After a finding-bearing result, fix the F
 project's deterministic Gate command, and stop. Do not open a follow-up review Campaign. Add
 `--heavy` only when a human explicitly requests convergence review.
 
-`--authority` must name a trusted committed revision containing this `.af/` directory. The review
-command captures authority immutably; uncommitted pull-request content cannot alter its Gate,
-Worker prompts, models, topology, budgets, or pins.
+`--policy-rev` must name a trusted committed revision containing this `.af/` directory; `--base`
+independently names the revision against which the candidate is compared. The review command
+captures both immutably; uncommitted pull-request content cannot alter its Gate, Worker prompts,
+models, topology, budgets, or pins. Compatibility `--authority REV` expands visibly to both
+selectors, but explicit selectors are preferred.
 
 ## Changing authority
 
@@ -1021,8 +1089,9 @@ fn validate_bundle(bundle: &Bundle) -> Result<(), String> {
     let lock = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
     validate_pipeline_pin(&lock, PIPELINE_NAME, pipeline_text.as_bytes())?;
     let registry = Registry::captured(bundle.worker_files.clone());
-    let loaded = Definition::from_toml(pipeline_text)
-        .map_err(|error| error.to_string())?
+    let definition = Definition::from_toml(pipeline_text).map_err(|error| error.to_string())?;
+    validate_budget_arithmetic(&definition)?;
+    let loaded = definition
         .load_with(&lock, &registry)
         .map_err(|error| error.to_string())?;
     if loaded.packages().len() != 2 || loaded.checks().is_empty() {
@@ -1130,24 +1199,9 @@ fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
 }
 
 fn selected_pipeline(text: &str) -> Result<String, String> {
-    let project: toml::Value = toml::from_str(text)
-        .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
-    if project.get("version").and_then(toml::Value::as_integer) != Some(1) {
-        return Err("authority project `.af/af.toml` must declare `version = 1`".into());
-    }
-    let selected = project
-        .get("defaults")
-        .and_then(|value| value.get("pipeline"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or(PIPELINE_NAME);
-    if selected.is_empty()
-        || !selected.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
-        })
-    {
-        return Err("authority project default pipeline must be one safe name".into());
-    }
-    Ok(selected.to_string())
+    Ok(crate::project::ProjectFile::parse(text)?
+        .review_pipeline()
+        .to_string())
 }
 
 fn read_authority_text(path: &Path) -> Result<String, String> {
@@ -1188,6 +1242,7 @@ fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<()
 
 fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
     let authority = parse_existing(repo)?;
+    validate_no_stale_pins(repo, &authority.lock)?;
     validate_pipeline_pin(
         &authority.lock,
         &authority.selected,
@@ -1232,6 +1287,7 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         .as_ref()
         .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
         .unwrap_or((None, None));
+    let warnings = validate_budget_arithmetic(&authority.definition)?;
     let mut files = vec![
         ".af/af.lock".to_string(),
         ".af/af.toml".to_string(),
@@ -1263,6 +1319,8 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         run_tokens,
         clean_rounds: authority.definition.convergence.clean_rounds,
         max_rounds: authority.definition.convergence.max_rounds,
+        topology: topology_lines(&authority.definition),
+        warnings,
         files,
         next_steps: vec![
             "Run `af provider status`; Provider credentials remain machine-local.".into(),
@@ -1281,7 +1339,7 @@ fn runner_model(command: &review_core::Command) -> String {
         .collect::<Vec<_>>();
     let model = values
         .windows(2)
-        .find_map(|pair| (pair[0] == "--model").then_some(pair[1]));
+        .find_map(|pair| matches!(pair[0], "--model" | "-m").then_some(pair[1]));
     let effort = values
         .windows(2)
         .find_map(|pair| (pair[0] == "--effort").then_some(pair[1]));
@@ -1311,6 +1369,15 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
     }
     let registry = Registry::new([repo.join(".af/workers")]);
     let mut refreshed = authority.lock.clone();
+    refreshed
+        .workers
+        .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
+    refreshed
+        .reviewers
+        .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
+    refreshed
+        .pipelines
+        .retain(|name, _| repo.join(format!(".af/pipelines/{name}.toml")).is_file());
     for name in referenced {
         let pin = Lockfile::pin(&name, &registry).map_err(|error| error.to_string())?;
         refreshed.workers.insert(name.clone(), pin);
@@ -1335,6 +1402,24 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         .map_err(|error| error.to_string())?;
     atomic_replace_lock(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
     inspect_existing(repo, "lock_refreshed")
+}
+
+fn validate_no_stale_pins(repo: &Path, lock: &Lockfile) -> Result<(), String> {
+    for name in lock.workers.keys().chain(lock.reviewers.keys()) {
+        if !repo.join(".af/workers").join(name).is_dir() {
+            return Err(format!(
+                "stale Worker pin `{name}` has no `.af/workers/{name}` package; run `af onboard --refresh-lock`"
+            ));
+        }
+    }
+    for name in lock.pipelines.keys() {
+        if !repo.join(format!(".af/pipelines/{name}.toml")).is_file() {
+            return Err(format!(
+                "stale pipeline pin `{name}` has no `.af/pipelines/{name}.toml`; run `af onboard --refresh-lock`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn atomic_replace_lock(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1369,4 +1454,32 @@ fn atomic_replace_lock(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("syncing authority directory: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_definition, runner_model, validate_budget_arithmetic};
+    use review_core::{Arg, Command};
+
+    #[test]
+    fn model_summary_understands_codex_short_flag() {
+        let command = Command::new(
+            "codex",
+            vec![
+                Arg::literal("-m"),
+                Arg::literal("gpt-5.6-terra"),
+                Arg::literal("-c"),
+                Arg::literal("model_reasoning_effort=\"xhigh\""),
+            ],
+        );
+        assert_eq!(runner_model(&command), "gpt-5.6-terra (xhigh effort)");
+    }
+
+    #[test]
+    fn budget_must_admit_every_static_worker_once() {
+        let mut definition = build_definition(&[]);
+        definition.budgets.as_mut().unwrap().run = 600_000;
+        let error = validate_budget_arithmetic(&definition).unwrap_err();
+        assert!(error.contains("requires 600002"), "{error}");
+    }
 }

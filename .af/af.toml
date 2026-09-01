@@ -8,10 +8,6 @@ min_af = "0.2"
 pipeline = "review"
 task_pipeline = "implement"
 
-[env.default]
-isolation = "host"
-network = "ambient"
-
 [worker.correctness]
 package = "correctness"
 
