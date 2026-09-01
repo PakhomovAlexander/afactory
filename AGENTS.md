@@ -11,13 +11,14 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1–M6 are complete and retain their merged or dogfood evidence. M7–M9 are implemented
-on `agent/m7-m9`: verified base-bound Proposals and export, bounded typed Scatter with
-whole-Subject semantic closure, and opt-in checked internal Integration. Pinned `v0.5.0` light
-dogfood found five authority/replay defects; all five have regressions and are fixed, and the full
-`make check` gate is green. Static automatic Integration is deliberately refused until a captured
-semantic-closure route exists. Product-branch publication, CI, merge, and exact-main verification
-remain. The Docker-backed M6.1 CI probe remains pending the first product-branch publication.
+verified. M3.1–M6 are complete and retain their merged or dogfood evidence. M7–M9 shipped in
+private release `v0.6.0` from exact `main` commit `fb462ba`: verified base-bound Proposals and
+export, bounded typed Scatter with whole-Subject semantic closure, and opt-in checked internal
+Integration. Pinned `v0.5.0` light dogfood found five authority/replay defects; all five have
+regressions and are fixed. Local and exact-main gates, live container probes, both release
+archives/checksums, and the extracted macOS binary passed. Static automatic Integration is
+deliberately refused until a captured semantic-closure route exists. The canonical M0–M9 roadmap
+is complete; new capability is separately scoped post-roadmap work.
 V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
