@@ -38,14 +38,19 @@ fn invoke_reviewctl(
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test");
+    let provider_registry = home.join(".config/afactory/providers.toml");
+    if provider_registry.is_file() {
+        command.env("REVIEWCTL_PROVIDERS_FILE", provider_registry);
+    }
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
-        let mut authority = vec![
-            "--authority",
-            "HEAD",
-            "--pipeline",
-            ".review/pipelines/heavy.toml",
-        ];
+        let mut authority = vec!["--pipeline", ".review/pipelines/heavy.toml"];
+        if !actual
+            .iter()
+            .any(|argument| matches!(*argument, "--authority" | "--policy-rev"))
+        {
+            authority.extend(["--authority", "HEAD"]);
+        }
         if let Some(mode) = default_mode {
             authority.push(mode);
         }
@@ -150,7 +155,7 @@ gate = "major"
     std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
     std::fs::write(
         repo.join(".af/af.toml"),
-        "version = 1\n[defaults]\npipeline = \"review\"\n",
+        "version = 1\n[project]\nname = \"fixture\"\nmin_af = \"0.6\"\n[defaults]\npipeline = \"review\"\n",
     )
     .unwrap();
     std::fs::copy(
@@ -1533,12 +1538,19 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     std::fs::write(
         &codex,
         r#"#!/bin/sh
+if [ "$1" = "login" ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
 out=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then out=$2; shift 2; else shift; fi
 done
-cat >/dev/null
-printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
+input=$(cat)
+if [ -n "$out" ]; then
+  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
+fi
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
 "#,
     )
@@ -1548,6 +1560,18 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let auth_dir = home.join("codex-auth");
+    std::fs::create_dir_all(&auth_dir).unwrap();
+    let provider_registry = home.join(".config/afactory/providers.toml");
+    std::fs::create_dir_all(provider_registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &provider_registry,
+        format!(
+            "version = 1\n[[providers]]\nid = \"test-codex\"\nkind = \"codex\"\nauth_dir = \"{}\"\n",
+            auth_dir.display()
+        ),
+    )
+    .unwrap();
     let reviewers = repo.join(".review/reviewers");
     let package = reviewers.join("tester");
     std::fs::create_dir_all(&package).unwrap();
@@ -1578,9 +1602,7 @@ args = []
         review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
     );
     std::fs::write(repo.join(".review/review.lock"), lockfile.to_toml()).unwrap();
-    std::fs::write(
-        repo.join(".review/pipelines/heavy.toml"),
-        r#"
+    let pipeline = r#"
 version = 2
 [subject]
 kind = "diff"
@@ -1623,16 +1645,171 @@ to = { node = "ledger", port = "reports" }
 clean_rounds = 1
 max_rounds = 2
 gate = "major"
-"#,
-    )
-    .unwrap();
+"#
+    .to_string();
+    std::fs::write(repo.join(".review/pipelines/heavy.toml"), pipeline).unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "declare diff subject"]);
+
+    let (code, plan_stdout, plan_stderr) = invoke_reviewctl(
+        &repo,
+        &home,
+        &[
+            "plan",
+            "--pipeline",
+            ".review/pipelines/heavy.toml",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD^",
+            "--candidate",
+            "HEAD",
+            "--provider",
+            "reviewer=test-codex",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{plan_stdout}\n{plan_stderr}");
+    let plan: serde_json::Value = serde_json::from_str(&plan_stdout).unwrap();
+    assert_eq!(plan["schema"], "af/review-plan@1");
+    assert_eq!(plan["token_free"], true);
+    assert_eq!(plan["subject"]["empty"], false);
+    assert!(
+        !plan["subject"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(plan["external_effects"]["campaign_state"], false);
+    assert_eq!(plan["providers"][0]["ready"], true);
+
+    let (code, empty_stdout, empty_stderr) = invoke_reviewctl(
+        &repo,
+        &home,
+        &[
+            "plan",
+            "--pipeline",
+            ".review/pipelines/heavy.toml",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
+            "--candidate",
+            "HEAD",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{empty_stdout}\n{empty_stderr}");
+    let empty: serde_json::Value = serde_json::from_str(&empty_stdout).unwrap();
+    assert_eq!(empty["subject"]["empty"], true);
+
+    let (code, empty_run_stdout, empty_run_stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "empty-diff",
+            "--state",
+            &state,
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
+            "--candidate",
+            "HEAD",
+            "--provider",
+            "reviewer=test-codex",
+        ],
+    );
+    assert_eq!(code, 1, "{empty_run_stdout}\n{empty_run_stderr}");
+    assert!(
+        empty_run_stderr.contains("refusing empty Diff before Gates, Provider admission"),
+        "{empty_run_stderr}"
+    );
+
+    let (code, missing_stdout, missing_stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "missing-provider",
+            "--state",
+            &state,
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD^",
+            "--candidate",
+            "HEAD",
+        ],
+    );
+    assert_eq!(code, 1, "{missing_stdout}\n{missing_stderr}");
+    assert!(
+        missing_stderr.contains("requires explicit `--provider reviewer=PROVIDER_ID`"),
+        "{missing_stderr}"
+    );
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "provider",
+            "doctor",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--pipeline",
+            ".review/pipelines/heavy.toml",
+            "--campaign",
+            "diff",
+            "--state",
+            &state,
+            "--heavy",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD^",
+            "--candidate",
+            "HEAD",
+            "--provider",
+            "reviewer=test-codex",
+            "--json",
+        ])
+        .env("HOME", &home)
+        .env("USER", "loop-test")
+        .env("REVIEWCTL_PROVIDERS_FILE", &provider_registry)
+        .output()
+        .unwrap();
+    assert!(
+        doctor.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doctor["ready"], true);
+    assert_eq!(doctor["gates_run"], false);
+    assert_eq!(doctor["workers_dispatched"], false);
 
     let (code, stdout, stderr) = reviewctl(
         &repo,
         &home,
-        &["run", "--campaign", "diff", "--state", &state],
+        &[
+            "run",
+            "--campaign",
+            "diff",
+            "--state",
+            &state,
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD^",
+            "--candidate",
+            "HEAD",
+            "--provider",
+            "reviewer=test-codex",
+        ],
     );
 
     assert_eq!(code, 0, "{stdout}\n{stderr}");
@@ -1648,7 +1825,13 @@ gate = "major"
             "diff-dirty",
             "--state",
             &state,
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
             "--uncommitted",
+            "--provider",
+            "reviewer=test-codex",
         ],
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");

@@ -68,9 +68,21 @@ publishing, delivery, and other remote side effects remain separate operations. 
 Review Campaigns are light by default:
 
 ```sh
-af review run --campaign pr-123 --authority origin/main --uncommitted --json
-af review run --campaign release-audit --heavy --authority origin/main --uncommitted --json
+af review plan --policy-rev origin/main --base origin/main --uncommitted \
+  --provider correctness=codex-work
+af provider doctor --campaign pr-123 --policy-rev origin/main --base origin/main --uncommitted \
+  --provider correctness=codex-work
+af review run --campaign pr-123 --policy-rev origin/main --base origin/main --uncommitted \
+  --provider correctness=codex-work --json
+af review run --campaign release-audit --heavy --policy-rev origin/main --base origin/main \
+  --uncommitted --provider correctness=codex-work --json
 ```
+
+`plan` resolves policy, Base, candidate, exact Change Set, topology, Gates, budgets, and required
+Provider bindings without Campaign state, external calls, or tokens. `provider doctor` runs the
+same durable, charged admission used by `review run` but no Gate or Worker; its evidence is reused
+by the exact Campaign. Every packaged Claude or Codex Worker requires a named provider from the
+machine-local registry. An empty Diff is refused before all three external boundaries.
 
 Light mode permits one closed review Round. If it finds defects, fix them and run the project's
 deterministic gate; do not start another Campaign. `--heavy` preserves the pipeline's full

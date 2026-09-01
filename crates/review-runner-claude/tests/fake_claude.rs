@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use review_config::lock::{Lockfile, Registry};
+use review_core::{Arg, Command};
 use review_runner::{ReviewerAdapter, RunnerError};
 use review_store::Cas;
 
@@ -14,6 +15,53 @@ const ANSWER: &str = r#"{"verdict":"request-changes","summary":null,"findings":[
     {"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop",
      "body":"spins forever","fix":"bound it","confidence":0.9}
 ],"benchmark_demands":[],"disputes":[]}"#;
+
+#[test]
+fn adapter_security_flags_follow_allowed_package_model_flags() {
+    let runner = Command::new(
+        "claude",
+        vec![
+            Arg::literal("--model"),
+            Arg::literal("opus"),
+            Arg::literal("--effort"),
+            Arg::literal("high"),
+        ],
+    );
+    let args = review_runner_claude::smoke_command(&runner)
+        .unwrap()
+        .resolve()
+        .unwrap();
+    assert!(args.ends_with(&[
+        "--safe-mode".into(),
+        "--restricted".into(),
+        "--permission-mode".into(),
+        "dontAsk".into(),
+        "--strict-mcp-config".into(),
+        "--tools".into(),
+        "Read,Glob,Grep".into(),
+        "--allowedTools".into(),
+        "Read,Glob,Grep".into(),
+    ]));
+}
+
+#[test]
+fn package_cannot_add_filesystem_settings_or_mcp_authority() {
+    for arguments in [
+        vec![Arg::literal("--add-dir"), Arg::literal("/")],
+        vec![
+            Arg::literal("--settings"),
+            Arg::literal("project-settings.json"),
+        ],
+        vec![
+            Arg::literal("--mcp-config"),
+            Arg::literal("project-mcp.json"),
+        ],
+    ] {
+        let error =
+            review_runner_claude::smoke_command(&Command::new("claude", arguments)).unwrap_err();
+        assert!(error.contains("packages may set only"), "{error}");
+    }
+}
 
 fn success_envelope(result: &str) -> String {
     serde_json::json!({

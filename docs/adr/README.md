@@ -90,3 +90,7 @@ options you rejected and why — that is the part future-you needs.
   node](0039-own-dynamic-shards-inside-a-typed-scatter-node.md)
 - [0040 — Promote only checked derived
   Snapshots](0040-promote-only-checked-derived-snapshots.md)
+- [0041 — Make review selectors explicit and refuse empty
+  Diffs](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)
+- [0042 — Require Provider bindings and isolate Claude
+  reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)

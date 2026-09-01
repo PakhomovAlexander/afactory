@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use review_config::lock::{Lockfile, Registry};
+use review_core::{Arg, Command};
 use review_runner::{ReviewerAdapter, RunnerError};
 use review_store::Cas;
 
@@ -13,6 +14,24 @@ const ANSWER: &str = r#"{"verdict":"request-changes","summary":null,"findings":[
     {"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop",
      "body":"spins forever","fix":"bound it","confidence":0.9}
 ],"benchmark_demands":[],"disputes":[]}"#;
+
+#[test]
+fn package_cannot_override_codex_sandbox_or_working_directory() {
+    let scratch = tempfile::tempdir().unwrap();
+    for arguments in [
+        vec![Arg::literal("-C"), Arg::literal("/")],
+        vec![Arg::literal("-s"), Arg::literal("danger-full-access")],
+        vec![
+            Arg::literal("-c"),
+            Arg::literal("sandbox_workspace_write.network_access=true"),
+        ],
+    ] {
+        let error =
+            review_runner_codex::smoke_command(&Command::new("codex", arguments), scratch.path())
+                .unwrap_err();
+        assert!(error.contains("packages may set only"), "{error}");
+    }
+}
 
 /// The success stream, verbatim from the real CLI (usage numbers included).
 const SUCCESS_EVENTS: &str = r#"{"type":"thread.started","thread_id":"t1"}

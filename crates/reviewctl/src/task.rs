@@ -2330,18 +2330,9 @@ fn manifest_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>,
 }
 
 fn validate_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
-    let project: toml::Value = toml::from_str(
-        std::str::from_utf8(bytes).map_err(|error| format!(".af/af.toml: {error}"))?,
-    )
-    .map_err(|error| format!(".af/af.toml: {error}"))?;
-    if project.get("version").and_then(toml::Value::as_integer) != Some(1) {
-        return Err(".af/af.toml must declare version = 1".into());
-    }
-    let configured = project
-        .get("defaults")
-        .and_then(|value| value.get("task_pipeline"))
-        .and_then(toml::Value::as_str)
-        .ok_or(".af/af.toml must declare defaults.task_pipeline")?;
+    let text = std::str::from_utf8(bytes).map_err(|error| format!(".af/af.toml: {error}"))?;
+    let project = crate::project::ProjectFile::parse(text)?;
+    let configured = project.task_pipeline()?;
     let requested = Path::new(pipeline_path)
         .file_stem()
         .and_then(|value| value.to_str())

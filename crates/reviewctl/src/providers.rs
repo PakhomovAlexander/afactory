@@ -39,6 +39,7 @@ const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_CONCURRENT_PROBES: usize = 4;
 const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLAUDE_STRUCTURAL_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
 const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
@@ -2354,7 +2355,11 @@ fn run_probe(
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut discarded = Vec::new();
     let mut exceeded = false;
-    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let timeout = match spec.kind {
+        ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
+        ProviderKind::Codex => PROBE_TIMEOUT,
+    };
+    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Err(error) = drain_probe_streams(
             spec.kind,
@@ -2389,7 +2394,7 @@ fn run_probe(
             stop_probe(&mut child);
             return Err(format!(
                 "provider status probe timed out after {} seconds",
-                PROBE_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(25));

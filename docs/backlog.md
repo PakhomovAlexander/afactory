@@ -843,6 +843,15 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
 
 ## Explicitly not doing
 
+### Post-roadmap safety hardening
+
+This is maintenance after M0–M9, not M10. ADR-0041 and ADR-0042 cover explicit policy/Base/
+candidate selectors, token-free planning, empty-Diff refusal, exact Provider bindings and doctor,
+adapter-owned Claude isolation, strict project-policy parsing, and deterministic onboarding
+validation. This slice passed the full deterministic gate and one pinned light review; both
+review Findings have regressions and are fixed. Distribution self-update and provider model-alias
+resolution stay in separate focused issues rather than expanding this slice.
+
 - **Static automatic Integration without semantic closure.** Pipeline v5 currently requires a
   captured Slicer/Scatter closure route before `[integration]` is admitted. Generalizing closure
   to static review graphs is post-M9 work; bypassing closure is not.

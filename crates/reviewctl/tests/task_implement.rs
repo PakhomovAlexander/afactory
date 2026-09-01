@@ -57,7 +57,7 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::write(repo.join(".gitignore"), "*.generated\n").unwrap();
     std::fs::write(
         repo.join(".af/af.toml"),
-        "version = 1\n[defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n",
+        "version = 1\n[project]\nname = \"fixture\"\nmin_af = \"0.6\"\n[defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n",
     )
     .unwrap();
     write_package(

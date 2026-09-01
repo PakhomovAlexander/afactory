@@ -40,6 +40,14 @@ fn preview_detects_gate_and_writes_nothing() {
     assert_eq!(report["status"], "preview");
     assert_eq!(report["gates"][0]["program"], "make");
     assert_eq!(report["reviewers"].as_array().unwrap().len(), 2);
+    assert!(
+        report["topology"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line == "correctness.result -> gather.correctness")
+    );
+    assert_eq!(report["warnings"].as_array().unwrap().len(), 0);
     assert!(!repo.join(".af").exists());
 }
 
@@ -110,7 +118,7 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
 }
 
 #[test]
-fn tampering_fails_closed_and_explicit_refresh_preserves_unrelated_pins() {
+fn tampering_fails_closed_and_explicit_refresh_prunes_absent_pins() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
     let create = af(&repo, &["--gate", "check=make check", "--apply"]);
@@ -138,7 +146,7 @@ fn tampering_fails_closed_and_explicit_refresh_preserves_unrelated_pins() {
 
     let validate = af(&repo, &[]);
     assert!(!validate.status.success());
-    assert!(stderr(&validate).contains("does not match `.af/af.lock`"));
+    assert!(stderr(&validate).contains("stale Worker pin `unused`"));
 
     let refresh = af(&repo, &["--refresh-lock", "--json"]);
     assert!(refresh.status.success(), "{}", stderr(&refresh));
@@ -147,7 +155,7 @@ fn tampering_fails_closed_and_explicit_refresh_preserves_unrelated_pins() {
     assert!(report["attempt_tokens"].is_null());
     assert!(report["run_tokens"].is_null());
     let refreshed = Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
-    assert_eq!(refreshed.workers.get("unused"), Some(&unrelated));
+    assert!(!refreshed.workers.contains_key("unused"));
 
     let validate = af(&repo, &[]);
     assert!(validate.status.success(), "{}", stderr(&validate));
