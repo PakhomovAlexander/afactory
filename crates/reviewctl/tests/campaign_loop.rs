@@ -38,6 +38,10 @@ fn invoke_reviewctl(
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test");
+    let provider_registry = home.join(".config/afactory/providers.toml");
+    if provider_registry.is_file() {
+        command.env("REVIEWCTL_PROVIDERS_FILE", provider_registry);
+    }
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
         let mut authority = vec!["--pipeline", ".review/pipelines/heavy.toml"];
@@ -1774,6 +1778,7 @@ gate = "major"
         ])
         .env("HOME", &home)
         .env("USER", "loop-test")
+        .env("REVIEWCTL_PROVIDERS_FILE", &provider_registry)
         .output()
         .unwrap();
     assert!(
