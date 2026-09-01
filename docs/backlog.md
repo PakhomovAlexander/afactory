@@ -1,8 +1,8 @@
 # Afactory Review Kernel - backlog
 
 Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity, and M0–M2 are complete. Minimal product v1 and v2 now precede candidate dogfood
-and M3.1; they must not rename frozen persisted Review Kernel contracts.
+release parity through `v0.6.0`, and M0–M9 are complete. Minimal product v1 and v2 preceded
+candidate dogfood and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
 milestone that made them.
@@ -641,6 +641,11 @@ pipeline requiring container isolation.
 
 ### M6.3 — Brokered external capabilities and revocation
 
+**Status: shipped in private release `v0.5.0` (2026-08-31).** Product PR #25 merged the
+default-light Campaign safeguard and PR #26 merged the release version at exact `main` commit
+`c51601a`; PR and exact-main CI, including container probes, passed. Both supported checksummed
+archives were downloaded and verified, and the packaged macOS binary reports `af 0.5.0`.
+
 A safe Attempt receives no reusable provider or service credential bytes through files,
 environment, argv, stdin, logs, or model context. Privileged operations go through a trusted
 broker using a non-readable handle bound to Campaign, node, Attempt, and lease epoch, with named
@@ -680,7 +685,7 @@ fence.
 
 ## M7 · Patch proposals
 
-**Status: implemented and locally verified (2026-09-01).** Proposal transport, seal equality,
+**Status: shipped in private release `v0.6.0` (2026-09-01).** Proposal transport, seal equality,
 durable Attempt authority, exact export, stale refusal, and adversarial regressions pass the full
 kernel gate. Existing context and output byte caps cover the optional proposal transport, so no
 budget increase was required.
@@ -733,9 +738,9 @@ raised merely to admit Proposal bytes.
 operator for application. M6.2 no longer grants a safe pipeline direct host-cache access;
 ADR-0008 supersedes that part of the earlier risk acceptance.
 
-`ContainerProvider` has never run against a live daemon, so the probes needing one stay open;
-three of `malicious-check.md`'s six remain open; and `trusted_local` does not prevent an
-absolute-path write to the checkout — recorded as open rather than claimed covered.
+`ContainerProvider` live probes passed in exact-main CI for both `v0.5.0` and `v0.6.0`. Three of
+`malicious-check.md`'s six remain open, and `trusted_local` does not prevent an absolute-path write
+to the checkout — recorded as open rather than claimed covered.
 
 Accepted while this tool reviews only first-party code. Revisit before pointing it at code the
 operator does not trust. Mirror this note into `fixtures/adversarial/malicious-check.md` so it
@@ -750,7 +755,7 @@ data. A hub that captures its own runs them with `make review-kernel-test-corpus
 
 ## M8 · Dynamic scatter, gather, and semantic closure
 
-**Status: implemented and locally verified (2026-09-01).** Pipeline v5 persists and validates an
+**Status: shipped in private release `v0.6.0` (2026-09-01).** Pipeline v5 persists and validates an
 exact Slice Set before dispatch, owns bounded shard Attempts inside typed Scatter, retains every
 outcome in a Shard Set, restores fan-out spend on replay, and requires whole-Subject closeout plus
 semantic closure before pass.
@@ -794,7 +799,7 @@ Missing or lossy routing yields incomplete/invalid, never pass.
 
 ## M9 · Internal derived Snapshots and automatic Integration
 
-**Status: implemented and locally verified (2026-09-01).** Automatic Integration is captured
+**Status: shipped in private release `v0.6.0` (2026-09-01).** Automatic Integration is captured
 policy and reviewer opt-in only. It selects exact accepted Proposals, composes disjoint sealed
 Manifests, checks the unpromoted derived Snapshot, and atomically advances only the internal
 Campaign head. Static Integration without a captured semantic-closure route is refused at

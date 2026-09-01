@@ -1,14 +1,14 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Status:** M0–M9 are implemented and locally verified. M7 adds base-bound, seal-checked Proposal
+**Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
+`fb462ba`. M7 adds base-bound, seal-checked Proposal
 transport and exact export; M8 adds typed bounded Scatter, lossless Shard Sets, whole-Subject
 closeout, and semantic closure; M9 adds opt-in deterministic Integration that checks an
 unpromoted derived Snapshot before one atomic internal-head commit. Pinned `v0.5.0` light dogfood
 Campaign `m7-m9-light-v1` found five authority/replay defects; all five have deterministic
-regressions and are fixed. The full `make check` gate passes. Static automatic Integration is
-deliberately refused until a captured semantic-closure route exists. Product-branch publication,
-CI, merge, and exact-main verification remain. The Docker-backed M6.1 probe remains unexecuted on
-this daemon-less worktree and must be green when the product branch is first published. The
+regressions and are fixed. Local and exact-main gates, live container probes, both published
+archives/checksums, and the extracted macOS binary passed. Static automatic Integration is
+deliberately refused until a captured semantic-closure route exists. The
 accepted V3.1
 local-delivery slice is complete for trusted design-partner pilots: it is proven against the real
 v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final minor Findings are
@@ -194,9 +194,9 @@ and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0–M9 are complete on local branch `agent/m7-m9`. Resume at product-branch publication, CI,
-merge, and exact-main verification. Do not add static automatic Integration by bypassing closure:
-pipeline v5 refuses it until a captured Slicer/Scatter semantic-closure route exists.
+M0–M9 are complete and shipped in private release `v0.6.0`. Resume only with a separately scoped
+post-roadmap capability or maintenance item. Do not add static automatic Integration by bypassing
+closure: pipeline v5 refuses it until a captured Slicer/Scatter semantic-closure route exists.
 
 M0 and M1 are complete. M2.1-M2.6 reached dogfood. Campaigns now publish one immutable
 Campaign Manifest before candidate capture, reconstruct package execution from captured CAS bytes,

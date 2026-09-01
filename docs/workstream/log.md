@@ -1315,6 +1315,17 @@ PR #19 merged at exact `main` commit `01147ce`; post-merge CI run `33185591446` 
 workspace Check and CLI smoke. M4 is complete and issue #15 is closed. Resume at M5 operator
 visibility.
 
+## 2026-08-31 — Private v0.5.0 M3–M6 release published
+
+[Product PR #25](https://github.com/PakhomovAlexander/afactory/pull/25) merged default-light
+Campaigns, and release PR #26 merged the workspace version at exact `main` commit `c51601a`.
+PR and exact-main CI passed, including live container probes. Lightweight tag `v0.5.0` points to
+that commit; private release workflow run `33432518747` completed its macOS, Linux, and publish
+jobs successfully. Downloaded checksums passed for macOS arm64
+`sha256:fb305ae48a30a4cfd6637a9b092af9746972f311a19971ee5b3ba4229a97f1c4` and Linux x86_64
+`sha256:af7edb12fbe4c386ae295bed1874126e3579c01f4f617b49eaa5de3fe5091902`; the extracted binary
+reports `af 0.5.0` and exposes light/heavy Campaign modes.
+
 ## 2026-09-01 — M7–M9 implemented, light-dogfooded, and locally verified
 
 Branch `agent/m7-m9` completes the dependency-ordered kernel roadmap. M7 transports at most one
@@ -1337,3 +1348,20 @@ lost on replay; and static Integration could terminate without Semantic Closure.
 has a fail-closed implementation and adversarial regression. Per the light-review contract no
 second Campaign was dispatched; the independent final `make check` passed formatting,
 warnings-denied Clippy, all workspace tests and doctests, and byte-identical fixture reproduction.
+
+## 2026-09-01 — Private v0.6.0 M7–M9 release published
+
+[Product PR #28](https://github.com/PakhomovAlexander/afactory/pull/28) merged M7–M9 at
+`8fb500a`; both PR checks and exact-main CI passed, including live container probes. Release
+[PR #29](https://github.com/PakhomovAlexander/afactory/pull/29) then bumped only workspace package
+versions and merged at exact `main` commit `fb462ba`. Local `make check`, release-PR CI, and
+exact-main CI run `33501053304` passed before the tag was created.
+
+Lightweight tag `v0.6.0` points to `fb462ba`. Private release workflow run `33501704396` built and
+published both supported archives. Downloaded checksum sidecars independently verified macOS
+arm64 archive `sha256:d4bb4b254ba86b170a7b10407bf35b76d845c3cccd590a09f4d2032cb5a00883`
+and Linux x86_64 archive
+`sha256:d7c89e88335c59616eaabd5b44126fa7c589ec8373ad2ed9db514e45a4e5b568`.
+The extracted macOS release binary reports `af 0.6.0`. The dependency-ordered M0–M9 roadmap is
+complete; static automatic Integration without captured semantic closure remains deliberately
+refused rather than silently weakened.
