@@ -680,6 +680,11 @@ fence.
 
 ## M7 · Patch proposals
 
+**Status: implemented and locally verified (2026-09-01).** Proposal transport, seal equality,
+durable Attempt authority, exact export, stale refusal, and adversarial regressions pass the full
+kernel gate. Existing context and output byte caps cover the optional proposal transport, so no
+budget increase was required.
+
 ADR-0004 is refined and superseded by
 [ADR-0010](adr/0010-proposals-are-exported-by-id-and-base-bound.md).
 **Sequenced after M3** — a proposal scoped to a Change Set is worth far more than one scoped to
@@ -697,6 +702,9 @@ An attempt may emit at most one atomic Proposal, referencing one or more Report/
 patch must equal the attempt's complete sealed diff after canonical normalization; a reviewer
 cannot emit one independently selectable patch per finding from one shared sandbox mutation set.
 A refused Proposal is absent, never stored carrying an unrelated edit.
+The declaration travels beside the flat Reviewer Result and is finalized only at the canonical
+Ledger barrier; [ADR-0038](adr/0038-transport-proposals-beside-reviewer-results.md) records the
+transport and replay boundary.
 
 SKILL.md's boundary turns out to be exactly right as written: reviewers never edit anything that
 is *integrated*.
@@ -715,8 +723,9 @@ mutates any repository" boundary and makes stale application an explicit human d
 
 ### M7.3 — Revisit `[budgets]`
 
-A model that writes code costs more than one that writes prose. Every pipeline's attempt and run
-caps need re-derivation when M7.1 lands.
+Completed with M7.1: the optional Proposal shares the already bounded reviewer output and exact
+context accounting. Existing attempt and run caps remain sufficient; no cap was weakened or
+raised merely to admit Proposal bytes.
 
 ### Risk delta — recorded, accepted
 
@@ -741,6 +750,11 @@ data. A hub that captures its own runs them with `make review-kernel-test-corpus
 
 ## M8 · Dynamic scatter, gather, and semantic closure
 
+**Status: implemented and locally verified (2026-09-01).** Pipeline v5 persists and validates an
+exact Slice Set before dispatch, owns bounded shard Attempts inside typed Scatter, retains every
+outcome in a Shard Set, restores fan-out spend on replay, and requires whole-Subject closeout plus
+semantic closure before pass.
+
 The recovered source design's Phase 4 was absent from the original M1–M6 reconstruction even
 though the current budget enum's `Scope::FanOut` variant already exists. Rename that enum to
 `BudgetScope` when wiring it; M8 restores the obligation without coupling it to M9's automatic
@@ -752,6 +766,8 @@ A static partition or Planner reviewer emits bounded Review Slices for one exact
 stable unique slice IDs, path syntax, declared overlaps, coverage policy, maximum fan-out, and
 collision-free tagged runtime node identity before admitting the complete SliceSet. No shard may
 dispatch before `SliceSetAccepted@1` is durable.
+[ADR-0039](adr/0039-own-dynamic-shards-inside-a-typed-scatter-node.md) keeps the captured outer DAG
+static: one typed Scatter owns the tagged shard sub-invocations and publishes every outcome.
 
 ### M8.2 — Scatter/gather is lossless and budgeted
 
@@ -778,11 +794,21 @@ Missing or lossy routing yields incomplete/invalid, never pass.
 
 ## M9 · Internal derived Snapshots and automatic Integration
 
+**Status: implemented and locally verified (2026-09-01).** Automatic Integration is captured
+policy and reviewer opt-in only. It selects exact accepted Proposals, composes disjoint sealed
+Manifests, checks the unpromoted derived Snapshot, and atomically advances only the internal
+Campaign head. Static Integration without a captured semantic-closure route is refused at
+configuration load; general static closure is deferred rather than allowed to fail after work.
+
 This completes the original accepted kernel boundary after M2's Subject model, M6's safe
 sandbox/cache path, M7's verified Proposals, and M8's closure proof exist. Export remains the v1
 human path; M9 is opt-in per trusted reviewer binding.
 
 ### M9.1 — Validate and compose selected Proposals
+
+[ADR-0040](adr/0040-promote-only-checked-derived-snapshots.md) fixes the Integration boundary:
+compose the sealed candidate Manifests, check an unpromoted derived Snapshot, then promote only
+internal Campaign authority at one transaction boundary.
 
 Only bindings granted `auto_apply` are eligible. Validate exact Proposal Base, claim/Evidence
 links, protected paths, and pre-apply policy. Deduplicate byte-identical Proposals and compose only
@@ -811,6 +837,10 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
 ---
 
 ## Explicitly not doing
+
+- **Static automatic Integration without semantic closure.** Pipeline v5 currently requires a
+  captured Slicer/Scatter closure route before `[integration]` is admitted. Generalizing closure
+  to static review graphs is post-M9 work; bypassing closure is not.
 
 - **Changing fingerprint normalization in legacy campaigns.** ASCII-only lowercasing remains
   bug-compatible with the shell harness on their permanent replay path. New campaigns use the

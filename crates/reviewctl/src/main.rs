@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -341,6 +342,14 @@ struct ShowOptions {
     key: String,
 }
 
+struct ExportOptions {
+    state: Option<PathBuf>,
+    campaign: String,
+    proposal_id: Option<String>,
+    finding_id: Option<String>,
+    allow_stale: bool,
+}
+
 struct ReportOptions {
     state: Option<PathBuf>,
     campaign: String,
@@ -463,6 +472,8 @@ fn usage() -> ! {
          [--campaign NAME] [--light|--heavy] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      af review show    --campaign NAME [--state DIR] KEY\n\
+        \x20      af review export  --campaign NAME [--state DIR] PROPOSAL_ID [--allow-stale]\n\
+        \x20      af review export  --campaign NAME [--state DIR] --finding FINDING_ID [--allow-stale]\n\
         \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
         \x20      af review campaigns [--state-root DIR] [--format text|json]\n\
         \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
@@ -630,6 +641,37 @@ fn parse_show(mut args: std::env::Args) -> ShowOptions {
         state,
         campaign: campaign.unwrap_or_else(|| usage()),
         key: key.unwrap_or_else(|| usage()),
+    }
+}
+
+fn parse_export(mut args: std::env::Args) -> ExportOptions {
+    let mut state = None;
+    let mut campaign = None;
+    let mut proposal_id = None;
+    let mut finding_id = None;
+    let mut allow_stale = false;
+    while let Some(flag) = args.next() {
+        let mut value = || args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--state" => state = Some(PathBuf::from(value())),
+            "--campaign" => campaign = Some(value()),
+            "--finding" => finding_id = Some(value()),
+            "--allow-stale" => allow_stale = true,
+            other if !other.starts_with("--") && proposal_id.is_none() => {
+                proposal_id = Some(other.to_string())
+            }
+            _ => usage(),
+        }
+    }
+    if proposal_id.is_some() == finding_id.is_some() {
+        usage();
+    }
+    ExportOptions {
+        state,
+        campaign: campaign.unwrap_or_else(|| usage()),
+        proposal_id,
+        finding_id,
+        allow_stale,
     }
 }
 
@@ -1081,6 +1123,7 @@ fn main() {
         }
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
+        Some("export") => export_proposal(&parse_export(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("campaigns") => print_campaigns(&parse_campaigns(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
@@ -1251,6 +1294,160 @@ fn print_indented(label: &str, value: &str) {
     }
 }
 
+struct CampaignProposal {
+    id: String,
+    proposal: review_core::PatchProposal,
+}
+
+fn campaign_proposals(
+    store: &EventStore,
+    cas: &Cas,
+    run_id: &str,
+) -> Result<Vec<CampaignProposal>, String> {
+    let mut proposals = BTreeMap::new();
+    for event in store
+        .replay(run_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|event| event.event_type == EventType::ProposalAcceptedV1)
+    {
+        let accepted: review_core::ProposalAcceptedPayloadV1 =
+            serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&accepted.proposal_artifact_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        review_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type != review_core::contract::PATCH_PROPOSAL_V1
+            || envelope.artifact_id != accepted.proposal_id
+        {
+            return Err(format!(
+                "accepted Proposal {} contradicts its artifact envelope",
+                accepted.proposal_id
+            ));
+        }
+        let proposal: review_core::PatchProposal =
+            serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+        proposal.check_shape().map_err(str::to_string)?;
+        cas.verify(&proposal.patch_artifact_id)
+            .map_err(|error| error.to_string())?;
+        let view = CampaignProposal {
+            id: accepted.proposal_id.clone(),
+            proposal,
+        };
+        if proposals.insert(accepted.proposal_id, view).is_some() {
+            return Err("Campaign records one Proposal ID more than once".into());
+        }
+    }
+    Ok(proposals.into_values().collect())
+}
+
+fn current_campaign_head(store: &EventStore, cas: &Cas, run_id: &str) -> Result<String, String> {
+    let started = store
+        .replay(run_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .rev()
+        .find(|event| event.event_type == EventType::RoundStartedV1)
+        .ok_or_else(|| "Campaign has no started Round".to_string())?;
+    let payload: review_core::RoundStartedPayloadV1 =
+        serde_json::from_value(started.payload).map_err(|error| error.to_string())?;
+    review_store::resolve_subject(cas, &payload.subject_id)
+        .map(|resolved| resolved.subject.head_snapshot_id)
+        .map_err(|error| error.to_string())
+}
+
+fn finding_claim_ids(
+    finding: &review_store::Finding,
+    cas: &Cas,
+) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+    let mut findings = BTreeSet::from([finding.key.clone()]);
+    findings.extend(finding.aliases.iter().cloned());
+    let mut reports = BTreeSet::new();
+    for report in &finding.reports {
+        if report.report_id.is_empty() {
+            continue;
+        }
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(&report.report_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        review_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type == review_core::contract::FINDING_REPORT_V1 {
+            reports.insert(envelope.artifact_id);
+        }
+    }
+    Ok((findings, reports))
+}
+
+fn proposal_links_finding(
+    proposal: &review_core::PatchProposal,
+    finding_ids: &BTreeSet<String>,
+    report_ids: &BTreeSet<String>,
+) -> bool {
+    proposal.finding_refs.iter().any(|claim| match claim.kind {
+        review_core::ClaimRefKind::Finding => finding_ids.contains(&claim.id),
+        review_core::ClaimRefKind::Report => report_ids.contains(&claim.id),
+    })
+}
+
+fn export_proposal(options: &ExportOptions) -> Result<(), String> {
+    let state = campaign_state(&options.state, &options.campaign)?;
+    let store = open_campaign_store_read_only(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let run_id = campaign_run_id(&options.campaign);
+    let proposals = campaign_proposals(&store, &cas, &run_id)?;
+    let head = current_campaign_head(&store, &cas, &run_id)?;
+    let selected = if let Some(proposal_id) = &options.proposal_id {
+        proposals
+            .iter()
+            .find(|proposal| &proposal.id == proposal_id)
+            .ok_or_else(|| format!("no Proposal with ID {proposal_id}"))?
+    } else {
+        let finding_id = options
+            .finding_id
+            .as_deref()
+            .expect("parser requires Finding");
+        let ledger = LedgerProjection::rebuild(&store, &cas, &run_id)
+            .map_err(|error| error.to_string())?
+            .into_ledger();
+        let finding = ledger
+            .finding_view(finding_id)
+            .ok_or_else(|| format!("no finding with key {finding_id}"))?;
+        let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
+        let current = proposals
+            .iter()
+            .filter(|proposal| {
+                proposal.proposal.base_snapshot_id == head
+                    && proposal_links_finding(&proposal.proposal, &finding_ids, &report_ids)
+            })
+            .collect::<Vec<_>>();
+        if current.len() != 1 {
+            return Err(format!(
+                "finding {finding_id} has {} current Proposals; export by exact Proposal ID",
+                current.len()
+            ));
+        }
+        current[0]
+    };
+    let stale = selected.proposal.base_snapshot_id != head;
+    if stale && !options.allow_stale {
+        return Err(format!(
+            "Proposal {} is stale: base {} differs from current Campaign head {}; pass --allow-stale only for deliberate three-way application",
+            selected.id, selected.proposal.base_snapshot_id, head
+        ));
+    }
+    let patch = cas
+        .get(&selected.proposal.patch_artifact_id)
+        .map_err(|error| error.to_string())?;
+    std::io::stdout()
+        .lock()
+        .write_all(&patch)
+        .map_err(|error| error.to_string())
+}
+
 fn show(options: &ShowOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
@@ -1262,6 +1459,10 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let finding = ledger
         .finding_view(&options.key)
         .ok_or_else(|| format!("no finding with key {}", options.key))?;
+    let run_id = campaign_run_id(&options.campaign);
+    let head = current_campaign_head(&store, &cas, &run_id)?;
+    let proposals = campaign_proposals(&store, &cas, &run_id)?;
+    let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
 
     println!("{} [{}]", finding.title, finding.key);
     if !finding.aliases.is_empty() {
@@ -1336,6 +1537,28 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         "current note: {}",
         finding.current_note().unwrap_or("(none)")
     );
+    println!("\nproposals:");
+    let linked = proposals
+        .iter()
+        .filter(|proposal| proposal_links_finding(&proposal.proposal, &finding_ids, &report_ids))
+        .collect::<Vec<_>>();
+    if linked.is_empty() {
+        println!("  (none)");
+    } else {
+        for proposal in linked {
+            println!(
+                "  {} base={} applicability={} paths={}",
+                proposal.id,
+                proposal.proposal.base_snapshot_id,
+                if proposal.proposal.base_snapshot_id == head {
+                    "current"
+                } else {
+                    "stale"
+                },
+                proposal.proposal.paths.join(",")
+            );
+        }
+    }
     Ok(())
 }
 

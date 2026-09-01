@@ -106,7 +106,7 @@ pub fn validate_pipeline_structure(text: &str) -> Result<(), String> {
     if !definition
         .nodes
         .iter()
-        .any(|node| node.kind == NodeKindSpec::Reviewer)
+        .any(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
     {
         return Err("pipeline defines no reviewer".to_string());
     }
@@ -481,6 +481,8 @@ fn node_kind(kind: NodeKindSpec) -> &'static str {
         NodeKindSpec::Generation => "generation",
         NodeKindSpec::Gate => "gate",
         NodeKindSpec::Reviewer => "reviewer",
+        NodeKindSpec::Slicer => "slicer",
+        NodeKindSpec::Scatter => "scatter",
         NodeKindSpec::Gather => "gather",
         NodeKindSpec::Ledger => "ledger",
     }

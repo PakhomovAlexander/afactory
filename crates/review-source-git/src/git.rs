@@ -514,6 +514,37 @@ impl Repo {
         Ok((administration, object_dir))
     }
 
+    fn prepare_synthetic_diff_repository(&self) -> Result<tempfile::TempDir, GitError> {
+        let administration = tempfile::Builder::new()
+            .prefix("review-kernel-synthetic-diff-")
+            .tempdir()
+            .map_err(GitError::Io)?;
+        let workdir = self.workdir.canonicalize().map_err(GitError::Io)?;
+        let admin_root = administration.path().canonicalize().map_err(GitError::Io)?;
+        if admin_root.starts_with(workdir) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "temporary synthetic-diff administration is inside the candidate checkout"
+                    .to_string(),
+            });
+        }
+        let git_dir = administration.path().join("repo.git");
+        fs::create_dir(&git_dir).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("objects")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs/heads")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("info")).map_err(GitError::Io)?;
+        write_new(
+            &git_dir.join("HEAD"),
+            b"ref: refs/heads/review-kernel-unused\n",
+        )?;
+        write_new(
+            &git_dir.join("config"),
+            b"[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+        )?;
+        write_new(&git_dir.join("info/attributes"), b"")?;
+        Ok(administration)
+    }
+
     fn write_synthetic_tree(
         &self,
         git_dir: &Path,
@@ -750,6 +781,58 @@ impl Repo {
         self.tree_diff_with_head(base, DiffHead::Synthetic(manifest, cas))
     }
 
+    /// Compare two immutable manifests without consulting a checkout, index, attributes, or
+    /// candidate object database. Both trees are reconstructed from verified CAS bytes inside
+    /// one kernel-owned bare repository, so this is the canonical M7 sandbox-diff path.
+    pub fn tree_diff_manifests(
+        &self,
+        base: &Manifest,
+        head: &Manifest,
+        cas: &Cas,
+    ) -> Result<TreeDiff, GitError> {
+        let administration = self.prepare_synthetic_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
+        let object_dir = git_dir.join("objects");
+        let base = self.write_synthetic_tree(&git_dir, &object_dir, None, base, cas)?;
+        let head = self.write_synthetic_tree(&git_dir, &object_dir, None, head, cas)?;
+        let rename_limit_arg = format!("-l{RENAME_LIMIT}");
+        let (output, git_version, rename_detection_truncated) = self.run_tree_diff_unchecked(
+            &git_dir,
+            &object_dir,
+            None,
+            &[
+                "diff",
+                "--patch-with-raw",
+                "-z",
+                "--no-abbrev",
+                "--full-index",
+                "--binary",
+                "--diff-algorithm=myers",
+                "--no-indent-heuristic",
+                "--find-renames=50%",
+                "--unified=3",
+                "--inter-hunk-context=0",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--line-prefix=",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-relative",
+                "--submodule=short",
+                "--ignore-submodules=none",
+                &rename_limit_arg,
+                "-O/dev/null",
+                base.as_str(),
+                head.as_str(),
+                "--",
+            ],
+        )?;
+        let mut diff = parse_tree_diff(output.stdout, git_version)?;
+        diff.rename_detection_truncated = rename_detection_truncated;
+        Ok(diff)
+    }
+
     /// Derive the tree identity of a revalidated worktree without writing into the repository.
     pub fn synthetic_tree(&self, manifest: &Manifest, cas: &Cas) -> Result<TreeId, GitError> {
         let (administration, _) = self.prepare_tree_diff_repository()?;
@@ -819,6 +902,16 @@ impl Repo {
         let id = roots.join(",");
         Ok(self.repository_id.get_or_init(|| id).clone())
     }
+}
+
+/// Canonical diff between two CAS-backed manifests. The temporary home is empty and exists only
+/// for the duration of the fixed Git invocation.
+pub fn manifest_diff(base: &Manifest, head: &Manifest, cas: &Cas) -> Result<TreeDiff, GitError> {
+    let environment = tempfile::Builder::new()
+        .prefix("review-kernel-manifest-diff-")
+        .tempdir()
+        .map_err(GitError::Io)?;
+    Repo::open(environment.path(), environment.path()).tree_diff_manifests(base, head, cas)
 }
 
 fn rename_detection_was_truncated(stderr: &[u8]) -> bool {

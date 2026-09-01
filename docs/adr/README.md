@@ -84,3 +84,9 @@ options you rejected and why — that is the part future-you needs.
   policy](0036-resolve-gate-caches-through-machine-local-bounded-policy.md)
 - [0037 — Default Campaigns to one-Round light
   review](0037-default-campaigns-to-one-round-light-review.md)
+- [0038 — Transport Proposal declarations beside Reviewer
+  Results](0038-transport-proposals-beside-reviewer-results.md)
+- [0039 — Own dynamic shards inside a typed Scatter
+  node](0039-own-dynamic-shards-inside-a-typed-scatter-node.md)
+- [0040 — Promote only checked derived
+  Snapshots](0040-promote-only-checked-derived-snapshots.md)

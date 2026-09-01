@@ -137,6 +137,7 @@ impl ReviewerAdapter for Recorder {
         *self.seen.lock().unwrap() = Some(inputs.prior_findings.clone());
         Ok(ReviewerReturn {
             output: clean_output(),
+            proposal: Ok(None),
             cost_tokens: 1,
             raw_artifact: cas.put(b"stub").unwrap(),
         })

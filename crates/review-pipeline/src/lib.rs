@@ -22,18 +22,20 @@
 //! A blocked gate makes every node after it unreachable, so a review that could not build
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
+pub mod scatter;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use review_attempt::{
-    AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
+    AttemptId, AttemptLedger, Budget, BudgetLedger, BudgetScope, Receipt, Reservation, Selection,
 };
 use review_broker::{
     AuthorityError, Broker, BrokerClient, BrokerHandle, Connector, Credential, LeaseAuthority,
     ReceiptError, ReceiptSink,
 };
-use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
+use review_check::{CheckDefinition, CheckRunner, CheckStatus, Command, GateDecision, check_event};
 use review_core::event::{
     AttemptAdmittedPayloadV1, AttemptDispatchedPayloadV1, AttemptFailedPayloadV1,
     AttemptFeedbackPayloadV1, AttemptFencedPayloadV1, AttemptInputPayloadV1,
@@ -41,27 +43,34 @@ use review_core::event::{
 };
 use review_core::{
     BrokerCredentialModeV1, BrokerLeaseV1, BrokerOperationReceiptV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
+    CampaignOpenedPayloadV1, Capture as SnapshotCapture, EventType, IntegrationCandidateV1,
+    IntegrationCheckV1, IntegrationChecksCompletedPayloadV1, IntegrationChecksV1,
+    IntegrationCommittedPayloadV1, IntegrationConflictPayloadV1, IntegrationPlanV1,
+    IntegrationPreparedPayloadV1, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
     MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
-    PortArtifactsV1, ReviewerExecutionBindingV1, ReviewerResultContract, ReviewerResultRejection,
-    RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
-    RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4,
-    RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3,
-    SnapshotAffinity, SourceSnapshot, run_report_closes_round,
+    PortArtifactsV1, Producer, ProposalAcceptedPayloadV1, ProposalCandidateV1,
+    ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
+    RecordedSetPayloadV1, ReviewerExecutionBindingV1, ReviewerResultContract,
+    ReviewerResultRejection, RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
+    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4,
+    RunSuppressionReasonV2, RunVerdictV3, ShardOutcomeV1, ShardReceiptV1, ShardSetV1,
+    SliceSetAcceptedPayloadV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectV1,
+    run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
 };
 use review_runner::{
     ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
-    ReviewerInputs, RunnerError, TokenUsage,
+    ReviewerInputs, ReviewerProposalDeclaration, RunnerError, TokenUsage,
 };
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheMaterialization, CacheSource, ContainerProvider,
     Isolation, Mode, Policy, Sandbox, admit, materialize_cache, remove_materialized_caches,
 };
-use review_source_git::Manifest;
+use review_source_git::{Manifest, manifest_diff};
 use review_store::{
     Cas, Convergence, ConvergencePolicy, EventStore, Ingest, Ledger, LedgerProjection, NewEvent,
     StoreError, Verdict,
@@ -284,6 +293,8 @@ pub struct RoundAuthority {
     epoch: u32,
     authority_snapshot_id: String,
     campaign_manifest_id: String,
+    pipeline_policy_id: String,
+    max_rounds: u32,
     subject_id: String,
     head_snapshot_id: String,
     head_content_digest: String,
@@ -432,6 +443,8 @@ impl RoundAuthority {
             epoch: payload.epoch,
             authority_snapshot_id: opened.authority_snapshot_id,
             campaign_manifest_id: payload.campaign_manifest_id,
+            pipeline_policy_id: campaign_manifest.pipeline.artifact_id,
+            max_rounds: campaign_manifest.convergence.max_rounds,
             subject_id: payload.subject_id,
             head_snapshot_id: subject.head_snapshot_id,
             head_content_digest: source.content_digest,
@@ -630,6 +643,16 @@ struct DurableReceipt {
 struct SelectedReviewer {
     attempt_id: String,
     result_artifact: String,
+    proposal_candidate: Option<String>,
+}
+
+enum PreparedProposal {
+    None,
+    Prepared {
+        candidate_artifact: String,
+        event: NewEvent,
+    },
+    Refused(NewEvent),
 }
 
 #[derive(Default)]
@@ -644,6 +667,7 @@ struct ReplayedExecution {
     outstanding_attempts: Vec<(String, String, u64)>,
     refusal_histories: BTreeMap<String, Vec<String>>,
     committed_tokens: u64,
+    fan_out_committed: BTreeMap<String, u64>,
 }
 
 fn replay_execution(
@@ -659,6 +683,7 @@ fn replay_execution(
     let mut provider_operations = BTreeMap::new();
     let mut broker_authorized_usage = BTreeMap::new();
     let mut broker_observed_usage = BTreeMap::new();
+    let mut attempt_nodes = BTreeMap::new();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut round_lineage = BTreeSet::new();
     for event in &events {
@@ -793,6 +818,7 @@ fn replay_execution(
                 let attempt = event
                     .attempt_id
                     .ok_or("AttemptDispatched@1 has no attempt ID")?;
+                attempt_nodes.insert(attempt.clone(), node.clone());
                 if reservations
                     .insert(attempt, (node, payload.reserved.unwrap_or(0), active_epoch))
                     .is_some()
@@ -868,6 +894,7 @@ fn replay_execution(
                             SelectedReviewer {
                                 attempt_id: attempt,
                                 result_artifact,
+                                proposal_candidate: None,
                             },
                         )
                         .is_some()
@@ -875,6 +902,32 @@ fn replay_execution(
                         return Err("reviewer has multiple selected attempts".into());
                     }
                 }
+            }
+            EventType::ProposalPreparedV1 if active_epoch => {
+                let payload: ProposalPreparedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                let node = event.node_id.ok_or("ProposalPrepared@1 has no node ID")?;
+                let attempt = event
+                    .attempt_id
+                    .ok_or("ProposalPrepared@1 has no Attempt ID")?;
+                let candidate: ProposalCandidateV1 = serde_json::from_value(
+                    cas.get_json(&payload.candidate_artifact_id)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                candidate.validate().map_err(str::to_string)?;
+                let selected = replayed
+                    .selected_reviewers
+                    .get_mut(&node)
+                    .ok_or("prepared Proposal has no selected reviewer Attempt")?;
+                if selected.attempt_id != attempt
+                    || selected.result_artifact != payload.result_artifact_id
+                    || candidate.result_artifact_id != payload.result_artifact_id
+                    || selected.proposal_candidate.is_some()
+                {
+                    return Err("prepared Proposal contradicts its selected Attempt".into());
+                }
+                selected.proposal_candidate = Some(payload.candidate_artifact_id);
             }
             EventType::AttemptFailedV1 => {
                 let payload: AttemptFailedPayloadV1 =
@@ -960,6 +1013,18 @@ fn replay_execution(
             .committed_tokens
             .checked_add(charged)
             .ok_or("replayed token charge overflow")?;
+        if let Some(scatter) = attempt_nodes
+            .get(&attempt)
+            .and_then(|node| node.split_once("#slice:").map(|(scatter, _)| scatter))
+        {
+            let committed = replayed
+                .fan_out_committed
+                .entry(scatter.to_string())
+                .or_default();
+            *committed = committed
+                .checked_add(charged)
+                .ok_or("replayed fan-out token charge overflow")?;
+        }
     }
     for (attempt, (node, reserved, active_epoch)) in reservations {
         // A fenced attempt charges conservatively. The dispatch reservation covers ordinary
@@ -973,6 +1038,15 @@ fn replay_execution(
             .committed_tokens
             .checked_add(charged)
             .ok_or("replayed token charge overflow")?;
+        if let Some(scatter) = node.split_once("#slice:").map(|(scatter, _)| scatter) {
+            let committed = replayed
+                .fan_out_committed
+                .entry(scatter.to_string())
+                .or_default();
+            *committed = committed
+                .checked_add(charged)
+                .ok_or("replayed fan-out token charge overflow")?;
+        }
         if active_epoch {
             replayed.outstanding_attempts.push((node, attempt, charged));
         }
@@ -1079,6 +1153,7 @@ pub struct Kernel<'a> {
     /// Absent only for frozen v1/v2 pipeline semantics. V3 resolves this exact Gate binding from
     /// captured authority before any candidate check executes.
     gate_execution: Option<review_config::GateExecutionSpec>,
+    integration: Option<review_config::IntegrationSpec>,
     /// Optional machine-resolved provider. The CLI normally lets the kernel probe locally;
     /// embedding callers and deterministic boundary tests may bind an already-probed provider.
     container_provider: Option<ContainerProvider>,
@@ -1093,6 +1168,14 @@ pub struct Kernel<'a> {
     reviewer_execution: BTreeMap<String, review_config::ReviewerExecutionSpec>,
     broker_providers: BTreeMap<String, BrokerProvider>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
+    slicing: BTreeMap<String, scatter::StaticSlicePolicy>,
+    closeouts: BTreeMap<String, String>,
+    static_node_ids: BTreeSet<String>,
+    /// Dynamic reviewer ID -> owning static Scatter. The binding is installed only after the
+    /// complete SliceSet is durable and lets existing reviewer authority remain keyed by the
+    /// captured static graph.
+    dynamic_reviewer_bases: Mutex<BTreeMap<String, String>>,
+    fan_out_cap: Option<u64>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
     /// Retries per node, spent on timeouts or an inadmissible returned result. A retry is a new
@@ -1137,6 +1220,7 @@ pub struct Kernel<'a> {
     /// canonical reducers consult only this map plus the validated graph when binding artifacts.
     node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
     replayed_spent: u64,
+    replayed_fan_out_spent: BTreeMap<String, u64>,
 }
 
 struct KernelBrokerBoundary<'kernel, 'store> {
@@ -1343,6 +1427,7 @@ impl<'a> Kernel<'a> {
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
             gate_execution: None,
+            integration: None,
             container_provider: None,
             cache_sources: BTreeMap::new(),
             cache_source_resolver: None,
@@ -1353,6 +1438,11 @@ impl<'a> Kernel<'a> {
             reviewer_execution: BTreeMap::new(),
             broker_providers: BTreeMap::new(),
             demand_requirements: BTreeMap::new(),
+            slicing: BTreeMap::new(),
+            closeouts: BTreeMap::new(),
+            static_node_ids: BTreeSet::new(),
+            dynamic_reviewer_bases: Mutex::new(BTreeMap::new()),
+            fan_out_cap: None,
             attempts: Mutex::new(attempts),
             budgets: None,
             timeout_retries: 1,
@@ -1373,6 +1463,7 @@ impl<'a> Kernel<'a> {
             input_bindings: BTreeMap::new(),
             node_outputs: Mutex::new(BTreeMap::new()),
             replayed_spent: replayed.committed_tokens,
+            replayed_fan_out_spent: replayed.fan_out_committed,
         })
     }
 
@@ -1420,7 +1511,30 @@ impl<'a> Kernel<'a> {
         kernel.input_bindings = loaded.input_bindings();
         kernel.demand_requirements = loaded.demand_requirements().clone();
         kernel.gate_execution = loaded.gate_execution().cloned();
+        kernel.integration = loaded.integration().cloned();
         kernel.reviewer_execution = loaded.reviewer_execution().clone();
+        kernel.slicing = loaded
+            .slicing()
+            .iter()
+            .map(|(node, policy)| {
+                Ok((
+                    node.clone(),
+                    scatter::StaticSlicePolicy {
+                        scatter_node: policy.scatter.clone(),
+                        max_paths_per_slice: policy.max_paths_per_slice,
+                        max_fanout: policy.max_fanout,
+                        coverage: policy.coverage,
+                        all_shards_required: policy.all_shards_required,
+                        closeout: policy
+                            .closeout_policy()
+                            .map_err(|error| error.to_string())?,
+                    },
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        kernel.closeouts = loaded.closeouts().clone();
+        kernel.static_node_ids = loaded.plan_order().iter().cloned().collect();
+        kernel.fan_out_cap = loaded.budgets().and_then(|budgets| budgets.fan_out);
         Ok(kernel)
     }
 
@@ -1483,15 +1597,35 @@ impl<'a> Kernel<'a> {
     /// Cap the run. Reservation before every dispatch; a dispatch that cannot reserve does not
     /// happen, and the refusal names the scope that said no.
     pub fn with_budgets(mut self, attempt_cap: u64, run_cap: u64) -> Self {
+        let mut ledger = BudgetLedger::default()
+            .with_limit(BudgetScope::Run, Budget::of(run_cap))
+            .with_committed(BudgetScope::Run, self.replayed_spent);
+        let fan_out_cap = self.fan_out_cap.unwrap_or(run_cap);
+        for policy in self.slicing.values() {
+            let scope = BudgetScope::FanOut(policy.scatter_node.clone());
+            ledger = ledger.with_limit(scope.clone(), Budget::of(fan_out_cap));
+            ledger = ledger.with_committed(
+                scope,
+                self.replayed_fan_out_spent
+                    .get(&policy.scatter_node)
+                    .copied()
+                    .unwrap_or(0),
+            );
+        }
         self.budgets = Some(Budgets {
             attempt_cap,
-            ledger: Mutex::new(
-                BudgetLedger::default()
-                    .with_limit(Scope::Run, Budget::of(run_cap))
-                    .with_committed(Scope::Run, self.replayed_spent),
-            ),
+            ledger: Mutex::new(ledger),
         });
         self
+    }
+
+    fn reviewer_binding_node(&self, node_id: &str) -> String {
+        self.dynamic_reviewer_bases
+            .lock()
+            .expect("dynamic reviewer bases")
+            .get(node_id)
+            .cloned()
+            .unwrap_or_else(|| node_id.to_string())
     }
 
     /// Seed the generation-local projection with the Ledger rebuilt while its Round input was
@@ -1518,7 +1652,18 @@ impl<'a> Kernel<'a> {
             b.ledger
                 .lock()
                 .expect("budget ledger")
-                .committed(&Scope::Run)
+                .committed(&BudgetScope::Run)
+        })
+    }
+
+    /// Charge accumulated by the dynamic reviewers owned by one captured Scatter.
+    pub fn fan_out_spent(&self, scatter: &str) -> Option<u64> {
+        self.budgets.as_ref().map(|budgets| {
+            budgets
+                .ledger
+                .lock()
+                .expect("budget ledger")
+                .committed(&BudgetScope::FanOut(scatter.to_string()))
         })
     }
 
@@ -1684,6 +1829,53 @@ impl<'a> Kernel<'a> {
         Ok(())
     }
 
+    /// M9 transitions intentionally occur after the Round has closed, so they cannot carry the
+    /// Round causation installed by `append`. Keep that exception closed over the exact event
+    /// vocabulary instead of exposing a general authority-bypass primitive.
+    fn append_integration_transition(&self, event: NewEvent) -> Result<(), String> {
+        if !matches!(
+            event.event_type,
+            EventType::IntegrationPreparedV1
+                | EventType::IntegrationConflictV1
+                | EventType::IntegrationChecksCompletedV1
+        ) || event.causation_id.is_some()
+        {
+            return Err("invalid non-transactional Integration transition".into());
+        }
+        let appended = self
+            .store
+            .lock()
+            .expect("event store")
+            .append(&self.run_id, self.cas, event)
+            .map_err(|error| error.to_string())?;
+        self.fold_appended_into_ledger_cache(std::slice::from_ref(&appended));
+        Ok(())
+    }
+
+    /// The sole M9 visibility boundary: zero or more Change Attestations immediately followed
+    /// by one Integration commit. `EventStore::append_batch` supplies the SQLite transaction.
+    fn commit_integration(&self, events: &[NewEvent]) -> Result<(), String> {
+        let Some(last) = events.last() else {
+            return Err("empty Integration commit batch".into());
+        };
+        if last.event_type != EventType::IntegrationCommittedV1
+            || last.causation_id.is_some()
+            || events[..events.len() - 1].iter().any(|event| {
+                event.event_type != EventType::ChangeAttestedV1 || event.causation_id.is_some()
+            })
+        {
+            return Err("Integration commit batch contains an unauthorized transition".into());
+        }
+        let appended = self
+            .store
+            .lock()
+            .expect("event store")
+            .append_batch(&self.run_id, self.cas, events)
+            .map_err(|error| error.to_string())?;
+        self.fold_appended_into_ledger_cache(&appended);
+        Ok(())
+    }
+
     fn fold_appended_into_ledger_cache(&self, events: &[review_core::RunEvent]) {
         let mut cached = self.ledger_cache.lock().expect("ledger cache");
         let Some(projection) = cached.as_mut() else {
@@ -1720,12 +1912,19 @@ impl<'a> Kernel<'a> {
             .transpose()?;
         let reservation = match &self.budgets {
             Some(budgets) => {
-                let result = budgets.ledger.lock().expect("budget ledger").reserve(
-                    &[Scope::Node(node_id.to_string()), Scope::Run],
-                    budgets.attempt_cap,
-                );
+                let base = self.reviewer_binding_node(node_id);
+                let mut scopes = vec![BudgetScope::Node(node_id.to_string())];
+                if base != node_id {
+                    scopes.push(BudgetScope::FanOut(base));
+                }
+                scopes.push(BudgetScope::Run);
+                let result = budgets
+                    .ledger
+                    .lock()
+                    .expect("budget ledger")
+                    .reserve(&scopes, budgets.attempt_cap);
                 Some(result.map_err(|error| {
-                    if error.scope == Scope::Run {
+                    if error.scope == BudgetScope::Run {
                         self.failure_classes
                             .lock()
                             .expect("failure classes")
@@ -2048,7 +2247,581 @@ impl<'a> Kernel<'a> {
             ))?;
         }
         *published = true;
+        if verdict == RunVerdict::Pass
+            && self.integration.is_some()
+            && self.authority.round < self.authority.max_rounds
+        {
+            self.integrate_selected_proposals()?;
+        }
         Ok(verdict)
+    }
+
+    /// Compose every eligible, disjoint Proposal into one checked internal Snapshot. This is
+    /// deliberately callable for deterministic boundary tests; normal execution reaches it only
+    /// after a passing terminal RunReport.
+    pub fn integrate_selected_proposals(&self) -> Result<Option<String>, String> {
+        let Some(policy) = self.integration.as_ref() else {
+            return Ok(None);
+        };
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let terminal = events.iter().rev().find(|event| {
+            event.event_type.is_run_report()
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        });
+        if terminal.and_then(|event| event.payload.pointer("/verdict/kind"))
+            != Some(&serde_json::Value::String("pass".into()))
+        {
+            return Err(
+                "automatic Integration requires the current Round's passing conclusion".into(),
+            );
+        }
+        if events.iter().any(|event| {
+            event.event_type == EventType::IntegrationCommittedV1
+                && event
+                    .payload
+                    .get("prior_subject_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(self.authority.subject_id.as_str())
+        }) {
+            return Ok(None);
+        }
+
+        let ledger = self.ledger();
+        let mut report_to_finding = BTreeMap::new();
+        for finding in ledger.finding_views() {
+            for report in &finding.reports {
+                report_to_finding.insert(report.report_id.clone(), finding.key.clone());
+                if let Some(artifact_id) = &report.artifact_id {
+                    report_to_finding.insert(artifact_id.clone(), finding.key.clone());
+                }
+            }
+        }
+        let priorities: BTreeMap<&str, u32> = policy
+            .reviewer_priority
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.as_str(), index as u32))
+            .collect();
+        let default_priority = u32::try_from(priorities.len()).unwrap_or(u32::MAX);
+        let mut selected = Vec::new();
+        let mut seen_patches = BTreeSet::new();
+        for event in events.iter().filter(|event| {
+            event.event_type == EventType::ProposalAcceptedV1
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        }) {
+            let accepted: ProposalAcceptedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            let node = event
+                .node_id
+                .as_deref()
+                .ok_or("accepted Proposal has no producing node")?;
+            let binding_node = self.reviewer_binding_node(node);
+            if !self
+                .reviewer_execution
+                .get(&binding_node)
+                .is_some_and(|binding| binding.auto_apply)
+            {
+                continue;
+            }
+            let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+                self.cas
+                    .get_json(&accepted.proposal_artifact_id)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            review_store::validate_envelope(&envelope)?;
+            let proposal: review_core::PatchProposal =
+                serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
+            proposal.check_shape().map_err(str::to_string)?;
+            if !proposal.auto_apply_nominated
+                || proposal.base_snapshot_id != self.authority.head_snapshot_id
+                || !seen_patches.insert(proposal.patch_artifact_id.clone())
+            {
+                continue;
+            }
+            if proposal.paths.iter().any(|path| {
+                policy.protected_paths.iter().any(|protected| {
+                    path == protected
+                        || path
+                            .strip_prefix(protected)
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+                })
+            }) {
+                self.record_integration_conflict(
+                    &[accepted.proposal_id],
+                    &proposal.paths,
+                    "Proposal changes a protected path",
+                )?;
+                return Ok(None);
+            }
+            let candidate: ProposalCandidateV1 = serde_json::from_value(
+                self.cas
+                    .get_json(&accepted.candidate_artifact_id)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            candidate.validate().map_err(str::to_string)?;
+            if candidate.base_snapshot_id != proposal.base_snapshot_id
+                || candidate.patch_artifact_id != proposal.patch_artifact_id
+                || candidate.paths != proposal.paths
+            {
+                return Err("accepted Proposal contradicts its sealed candidate".into());
+            }
+            let mut finding_ids = BTreeSet::new();
+            for claim in &proposal.finding_refs {
+                let finding = match claim.kind {
+                    review_core::ClaimRefKind::Finding => {
+                        ledger.finding_view(&claim.id).map(|finding| finding.key)
+                    }
+                    review_core::ClaimRefKind::Report => report_to_finding.get(&claim.id).cloned(),
+                };
+                let Some(finding) = finding else {
+                    self.record_integration_conflict(
+                        std::slice::from_ref(&accepted.proposal_id),
+                        &proposal.paths,
+                        "Proposal claim no longer resolves in the exact Finding view",
+                    )?;
+                    return Ok(None);
+                };
+                finding_ids.insert(finding);
+            }
+            for evidence in &proposal.evidence_ids {
+                self.cas.verify(evidence).map_err(|error| {
+                    format!("Proposal evidence `{evidence}` is not durable: {error}")
+                })?;
+            }
+            selected.push((
+                IntegrationCandidateV1 {
+                    proposal_id: accepted.proposal_id,
+                    candidate_artifact_id: accepted.candidate_artifact_id,
+                    node_id: node.to_string(),
+                    priority: priorities
+                        .get(binding_node.as_str())
+                        .copied()
+                        .unwrap_or(default_priority),
+                    patch_artifact_id: proposal.patch_artifact_id,
+                    derived_manifest_artifact_id: candidate.derived_manifest_artifact_id,
+                    paths: proposal.paths,
+                    finding_ids: finding_ids.into_iter().collect(),
+                    evidence_ids: proposal.evidence_ids,
+                },
+                accepted.proposal_artifact_id,
+            ));
+        }
+        if selected.is_empty() {
+            return Ok(None);
+        }
+        selected.sort_by(|left, right| {
+            (&left.0.priority, &left.0.node_id, &left.0.proposal_id).cmp(&(
+                &right.0.priority,
+                &right.0.node_id,
+                &right.0.proposal_id,
+            ))
+        });
+        for left in 0..selected.len() {
+            for right in left + 1..selected.len() {
+                let overlap: Vec<String> = selected[left]
+                    .0
+                    .paths
+                    .iter()
+                    .filter(|a| selected[right].0.paths.iter().any(|b| paths_overlap(a, b)))
+                    .cloned()
+                    .collect();
+                if !overlap.is_empty() {
+                    self.record_integration_conflict(
+                        &[
+                            selected[left].0.proposal_id.clone(),
+                            selected[right].0.proposal_id.clone(),
+                        ],
+                        &overlap,
+                        "selected Proposals overlap; semantic merging is forbidden",
+                    )?;
+                    return Ok(None);
+                }
+            }
+        }
+
+        let mut entries: BTreeMap<String, review_source_git::Entry> = self
+            .snapshot
+            .entries
+            .iter()
+            .cloned()
+            .map(|entry| (entry.path.clone(), entry))
+            .collect();
+        for (candidate, _) in &selected {
+            let derived: Manifest = serde_json::from_value(
+                self.cas
+                    .get_json(&candidate.derived_manifest_artifact_id)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            derived.validate().map_err(|error| error.to_string())?;
+            for path in &candidate.paths {
+                match derived.get(path).cloned() {
+                    Some(entry) => {
+                        entries.insert(path.clone(), entry);
+                    }
+                    None => {
+                        entries.remove(path);
+                    }
+                }
+            }
+        }
+        let derived_manifest = Manifest::new_with_encoding(
+            entries.into_values().collect(),
+            self.snapshot.path_encoding,
+        )
+        .map_err(|error| error.to_string())?;
+        let derived_manifest_artifact_id = self
+            .cas
+            .put_json(&serde_json::to_value(&derived_manifest).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let plan = IntegrationPlanV1 {
+            subject_id: self.authority.subject_id.clone(),
+            base_snapshot_id: self.authority.head_snapshot_id.clone(),
+            policy_id: self.authority.pipeline_policy_id.clone(),
+            protected_paths: policy.protected_paths.clone(),
+            candidates: selected.iter().map(|selected| selected.0.clone()).collect(),
+            derived_manifest_artifact_id: derived_manifest_artifact_id.clone(),
+        };
+        plan.validate()?;
+        let plan_artifact_id = self
+            .cas
+            .put_json(&serde_json::to_value(&plan).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let batch_id = format!("integration-{}", &plan_artifact_id[7..23]);
+        let prior_snapshot: SourceSnapshot = serde_json::from_value(
+            self.cas
+                .get_json(&self.authority.head_snapshot_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let derived_snapshot = SourceSnapshot {
+            repository_id: prior_snapshot.repository_id,
+            vcs: prior_snapshot.vcs,
+            capture: SnapshotCapture::Derived {
+                tree_id: derived_manifest.content_digest(),
+                parent_snapshot_id: self.authority.head_snapshot_id.clone(),
+                integration_batch_id: batch_id.clone(),
+            },
+            content_digest: derived_manifest.content_digest(),
+            parent_snapshot_id: Some(self.authority.head_snapshot_id.clone()),
+            source_revision: prior_snapshot.source_revision,
+            artifact_manifest: Some(derived_manifest_artifact_id.clone()),
+            submodules: prior_snapshot.submodules,
+        };
+        let derived_snapshot_id = self
+            .cas
+            .put_json(&serde_json::to_value(&derived_snapshot).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        self.append_integration_transition(
+            NewEvent::new(
+                EventType::IntegrationPreparedV1,
+                serde_json::to_value(IntegrationPreparedPayloadV1 {
+                    batch_id: batch_id.clone(),
+                    plan_artifact_id: plan_artifact_id.clone(),
+                    derived_snapshot_id: derived_snapshot_id.clone(),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .correlating(self.authority.subject_id.clone())
+            .referencing(vec![
+                plan_artifact_id.clone(),
+                derived_snapshot_id.clone(),
+                derived_manifest_artifact_id,
+            ]),
+        )?;
+
+        let checks =
+            self.run_integration_checks(policy, &derived_manifest, &derived_snapshot_id)?;
+        let passed = checks.passed();
+        let result_ids: Vec<String> = checks
+            .checks
+            .iter()
+            .map(|check| check.result_artifact_id.clone())
+            .collect();
+        let checks_artifact_id = self
+            .cas
+            .put_json(&serde_json::to_value(&checks).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let mut check_refs = vec![checks_artifact_id.clone(), derived_snapshot_id.clone()];
+        check_refs.extend(result_ids);
+        self.append_integration_transition(
+            NewEvent::new(
+                EventType::IntegrationChecksCompletedV1,
+                serde_json::to_value(IntegrationChecksCompletedPayloadV1 {
+                    batch_id: batch_id.clone(),
+                    checks_artifact_id: checks_artifact_id.clone(),
+                    passed,
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .correlating(derived_snapshot_id.clone())
+            .referencing(check_refs),
+        )?;
+        if !passed {
+            return Ok(None);
+        }
+
+        let (finding_set_id, demand_set_id, semantic_closure_id) =
+            current_integration_authority(&events, &self.authority.round_event_id)?;
+        let current_subject: SubjectV1 = serde_json::from_value(
+            self.cas
+                .get_json(&self.authority.subject_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let derived_subject = match self.authority.subject_kind {
+            review_core::SubjectKind::WholeTree => SubjectV1::whole_tree(&derived_snapshot_id),
+            review_core::SubjectKind::Diff => {
+                let base_snapshot_id = current_subject
+                    .base_snapshot_id
+                    .as_deref()
+                    .ok_or("diff Integration has no Campaign Base")?;
+                let base_snapshot: SourceSnapshot = serde_json::from_value(
+                    self.cas
+                        .get_json(base_snapshot_id)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let base_manifest: Manifest = serde_json::from_value(
+                    self.cas
+                        .get_json(
+                            base_snapshot
+                                .artifact_manifest
+                                .as_deref()
+                                .ok_or("Campaign Base has no Manifest")?,
+                        )
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let change_set = manifest_diff(&base_manifest, &derived_manifest, self.cas)
+                    .map_err(|error| error.to_string())?
+                    .change_set(base_snapshot_id, &derived_snapshot_id)?;
+                let change_set_id = self
+                    .cas
+                    .put_json(&serde_json::to_value(change_set).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+                SubjectV1::diff(&derived_snapshot_id, base_snapshot_id, change_set_id)
+            }
+        };
+        derived_subject.validate()?;
+        let derived_subject_id = self
+            .cas
+            .put_json(&serde_json::to_value(&derived_subject).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+
+        let mut by_finding: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> =
+            BTreeMap::new();
+        for (candidate, _) in &selected {
+            for finding in &candidate.finding_ids {
+                let grouped = by_finding.entry(finding.clone()).or_default();
+                grouped.0.extend(candidate.paths.iter().cloned());
+                grouped.1.extend(candidate.evidence_ids.iter().cloned());
+            }
+        }
+        let mut commit_events = Vec::new();
+        let mut attestation_ids = Vec::new();
+        for (finding_id, (paths, evidence_ids)) in by_finding {
+            let attestation = review_core::ChangeAttestationV1 {
+                finding_id: finding_id.clone(),
+                expected_finding_view_id: ledger
+                    .finding_view_id(&finding_id)
+                    .ok_or("Integration Finding view disappeared before commit")?,
+                subject_id: self.authority.subject_id.clone(),
+                change_set_id: self.authority.change_set_id.clone(),
+                changed_regions: paths
+                    .into_iter()
+                    .map(|path| review_core::ChangedRegionV1 {
+                        path,
+                        start_line: None,
+                        end_line: None,
+                    })
+                    .collect(),
+                actor: "review.kernel/automatic-integration@1".into(),
+                reason: format!("checked Integration batch {batch_id}"),
+                evidence_ids: evidence_ids.into_iter().collect(),
+            };
+            attestation.validate()?;
+            let mut inputs = selected
+                .iter()
+                .filter(|selected| selected.0.finding_ids.contains(&finding_id))
+                .map(|selected| selected.1.clone())
+                .collect::<Vec<_>>();
+            inputs.extend(attestation.evidence_ids.iter().cloned());
+            inputs.sort();
+            inputs.dedup();
+            let (record_id, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::CHANGE_ATTESTATION_V1,
+                    Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: None,
+                        operation_id: format!("automatic-integration:{batch_id}:{finding_id}"),
+                    },
+                    inputs,
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(attestation).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            attestation_ids.push(record_id.clone());
+            commit_events.push(
+                NewEvent::new(
+                    EventType::ChangeAttestedV1,
+                    serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                        artifact_id: record_id.clone(),
+                    })
+                    .map_err(|error| error.to_string())?,
+                )
+                .correlating(finding_id)
+                .referencing(vec![record_id]),
+            );
+        }
+        let proposal_ids = selected
+            .iter()
+            .map(|selected| selected.0.proposal_id.clone())
+            .collect::<Vec<_>>();
+        let committed = IntegrationCommittedPayloadV1 {
+            batch_id,
+            prior_subject_id: self.authority.subject_id.clone(),
+            derived_subject_id: derived_subject_id.clone(),
+            prior_snapshot_id: self.authority.head_snapshot_id.clone(),
+            derived_snapshot_id: derived_snapshot_id.clone(),
+            proposal_ids,
+            attestation_ids: attestation_ids.clone(),
+            expected_finding_set_id: finding_set_id.clone(),
+            expected_demand_set_id: demand_set_id.clone(),
+            policy_id: self.authority.pipeline_policy_id.clone(),
+            semantic_closure_id: semantic_closure_id.clone(),
+        };
+        committed.validate()?;
+        let mut commit_refs = vec![
+            plan_artifact_id,
+            checks_artifact_id,
+            derived_subject_id.clone(),
+            derived_snapshot_id,
+            finding_set_id,
+            demand_set_id,
+            semantic_closure_id,
+        ];
+        commit_refs.extend(attestation_ids);
+        commit_events.push(
+            NewEvent::new(
+                EventType::IntegrationCommittedV1,
+                serde_json::to_value(committed).map_err(|error| error.to_string())?,
+            )
+            .correlating(self.authority.subject_id.clone())
+            .referencing(commit_refs),
+        );
+        self.commit_integration(&commit_events)?;
+        Ok(Some(derived_subject_id))
+    }
+
+    fn record_integration_conflict(
+        &self,
+        proposal_ids: &[String],
+        paths: &[String],
+        reason: &str,
+    ) -> Result<(), String> {
+        self.append_integration_transition(
+            NewEvent::new(
+                EventType::IntegrationConflictV1,
+                serde_json::to_value(IntegrationConflictPayloadV1 {
+                    base_snapshot_id: self.authority.head_snapshot_id.clone(),
+                    proposal_ids: proposal_ids.to_vec(),
+                    paths: paths.to_vec(),
+                    reason: reason.into(),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .correlating(self.authority.subject_id.clone()),
+        )
+    }
+
+    fn run_integration_checks(
+        &self,
+        policy: &review_config::IntegrationSpec,
+        manifest: &Manifest,
+        derived_snapshot_id: &str,
+    ) -> Result<IntegrationChecksV1, String> {
+        let template = review_sandbox::SandboxTemplate::materialize(manifest, self.cas)
+            .map_err(|error| error.to_string())?;
+        let binding = self
+            .gate_execution
+            .as_ref()
+            .ok_or("Integration requires the captured Gate Execution Binding")?;
+        let container = match binding.provider {
+            review_config::SandboxProviderSpec::TrustedLocal => None,
+            review_config::SandboxProviderSpec::Container => Some(
+                self.container_provider
+                    .clone()
+                    .unwrap_or_else(ContainerProvider::detect)
+                    .with_image(
+                        binding
+                            .image
+                            .as_deref()
+                            .ok_or("container Integration binding has no pinned image")?,
+                    ),
+            ),
+        };
+        if let Some(provider) = container.as_ref()
+            && !provider.availability().usable()
+        {
+            return Err(format!(
+                "container provider unavailable: {}",
+                provider.availability().reason()
+            ));
+        }
+        let sandbox = match container.as_ref() {
+            Some(provider) => provider
+                .sandbox_from_template(&template, Mode::EphemeralWrite)
+                .map_err(|error| error.to_string())?,
+            None => Sandbox::from_template(&template, Mode::EphemeralWrite)
+                .map_err(|error| error.to_string())?,
+        };
+        let runner = CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
+        let selected: BTreeSet<_> = policy
+            .post_apply_checks
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut checks = Vec::new();
+        for definition in self
+            .checks
+            .iter()
+            .filter(|definition| selected.contains(definition.name.as_str()))
+        {
+            let result = match container.as_ref() {
+                Some(provider) => runner.run_with(definition, |program, args, env, timeout| {
+                    provider
+                        .exec_evidenced(sandbox.root(), program, args, env, timeout)
+                        .map(|execution| (execution.output, execution.stderr_held))
+                        .map_err(|error| error.to_string())
+                }),
+                None => runner.run(definition),
+            };
+            let result_artifact_id = self
+                .cas
+                .put_json(&serde_json::to_value(&result).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+            checks.push(IntegrationCheckV1 {
+                name: result.name,
+                passed: result.status == CheckStatus::Passed,
+                result_artifact_id,
+            });
+        }
+        let checks = IntegrationChecksV1 {
+            derived_snapshot_id: derived_snapshot_id.into(),
+            checks,
+        };
+        checks.validate()?;
+        Ok(checks)
     }
     /// A sandbox in the requested mode, as a copy-on-write clone of the run's single
     /// materialized template. The template is built once, under the lock, on the first call
@@ -2462,14 +3235,151 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
+    #[allow(clippy::too_many_arguments)] // one exact Attempt boundary; grouping would obscure authority inputs
+    fn prepare_proposal(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        result_artifact: &str,
+        declaration: Result<Option<ReviewerProposalDeclaration>, String>,
+        assigned_finding_ids: &[String],
+        report_count: usize,
+        sealed: &review_sandbox::SealedSandbox,
+    ) -> Result<PreparedProposal, String> {
+        let refused = |reason| {
+            PreparedProposal::Refused(
+                NewEvent::new(
+                    EventType::ProposalRefusedV1,
+                    serde_json::to_value(ProposalRefusedPayloadV1 {
+                        reason,
+                        result_artifact_id: result_artifact.to_string(),
+                    })
+                    .expect("typed Proposal refusal serializes"),
+                )
+                .node(node_id)
+                .attempt(attempt.to_string())
+                .referencing(vec![result_artifact.to_string()]),
+            )
+        };
+        let declaration = match declaration {
+            Ok(Some(declaration)) => declaration,
+            Ok(None) => return Ok(PreparedProposal::None),
+            Err(_) => return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration)),
+        };
+        if self.authority.finding_identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
+        {
+            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
+        }
+        if declaration.patch.is_empty() || declaration.patch.len() > MAX_CHANGE_SET_BYTES {
+            return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration));
+        }
+        let mut report_indexes = declaration.report_indexes;
+        report_indexes.sort_unstable();
+        if report_indexes.windows(2).any(|pair| pair[0] == pair[1])
+            || report_indexes
+                .iter()
+                .any(|index| usize::try_from(*index).map_or(true, |index| index >= report_count))
+        {
+            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
+        }
+        let mut finding_ids = declaration.finding_ids;
+        finding_ids.sort();
+        if finding_ids.windows(2).any(|pair| pair[0] == pair[1])
+            || finding_ids
+                .iter()
+                .any(|id| !assigned_finding_ids.contains(id))
+            || report_indexes.is_empty() && finding_ids.is_empty()
+        {
+            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
+        }
+        let mut evidence_ids = declaration.evidence_ids;
+        evidence_ids.sort();
+        if evidence_ids.windows(2).any(|pair| pair[0] == pair[1])
+            || evidence_ids.iter().any(|id| self.cas.verify(id).is_err())
+        {
+            return Ok(refused(ProposalRefusalReasonV1::InvalidEvidence));
+        }
+        let mut paths = declaration.paths;
+        paths.sort();
+        if paths.is_empty()
+            || paths.windows(2).any(|pair| pair[0] == pair[1])
+            || paths
+                .iter()
+                .any(|path| !review_core::is_valid_repo_path(path))
+        {
+            return Ok(refused(ProposalRefusalReasonV1::InvalidPath));
+        }
+        if sealed.mutations.is_empty() {
+            return Ok(refused(ProposalRefusalReasonV1::EmptyMutation));
+        }
+        if paths != sealed.mutations.paths() {
+            return Ok(refused(ProposalRefusalReasonV1::PathMismatch));
+        }
+        let final_manifest = sealed
+            .capture_snapshot(self.cas)
+            .map_err(|error| error.to_string())?;
+        let diff = manifest_diff(sealed.baseline.as_ref(), &final_manifest, self.cas)
+            .map_err(|error| error.to_string())?;
+        if declaration.patch.as_bytes() != diff.patch() {
+            return Ok(refused(ProposalRefusalReasonV1::PatchMismatch));
+        }
+        let patch_artifact_id = self
+            .cas
+            .put(diff.patch())
+            .map_err(|error| error.to_string())?;
+        let derived_manifest_artifact_id = self
+            .cas
+            .put_json(&serde_json::to_value(&final_manifest).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let candidate = ProposalCandidateV1 {
+            base_snapshot_id: self.authority.head_snapshot_id.clone(),
+            patch_artifact_id: patch_artifact_id.clone(),
+            derived_manifest_artifact_id: derived_manifest_artifact_id.clone(),
+            result_artifact_id: result_artifact.to_string(),
+            report_indexes,
+            finding_ids,
+            evidence_ids: evidence_ids.clone(),
+            paths,
+            description: declaration.description,
+            auto_apply_nominated: declaration.auto_apply_nominated,
+        };
+        candidate.validate().map_err(str::to_string)?;
+        let candidate_artifact = self
+            .cas
+            .put_json(&serde_json::to_value(candidate).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let mut artifacts = vec![
+            candidate_artifact.clone(),
+            result_artifact.to_string(),
+            patch_artifact_id,
+            derived_manifest_artifact_id,
+        ];
+        artifacts.extend(evidence_ids);
+        Ok(PreparedProposal::Prepared {
+            candidate_artifact: candidate_artifact.clone(),
+            event: NewEvent::new(
+                EventType::ProposalPreparedV1,
+                serde_json::to_value(ProposalPreparedPayloadV1 {
+                    candidate_artifact_id: candidate_artifact,
+                    result_artifact_id: result_artifact.to_string(),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .node(node_id)
+            .attempt(attempt.to_string())
+            .referencing(artifacts),
+        })
+    }
+
     fn run_reviewer(&self, node: &Node, node_inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         let node_id = node.id.as_str();
+        let binding_node = self.reviewer_binding_node(node_id);
         let mut prepared = self
             .prepared_attempts
             .lock()
             .expect("prepared attempts")
             .remove(node_id);
-        let adapter = match self.reviewers.get(node_id) {
+        let adapter = match self.reviewers.get(&binding_node) {
             Some(adapter) => adapter,
             None => {
                 let error = format!("no reviewer bound to node {node_id}");
@@ -2749,7 +3659,7 @@ impl<'a> Kernel<'a> {
         let mut retry_failures: Vec<String> = Vec::new();
         let broker_fence_authority = self
             .reviewer_execution
-            .get(node_id)
+            .get(&binding_node)
             .filter(|execution| {
                 execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
             })
@@ -2808,12 +3718,12 @@ impl<'a> Kernel<'a> {
                 reviewer_package_artifact_id: self
                     .authority
                     .reviewer_packages
-                    .get(node_id)
+                    .get(&binding_node)
                     .map(|(artifact_id, _)| artifact_id.clone()),
                 reviewer_package_digest: self
                     .authority
                     .reviewer_packages
-                    .get(node_id)
+                    .get(&binding_node)
                     .map(|(_, digest)| digest.clone()),
                 policy_ids: self.authority.policy_ids.clone(),
                 reserved_tokens: reservation.as_ref().map(|reservation| reservation.amount),
@@ -2821,7 +3731,7 @@ impl<'a> Kernel<'a> {
 
             let boundary = KernelBrokerBoundary { kernel: self };
             let brokered = (|| -> Result<Option<Broker<'_>>, String> {
-                let Some(execution) = self.reviewer_execution.get(node_id) else {
+                let Some(execution) = self.reviewer_execution.get(&binding_node) else {
                     return Ok(None);
                 };
                 let lease_epoch = self
@@ -2834,7 +3744,7 @@ impl<'a> Kernel<'a> {
                 let mut broker = None;
                 let broker_handle = if execution.credential_mode == BrokerCredentialModeV1::Brokered
                 {
-                    let provider = self.broker_providers.get(node_id).ok_or_else(|| {
+                    let provider = self.broker_providers.get(&binding_node).ok_or_else(|| {
                         format!("brokered reviewer `{node_id}` has no machine-local provider")
                     })?;
                     let issued = Broker::issue(
@@ -2955,6 +3865,7 @@ impl<'a> Kernel<'a> {
                         return Err(error);
                     }
                     let returned = receipted.returned;
+                    let proposal_declaration = returned.proposal;
                     let assigned_finding_ids = inputs
                         .prior_findings
                         .as_ref()
@@ -2996,12 +3907,21 @@ impl<'a> Kernel<'a> {
                             continue;
                         }
                     };
-                    let artifacts = (|| -> Result<(String, String), String> {
+                    let artifacts = (|| -> Result<(String, String, PreparedProposal), String> {
                         let sealed = sandbox.seal().map_err(|error| error.to_string())?;
                         let result_artifact = self
                             .cas
                             .put_json(&result_value)
                             .map_err(|error| error.to_string())?;
+                        let proposal = self.prepare_proposal(
+                            node_id,
+                            &attempt,
+                            &result_artifact,
+                            proposal_declaration,
+                            &assigned_finding_ids,
+                            returned.output.findings.len(),
+                            &sealed,
+                        )?;
                         // The mutation set can be enormous — a reviewer that built to verify a
                         // claim leaves a whole target/ behind. The full list lives once in the
                         // CAS; provenance carries only a bounded summary.
@@ -3028,9 +3948,9 @@ impl<'a> Kernel<'a> {
                                 "sandbox_mutations": mutation_summary,
                             }))
                             .map_err(|error| error.to_string())?;
-                        Ok((result_artifact, provenance_artifact))
+                        Ok((result_artifact, provenance_artifact, proposal))
                     })();
-                    let (result_artifact, provenance_artifact) = match artifacts {
+                    let (result_artifact, provenance_artifact, proposal) = match artifacts {
                         Ok(artifacts) => artifacts,
                         Err(error) => {
                             self.fail_started_attempt(
@@ -3101,6 +4021,12 @@ impl<'a> Kernel<'a> {
                             SelectedReviewer {
                                 attempt_id: attempt.to_string(),
                                 result_artifact: result_artifact.clone(),
+                                proposal_candidate: match &proposal {
+                                    PreparedProposal::Prepared {
+                                        candidate_artifact, ..
+                                    } => Some(candidate_artifact.clone()),
+                                    PreparedProposal::None | PreparedProposal::Refused(_) => None,
+                                },
                             },
                         )
                         .is_some()
@@ -3108,6 +4034,13 @@ impl<'a> Kernel<'a> {
                         return Err(format!("reviewer {node_id} selected more than one attempt"));
                     }
                     self.buffer_reviewer_event(node_id, admitted);
+                    match proposal {
+                        PreparedProposal::None => {}
+                        PreparedProposal::Prepared { event, .. }
+                        | PreparedProposal::Refused(event) => {
+                            self.buffer_reviewer_event(node_id, event)
+                        }
+                    }
                     return Ok(vec![result_artifact]);
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
@@ -3258,6 +4191,280 @@ impl<'a> Kernel<'a> {
         ))
     }
 
+    fn run_slicer(&self, node: &Node) -> Result<Vec<String>, String> {
+        let policy = self
+            .slicing
+            .get(&node.id)
+            .ok_or_else(|| format!("Slicer `{}` has no captured slicing policy", node.id))?;
+        let subject_paths = match &self.authority.change_set {
+            Some(change_set) => change_set.change_set().changed_paths.clone(),
+            None => self
+                .snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+        let slice_set = policy.plan(
+            &self.authority.subject_id,
+            &subject_paths,
+            &self.static_node_ids,
+        )?;
+        let operation_id = review_store::content_id(&serde_json::json!({
+            "operation": "slice-set@1",
+            "node": node.id,
+            "subject": self.authority.subject_id,
+            "policy": {
+                "scatter": policy.scatter_node,
+                "max_paths_per_slice": policy.max_paths_per_slice,
+                "max_fanout": policy.max_fanout,
+                "coverage": policy.coverage,
+                "all_shards_required": policy.all_shards_required,
+                "closeout": policy.closeout,
+            }
+        }))
+        .map_err(|error| error.to_string())?;
+        let mut inputs = vec![self.authority.subject_id.clone()];
+        inputs.extend(self.authority.change_set_id.clone());
+        let (record_id, envelope) = self
+            .cas
+            .put_artifact(
+                review_core::contract::SLICE_SET_V1,
+                Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some(node.id.clone()),
+                    operation_id,
+                },
+                inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(slice_set).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        // This event is deliberately appended inside the Slicer, before its graph receipt can
+        // make the artifact visible to Scatter.
+        self.append(
+            NewEvent::new(
+                EventType::SliceSetAcceptedV1,
+                serde_json::to_value(SliceSetAcceptedPayloadV1 {
+                    slice_set_id: envelope.artifact_id,
+                    slice_set_artifact_id: record_id.clone(),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .node(&node.id)
+            .referencing(vec![record_id.clone()]),
+        )?;
+        Ok(vec![record_id])
+    }
+
+    fn run_scatter(&self, node: &Node, inputs: &ArtifactMap) -> Result<Vec<String>, String> {
+        let slice_port = node
+            .inputs
+            .iter()
+            .find(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
+            .ok_or_else(|| format!("Scatter `{}` has no SliceSet@1 input", node.id))?;
+        let [slice_set_record] = inputs
+            .get(&slice_port.name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        else {
+            return Err(format!(
+                "Scatter `{}` did not receive exactly one SliceSet@1",
+                node.id
+            ));
+        };
+        let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+            self.cas
+                .get_json(slice_set_record)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("SliceSet@1 envelope is malformed: {error}"))?;
+        review_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type != review_core::contract::SLICE_SET_V1
+            || envelope.subject_snapshot_id.as_deref()
+                != Some(self.authority.head_snapshot_id.as_str())
+        {
+            return Err("Scatter received a SliceSet outside current Subject authority".into());
+        }
+        let slice_set: SliceSetV1 = serde_json::from_value(envelope.payload)
+            .map_err(|error| format!("SliceSet@1 payload is malformed: {error}"))?;
+        let subject_paths = match &self.authority.change_set {
+            Some(change_set) => change_set.change_set().changed_paths.clone(),
+            None => self
+                .snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+        };
+        slice_set.validate_coverage(&subject_paths)?;
+        if !self
+            .slicing
+            .values()
+            .any(|policy| policy.scatter_node == node.id)
+        {
+            return Err(format!(
+                "Scatter `{}` has no accepted Slicer owner",
+                node.id
+            ));
+        }
+
+        let mut inherited_contracts = node
+            .inputs
+            .iter()
+            .filter(|contract| contract.artifact_type != review_core::contract::SLICE_SET_V1)
+            .cloned()
+            .collect::<Vec<_>>();
+        if inherited_contracts
+            .iter()
+            .any(|contract| contract.name == "slice")
+        {
+            return Err(format!(
+                "Scatter `{}` reserves dynamic input port `slice`",
+                node.id
+            ));
+        }
+        inherited_contracts.push(PortContract::new(
+            "slice",
+            review_core::contract::REVIEW_SLICE_V1,
+        ));
+        let result_contract = if inherited_contracts
+            .iter()
+            .any(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+        {
+            review_core::contract::REVIEWER_RESULT_V2
+        } else {
+            review_core::contract::REVIEWER_RESULT_V1
+        };
+        let inherited_inputs = inputs
+            .iter()
+            .filter(|(port, _)| *port != &slice_port.name)
+            .map(|(port, artifacts)| (port.clone(), artifacts.clone()))
+            .collect::<ArtifactMap>();
+
+        let mut runnable = Vec::new();
+        let mut outcomes: BTreeMap<String, ShardOutcomeV1> = BTreeMap::new();
+        for slice in &slice_set.slices {
+            self.dynamic_reviewer_bases
+                .lock()
+                .expect("dynamic reviewer bases")
+                .insert(slice.runtime_node_id.clone(), node.id.clone());
+            let (slice_record, _) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::REVIEW_SLICE_V1,
+                    Producer::KernelOperation {
+                        run_id: self.run_id.clone(),
+                        node_id: Some(node.id.clone()),
+                        operation_id: format!("slice:{}", slice.slice_id),
+                    },
+                    vec![slice_set_record.clone()],
+                    Some(self.authority.head_snapshot_id.clone()),
+                    serde_json::to_value(slice).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            let dynamic_node = Node::new(&slice.runtime_node_id, NodeKind::Reviewer)
+                .accepting_contracts(inherited_contracts.clone())
+                .emitting_contracts(vec![PortContract::new("out", result_contract)]);
+            let mut dynamic_inputs = inherited_inputs.clone();
+            dynamic_inputs.insert("slice".into(), vec![slice_record]);
+            match self.record_invocation(&dynamic_node, &dynamic_inputs) {
+                Ok(()) => runnable.push((slice.clone(), dynamic_node, dynamic_inputs)),
+                Err(error) => {
+                    outcomes.insert(
+                        slice.slice_id.clone(),
+                        ShardOutcomeV1::Missing { reason: error },
+                    );
+                }
+            }
+        }
+
+        // Dispatches above are durable in canonical Slice order. Model execution may now run on
+        // the shared bounded executor; receipts are committed below in the same canonical order.
+        let executed =
+            review_parallel::try_map_owned(runnable, |(slice, dynamic_node, inputs)| {
+                Ok::<_, String>((
+                    slice,
+                    dynamic_node.clone(),
+                    self.run(&dynamic_node, &inputs),
+                ))
+            })?;
+        for (slice, dynamic_node, result) in executed {
+            let outcome = match result {
+                Ok(outputs) => match self.record_outputs(&dynamic_node, &outputs) {
+                    Ok(()) => ShardOutcomeV1::Completed {
+                        result_artifact_ids: artifact_ids(&outputs),
+                    },
+                    Err(error) => ShardOutcomeV1::Failed { reason: error },
+                },
+                Err(error) => ShardOutcomeV1::Failed { reason: error },
+            };
+            outcomes.insert(slice.slice_id, outcome);
+        }
+        let shard_set = ShardSetV1 {
+            subject_id: slice_set.subject_id.clone(),
+            slice_set_id: slice_set_record.clone(),
+            all_shards_required: slice_set.all_shards_required,
+            shards: slice_set
+                .slices
+                .iter()
+                .map(|slice| ShardReceiptV1 {
+                    slice_id: slice.slice_id.clone(),
+                    runtime_node_id: slice.runtime_node_id.clone(),
+                    outcome: outcomes.remove(&slice.slice_id).unwrap_or_else(|| {
+                        ShardOutcomeV1::Missing {
+                            reason: "dynamic shard produced no terminal outcome".into(),
+                        }
+                    }),
+                })
+                .collect(),
+        };
+        shard_set.validate_against(&slice_set)?;
+        let mut artifact_inputs = vec![slice_set_record.clone()];
+        artifact_inputs.extend(
+            shard_set
+                .shards
+                .iter()
+                .flat_map(|shard| match &shard.outcome {
+                    ShardOutcomeV1::Completed {
+                        result_artifact_ids,
+                    } => result_artifact_ids.clone(),
+                    ShardOutcomeV1::Failed { .. } | ShardOutcomeV1::Missing { .. } => vec![],
+                }),
+        );
+        let operation_id = review_store::content_id(
+            &serde_json::to_value(&shard_set).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let (record_id, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::SHARD_SET_V1,
+                Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some(node.id.clone()),
+                    operation_id,
+                },
+                artifact_inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(shard_set).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        self.append(
+            NewEvent::new(
+                EventType::ShardSetRecordedV1,
+                serde_json::to_value(RecordedSetPayloadV1 {
+                    artifact_id: record_id.clone(),
+                    record_id: record_id.clone(),
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .node(&node.id)
+            .referencing(vec![record_id.clone(), slice_set_record.clone()]),
+        )?;
+        Ok(vec![record_id])
+    }
+
     /// A real gather: one artifact holding exactly the report artifacts the edges delivered.
     /// A reviewer whose result port feeds no edge is absent here, and therefore absent from
     /// everything downstream — the plan is the data flow, not a suggestion about it.
@@ -3341,6 +4548,138 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
+    fn finalize_proposals(
+        &self,
+        reduction: &review_store::CanonicalReduction,
+    ) -> Result<Vec<String>, String> {
+        let existing = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|event| {
+                event.event_type == EventType::ProposalAcceptedV1
+                    && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+            })
+            .map(|event| {
+                let payload: ProposalAcceptedPayloadV1 =
+                    serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
+                Ok((payload.candidate_artifact_id.clone(), payload))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        let selections = self
+            .reviewer_selections
+            .lock()
+            .expect("reviewer selections")
+            .clone();
+        let mut proposal_ids = Vec::new();
+        let mut events = Vec::new();
+        for (node, selection) in selections {
+            let Some(candidate_artifact) = selection.proposal_candidate else {
+                continue;
+            };
+            if let Some(accepted) = existing.get(&candidate_artifact) {
+                self.cas
+                    .verify(&accepted.proposal_artifact_id)
+                    .map_err(|error| error.to_string())?;
+                proposal_ids.push(accepted.proposal_id.clone());
+                continue;
+            }
+            let candidate: ProposalCandidateV1 = serde_json::from_value(
+                self.cas
+                    .get_json(&candidate_artifact)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            candidate.validate().map_err(str::to_string)?;
+            if candidate.result_artifact_id != selection.result_artifact
+                || candidate.base_snapshot_id != self.authority.head_snapshot_id
+            {
+                return Err(format!(
+                    "prepared Proposal for `{node}` contradicts selected Round authority"
+                ));
+            }
+            let source_reports = reduction
+                .report_ids_by_source
+                .get(&node)
+                .ok_or_else(|| format!("prepared Proposal source `{node}` reached no Reports"))?;
+            let mut finding_refs = candidate
+                .finding_ids
+                .iter()
+                .map(|id| review_core::ClaimRef {
+                    kind: review_core::ClaimRefKind::Finding,
+                    id: id.clone(),
+                })
+                .collect::<Vec<_>>();
+            for index in &candidate.report_indexes {
+                let report_id = source_reports
+                    .get(*index as usize)
+                    .ok_or_else(|| {
+                        format!("prepared Proposal for `{node}` names absent Report {index}")
+                    })?
+                    .clone();
+                finding_refs.push(review_core::ClaimRef {
+                    kind: review_core::ClaimRefKind::Report,
+                    id: report_id,
+                });
+            }
+            let proposal = review_core::PatchProposal {
+                base_snapshot_id: candidate.base_snapshot_id.clone(),
+                patch_artifact_id: candidate.patch_artifact_id.clone(),
+                finding_refs,
+                evidence_ids: candidate.evidence_ids.clone(),
+                paths: candidate.paths.clone(),
+                description: candidate.description.clone(),
+                auto_apply_nominated: candidate.auto_apply_nominated,
+            };
+            proposal.check_shape().map_err(str::to_string)?;
+            let mut inputs = vec![
+                candidate_artifact.clone(),
+                candidate.result_artifact_id.clone(),
+                candidate.patch_artifact_id.clone(),
+                candidate.derived_manifest_artifact_id.clone(),
+            ];
+            inputs.extend(candidate.evidence_ids.iter().cloned());
+            inputs.sort();
+            inputs.dedup();
+            let (proposal_artifact_id, envelope) = self
+                .cas
+                .put_artifact(
+                    review_core::contract::PATCH_PROPOSAL_V1,
+                    Producer::Attempt {
+                        run_id: self.run_id.clone(),
+                        node_id: node.clone(),
+                        attempt_id: selection.attempt_id.clone(),
+                    },
+                    inputs,
+                    Some(candidate.base_snapshot_id.clone()),
+                    serde_json::to_value(proposal).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            let payload = ProposalAcceptedPayloadV1 {
+                proposal_id: envelope.artifact_id.clone(),
+                proposal_artifact_id: proposal_artifact_id.clone(),
+                candidate_artifact_id: candidate_artifact.clone(),
+            };
+            proposal_ids.push(envelope.artifact_id);
+            events.push(
+                NewEvent::new(
+                    EventType::ProposalAcceptedV1,
+                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
+                )
+                .node(node)
+                .attempt(selection.attempt_id)
+                .referencing(vec![proposal_artifact_id, candidate_artifact]),
+            );
+        }
+        self.append_batch(&events)?;
+        proposal_ids.sort();
+        proposal_ids.dedup();
+        Ok(proposal_ids)
+    }
+
     fn run_ledger(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
@@ -3348,6 +4687,7 @@ impl<'a> Kernel<'a> {
             == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
         let mut results: Vec<(String, String, ReviewerResultContract, LegacyStageOutput)> =
             Vec::new();
+        let mut dynamic_sets: Vec<(String, String, SliceSetV1, ShardSetV1)> = Vec::new();
         let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
             let (contract, output) =
@@ -3358,6 +4698,75 @@ impl<'a> Kernel<'a> {
         for (input_port, artifacts) in inputs {
             for input in artifacts {
                 let value = self.cas.get_json(input).map_err(|e| e.to_string())?;
+                if value.get("type").and_then(serde_json::Value::as_str)
+                    == Some(review_core::contract::SHARD_SET_V1)
+                {
+                    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value)
+                        .map_err(|error| format!("ShardSet@1 envelope is malformed: {error}"))?;
+                    review_store::validate_envelope(&envelope)?;
+                    if envelope.subject_snapshot_id.as_deref()
+                        != Some(self.authority.head_snapshot_id.as_str())
+                    {
+                        return Err(
+                            "Ledger received a ShardSet outside current Subject authority".into(),
+                        );
+                    }
+                    let scatter_node = match &envelope.producer {
+                        Producer::KernelOperation {
+                            node_id: Some(node),
+                            ..
+                        } => node.clone(),
+                        _ => return Err("ShardSet@1 was not produced by its static Scatter".into()),
+                    };
+                    let shard_set: ShardSetV1 = serde_json::from_value(envelope.payload)
+                        .map_err(|error| format!("ShardSet@1 payload is malformed: {error}"))?;
+                    let slice_envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+                        self.cas
+                            .get_json(&shard_set.slice_set_id)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| format!("SliceSet@1 envelope is malformed: {error}"))?;
+                    review_store::validate_envelope(&slice_envelope)?;
+                    if slice_envelope.artifact_type != review_core::contract::SLICE_SET_V1 {
+                        return Err("ShardSet@1 references a non-SliceSet artifact".into());
+                    }
+                    let slice_set: SliceSetV1 = serde_json::from_value(slice_envelope.payload)
+                        .map_err(|error| format!("SliceSet@1 payload is malformed: {error}"))?;
+                    shard_set.validate_against(&slice_set)?;
+                    if slice_set.all_shards_required && !shard_set.complete() {
+                        let failures = shard_set
+                            .shards
+                            .iter()
+                            .filter_map(|shard| match &shard.outcome {
+                                ShardOutcomeV1::Failed { reason }
+                                | ShardOutcomeV1::Missing { reason } => {
+                                    Some(format!("{}: {reason}", shard.runtime_node_id))
+                                }
+                                ShardOutcomeV1::Completed { .. } => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        return Err(format!(
+                            "Scatter `{scatter_node}` has a failed or missing required shard: {failures}"
+                        ));
+                    }
+                    for shard in &shard_set.shards {
+                        if let ShardOutcomeV1::Completed {
+                            result_artifact_ids,
+                        } = &shard.outcome
+                        {
+                            for result_id in result_artifact_ids {
+                                let result = self
+                                    .cas
+                                    .get_json(result_id)
+                                    .map_err(|error| error.to_string())?;
+                                load(&shard.runtime_node_id, result_id, result)?;
+                            }
+                        }
+                    }
+                    dynamic_sets.push((scatter_node, input.clone(), slice_set, shard_set));
+                    continue;
+                }
                 if value.get("verdict").is_some() && value.get("reports").is_some() {
                     let source = if canonical {
                         let upstream = self
@@ -3549,7 +4958,7 @@ impl<'a> Kernel<'a> {
             demand_artifact_ids,
             demand_input_artifact_ids,
             reduction,
-            projection,
+            mut projection,
         ) = {
             let mut store = self.store.lock().expect("event store");
             let mut ingest =
@@ -3568,11 +4977,12 @@ impl<'a> Kernel<'a> {
                                 (node, result_id, result_contract, stage),
                                 (attempt_id, input_artifacts),
                             )| {
+                                let binding_node = self.reviewer_binding_node(node);
                                 review_store::CanonicalStage {
                                     source: node,
                                     demand_requirement: self
                                         .demand_requirements
-                                        .get(node)
+                                        .get(&binding_node)
                                         .copied()
                                         .unwrap_or(review_core::DemandRequirement::Required),
                                     stage,
@@ -3626,6 +5036,25 @@ impl<'a> Kernel<'a> {
                 ingest.into_projection(),
             )
         };
+        let proposal_ids = if let Some(reduction) = &reduction {
+            let proposals = self.finalize_proposals(reduction)?;
+            projection
+                .fast_forward(*self.store.lock().expect("event store"), self.cas)
+                .map_err(|error| error.to_string())?;
+            proposals
+        } else {
+            Vec::new()
+        };
+        let semantic_reduction_outputs = reduction.as_ref().map(|reduction| {
+            (
+                reduction.selected_report_ids.clone(),
+                reduction.relation_ids.clone(),
+                reduction.selected_demand_artifact_ids.clone(),
+            )
+        });
+        let semantic_grouping_ids = grouping_relation_ids.clone();
+        let semantic_resolution_ids = resolution_ids.clone();
+        let semantic_demand_lifecycle_ids = demand_artifact_ids.clone();
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
         let findings_artifact = if let (Some(entries), Some(reduction)) =
             (finding_entries, reduction)
@@ -3765,8 +5194,259 @@ impl<'a> Kernel<'a> {
                 None => {}
             }
         }
+        if !dynamic_sets.is_empty() {
+            let delivered_results = results
+                .iter()
+                .map(|(source, artifact, _, _)| (source.clone(), artifact.clone()))
+                .collect::<BTreeSet<_>>();
+            let round_events = self
+                .store
+                .lock()
+                .expect("event store")
+                .replay(&self.run_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|event| {
+                    event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+                })
+                .collect::<Vec<_>>();
+            for (scatter_node, shard_record, slice_set, shard_set) in dynamic_sets {
+                let mut selected = Vec::new();
+                for shard in &shard_set.shards {
+                    if let ShardOutcomeV1::Completed {
+                        result_artifact_ids,
+                    } = &shard.outcome
+                    {
+                        for artifact in result_artifact_ids {
+                            if !delivered_results
+                                .contains(&(shard.runtime_node_id.clone(), artifact.clone()))
+                            {
+                                return Err(format!(
+                                    "dynamic result `{artifact}` from `{}` did not reach Ledger",
+                                    shard.runtime_node_id
+                                ));
+                            }
+                            selected.push(artifact.clone());
+                        }
+                    }
+                }
+                let selected_outputs = BTreeMap::from([("reviewer_results".into(), selected)]);
+                let mut sinks = selected_outputs
+                    .values()
+                    .flatten()
+                    .map(|artifact| (artifact.clone(), "ledger:reviewer-result".into()))
+                    .collect::<BTreeMap<String, String>>();
+                let closeout_result_id = match &slice_set.closeout {
+                    review_core::CloseoutPolicyV1::Required => {
+                        let closeout = self.closeouts.get(&scatter_node).ok_or_else(|| {
+                            format!("Scatter `{scatter_node}` has no captured closeout reviewer")
+                        })?;
+                        let ids = results
+                            .iter()
+                            .filter(|(source, _, _, _)| source == closeout)
+                            .map(|(_, artifact, _, _)| artifact.clone())
+                            .collect::<Vec<_>>();
+                        let [artifact] = ids.as_slice() else {
+                            return Err(format!(
+                                "closeout reviewer `{closeout}` did not deliver exactly one result"
+                            ));
+                        };
+                        sinks.insert(artifact.clone(), "ledger:whole-subject-closeout".into());
+                        Some(artifact.clone())
+                    }
+                    review_core::CloseoutPolicyV1::Waived { policy_id, .. } => {
+                        if !self.authority.policy_ids.contains(policy_id) {
+                            return Err(format!(
+                                "closeout waiver `{policy_id}` is absent from Authority Snapshot"
+                            ));
+                        }
+                        None
+                    }
+                };
+                let mut closure = scatter::prove_semantic_closure(
+                    &slice_set,
+                    &shard_set,
+                    &selected_outputs,
+                    &sinks,
+                    closeout_result_id.clone(),
+                )?;
+                let mut semantic_sinks = closure
+                    .dispositions
+                    .iter()
+                    .map(|disposition| (disposition.artifact_id.clone(), disposition.sink.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                if let Some(closeout) = closeout_result_id {
+                    semantic_sinks.insert(closeout, "ledger:whole-subject-closeout".into());
+                }
+                if let Some((reports, relations, demands)) = &semantic_reduction_outputs {
+                    for artifact in reports {
+                        semantic_sinks.insert(artifact.clone(), "ledger:finding-set".into());
+                    }
+                    for artifact in relations {
+                        semantic_sinks.insert(artifact.clone(), "ledger:relation".into());
+                    }
+                    for artifact in demands {
+                        semantic_sinks.insert(artifact.clone(), "ledger:demand-set".into());
+                    }
+                }
+                for artifact in &semantic_grouping_ids {
+                    semantic_sinks.insert(artifact.clone(), "ledger:grouping".into());
+                }
+                for artifact in &semantic_resolution_ids {
+                    semantic_sinks.insert(artifact.clone(), "ledger:resolution".into());
+                }
+                for artifact in semantic_demand_lifecycle_ids
+                    .0
+                    .iter()
+                    .chain(&semantic_demand_lifecycle_ids.1)
+                    .chain(&semantic_demand_lifecycle_ids.2)
+                {
+                    semantic_sinks.insert(artifact.clone(), "ledger:demand-lifecycle".into());
+                }
+                for proposal_id in &proposal_ids {
+                    semantic_sinks.insert(proposal_id.clone(), "proposal-store".into());
+                    let proposal_envelope: review_core::ArtifactEnvelope = serde_json::from_value(
+                        self.cas
+                            .get_json(proposal_id)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let proposal: review_core::PatchProposal =
+                        serde_json::from_value(proposal_envelope.payload)
+                            .map_err(|error| error.to_string())?;
+                    for evidence in proposal.evidence_ids {
+                        semantic_sinks.insert(evidence, "proposal-store:evidence".into());
+                    }
+                }
+                for event in &round_events {
+                    let sink = match event.event_type {
+                        EventType::CheckCompletedV1 => Some("event-log:check"),
+                        EventType::GateDecisionV1 => Some("event-log:policy"),
+                        EventType::EvidenceAddedV1 => Some("ledger:evidence"),
+                        _ => None,
+                    };
+                    if let Some(sink) = sink {
+                        let artifact = self
+                            .cas
+                            .put_json(&event.payload)
+                            .map_err(|error| error.to_string())?;
+                        semantic_sinks.insert(artifact, sink.into());
+                    }
+                }
+                closure.required_artifact_ids = semantic_sinks.keys().cloned().collect();
+                closure.dispositions = semantic_sinks
+                    .into_iter()
+                    .map(|(artifact_id, sink)| review_core::SemanticDispositionV1 {
+                        artifact_id,
+                        sink,
+                    })
+                    .collect();
+                closure.validate()?;
+                let mut closure_inputs = vec![shard_record.clone(), shard_set.slice_set_id.clone()];
+                closure_inputs.extend(closure.required_artifact_ids.iter().cloned());
+                closure_inputs.sort();
+                closure_inputs.dedup();
+                for artifact in &closure_inputs {
+                    self.cas.verify(artifact).map_err(|error| {
+                        format!("semantic closure input `{artifact}` is not durable: {error}")
+                    })?;
+                }
+                let operation_id = review_store::content_id(
+                    &serde_json::to_value(&closure).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let (record_id, _) = self
+                    .cas
+                    .put_artifact(
+                        review_core::contract::SEMANTIC_CLOSURE_V1,
+                        Producer::KernelOperation {
+                            run_id: self.run_id.clone(),
+                            node_id: Some(node.id.clone()),
+                            operation_id,
+                        },
+                        closure_inputs,
+                        Some(self.authority.head_snapshot_id.clone()),
+                        serde_json::to_value(closure).map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                self.append(
+                    NewEvent::new(
+                        EventType::SemanticClosureCheckedV1,
+                        serde_json::to_value(RecordedSetPayloadV1 {
+                            artifact_id: record_id.clone(),
+                            record_id: record_id.clone(),
+                        })
+                        .map_err(|error| error.to_string())?,
+                    )
+                    .node(&node.id)
+                    .referencing(vec![record_id]),
+                )?;
+            }
+        }
         Ok(outputs)
     }
+}
+
+fn paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn current_integration_authority(
+    events: &[review_core::RunEvent],
+    round_event_id: &str,
+) -> Result<(String, String, String), String> {
+    let mut finding_set = None;
+    let mut demand_set = None;
+    let mut semantic_closure = None;
+    for event in events
+        .iter()
+        .filter(|event| event.causation_id.as_deref() == Some(round_event_id))
+    {
+        match event.event_type {
+            EventType::NodeOutputReceiptV1 => {
+                let receipt: NodeOutputReceiptPayloadV1 =
+                    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+                for port in receipt.outputs {
+                    let target = if port.artifact_type == review_core::contract::FINDING_SET_V1 {
+                        Some(&mut finding_set)
+                    } else if port.artifact_type == review_core::contract::DEMAND_SET_V1 {
+                        Some(&mut demand_set)
+                    } else {
+                        None
+                    };
+                    if let Some(target) = target {
+                        if port.artifact_ids.is_empty() && port.optional {
+                            continue;
+                        }
+                        let [artifact] = port.artifact_ids.as_slice() else {
+                            return Err(format!(
+                                "Integration authority port `{}` is not singular",
+                                port.port
+                            ));
+                        };
+                        *target = Some(artifact.clone());
+                    }
+                }
+            }
+            EventType::SemanticClosureCheckedV1 => {
+                let recorded: RecordedSetPayloadV1 =
+                    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+                semantic_closure = Some(recorded.record_id);
+            }
+            _ => {}
+        }
+    }
+    Ok((
+        finding_set.ok_or("Integration has no exact current FindingSet@1")?,
+        demand_set.ok_or("Integration has no exact current DemandSet@1")?,
+        semantic_closure.ok_or("Integration has no SemanticClosure@1 proof")?,
+    ))
 }
 
 fn reviewer_result_value(
@@ -4095,7 +5775,8 @@ impl Dispatch for Kernel<'_> {
                 .insert(node.id.clone(), artifact_ids(inputs));
         }
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
-            if !self.reviewers.contains_key(&node.id) {
+            let binding_node = self.reviewer_binding_node(&node.id);
+            if !self.reviewers.contains_key(&binding_node) {
                 return Err(format!("no reviewer bound to node {}", node.id));
             }
             let prior_findings = node
@@ -4182,6 +5863,8 @@ impl Dispatch for Kernel<'_> {
                 }
                 result
             }
+            NodeKind::Slicer => self.run_slicer(node),
+            NodeKind::Scatter => self.run_scatter(node, inputs),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.run_gather(node, inputs),

@@ -29,7 +29,8 @@ use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
     ContextManifest, ModelRunner, ReceiptedReviewerReturn, ReviewerAdapter, ReviewerInputs,
-    ReviewerReturn, RunnerError, TokenUsage, parse_stage_output_for, result_contract,
+    ReviewerReturn, RunnerError, TokenUsage, parse_proposal_declaration, parse_stage_output_for,
+    result_contract,
 };
 use review_store::Cas;
 
@@ -205,9 +206,11 @@ impl ReviewerAdapter for ClaudeAdapter {
                     why: e.to_string(),
                 }
             })?;
+            let proposal = parse_proposal_declaration(&text);
             return Ok(ReceiptedReviewerReturn {
                 returned: ReviewerReturn {
                     output,
+                    proposal,
                     cost_tokens: cost,
                     raw_artifact: capture.raw_artifact,
                 },

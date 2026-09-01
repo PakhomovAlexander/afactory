@@ -227,6 +227,7 @@ impl ReviewerAdapter for Costed {
     ) -> Result<ReviewerReturn, RunnerError> {
         Ok(ReviewerReturn {
             output: clean_output(),
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"stub answer").unwrap(),
         })
@@ -254,6 +255,7 @@ impl ReviewerAdapter for FlakyOnce {
         }
         Ok(ReviewerReturn {
             output: clean_output(),
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"second answer").unwrap(),
         })
@@ -288,6 +290,7 @@ impl ReviewerAdapter for MalformedOnce {
         assert!(!inputs.refused_attempts[0].contains("quoted object key"));
         Ok(ReviewerReturn {
             output: clean_output(),
+            proposal: Ok(None),
             cost_tokens: 10_000,
             raw_artifact: cas.put(b"corrected answer").unwrap(),
         })
@@ -339,6 +342,7 @@ impl ReviewerAdapter for InvalidOnce {
         };
         Ok(ReviewerReturn {
             output,
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if first {
@@ -374,6 +378,7 @@ impl ReviewerAdapter for InvalidThenUnavailable {
                     "benchmark_demands":[],"disputes":[]}"#,
             )
             .unwrap(),
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"first invalid answer").unwrap(),
         })
@@ -413,6 +418,7 @@ impl ReviewerAdapter for CleanAfterGenericFailure {
         );
         Ok(ReviewerReturn {
             output: clean_output(),
+            proposal: Ok(None),
             cost_tokens: 10_000,
             raw_artifact: cas.put(b"clean resumed answer").unwrap(),
         })
@@ -445,6 +451,7 @@ impl ReviewerAdapter for InvalidAfterResume {
         };
         Ok(ReviewerReturn {
             output,
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if call == 0 {
@@ -483,6 +490,7 @@ impl ReviewerAdapter for InvalidMetadataOnce {
         };
         Ok(ReviewerReturn {
             output,
+            proposal: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if first {

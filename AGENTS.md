@@ -11,16 +11,14 @@ Before changing behavior, read:
 - [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
 
 M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1–M3.3 and M4 are complete. M4's exhausted verification Campaign has six fixed
-Findings and zero open; follow-up PR #19 merged at exact `main` `01147ce` and post-merge CI passed.
-M5 is complete: deliberate report formats, exact Round/reviewer spend, and safe Campaign
-enumeration/history are implemented and externally verified. M6.1 Gate Execution Bindings and
-M6.2 bounded Cache Snapshots retain their passed dogfood evidence. M6.3 adds v4
-credential-free, brokered, and trusted-unsafe reviewers; Brokered Attempts receive only a
-revocable handle, with durable bounded receipts, secret isolation, recovery settlement, and late
-revocation. Its final correctness Campaign findings are fixed and `make check` is green; M6 is
-complete. The Docker-backed M6.1 CI probe remains pending the first product-branch publication.
-Resume at M7.1 verified Proposals. V3.1 local delivery is
+verified. M3.1–M6 are complete and retain their merged or dogfood evidence. M7–M9 are implemented
+on `agent/m7-m9`: verified base-bound Proposals and export, bounded typed Scatter with
+whole-Subject semantic closure, and opt-in checked internal Integration. Pinned `v0.5.0` light
+dogfood found five authority/replay defects; all five have regressions and are fixed, and the full
+`make check` gate is green. Static automatic Integration is deliberately refused until a captured
+semantic-closure route exists. Product-branch publication, CI, merge, and exact-main verification
+remain. The Docker-backed M6.1 CI probe remains pending the first product-branch publication.
+V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
 bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
@@ -95,3 +93,15 @@ budget, or sandbox boundary to make a test or review pass.
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
   ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)).
+- Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
+  kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
+  with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist
+  ([ADR-0038](docs/adr/0038-transport-proposals-beside-reviewer-results.md)).
+- Dynamic shards do not rewrite the planned DAG. Pipeline v5 persists a complete Slice Set before
+  a typed Scatter owns tagged sub-invocations, and carries every shard outcome through a lossless
+  Shard Set to whole-Subject closeout and semantic closure
+  ([ADR-0039](docs/adr/0039-own-dynamic-shards-inside-a-typed-scatter-node.md)).
+- Automatic Integration composes only selected, sealed, disjoint Proposal Manifests. It checks an
+  unpromoted `Capture::Derived` Snapshot and advances only the internal Campaign head plus
+  pending-verification claims in one transaction; branch and PR publication stay outside the
+  kernel ([ADR-0040](docs/adr/0040-promote-only-checked-derived-snapshots.md)).
