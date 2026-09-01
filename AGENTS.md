@@ -18,7 +18,10 @@ Integration. Pinned `v0.5.0` light dogfood found five authority/replay defects; 
 regressions and are fixed. Local and exact-main gates, live container probes, both release
 archives/checksums, and the extracted macOS binary passed. Static automatic Integration is
 deliberately refused until a captured semantic-closure route exists. The canonical M0–M9 roadmap
-is complete; new capability is separately scoped post-roadmap work.
+is complete. The first post-roadmap safety slice shipped in private release `v0.7.0` from exact
+`main` commit `c9a62fb`: explicit review selectors and token-free planning, empty-Diff refusal,
+strict Provider admission/doctor, adapter-owned reviewer isolation, strict project policy, and
+reservation-aware onboarding. New capability is separately scoped post-roadmap work.
 V3.1 local delivery is
 implemented, proven against a real trusted repository, and passed a fresh pinned correctness
 Campaign; its reported minor corrections are implemented and verified. New Campaigns use the

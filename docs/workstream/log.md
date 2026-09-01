@@ -1365,3 +1365,22 @@ and Linux x86_64 archive
 The extracted macOS release binary reports `af 0.6.0`. The dependency-ordered M0–M9 roadmap is
 complete; static automatic Integration without captured semantic closure remains deliberately
 refused rather than silently weakened.
+
+## 2026-09-01 — Private v0.7.0 review-safety release published
+
+[Product PR #31](https://github.com/PakhomovAlexander/afactory/pull/31) merged the first
+post-roadmap safety slice at exact `main` commit `91cc49c`. Its one pinned `v0.6.0` light Campaign,
+`audit-safety-light-v1`, spent 230,395 chargeable tokens and found two defects: package arguments
+could widen reviewer filesystem authority, and Provider smoke spend could leave too little Run
+budget for one static Attempt per Worker. Both gained fail-closed regressions; no second Campaign
+was dispatched under the light-review contract. PR CI and exact-main `make check` passed.
+
+Release [PR #43](https://github.com/PakhomovAlexander/afactory/pull/43) bumped only workspace
+package versions and merged at exact `main` commit `c9a62fb`. Local `make check`, the optimized
+release build, release-PR CI with live container probes, and a fresh exact-main `make check` all
+passed before tagging. Lightweight tag `v0.7.0` points to that exact commit. Private release
+workflow run `33531761113` completed its create, macOS, Linux, and publish jobs successfully.
+Downloaded checksum sidecars independently verified macOS arm64 archive
+`sha256:964821d63fc478798af7d7e8aa709fca62ec8613fb42e357ebaef0d30a66eeaf` and Linux x86_64
+archive `sha256:28bb6eabda42f1b5b0a768f1fdec0a9a8e1ff5c5a59b35b07bccc9cf9e6738fb`.
+The extracted macOS binary reports `af 0.7.0`.

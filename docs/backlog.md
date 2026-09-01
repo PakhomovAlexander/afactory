@@ -1,7 +1,7 @@
 # Afactory Review Kernel - backlog
 
 Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity through `v0.6.0`, and M0–M9 are complete. Minimal product v1 and v2 preceded
+release parity through `v0.7.0`, and M0–M9 are complete. Minimal product v1 and v2 preceded
 candidate dogfood and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
@@ -845,7 +845,8 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
 
 ### Post-roadmap safety hardening
 
-This is maintenance after M0–M9, not M10. ADR-0041 and ADR-0042 cover explicit policy/Base/
+**Status: shipped in private release `v0.7.0` (2026-09-01).** This is maintenance after M0–M9,
+not M10. ADR-0041 and ADR-0042 cover explicit policy/Base/
 candidate selectors, token-free planning, empty-Diff refusal, exact Provider bindings and doctor,
 adapter-owned Claude isolation, strict project-policy parsing, and deterministic onboarding
 validation. This slice passed the full deterministic gate and one pinned light review; both

@@ -15,6 +15,9 @@ v2 dogfood Task, fresh pinned Campaign v3 returned Pass, and all three final min
 fixed with zero open. PR #11 merged and private `v0.3.0` is published. The bounded V3.2
 binary-owned review-onboarding slice shipped through PR #13 in private `v0.4.0`; exact-main CI,
 downloaded checksums, and the extracted macOS binary passed.
+The first post-roadmap review-safety slice shipped in private release `v0.7.0` from exact `main`
+commit `c9a62fb`; release CI, both downloaded archive checksums, and the extracted macOS binary
+passed.
 **Goal:** `af review` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy; minimal v2 then
 lets `af` implement a real change and return a verified internal Snapshot.
@@ -195,7 +198,8 @@ and verification prerequisites exist.
 ## Post-roadmap safety hardening
 
 M0–M9 are complete and shipped in private release `v0.6.0`. The first post-roadmap safety slice
-implements ADR-0041 and ADR-0042: explicit review selectors and token-free planning, empty-Diff
+shipped in private release `v0.7.0` and implements ADR-0041 and ADR-0042: explicit review
+selectors and token-free planning, empty-Diff
 refusal, exact Provider admission/doctor, adapter-owned Claude isolation, strict `.af/af.toml`, and
 onboarding validation for real topology, budget arithmetic, stale pins, and runner model flags. It
 passed the full deterministic gate and one pinned light review; both review Findings have
