@@ -40,7 +40,9 @@ read it through the same authority layer, and `af onboard` now recognizes it.
 - Scaffolding `.af/` beside `.review/` is refused so a repository never carries two
   authorities. Moving to `.af/` is a deliberate step: remove `.review/`, then `af onboard --apply`.
 
-Deprecation posture: `.review/` remains accepted until a migration ADR names the release that
-drops it (AGENTS.md forbids renaming it before then). Consumers should run their pinned release's
-`af review plan` after every pin bump; the hub does this with `make review-plan`, and the release
-workflow plans `fixtures/consumers/` with every built binary.
+Deprecation: [ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md) drops `.review/`
+authority in `v0.8.0`; that release ships `af onboard --migrate` converting a `.review/`
+repository into `.af/` ([#52](https://github.com/PakhomovAlexander/afactory/issues/52)). Persisted
+`review.kernel/*` types, events, and stored Campaign replay are untouched. Until then, consumers
+run their pinned release's `af review plan` after every pin bump; the hub does this with `make
+review-plan`, and the release workflow plans `fixtures/consumers/` with every built binary.

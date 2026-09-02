@@ -30,8 +30,10 @@ clean-window Campaign.
 V3.2 `af onboard` shipped in private release `v0.4.0` from exact `main` commit `bb9e5a3`; its
 supported release archives and checksum sidecars were downloaded and verified.
 Product rebranding must not rename
-`.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
-domain terms until a separate accepted migration ADR supersedes this rule. v1 adds the final
+`review.kernel/*` artifact types, persisted events, or established Review Kernel domain terms
+until a separate accepted migration ADR supersedes this rule; the `.review/` authority *layout*
+is dropped in `v0.8.0` by [ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
+which renames nothing persisted. v1 adds the final
 user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
 reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,

@@ -841,6 +841,14 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
 
 ---
 
+## Post-roadmap · Drop legacy `.review/` authority before `v0.8.0`
+
+Owner decision of 2026-09-02 ([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
+[#52](https://github.com/PakhomovAlexander/afactory/issues/52)): `v0.8.0` accepts review authority only
+under `.af/` and ships `af onboard --migrate` converting a `.review/` repository into `.af/`.
+Stored Campaign replay keeps reading its pinned `.review/...` paths; nothing persisted is renamed.
+The hub and the release-CI consumer fixture move to `.af/` before the release is cut.
+
 ## Explicitly not doing
 
 ### Post-roadmap safety hardening

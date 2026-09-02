@@ -1416,3 +1416,11 @@ both versions, a lock pinned by an older release proceeds and prints one note po
 without the pin stays silent — the owner chose minimum friction for consumers on pinned
 launchers. Pre-0.8 binaries refuse a pinned lock through `deny_unknown_fields`, which is the
 intended direction. Legacy `.review/review.lock` is never stamped; `min_af` remains the floor.
+
+## 2026-09-02 — Owner decision: `v0.8.0` drops legacy `.review/` authority (ADR-0043)
+
+Recorded the owner's call: the next release accepts review authority only under `.af/` and ships
+`af onboard --migrate` converting `.review/` into `.af/` (#52). Stored Campaign replay keeps
+resolving pinned `.review/...` paths; `review.kernel/*` types, events, and domain terms stay frozen.
+AGENTS.md's rebranding rule now excludes the layout; `docs/migration.md` and the backlog carry the
+release gate. The hub and the consumer fixture move to `.af/` before the release is cut.
