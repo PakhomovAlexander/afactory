@@ -1394,3 +1394,14 @@ policy verbatim, `crates/reviewctl/tests/consumer_compat.rs` plans it with the b
 `make check` and proves the pre-fix pipeline is still rejected, and the release workflow plans it
 with the built artifact on every target before publishing. Follow-ups: #46 (`.review/` migration
 path in `af onboard`), #47 (`af.lock` pins the `af` version that produced it).
+
+## 2026-09-02 — Legacy `.review/` migration in `af onboard` (issue #46)
+
+`af onboard` recognizes legacy `.review/` authority when no `.af/` exists: it validates every
+pipeline and the lock against the current format and reports each pending upgrade (`legacy` /
+`legacy-outdated`), writing nothing; `--migrate --apply` rewrites outdated pipelines in place
+through `review_config::pipeline_edit::{legacy_upgrades, apply_legacy_upgrades}`, a fixed,
+additive, idempotent upgrade list whose only member today adds the `DemandSet@1` Ledger output
+(status `migrated`). Scaffolding `.af/` beside `.review/` is refused. Tests drive the consumer
+fixture through outdated → migrated → planned by the built `af`. `docs/migration.md` records the
+deprecation posture; the release that drops `.review/` stays an owner decision (migration ADR).

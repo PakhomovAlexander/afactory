@@ -29,12 +29,17 @@ Usage:
   af onboard [--repo DIR] [--runner mixed|claude|codex]
              [--gate NAME=COMMAND]... [--apply] [--json]
   af onboard [--repo DIR] --refresh-lock [--json]
+  af onboard [--repo DIR] --migrate [--apply] [--json]
   af onboard --help
 
 Behavior:
   * Without .af/: preview a deterministic two-reviewer scaffold. --apply atomically creates it.
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.
   * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.
+  * With legacy .review/ and no .af/: validate every pipeline and the lock against this release
+    and name each pending format upgrade. --migrate --apply rewrites the pipelines in place,
+    additively — reviewer packages, budgets, convergence, checks, and edges are untouched.
+    Scaffolding .af/ beside .review/ is refused; remove .review/ first if you want a fresh bundle.
 
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
 fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
@@ -186,6 +191,7 @@ struct Options {
     gates: Vec<Gate>,
     apply: bool,
     refresh_lock: bool,
+    migrate: bool,
     json: bool,
 }
 
@@ -195,6 +201,16 @@ struct ReviewerSummary {
     package: String,
     runner: String,
     model: String,
+}
+
+/// One legacy `.review/` pipeline: the format upgrades it still needs, or just received.
+#[derive(Debug, Clone, Serialize)]
+struct LegacyPipeline {
+    path: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    applied: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +229,8 @@ struct Report {
     warnings: Vec<String>,
     files: Vec<String>,
     next_steps: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pipelines: Vec<LegacyPipeline>,
 }
 
 struct Bundle {
@@ -245,6 +263,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         gates: Vec::new(),
         apply: false,
         refresh_lock: false,
+        migrate: false,
         json: false,
     };
     let mut gate_names = BTreeSet::new();
@@ -266,6 +285,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             }
             "--apply" => options.apply = true,
             "--refresh-lock" => options.refresh_lock = true,
+            "--migrate" => options.migrate = true,
             "--json" => options.json = true,
             _ => return Err(format!("unknown option `{flag}`; run `af onboard --help`")),
         }
@@ -281,6 +301,14 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     if options.refresh_lock && options.profile != RunnerProfile::Mixed {
         return Err(
             "--runner cannot be combined with --refresh-lock; edit Worker manifests first".into(),
+        );
+    }
+    if options.migrate && options.refresh_lock {
+        return Err("--migrate and --refresh-lock are mutually exclusive".to_string());
+    }
+    if options.migrate && (!options.gates.is_empty() || options.profile != RunnerProfile::Mixed) {
+        return Err(
+            "--gate and --runner configure only a new `.af/` bundle; --migrate upgrades existing `.review/` policy in place".into(),
         );
     }
     Ok(Some(options))
@@ -331,6 +359,12 @@ fn execute(options: &Options) -> Result<Report, String> {
             Err("review authority `.af` exists but is not a directory".to_string())
         }
         Ok(_) => {
+            if options.migrate {
+                return Err(
+                    "`.af/` is current authority; --migrate applies only to legacy `.review/` policy"
+                        .to_string(),
+                );
+            }
             if options.apply {
                 return Err(
                     "`.af/` already exists; plain `af onboard` validates it and never overwrites it"
@@ -349,6 +383,15 @@ fn execute(options: &Options) -> Result<Report, String> {
             inspect_existing(&repo, "onboarded")
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(legacy) = legacy_authority(&repo)? {
+                return inspect_legacy(&repo, &legacy, options);
+            }
+            if options.migrate {
+                return Err(
+                    "--migrate applies to legacy `.review/` authority; this repository has none"
+                        .to_string(),
+                );
+            }
             if options.refresh_lock {
                 return Err("cannot refresh a lock before `.af/` exists".to_string());
             }
@@ -381,6 +424,18 @@ fn print_human(report: &Report) {
     println!("repository  {}", report.repository);
     println!("profile     {}", report.profile);
     println!("pipeline    {}", report.pipeline);
+    if !report.pipelines.is_empty() {
+        println!("pipelines");
+        for pipeline in &report.pipelines {
+            println!("  {}", pipeline.path);
+            for change in &pipeline.pending {
+                println!("    pending  {change}");
+            }
+            for change in &pipeline.applied {
+                println!("    applied  {change}");
+            }
+        }
+    }
     println!("topology");
     for line in &report.topology {
         println!("  {line}");
@@ -603,6 +658,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         topology: topology_lines(&definition),
         warnings,
         files: files.keys().cloned().collect(),
+        pipelines: Vec::new(),
         next_steps: vec![
             format!(
                 "Review this plan, then run `af onboard --repo {} --runner {} --apply`.",
@@ -1322,6 +1378,7 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         topology: topology_lines(&authority.definition),
         warnings,
         files,
+        pipelines: Vec::new(),
         next_steps: vec![
             "Run `af provider status`; Provider credentials remain machine-local.".into(),
             "Follow `.af/README.md` to capture a pull request in a disposable worktree.".into(),
@@ -1400,7 +1457,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         .clone()
         .load_with(&refreshed, &registry)
         .map_err(|error| error.to_string())?;
-    atomic_replace_lock(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
+    atomic_replace_authority(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
     inspect_existing(repo, "lock_refreshed")
 }
 
@@ -1422,38 +1479,251 @@ fn validate_no_stale_pins(repo: &Path, lock: &Lockfile) -> Result<(), String> {
     Ok(())
 }
 
-fn atomic_replace_lock(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn atomic_replace_authority(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("inspecting {}: {error}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!(
-            "refusing to replace authority lock {} because it is not a regular file",
+            "refusing to replace authority file {} because it is not a regular file",
             path.display()
         ));
     }
     let parent = path
         .parent()
-        .ok_or_else(|| format!("authority lock {} has no parent", path.display()))?;
+        .ok_or_else(|| format!("authority file {} has no parent", path.display()))?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| format!("staging authority lock: {error}"))?;
+        .map_err(|error| format!("staging authority file: {error}"))?;
     temporary
         .as_file()
         .set_permissions(metadata.permissions())
-        .map_err(|error| format!("preserving authority lock permissions: {error}"))?;
+        .map_err(|error| format!("preserving authority file permissions: {error}"))?;
     temporary
         .write_all(bytes)
-        .map_err(|error| format!("writing staged authority lock: {error}"))?;
+        .map_err(|error| format!("writing staged authority file: {error}"))?;
     temporary
         .as_file()
         .sync_all()
-        .map_err(|error| format!("syncing staged authority lock: {error}"))?;
+        .map_err(|error| format!("syncing staged authority file: {error}"))?;
     temporary
         .persist(path)
-        .map_err(|error| format!("replacing authority lock atomically: {}", error.error))?;
+        .map_err(|error| format!("replacing authority file atomically: {}", error.error))?;
     std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("syncing authority directory: {error}"))?;
     Ok(())
+}
+
+/// Legacy `.review/` authority: the layout consumers pinned before `.af/` existed.
+struct LegacyAuthority {
+    root: PathBuf,
+    pipelines: Vec<PathBuf>,
+}
+
+/// The repository's legacy authority, if it carries `.review/` and no `.af/`.
+fn legacy_authority(repo: &Path) -> Result<Option<LegacyAuthority>, String> {
+    let root = repo.join(".review");
+    match std::fs::symlink_metadata(&root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("refusing symlinked review authority `.review`".to_string())
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            Err("review authority `.review` exists but is not a directory".to_string())
+        }
+        Ok(_) => {
+            let pipelines_dir = root.join("pipelines");
+            let mut pipelines: Vec<PathBuf> = match std::fs::read_dir(&pipelines_dir) {
+                Ok(entries) => entries
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<Result<_, _>>()
+                    .map_err(|error| format!("listing {}: {error}", pipelines_dir.display()))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => {
+                    return Err(format!("listing {}: {error}", pipelines_dir.display()));
+                }
+            };
+            pipelines.retain(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "toml")
+            });
+            pipelines.sort();
+            if pipelines.is_empty() {
+                return Err(
+                    "`.review/` carries no pipelines/*.toml; nothing to validate or migrate".into(),
+                );
+            }
+            Ok(Some(LegacyAuthority { root, pipelines }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("inspecting {}: {error}", root.display())),
+    }
+}
+
+/// Validates legacy `.review/` policy against this release's pipeline format and, with
+/// `--migrate --apply`, rewrites each outdated pipeline in place — additively, never touching
+/// reviewer packages, budgets, convergence, checks, or edges. `.review/review.lock` pins only
+/// reviewer packages, so no lock changes.
+fn inspect_legacy(
+    repo: &Path,
+    legacy: &LegacyAuthority,
+    options: &Options,
+) -> Result<Report, String> {
+    if options.refresh_lock {
+        return Err(
+            "--refresh-lock applies to `.af/af.lock`; legacy `.review/review.lock` pins only reviewer packages"
+                .into(),
+        );
+    }
+    if !options.gates.is_empty() || options.profile != RunnerProfile::Mixed {
+        return Err(
+            "--gate and --runner configure only a new `.af/` bundle; this repository carries legacy `.review/` authority"
+                .into(),
+        );
+    }
+    if options.apply && !options.migrate {
+        return Err(
+            "`.review/` already carries review authority; run `af onboard --migrate [--apply]` to validate or upgrade it in place. Scaffolding `.af/` beside it would leave two authorities"
+                .into(),
+        );
+    }
+    let lock = Lockfile::from_toml(&read_authority_text(&legacy.root.join("review.lock"))?)
+        .map_err(|error| error.to_string())?;
+    let registry = Registry::new([legacy.root.join("reviewers")]);
+
+    let mut pipelines = Vec::new();
+    let mut first: Option<(Definition, review_config::Loaded)> = None;
+    let mut pending_total = 0_usize;
+    let mut applied_total = 0_usize;
+    for path in &legacy.pipelines {
+        let relative = path
+            .strip_prefix(repo)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let text = read_authority_text(path)?;
+        let needed = review_config::pipeline_edit::legacy_upgrades(&text)
+            .map_err(|error| format!("{relative}: {error}"))?;
+        let describe = |upgrades: &[review_config::pipeline_edit::LegacyUpgrade]| {
+            upgrades
+                .iter()
+                .map(|upgrade| upgrade.describe().to_string())
+                .collect::<Vec<_>>()
+        };
+        let (text, pending, applied) = if options.migrate && options.apply && !needed.is_empty() {
+            let rewritten = review_config::pipeline_edit::apply_legacy_upgrades(&text)
+                .map_err(|error| format!("{relative}: {error}"))?
+                .ok_or_else(|| format!("{relative}: upgrades were pending but nothing changed"))?;
+            Definition::from_toml(&rewritten)
+                .map_err(|error| format!("{relative}: {error}"))?
+                .load_with(&lock, &registry)
+                .map_err(|error| format!("{relative}: upgraded pipeline does not load: {error}"))?;
+            atomic_replace_authority(path, rewritten.as_bytes())?;
+            (rewritten, Vec::new(), describe(&needed))
+        } else {
+            (text, describe(&needed), Vec::new())
+        };
+        let definition =
+            Definition::from_toml(&text).map_err(|error| format!("{relative}: {error}"))?;
+        let loaded = definition
+            .clone()
+            .load_with(&lock, &registry)
+            .map_err(|error| format!("{relative}: {error}"))?;
+        pending_total += pending.len();
+        applied_total += applied.len();
+        pipelines.push(LegacyPipeline {
+            path: relative,
+            pending,
+            applied,
+        });
+        if first.is_none() {
+            first = Some((definition, loaded));
+        }
+    }
+    let (definition, loaded) = first.expect("legacy authority lists at least one pipeline");
+    let status = if pending_total > 0 {
+        "legacy-outdated"
+    } else if applied_total > 0 {
+        "migrated"
+    } else {
+        "legacy"
+    };
+
+    let gates = definition
+        .checks
+        .iter()
+        .map(|check| Gate {
+            name: check.name.clone(),
+            program: check.command.program.clone(),
+            args: check
+                .command
+                .args
+                .iter()
+                .map(|argument| argument.value.clone())
+                .collect(),
+            source: "project authority".into(),
+        })
+        .collect();
+    let reviewers = loaded
+        .packages()
+        .iter()
+        .map(|(node, package)| ReviewerSummary {
+            node: node.clone(),
+            package: package.name.clone(),
+            runner: package.runner.program.clone(),
+            model: runner_model(&package.runner),
+        })
+        .collect();
+    let (attempt_tokens, run_tokens) = definition
+        .budgets
+        .as_ref()
+        .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
+        .unwrap_or((None, None));
+    let warnings = validate_budget_arithmetic(&definition)?;
+    let mut files = vec![".review/review.lock".to_string()];
+    files.extend(pipelines.iter().map(|pipeline| pipeline.path.clone()));
+    for package in loaded.packages().values() {
+        for path in package.files().keys() {
+            files.push(format!(".review/reviewers/{}/{path}", package.name));
+        }
+    }
+    files.sort();
+    files.dedup();
+    let repository = repo.display().to_string();
+    let next_steps = match status {
+        "legacy-outdated" => vec![
+            format!(
+                "Run `af onboard --repo {repository} --migrate --apply` to rewrite the listed pipelines in place; reviewer packages, budgets, and convergence stay as they are."
+            ),
+            "Review and commit the `.review/` diff on the trusted base branch.".into(),
+            "Run `af review plan` against the committed policy before the next Campaign.".into(),
+        ],
+        "migrated" => vec![
+            "Review and commit the `.review/` diff on the trusted base branch.".into(),
+            "Run `af onboard` again to confirm nothing is pending, then `af review plan`.".into(),
+        ],
+        _ => vec![
+            "Policy is current for this release; run `af review plan` after every pin bump.".into(),
+            "Moving to `.af/` is a separate decision: remove `.review/` first, then `af onboard --apply` scaffolds a fresh bundle."
+                .into(),
+        ],
+    };
+    let pipeline = pipelines[0].path.clone();
+    Ok(Report {
+        status: status.to_string(),
+        profile: "legacy .review/ authority".into(),
+        repository,
+        pipeline,
+        reviewers,
+        gates,
+        attempt_tokens,
+        run_tokens,
+        clean_rounds: definition.convergence.clean_rounds,
+        max_rounds: definition.convergence.max_rounds,
+        topology: topology_lines(&definition),
+        warnings,
+        files,
+        pipelines,
+        next_steps,
+    })
 }
 
 #[cfg(test)]
