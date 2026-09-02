@@ -1,9 +1,13 @@
-# The heavy review, as a definition rather than as code.
+# The hub's review pipeline, as a definition rather than as code.
 #
-# This is the hub's own pipeline: the shape /self-review-heavy runs today, expressed for the
-# kernel. Reviewers are packages from .review/reviewers/, pinned by content digest in
-# .review/review.lock. Use `make review` to edit reviewer configuration through Afactory's
-# proposal flow; project policy stays here while the engine remains external.
+# One high-effort correctness reviewer, one required clean Round, at most two Rounds — the shape
+# the kernel adopted in ADR-0027 after the two-specialist, two-million-token pipeline never
+# converged. The reviewer is a package from .review/reviewers/, pinned by content digest in
+# .review/review.lock. The package and lock entry mirror the kernel repo's
+# `.review/reviewers/correctness` byte for byte: to change the package, copy the kernel's package
+# and lock entry together, or produce the digest with the kernel's lock generator
+# (`cargo run -p review-config --example lock -- .review/reviewers correctness` there). The pinned
+# release must still accept this file: `make review-plan` proves it without spending tokens.
 version = 2
 check_timeout_seconds = 3600
 
@@ -45,7 +49,7 @@ outputs = [
 ]
 
 [[nodes]]
-id = "architecture"
+id = "correctness"
 kind = "reviewer"
 demands = "required"
 inputs = [
@@ -55,27 +59,13 @@ inputs = [
 ]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
-package = "architecture"
-
-[[nodes]]
-id = "performance"
-kind = "reviewer"
-demands = "required"
-inputs = [
-  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]
-outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-gated_by = "gate"
-package = "performance"
+package = "correctness"
 
 [[nodes]]
 id = "gather"
 kind = "gather"
 inputs = [
-  { name = "architecture", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "performance", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "correctness", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
@@ -91,50 +81,34 @@ outputs = [
 # ---------------------------------------------------------------------- edges
 [[edges]]
 from = { node = "generation", port = "findings" }
-to = { node = "architecture", port = "prior_findings" }
+to = { node = "correctness", port = "prior_findings" }
 
 [[edges]]
 from = { node = "generation", port = "change_set" }
-to = { node = "architecture", port = "change_set" }
-
-[[edges]]
-from = { node = "generation", port = "findings" }
-to = { node = "performance", port = "prior_findings" }
-
-[[edges]]
-from = { node = "generation", port = "change_set" }
-to = { node = "performance", port = "change_set" }
+to = { node = "correctness", port = "change_set" }
 
 [[edges]]
 from = { node = "gate", port = "decision" }
-to = { node = "architecture", port = "gate" }
+to = { node = "correctness", port = "gate" }
 
 [[edges]]
-from = { node = "gate", port = "decision" }
-to = { node = "performance", port = "gate" }
-
-[[edges]]
-from = { node = "architecture", port = "result" }
-to = { node = "gather", port = "architecture" }
-
-[[edges]]
-from = { node = "performance", port = "result" }
-to = { node = "gather", port = "performance" }
+from = { node = "correctness", port = "result" }
+to = { node = "gather", port = "correctness" }
 
 [[edges]]
 from = { node = "gather", port = "reports" }
 to = { node = "ledger", port = "reports" }
 
 # -------------------------------------------------------------------- budgets
-# Defaults, in tokens; the numbers are this pipeline's to override. A run that exhausts
-# finishes in-flight attempts and reports incomplete; a fenced attempt charges.
+# One high-effort correctness reviewer. The cap admits its first attempt and retries while
+# bounding a milestone below the former two-specialist, two-million-token shape.
 [budgets]
 unit = "tokens"
 attempt = 300000
-run = 2000000
+run = 1000000
 
 # ---------------------------------------------------------------- convergence
 [convergence]
-clean_rounds = 2
-max_rounds = 4
+clean_rounds = 1
+max_rounds = 2
 gate = "major"

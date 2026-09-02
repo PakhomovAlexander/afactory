@@ -92,7 +92,7 @@ fn current_legacy_policy_is_reported_as_legacy_with_nothing_pending() {
         .iter()
         .map(|reviewer| reviewer["node"].as_str().unwrap())
         .collect();
-    assert_eq!(reviewers, ["architecture", "performance"]);
+    assert_eq!(reviewers, ["correctness"]);
     assert_eq!(report["gates"].as_array().unwrap().len(), 2);
     assert_eq!(report["attempt_tokens"], 300_000);
     assert!(
