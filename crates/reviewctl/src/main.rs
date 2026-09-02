@@ -483,7 +483,7 @@ fn usage() -> ! {
         \x20      af review demand waive --campaign NAME [--state DIR] DEMAND --policy REV --reason TEXT [--actor ACTOR]\n\
         \x20      af provider status\n\
         \x20      af provider doctor [review selector options] --provider NODE=PROVIDER_ID...\n\
-        \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock] [--json]\n\
+        \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock|--migrate [--apply]] [--json]\n\
         \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
         \x20      af task deliver TASK_ID --repo DIR --branch NAME --worktree DIR --confirm TASK_ID [--state DIR] [--json]\n\
         \x20      af task list [--repo DIR] [--state DIR] [--json]\n\

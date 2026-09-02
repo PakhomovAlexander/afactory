@@ -22,3 +22,25 @@
 Local consumers use existing `gh` authentication. Trusted CI uses a read-only token. Release
 artifacts are cached outside consuming repositories and verified against a committed lock. No
 credential is written into a project, pipeline, reviewer package, or release artifact.
+
+## Legacy `.review/` policies
+
+Consumers that onboarded before `.af/` existed still carry `.review/pipelines/*.toml`,
+`.review/review.lock`, and `.review/reviewers/`. That layout stays accepted: `af review plan|run`
+read it through the same authority layer, and `af onboard` now recognizes it.
+
+- `af onboard` on a repository with `.review/` and no `.af/` validates every pipeline and the
+  lock against this release's pipeline format and names each pending upgrade
+  (status `legacy` when nothing is pending, `legacy-outdated` otherwise). It writes nothing.
+- `af onboard --migrate --apply` rewrites each outdated pipeline in place. Upgrades are
+  additive and idempotent — today the only one adds the `review.kernel/DemandSet@1` Ledger
+  output that M4 made mandatory — and never touch reviewer packages, budgets, convergence,
+  checks, or edges. The lock pins only reviewer packages, so it does not change. Review and
+  commit the diff on the trusted base branch, then `af review plan`.
+- Scaffolding `.af/` beside `.review/` is refused so a repository never carries two
+  authorities. Moving to `.af/` is a deliberate step: remove `.review/`, then `af onboard --apply`.
+
+Deprecation posture: `.review/` remains accepted until a migration ADR names the release that
+drops it (AGENTS.md forbids renaming it before then). Consumers should run their pinned release's
+`af review plan` after every pin bump; the hub does this with `make review-plan`, and the release
+workflow plans `fixtures/consumers/` with every built binary.
