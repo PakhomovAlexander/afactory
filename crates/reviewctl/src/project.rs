@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use review_config::lock::Lockfile;
 use semver::Version;
 use serde::Deserialize;
 
@@ -121,6 +122,35 @@ fn parse_version(value: &str) -> Result<Version, semver::Error> {
         2 => Version::parse(&format!("{value}.0")),
         _ => Version::parse(value),
     }
+}
+
+/// Compares the running `af` with the release that wrote an authority lock. A lock written by a
+/// newer release is refused: this binary cannot know what that release meant by its pins. A lock
+/// written by an older release proceeds and returns a note naming `--refresh-lock`. A lock with
+/// no pin, or one written by this exact release, is silent.
+pub(crate) fn check_lock_af_version(
+    lock: &Lockfile,
+    lock_path: &str,
+) -> Result<Option<String>, String> {
+    let Some(pinned) = lock.af_version.as_deref() else {
+        return Ok(None);
+    };
+    let pinned = Version::parse(pinned).map_err(|error| {
+        format!("authority lock `{lock_path}` records an invalid af_version `{pinned}`: {error}")
+    })?;
+    let current = Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| format!("running af version is invalid: {error}"))?;
+    if pinned > current {
+        return Err(format!(
+            "authority lock `{lock_path}` was pinned by af {pinned}; this is af {current}, an older release that cannot trust those pins. Upgrade af, or re-pin with `af onboard --refresh-lock` from the release you run"
+        ));
+    }
+    if pinned < current {
+        return Ok(Some(format!(
+            "authority lock `{lock_path}` was pinned by af {pinned}; this is af {current} — `af onboard --refresh-lock` re-pins it"
+        )));
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

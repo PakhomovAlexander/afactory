@@ -2271,6 +2271,9 @@ fn load_authority(
             .map_err(|error| format!(".af/af.lock is not UTF-8: {error}"))?,
     )
     .map_err(|error| error.to_string())?;
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, ".af/af.lock")? {
+        eprintln!("af task: note: {note}");
+    }
     validate_pipeline_pin(&lockfile, &pipeline_path, &pipeline_bytes)?;
     let pipeline: TaskPipeline = toml::from_str(
         std::str::from_utf8(&pipeline_bytes)

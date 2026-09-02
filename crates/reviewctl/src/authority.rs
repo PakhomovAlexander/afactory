@@ -53,6 +53,9 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &layout.lock)? {
+        eprintln!("af review: note: {note}");
+    }
     if layout.root == ".af" {
         validate_af_pipeline_pin(&lockfile, &pipeline_path, &pipeline_bytes)?;
         let project_bytes = authority_bytes(&policy.manifest, cas, ".af/af.toml")?;
@@ -335,6 +338,9 @@ fn open_new(
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{lock_path}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &lock_path)? {
+        eprintln!("af review: note: {note}");
+    }
     if layout.root == ".af" {
         validate_af_pipeline_pin(&lockfile, pipeline_path, &pipeline_bytes)?;
     }

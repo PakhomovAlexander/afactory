@@ -1405,3 +1405,14 @@ additive, idempotent upgrade list whose only member today adds the `DemandSet@1`
 (status `migrated`). Scaffolding `.af/` beside `.review/` is refused. Tests drive the consumer
 fixture through outdated → migrated → planned by the built `af`. `docs/migration.md` records the
 deprecation posture; the release that drops `.review/` stays an owner decision (migration ADR).
+
+## 2026-09-02 — `af.lock` pins the `af` release that wrote it (issue #47)
+
+`Lockfile` gains an optional `af_version`; `af onboard --apply` and `--refresh-lock` stamp the
+running release. `af onboard`, `af review plan|run` (fresh authority), and `af task start` compare
+it with the running binary: a lock pinned by a newer release is refused with a message naming
+both versions, a lock pinned by an older release proceeds and prints one note pointing at
+`--refresh-lock` (onboard surfaces it as a warning and reports `lock_af_version`), and a lock
+without the pin stays silent — the owner chose minimum friction for consumers on pinned
+launchers. Pre-0.8 binaries refuse a pinned lock through `deny_unknown_fields`, which is the
+intended direction. Legacy `.review/review.lock` is never stamped; `min_af` remains the floor.

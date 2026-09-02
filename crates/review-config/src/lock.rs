@@ -405,6 +405,11 @@ pub struct Pin {
 #[serde(deny_unknown_fields)]
 pub struct Lockfile {
     pub version: u32,
+    /// The `af` release that wrote this lock (`af onboard --apply` or `--refresh-lock`). A newer
+    /// `af` proceeds and notes the difference; an older `af` refuses, because it cannot know what
+    /// the newer release meant by these pins. Absent on locks written before the pin existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub af_version: Option<String>,
     #[serde(default)]
     pub reviewers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -604,6 +609,7 @@ impl Lockfile {
     pub fn empty() -> Lockfile {
         Lockfile {
             version: 1,
+            af_version: None,
             reviewers: BTreeMap::new(),
             workers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
