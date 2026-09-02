@@ -1,4 +1,4 @@
-.PHONY: check fmt lint test fixtures build pilot-check review-kernel-container-probes
+.PHONY: check fmt lint test fixtures build pilot-check consumer-check review-kernel-container-probes
 
 check: fmt lint test fixtures
 
@@ -19,6 +19,11 @@ build:
 
 pilot-check:
 	cargo test --locked -p reviewctl --test task_implement
+
+# Plan every consumer fixture with the release binary — what the release workflow runs before a
+# release leaves draft. The same check runs inside `make check` through the reviewctl tests.
+consumer-check: build
+	fixtures/consumers/check.sh target/release/af
 
 # Live containment and the v3 Gate route. These stay outside `make check` because a missing
 # daemon is a hard failure here, never a skip disguised as success.

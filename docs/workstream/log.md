@@ -1384,3 +1384,13 @@ Downloaded checksum sidecars independently verified macOS arm64 archive
 `sha256:964821d63fc478798af7d7e8aa709fca62ec8613fb42e357ebaef0d30a66eeaf` and Linux x86_64
 archive `sha256:28bb6eabda42f1b5b0a768f1fdec0a9a8e1ff5c5a59b35b07bccc9cf9e6738fb`.
 The extracted macOS binary reports `af 0.7.0`.
+
+## 2026-09-02 — Consumer compatibility fixture (issue #45)
+
+The hub's pinned `.review/pipelines/heavy.toml` was rejected by `v0.7.0` (`Ledger node must declare
+a review.kernel/DemandSet@1 output`) for a week without notice; hub PR #11 fixed the policy and
+added a token-free `make review-plan`. `fixtures/consumers/hub/` now mirrors the hub's `.review/`
+policy verbatim, `crates/reviewctl/tests/consumer_compat.rs` plans it with the built `af` inside
+`make check` and proves the pre-fix pipeline is still rejected, and the release workflow plans it
+with the built artifact on every target before publishing. Follow-ups: #46 (`.review/` migration
+path in `af onboard`), #47 (`af.lock` pins the `af` version that produced it).

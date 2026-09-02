@@ -1,0 +1,15 @@
+name = "architecture"
+version = "1.2.0"
+subjects = ["diff", "whole-tree"]
+
+# Opus at maximum reasoning — set the model and effort your project wants reviews run at.
+# The prompt is reviewer.md, composed by the adapter; everything in this package is under the
+# lock's content digest, prompt included.
+[runner]
+program = "claude"
+args = [
+  { value = "--model" },
+  { value = "opus" },
+  { value = "--effort" },
+  { value = "xhigh" },
+]
