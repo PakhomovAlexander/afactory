@@ -1476,3 +1476,17 @@ alone exhausts the cap — nothing dispatched or charged, the refusal naming byt
 the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter node). Nothing is
 truncated. The automatic bounded-strategy selection with typed closure obligations is the
 remaining half of #32 and belongs with path routing (#40).
+
+## 2026-09-03 — Route pipelines by changed paths; oversized Diffs switch to a bounded pipeline (#40, #32)
+
+`.af/af.toml` gains `[[routes]]` (name, root-anchored segment globs, target pipeline) and
+`[routing]` (`unmatched = default|refuse`, `ambiguous = refuse|first`, `oversized = <pipeline>`).
+Plan and Campaign open now capture Base and candidate first, compute the exact Change Set, select
+the pipeline from the canonical changed paths (both rename sides), then load it; an explicit
+`--pipeline` is never overridden and a continuation keeps the pinned pipeline. The oversized policy
+replaces the refusal from the first #32 slice with a switch to a named pipeline measured the same
+way — a Scatter pipeline with Complete coverage and required closeout keeps every path — and the
+run still refuses before admission when that one does not fit either. `af onboard` pins and
+validates every route target; `validate_af_project` accepts every declared candidate; input sizing
+skips Scatter nodes and closeout reviewers, which have no first-Attempt input to measure. Plan
+JSON carries `route`; open prints `route    …`.
