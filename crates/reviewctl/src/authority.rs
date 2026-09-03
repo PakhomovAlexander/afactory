@@ -27,85 +27,68 @@ pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
 
 /// Resolve review authority and Subject without creating Campaign state or executing external
 /// work. CAS writes live only in the caller's temporary directory.
-pub(super) fn resolve_plan(
-    options: &Options,
+/// A pipeline read from pinned authority: bytes, parsed definition, and the loaded graph.
+pub(super) struct PinnedPipeline {
+    pub path: String,
+    pub bytes: Vec<u8>,
+    pub definition: Definition,
+    pub loaded: review_config::Loaded,
+}
+
+fn load_pinned_pipeline(
+    manifest: &Manifest,
     cas: &Cas,
-    repo: &Repo,
-) -> Result<ResolvedPlan, String> {
-    if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
-        return Err(
-            "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
-                .into(),
-        );
-    }
-    let policy_ref = options
-        .policy_rev
-        .as_deref()
-        .or(options.authority.as_deref())
-        .ok_or("review plan requires `--policy-rev REV`")?;
-    let capture = Capture::new(repo, cas);
-    let policy = capture
-        .committed(policy_ref)
-        .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
-    let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
-    let pipeline_path = authority_path(&options.repo, &options.pipeline)?;
-    let layout = authority_layout(&pipeline_path)?;
-    let pipeline_bytes = authority_bytes(&policy.manifest, cas, &pipeline_path)?;
-    let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
-    let pipeline_text = std::str::from_utf8(&pipeline_bytes)
-        .map_err(|error| format!("authority pipeline `{pipeline_path}` is not UTF-8: {error}"))?;
-    let lock_text = std::str::from_utf8(&lock_bytes)
-        .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
-    let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &layout.lock)? {
-        eprintln!("af review: note: {note}");
-    }
+    lockfile: &Lockfile,
+    registry: &Registry,
+    layout: &AuthorityLayout,
+    path: &str,
+) -> Result<PinnedPipeline, String> {
+    let bytes = authority_bytes(manifest, cas, path)?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("authority pipeline `{path}` is not UTF-8: {error}"))?;
     if layout.root == ".af" {
-        validate_af_pipeline_pin(&lockfile, &pipeline_path, &pipeline_bytes)?;
-        let project_bytes = authority_bytes(&policy.manifest, cas, ".af/af.toml")?;
-        validate_af_project(&project_bytes, &pipeline_path)?;
+        validate_af_pipeline_pin(lockfile, path, &bytes)?;
     }
-    let registry = Registry::captured(captured_registry(&policy.manifest, cas, &layout.registry)?);
-    let definition = Definition::from_toml(pipeline_text).map_err(|error| error.to_string())?;
-    let topology = serde_json::json!({
-        "nodes": &definition.nodes,
-        "edges": &definition.edges,
-    });
+    let definition = Definition::from_toml(text).map_err(|error| error.to_string())?;
     let loaded = definition
         .clone()
-        .load_with(&lockfile, &registry)
+        .load_with(lockfile, registry)
         .map_err(|error| error.to_string())?;
-    require_demand_set_output(&loaded, &pipeline_path)?;
+    require_demand_set_output(&loaded, path)?;
+    Ok(PinnedPipeline {
+        path: path.to_string(),
+        bytes,
+        definition,
+        loaded,
+    })
+}
 
-    let (base_ref, base, base_snapshot_id) = if loaded.subject_kind() == SubjectKind::Diff {
-        let base_ref = options
-            .base
-            .as_deref()
-            .or(options.authority.as_deref())
-            .ok_or("diff review plan requires `--base REV`")?;
-        let base = if base_ref == policy_ref {
-            policy.clone()
-        } else {
-            capture
-                .committed(base_ref)
-                .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?
-        };
-        if base.repository_id != policy.repository_id {
-            return Err("Campaign Base belongs to a different repository than policy".into());
-        }
-        let (base_snapshot_id, _) = publish_snapshot(&base, cas)?;
-        (
-            Some(base_ref.to_string()),
-            Some(base),
-            Some(base_snapshot_id),
-        )
-    } else {
-        if options.base.is_some() {
-            return Err("whole-tree review plan does not accept `--base`".into());
-        }
-        (None, None, None)
-    };
+/// The project policy under `.af/`, when that is the layout in use.
+fn captured_project(
+    manifest: &Manifest,
+    cas: &Cas,
+    layout: &AuthorityLayout,
+) -> Result<Option<(Vec<u8>, crate::project::ProjectFile)>, String> {
+    if layout.root != ".af" {
+        return Ok(None);
+    }
+    let bytes = authority_bytes(manifest, cas, ".af/af.toml")?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
+    let project = crate::project::ProjectFile::parse(text)?;
+    Ok(Some((bytes, project)))
+}
 
+/// Capture the candidate and, given a Base, the exact Change Set between them. Shared by plan
+/// and Campaign open so routing sees the same paths Round 1 will review.
+fn capture_candidate(
+    options: &Options,
+    repo: &Repo,
+    cas: &Cas,
+    policy: &Snapshot,
+    base: Option<(&Snapshot, &str)>,
+) -> Result<(Snapshot, String, Option<ChangeSetV1>), String> {
+    let capture = Capture::new(repo, cas);
     let candidate_selector = if options.uncommitted {
         "worktree".to_string()
     } else {
@@ -124,7 +107,7 @@ pub(super) fn resolve_plan(
         return Err("candidate belongs to a different repository than policy".into());
     }
     let mut change_set = None;
-    if let Some(base) = &base {
+    if let Some((base, base_snapshot_id)) = base {
         if candidate.submodules != base.submodules {
             return Err(
                 "diff plan refuses changed gitlinks until submodule sandbox policy is explicit"
@@ -149,17 +132,159 @@ pub(super) fn resolve_plan(
             .map_err(|error| error.to_string())?
         };
         let (candidate_snapshot_id, _) = publish_snapshot(&candidate, cas)?;
-        change_set = Some(
-            diff.change_set(
-                base_snapshot_id
-                    .as_deref()
-                    .expect("diff plan has Base Snapshot"),
-                &candidate_snapshot_id,
-            )?,
-        );
+        change_set = Some(diff.change_set(base_snapshot_id, &candidate_snapshot_id)?);
     }
     let (candidate_snapshot_id, _) = publish_snapshot(&candidate, cas)?;
+    Ok((candidate, candidate_snapshot_id, change_set))
+}
 
+/// The pipeline every static model Worker's first Attempt fits in — or the oversized strategy
+/// the project declared, loaded and measured the same way. Refusal stays with the caller: plan
+/// reports `fits`, run refuses before admission.
+fn apply_oversized_policy(
+    cas: &Cas,
+    project: Option<&crate::project::ProjectFile>,
+    route: &mut crate::project::RouteDecision,
+    pipeline: PinnedPipeline,
+    change_set: Option<&ChangeSetV1>,
+    focus: Option<&str>,
+    load: impl Fn(&str) -> Result<PinnedPipeline, String>,
+) -> Result<(PinnedPipeline, Vec<WorkerInputSize>), String> {
+    let source = change_set.map_or(ChangeSetSource::None, ChangeSetSource::Value);
+    let sizes = worker_input_sizes(cas, &pipeline.definition, &pipeline.loaded, source, focus)?;
+    if sizes.iter().all(|size| size.fits) || route.policy == "explicit" {
+        return Ok((pipeline, sizes));
+    }
+    let Some(alternative) = project.and_then(|project| project.oversized_pipeline()) else {
+        return Ok((pipeline, sizes));
+    };
+    let alternative_path = crate::project::pipeline_path_for(alternative);
+    if alternative_path == pipeline.path {
+        return Ok((pipeline, sizes));
+    }
+    let replacement = load(&alternative_path)?;
+    let source = change_set.map_or(ChangeSetSource::None, ChangeSetSource::Value);
+    let sizes = worker_input_sizes(
+        cas,
+        &replacement.definition,
+        &replacement.loaded,
+        source,
+        focus,
+    )?;
+    route.replaced = Some(pipeline.path.clone());
+    route.policy = "oversized";
+    route.name = Some(alternative.to_string());
+    route.pipeline_path = alternative_path;
+    Ok((replacement, sizes))
+}
+
+pub(super) fn resolve_plan(
+    options: &Options,
+    cas: &Cas,
+    repo: &Repo,
+) -> Result<ResolvedPlan, String> {
+    if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
+        return Err(
+            "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
+                .into(),
+        );
+    }
+    let policy_ref = options
+        .policy_rev
+        .as_deref()
+        .or(options.authority.as_deref())
+        .ok_or("review plan requires `--policy-rev REV`")?;
+    let capture = Capture::new(repo, cas);
+    let policy = capture
+        .committed(policy_ref)
+        .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
+    let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
+    let requested_path = authority_path(&options.repo, &options.pipeline)?;
+    let layout = authority_layout(&requested_path)?;
+    let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
+    let lock_text = std::str::from_utf8(&lock_bytes)
+        .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
+    let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &layout.lock)? {
+        eprintln!("af review: note: {note}");
+    }
+    let project = captured_project(&policy.manifest, cas, &layout)?;
+    let registry = Registry::captured(captured_registry(&policy.manifest, cas, &layout.registry)?);
+
+    // Base and candidate before the pipeline: routing decides the pipeline from the changed
+    // paths, and sizing needs the exact Change Set.
+    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let (base, base_snapshot_id) = match base_ref {
+        Some(base_ref) => {
+            let base = if base_ref == policy_ref {
+                policy.clone()
+            } else {
+                capture
+                    .committed(base_ref)
+                    .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?
+            };
+            if base.repository_id != policy.repository_id {
+                return Err("Campaign Base belongs to a different repository than policy".into());
+            }
+            let (base_snapshot_id, _) = publish_snapshot(&base, cas)?;
+            (Some(base), Some(base_snapshot_id))
+        }
+        None => (None, None),
+    };
+    let (candidate, candidate_snapshot_id, change_set) = capture_candidate(
+        options,
+        repo,
+        cas,
+        &policy,
+        base.as_ref().zip(base_snapshot_id.as_deref()),
+    )?;
+    let changed_paths: Vec<String> = change_set
+        .as_ref()
+        .map(|change_set| change_set.changed_paths.clone())
+        .unwrap_or_default();
+    let mut route = match (&project, options.pipeline_explicit) {
+        (Some((_, project)), false) => project.select_route(&changed_paths)?,
+        (Some(_), true) => crate::project::RouteDecision::explicit(&requested_path),
+        (None, _) => crate::project::RouteDecision::legacy(&requested_path),
+    };
+    let load = |path: &str| {
+        load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, &layout, path)
+    };
+    let pipeline = load(&route.pipeline_path)?;
+    if let Some((project_bytes, _)) = &project {
+        validate_af_project(project_bytes, &pipeline.path)?;
+    }
+    match (pipeline.loaded.subject_kind(), base.is_some()) {
+        (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
+        (SubjectKind::WholeTree, _) if options.base.is_some() => {
+            return Err("whole-tree review plan does not accept `--base`".into());
+        }
+        _ => {}
+    }
+    let (base, base_snapshot_id, change_set) =
+        if pipeline.loaded.subject_kind() == SubjectKind::WholeTree {
+            (None, None, None)
+        } else {
+            (base, base_snapshot_id, change_set)
+        };
+    let (pipeline, input_sizes) = apply_oversized_policy(
+        cas,
+        project.as_ref().map(|(_, project)| project),
+        &mut route,
+        pipeline,
+        change_set.as_ref(),
+        options.focus.as_deref(),
+        load,
+    )?;
+    let candidate_selector = if options.uncommitted {
+        "worktree".to_string()
+    } else {
+        options.candidate.as_deref().unwrap_or("HEAD").to_string()
+    };
+    let topology = serde_json::json!({
+        "nodes": &pipeline.definition.nodes,
+        "edges": &pipeline.definition.edges,
+    });
     let selectors = serde_json::json!({
         "compatibility_authority": options.authority,
         "policy_rev": policy_ref,
@@ -176,12 +301,12 @@ pub(super) fn resolve_plan(
         "candidate_snapshot_id": candidate_snapshot_id,
     });
     let subject = serde_json::json!({
-        "kind": match loaded.subject_kind() {
+        "kind": match pipeline.loaded.subject_kind() {
             SubjectKind::Diff => "diff",
             SubjectKind::WholeTree => "whole-tree",
         },
         "empty": change_set.as_ref().is_some_and(|change_set| change_set.changed_paths.is_empty()),
-        "changed_paths": change_set.as_ref().map(|change_set| &change_set.changed_paths).cloned().unwrap_or_default(),
+        "changed_paths": change_set.as_ref().map(|change_set| change_set.changed_paths.clone()).unwrap_or_default(),
         "renames": change_set.as_ref().map(|change_set| &change_set.renames).cloned().unwrap_or_default(),
         "patch_bytes": change_set.as_ref().map(|change_set| change_set.canonical_patch().map(|patch| patch.len())).transpose()?.unwrap_or(0),
     });
@@ -189,11 +314,13 @@ pub(super) fn resolve_plan(
         selectors,
         resolved,
         subject,
-        pipeline_path,
+        pipeline_path: pipeline.path,
         topology,
-        definition,
-        loaded,
+        definition: pipeline.definition,
+        loaded: pipeline.loaded,
         change_set,
+        route,
+        input_sizes,
     })
 }
 
@@ -208,6 +335,8 @@ pub(super) struct ResolvedPlan {
     pub definition: Definition,
     pub loaded: review_config::Loaded,
     pub change_set: Option<review_core::ChangeSetV1>,
+    pub route: crate::project::RouteDecision,
+    pub input_sizes: Vec<WorkerInputSize>,
 }
 
 fn token_free_effects() -> serde_json::Value {
@@ -251,17 +380,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
         })
         .collect::<Vec<_>>();
     let convergence = selected_convergence(options.mode, loaded.convergence());
-    let change_set = plan
-        .change_set
-        .as_ref()
-        .map_or(ChangeSetSource::None, ChangeSetSource::Value);
-    let input_sizes = worker_input_sizes(
-        cas,
-        &plan.definition,
-        loaded,
-        change_set,
-        options.focus.as_deref(),
-    )?;
+    let input_sizes = &plan.input_sizes;
     let reservations = crate::project::static_reservations(loaded)
         .into_iter()
         .map(|reservation| {
@@ -283,6 +402,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
         "selectors": plan.selectors,
         "resolved": plan.resolved,
         "subject": plan.subject,
+        "route": plan.route,
         "pipeline": {
             "path": plan.pipeline_path,
             "topology": plan.topology,
@@ -488,6 +608,14 @@ pub(super) fn worker_input_sizes(
 ) -> Result<Vec<WorkerInputSize>, String> {
     let mut sizes = Vec::new();
     for node in loaded.packages().keys() {
+        // A Scatter's Workers are sized per shard at run time, and a closeout reviewer sees the
+        // whole Subject by design; neither has a first-Attempt input to measure here.
+        let is_static_reviewer = definition.nodes.iter().any(|spec| {
+            spec.id == *node && matches!(spec.kind, review_config::NodeKindSpec::Reviewer)
+        });
+        if !is_static_reviewer || loaded.closeouts().contains_key(node) {
+            continue;
+        }
         let change_set = match &change_set {
             ChangeSetSource::Value(value) => ChangeSetSource::Value(value),
             ChangeSetSource::Resolved(resolved) => ChangeSetSource::Resolved(resolved),
@@ -722,60 +850,126 @@ fn open_new(
 
     let layout = authority_layout(pipeline_path)?;
     let lock_path = layout.lock.clone();
-    let pipeline_bytes = authority_bytes(&snapshot.manifest, cas, pipeline_path)?;
     let lock_bytes = authority_bytes(&snapshot.manifest, cas, &lock_path)?;
-    let pipeline_text = std::str::from_utf8(&pipeline_bytes)
-        .map_err(|error| format!("authority pipeline `{pipeline_path}` is not UTF-8: {error}"))?;
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{lock_path}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
     if let Some(note) = crate::project::check_lock_af_version(&lockfile, &lock_path)? {
         eprintln!("af review: note: {note}");
     }
-    if layout.root == ".af" {
-        validate_af_pipeline_pin(&lockfile, pipeline_path, &pipeline_bytes)?;
-    }
+    let project = captured_project(&snapshot.manifest, cas, &layout)?;
     let registry = Registry::captured(captured_registry(
         &snapshot.manifest,
         cas,
         &layout.registry,
     )?);
-    let loaded = Definition::from_toml(pipeline_text)
-        .map_err(|error| error.to_string())?
-        .load_with(&lockfile, &registry)
-        .map_err(|error| error.to_string())?;
-    require_demand_set_output(&loaded, pipeline_path)?;
 
-    let (base_snapshot_id, base_manifest_id) = if loaded.subject_kind() == SubjectKind::Diff {
-        let base_ref = options
-            .base
-            .as_deref()
-            .or(options.authority.as_deref())
-            .ok_or("a new diff Campaign requires `--base REV`")?;
-        if base_ref == authority_ref {
-            (
-                Some(authority_snapshot_id.clone()),
-                Some(authority_manifest_id.clone()),
-            )
-        } else {
+    // Base before the pipeline: routing decides the pipeline from the changed paths, and the
+    // oversized policy needs the exact Change Set, before anything is pinned.
+    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let base = match base_ref {
+        Some(base_ref) if base_ref == authority_ref => Some(snapshot.clone()),
+        Some(base_ref) => {
             let base = Capture::new(repo, cas)
                 .committed(base_ref)
                 .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?;
             if base.repository_id != snapshot.repository_id {
                 return Err("Campaign Base belongs to a different repository than policy".into());
             }
-            let (snapshot_id, manifest_id) = publish_snapshot(&base, cas)?;
+            Some(base)
+        }
+        None => None,
+    };
+    let (base_snapshot_id, base_manifest_id) = match &base {
+        Some(base) => {
+            let (snapshot_id, manifest_id) = publish_snapshot(base, cas)?;
             (Some(snapshot_id), Some(manifest_id))
         }
-    } else {
-        if options.base.is_some() {
+        None => (None, None),
+    };
+    let routing_applies = !options.pipeline_explicit
+        && project
+            .as_ref()
+            .is_some_and(|(_, project)| project.routes_configured());
+    let change_set = match (routing_applies, &base, base_snapshot_id.as_deref()) {
+        (true, Some(base), Some(base_snapshot_id)) => {
+            capture_candidate(
+                options,
+                repo,
+                cas,
+                &snapshot,
+                Some((base, base_snapshot_id)),
+            )?
+            .2
+        }
+        _ => None,
+    };
+    let changed_paths: Vec<String> = change_set
+        .as_ref()
+        .map(|change_set| change_set.changed_paths.clone())
+        .unwrap_or_default();
+    let mut route = match (&project, options.pipeline_explicit) {
+        (Some((_, project)), false) => project.select_route(&changed_paths)?,
+        (Some(_), true) => crate::project::RouteDecision::explicit(pipeline_path),
+        (None, _) => crate::project::RouteDecision::legacy(pipeline_path),
+    };
+    let load = |path: &str| {
+        load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, &layout, path)
+    };
+    let pipeline = load(&route.pipeline_path)?;
+    match (pipeline.loaded.subject_kind(), base.is_some()) {
+        (SubjectKind::Diff, false) => {
+            return Err("a new diff Campaign requires `--base REV`".into());
+        }
+        (SubjectKind::WholeTree, _) if options.base.is_some() => {
             return Err(
                 "whole-tree review does not accept a Base; select a whole-tree pipeline with --policy-rev only"
                     .into(),
             );
         }
-        (None, None)
+        _ => {}
+    }
+    let (pipeline, _input_sizes) = if routing_applies {
+        apply_oversized_policy(
+            cas,
+            project.as_ref().map(|(_, project)| project),
+            &mut route,
+            pipeline,
+            change_set.as_ref(),
+            options.focus.as_deref(),
+            load,
+        )?
+    } else {
+        (pipeline, Vec::new())
     };
+    let (base_snapshot_id, base_manifest_id) =
+        if pipeline.loaded.subject_kind() == SubjectKind::Diff {
+            (base_snapshot_id, base_manifest_id)
+        } else {
+            (None, None)
+        };
+    super::run_progress(
+        options,
+        format_args!(
+            "route    {} => {}{}{}",
+            route.policy,
+            route.pipeline_path,
+            route
+                .name
+                .as_deref()
+                .map(|name| format!(" ({name})"))
+                .unwrap_or_default(),
+            if route.changed_paths > 0 {
+                format!("; {} changed path(s)", route.changed_paths)
+            } else {
+                String::new()
+            }
+        ),
+    );
+    let selected_pipeline_path = pipeline.path.clone();
+    let pipeline_path: &str = selected_pipeline_path.as_str();
+    let pipeline_bytes = pipeline.bytes;
+    let loaded = pipeline.loaded;
     super::run_progress(
         options,
         format_args!(
@@ -798,13 +992,12 @@ fn open_new(
         .put(&pipeline_bytes)
         .map_err(|error| error.to_string())?;
     let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
-    let project_policy_ids = if layout.root == ".af" {
-        let project_path = ".af/af.toml";
-        let project_bytes = authority_bytes(&snapshot.manifest, cas, project_path)?;
-        validate_af_project(&project_bytes, pipeline_path)?;
-        vec![cas.put(&project_bytes).map_err(|error| error.to_string())?]
-    } else {
-        Vec::new()
+    let project_policy_ids = match &project {
+        Some((project_bytes, _)) => {
+            validate_af_project(project_bytes, pipeline_path)?;
+            vec![cas.put(project_bytes).map_err(|error| error.to_string())?]
+        }
+        None => Vec::new(),
     };
     let finding_genesis_id = cas
         .put_json(&serde_json::json!({
@@ -976,7 +1169,9 @@ fn resume(
     if manifest.authority_snapshot_id != payload.authority_snapshot_id {
         return Err("CampaignOpened@1 disagrees with its CampaignManifest authority".into());
     }
-    if manifest.pipeline.path != pipeline_path {
+    // A routed Campaign pinned the pipeline routing chose; only an explicit, different request
+    // is a conflict.
+    if manifest.pipeline.path != pipeline_path && options.pipeline_explicit {
         return Err(format!(
             "campaign is pinned to pipeline `{}`; `{pipeline_path}` requires a new Campaign",
             manifest.pipeline.path
@@ -2298,11 +2493,19 @@ fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> 
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
     let project = crate::project::ProjectFile::parse(text)?;
-    let selected = project.review_pipeline();
-    let selected_path = format!(".af/pipelines/{selected}.toml");
-    if selected_path != pipeline_path {
+    let candidates = project.pipeline_candidates();
+    let name = Path::new(pipeline_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !candidates.contains(name) {
         return Err(format!(
-            "authority project selects pipeline `{selected_path}` but invocation requested `{pipeline_path}`"
+            "authority project declares pipelines {} (default, routes, oversized) but invocation requested `{pipeline_path}`",
+            candidates
+                .iter()
+                .map(|candidate| format!("`.af/pipelines/{candidate}.toml`"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     Ok(())

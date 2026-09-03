@@ -69,6 +69,8 @@ impl CampaignMode {
 struct Options {
     repo: PathBuf,
     pipeline: PathBuf,
+    /// `--pipeline` was given: routing never overrides an explicit selection.
+    pipeline_explicit: bool,
     state: Option<PathBuf>,
     campaign: Option<String>,
     focus: Option<String>,
@@ -564,7 +566,11 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
     }
     Options {
         repo: args.repo,
-        pipeline: args.pipeline,
+        // Routing never overrides an explicit selection; the default is the project's.
+        pipeline_explicit: args.pipeline.is_some(),
+        pipeline: args
+            .pipeline
+            .unwrap_or_else(|| PathBuf::from(cli::REVIEW_PIPELINE)),
         state: args.state,
         campaign: args.campaign,
         focus: args.focus,
@@ -1180,6 +1186,29 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .flatten()
     {
         println!("  change  {}", path.as_str().unwrap_or("?"));
+    }
+    if let Some(route) = plan["route"].as_object() {
+        println!(
+            "route    {} => {}{}{}",
+            route
+                .get("policy")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?"),
+            route
+                .get("pipeline_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?"),
+            route
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|name| format!(" ({name})"))
+                .unwrap_or_default(),
+            route
+                .get("replaced")
+                .and_then(serde_json::Value::as_str)
+                .map(|replaced| format!("; replaced {replaced}: its Worker input exceeded the cap"))
+                .unwrap_or_default()
+        );
     }
     println!("topology");
     for node in plan["pipeline"]["topology"]["nodes"]
@@ -4984,6 +5013,7 @@ mod option_tests {
         let options = Options {
             repo: repository.path().to_path_buf(),
             pipeline: ".af/pipelines/review.toml".into(),
+            pipeline_explicit: false,
             state: Some(repository.path().join(".af/state/architecture")),
             campaign: Some("architecture".to_string()),
             focus: None,

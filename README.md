@@ -642,6 +642,41 @@ loader is serde types, so another syntax is a different `from_str`, not a differ
 reason is dependency risk: `serde_yaml` is archived and its forks are uneven, while `toml` is
 the ecosystem default for Rust tooling configuration. Recorded rather than quietly done.
 
+## Routing by changed paths
+
+One pipeline for every change makes a docs-only commit pay for the full review graph. `.af/af.toml`
+may declare routes, and the kernel selects the pipeline from the canonical changed paths — both
+sides of every rename included — before anything is pinned or dispatched:
+
+```toml
+[routing]
+unmatched = "default"   # or "refuse": no covering route is an error, never a silent fallback
+ambiguous = "refuse"    # or "first": several covering routes pick the first declared
+oversized = "scatter"   # the pipeline to select when a Worker's input alone exhausts its cap
+
+[[routes]]
+name = "docs"
+paths = ["docs/**", "**/*.md"]
+pipeline = "docs"
+```
+
+A route matches when every changed path matches one of its patterns. Patterns are anchored at
+the repository root and match by segment: `*` within one segment, `?` one character, `**` any
+number of segments; paths are matched in their canonical encoded form, so a non-UTF-8 byte is
+`%FF` on both sides. Selection is deterministic and token-free; `af review plan` prints it
+(`route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`, also `route` in
+`af/review-plan@1`), Campaign open prints the same line, and the Campaign Manifest pins the chosen
+pipeline, so later Rounds never re-route. An explicit `--pipeline` always wins and is reported as
+`explicit`; a whole-tree Subject has no changed paths and follows the `unmatched` policy. Every
+pipeline a route or the oversized policy names is authority: `af onboard --refresh-lock` pins them
+all and `af onboard` refuses a missing or unpinned target.
+
+The oversized policy is the bounded strategy for a Diff whose first-Attempt input exhausts a
+Worker's cap: instead of refusing, plan and open switch to the named pipeline — typically a
+Scatter pipeline whose shards each fit, with Complete coverage and a required closeout so no path
+is dropped — measure it the same way, and report the switch (`replaced`). If that pipeline does
+not fit either, the run still refuses before admission. Nothing is ever truncated.
+
 ## Attempts and budgets
 
 An attempt is one execution of one node, and the process behind it does not necessarily stop when

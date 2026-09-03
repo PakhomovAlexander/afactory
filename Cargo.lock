@@ -1219,7 +1219,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-attempt"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "serde",
  "sha2",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "review-broker"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64",
  "review-core",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "review-check"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "review-config"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "review-check",
  "review-core",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "review-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64",
  "jsonschema",
@@ -1276,21 +1276,21 @@ dependencies = [
 
 [[package]]
 name = "review-graph"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "review-core",
 ]
 
 [[package]]
 name = "review-parallel"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "review-pipeline"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "review-attempt",
  "review-broker",
@@ -1309,14 +1309,14 @@ dependencies = [
 
 [[package]]
 name = "review-process"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "nix 0.30.1",
 ]
 
 [[package]]
 name = "review-runner"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "jsonschema",
  "review-broker",
@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-claude"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "review-config",
  "review-core",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-codex"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "review-config",
  "review-core",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "review-sandbox"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "exacl",
  "nix 0.30.1",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-git"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "jsonschema",
  "notify",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "review-store"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "nix 0.30.1",
  "reflink-copy",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "reviewctl"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "clap_complete",
