@@ -251,6 +251,32 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
         })
         .collect::<Vec<_>>();
     let convergence = selected_convergence(options.mode, loaded.convergence());
+    let change_set = plan
+        .change_set
+        .as_ref()
+        .map_or(ChangeSetSource::None, ChangeSetSource::Value);
+    let input_sizes = worker_input_sizes(
+        cas,
+        &plan.definition,
+        loaded,
+        change_set,
+        options.focus.as_deref(),
+    )?;
+    let reservations = crate::project::static_reservations(loaded)
+        .into_iter()
+        .map(|reservation| {
+            let mut value = serde_json::to_value(&reservation).expect("a reservation serializes");
+            if let Some(size) = input_sizes
+                .iter()
+                .find(|size| size.node == reservation.node)
+            {
+                value["input_bytes"] = serde_json::json!(size.input_bytes);
+                value["input_tokens"] = serde_json::json!(size.input_tokens);
+                value["fits"] = serde_json::json!(size.fits);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "schema": "af/review-plan@1",
         "token_free": true,
@@ -262,8 +288,9 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             "topology": plan.topology,
             "gates": checks,
             "budgets": loaded.budgets(),
-            "reservations": crate::project::static_reservations(loaded),
+            "reservations": reservations,
             "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+            "inputs_fit": input_sizes.iter().all(|size| size.fits),
             "convergence": {
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
@@ -276,50 +303,46 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
     }))
 }
 
-/// The exact input one Worker would receive on a first Attempt, composed by the same function
-/// its adapter calls at dispatch. Token-free: no Campaign state, Gate, Provider, or spend.
-#[derive(serde::Serialize)]
-pub(super) struct RenderView {
-    pub(super) schema: &'static str,
-    pub(super) token_free: bool,
-    pub(super) node: String,
-    pub(super) runner: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) package: Option<serde_json::Value>,
-    pub(super) transport: review_runner::InputTransport,
-    pub(super) bytes: usize,
-    pub(super) estimated_tokens: u64,
-    pub(super) manifest: review_runner::ContextManifest,
-    /// Campaign-bound inputs a real Attempt also receives; listed, never invented.
-    pub(super) not_rendered: Vec<String>,
-    pub(super) input_is_utf8: bool,
-    pub(super) input: String,
-    pub(super) external_effects: serde_json::Value,
-    #[serde(skip)]
-    pub(super) raw: Vec<u8>,
+/// Where a first Attempt's Change Set comes from: the plan's freshly computed value, a Round's
+/// validated one, or nothing for a whole-tree Subject.
+pub(super) enum ChangeSetSource<'a> {
+    Value(&'a review_core::ChangeSetV1),
+    Resolved(&'a std::sync::Arc<review_store::ResolvedChangeSet>),
+    None,
 }
 
-pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<RenderView, String> {
-    let node = options
-        .node
-        .clone()
-        .ok_or("review render requires `--node NODE`")?;
-    let plan = resolve_plan(options, cas, repo)?;
-    let spec = plan
-        .definition
+/// One Worker's first-Attempt input, composed by the same function its adapter calls at
+/// dispatch, plus what a real Attempt adds that cannot be known before a Campaign exists.
+pub(super) struct FirstAttemptInput {
+    pub rendered: review_runner::RenderedInput,
+    pub runner: String,
+    pub not_rendered: Vec<String>,
+}
+
+/// Compose `node`'s first-Attempt input token-free. No Campaign state, Gate, Provider, Worker,
+/// or spend: the adapter is built from the digest-pinned package and only `render_input` is
+/// called on it.
+pub(super) fn first_attempt_input(
+    cas: &Cas,
+    definition: &Definition,
+    loaded: &review_config::Loaded,
+    node: &str,
+    change_set: ChangeSetSource<'_>,
+    focus: Option<&str>,
+) -> Result<FirstAttemptInput, String> {
+    let spec = definition
         .nodes
         .iter()
         .find(|spec| spec.id == node)
-        .ok_or_else(|| format!("pipeline `{}` has no node `{node}`", plan.pipeline_path))?;
+        .ok_or_else(|| format!("pipeline has no node `{node}`"))?;
     if !matches!(spec.kind, review_config::NodeKindSpec::Reviewer) {
         return Err(format!(
             "node `{node}` is not a reviewer Worker; only Workers receive an input"
         ));
     }
-    let command = plan
-        .loaded
+    let command = loaded
         .reviewers()
-        .get(&node)
+        .get(node)
         .ok_or_else(|| format!("node `{node}` has no runner"))?;
     let result_contract = match spec.outputs.as_slice() {
         [review_config::PortContractSpec::Typed(port)] => {
@@ -354,30 +377,36 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
             }
         };
         let is_change_set = artifact_type == review_core::contract::CHANGE_SET_V1
-            || (plan.definition.version == 1
+            || (definition.version == 1
                 && artifact_type == review_core::contract::OPAQUE_V1
                 && name == "change_set");
         if is_change_set {
-            let Some(change_set) = &plan.change_set else {
-                not_rendered.push(format!("{name}: a whole-tree Subject has no Change Set"));
-                continue;
-            };
-            // Published exactly as a run publishes it, so the artifact ID in the rendered
-            // metadata is the one a Campaign on this Subject would carry.
-            let value = serde_json::to_value(change_set).map_err(|error| error.to_string())?;
-            review_core::json::admit(&value).map_err(|error| error.to_string())?;
-            let encoded =
-                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
-            let artifact_id = cas.put(&encoded).map_err(|error| error.to_string())?;
-            inputs.artifacts.insert(
-                name.to_string(),
-                vec![
+            let artifact = match &change_set {
+                ChangeSetSource::Resolved(resolved) => {
+                    review_runner::ReviewerInputArtifact::from_resolved_change_set(
+                        std::sync::Arc::clone(resolved),
+                    )?
+                }
+                ChangeSetSource::Value(change_set) => {
+                    // Published exactly as a run publishes it, so the artifact ID in the
+                    // rendered metadata is the one a Campaign on this Subject would carry.
+                    let value =
+                        serde_json::to_value(change_set).map_err(|error| error.to_string())?;
+                    review_core::json::admit(&value).map_err(|error| error.to_string())?;
+                    let encoded = review_store::canonical::canonicalize(&value)
+                        .map_err(|error| error.to_string())?;
+                    let artifact_id = cas.put(&encoded).map_err(|error| error.to_string())?;
                     review_runner::ReviewerInputArtifact::change_set_from_encoded(
                         artifact_id,
                         &encoded,
-                    )?,
-                ],
-            );
+                    )?
+                }
+                ChangeSetSource::None => {
+                    not_rendered.push(format!("{name}: a whole-tree Subject has no Change Set"));
+                    continue;
+                }
+            };
+            inputs.artifacts.insert(name.to_string(), vec![artifact]);
         } else if name == "prior_findings"
             || artifact_type == review_core::contract::FINDING_SET_V1
             || artifact_type.contains("PriorFindings")
@@ -398,14 +427,13 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    let package = plan.loaded.packages().get(&node);
-    let adapter: Box<dyn review_runner::ReviewerAdapter> = match package {
+    let adapter: Box<dyn review_runner::ReviewerAdapter> = match loaded.packages().get(node) {
         Some(package) => match runner.as_str() {
             "claude" => {
                 let mut adapter =
                     review_runner_claude::ClaudeAdapter::from_package(package, timeout)
                         .map_err(|error| format!("{node}: {error}"))?;
-                if let Some(focus) = &options.focus {
+                if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
                 }
                 Box::new(adapter)
@@ -413,7 +441,7 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
             "codex" => {
                 let mut adapter = review_runner_codex::CodexAdapter::from_package(package, timeout)
                     .map_err(|error| format!("{node}: {error}"))?;
-                if let Some(focus) = &options.focus {
+                if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
                 }
                 Box::new(adapter)
@@ -430,30 +458,167 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
         .render_input(&inputs)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("node `{node}`: this adapter has no fixed input encoding"))?;
-    let (input, input_is_utf8) = match String::from_utf8(rendered.bytes.clone()) {
+    Ok(FirstAttemptInput {
+        rendered,
+        runner,
+        not_rendered,
+    })
+}
+
+/// A model Worker's first-Attempt input measured against the cap its dispatch reserves.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(super) struct WorkerInputSize {
+    pub node: String,
+    pub input_bytes: usize,
+    pub input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_tokens: Option<u64>,
+    /// `false` when the input alone leaves no room in the Attempt cap for any output.
+    pub fits: bool,
+}
+
+/// Measure every packaged model Worker's first-Attempt input against its cap. Command Workers
+/// spend no tokens and are not measured.
+pub(super) fn worker_input_sizes(
+    cas: &Cas,
+    definition: &Definition,
+    loaded: &review_config::Loaded,
+    change_set: ChangeSetSource<'_>,
+    focus: Option<&str>,
+) -> Result<Vec<WorkerInputSize>, String> {
+    let mut sizes = Vec::new();
+    for node in loaded.packages().keys() {
+        let change_set = match &change_set {
+            ChangeSetSource::Value(value) => ChangeSetSource::Value(value),
+            ChangeSetSource::Resolved(resolved) => ChangeSetSource::Resolved(resolved),
+            ChangeSetSource::None => ChangeSetSource::None,
+        };
+        let input = first_attempt_input(cas, definition, loaded, node, change_set, focus)?;
+        let cap_tokens = loaded.attempt_cap_for(node);
+        let input_tokens = input.rendered.manifest.estimated_tokens;
+        sizes.push(WorkerInputSize {
+            node: node.clone(),
+            input_bytes: input.rendered.bytes.len(),
+            input_tokens,
+            cap_tokens,
+            fits: cap_tokens.is_none_or(|cap| input_tokens < cap),
+        });
+    }
+    Ok(sizes)
+}
+
+/// Refuse before any Gate, Provider admission, or Worker dispatch when a Worker's input alone
+/// exhausts its Attempt cap: the Attempt could only fail after paying for the whole input.
+/// Never truncates; names the bounded alternatives instead.
+pub(super) fn refuse_unfit_inputs(sizes: &[WorkerInputSize]) -> Result<(), String> {
+    let unfit: Vec<String> = sizes
+        .iter()
+        .filter(|size| !size.fits)
+        .map(|size| {
+            format!(
+                "`{}` receives {} bytes (about {} tokens) against an Attempt cap of {} tokens",
+                size.node,
+                size.input_bytes,
+                size.input_tokens,
+                size.cap_tokens.unwrap_or(0)
+            )
+        })
+        .collect();
+    if unfit.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Worker input alone exhausts its Attempt cap, so no output could ever be paid for: {}. Nothing was dispatched or charged. Narrow the Subject (a smaller Base-to-candidate range), raise that Worker's `budget.attempt`, or route the Diff through a Scatter node (pipeline v5) so each shard fits",
+        unfit.join("; ")
+    ))
+}
+
+/// The exact input one Worker would receive on a first Attempt, composed by the same function
+/// its adapter calls at dispatch. Token-free: no Campaign state, Gate, Provider, or spend.
+#[derive(serde::Serialize)]
+pub(super) struct RenderView {
+    pub(super) schema: &'static str,
+    pub(super) token_free: bool,
+    pub(super) node: String,
+    pub(super) runner: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) package: Option<serde_json::Value>,
+    pub(super) transport: review_runner::InputTransport,
+    pub(super) bytes: usize,
+    pub(super) estimated_tokens: u64,
+    /// The Attempt cap this Worker's dispatch reserves, when the pipeline is capped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cap_tokens: Option<u64>,
+    /// Whether the input leaves room in that cap for any output; absent when uncapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) fits: Option<bool>,
+    pub(super) manifest: review_runner::ContextManifest,
+    /// Campaign-bound inputs a real Attempt also receives; listed, never invented.
+    pub(super) not_rendered: Vec<String>,
+    pub(super) input_is_utf8: bool,
+    pub(super) input: String,
+    pub(super) external_effects: serde_json::Value,
+    #[serde(skip)]
+    pub(super) raw: Vec<u8>,
+}
+
+pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<RenderView, String> {
+    let node = options
+        .node
+        .clone()
+        .ok_or("review render requires `--node NODE`")?;
+    let plan = resolve_plan(options, cas, repo)?;
+    let change_set = plan
+        .change_set
+        .as_ref()
+        .map_or(ChangeSetSource::None, ChangeSetSource::Value);
+    let input = first_attempt_input(
+        cas,
+        &plan.definition,
+        &plan.loaded,
+        &node,
+        change_set,
+        options.focus.as_deref(),
+    )
+    .map_err(|error| {
+        if error.starts_with("pipeline has no node") {
+            format!("pipeline `{}` has no node `{node}`", plan.pipeline_path)
+        } else {
+            error
+        }
+    })?;
+    let package = plan.loaded.packages().get(&node).map(|package| {
+        serde_json::json!({
+            "name": package.name,
+            "version": package.version,
+            "digest": package.digest,
+        })
+    });
+    let cap_tokens = package.as_ref().and(plan.loaded.attempt_cap_for(&node));
+    let estimated_tokens = input.rendered.manifest.estimated_tokens;
+    let (text, input_is_utf8) = match String::from_utf8(input.rendered.bytes.clone()) {
         Ok(text) => (text, true),
-        Err(_) => (String::from_utf8_lossy(&rendered.bytes).into_owned(), false),
+        Err(_) => (
+            String::from_utf8_lossy(&input.rendered.bytes).into_owned(),
+            false,
+        ),
     };
     Ok(RenderView {
         schema: "af/review-render@1",
         token_free: true,
-        runner,
-        package: package.map(|package| {
-            serde_json::json!({
-                "name": package.name,
-                "version": package.version,
-                "digest": package.digest,
-            })
-        }),
-        transport: rendered.transport,
-        bytes: rendered.bytes.len(),
-        estimated_tokens: rendered.manifest.estimated_tokens,
-        manifest: rendered.manifest,
-        not_rendered,
+        runner: input.runner,
+        package,
+        transport: input.rendered.transport,
+        bytes: input.rendered.bytes.len(),
+        estimated_tokens,
+        cap_tokens,
+        fits: cap_tokens.map(|cap| estimated_tokens < cap),
+        manifest: input.rendered.manifest,
+        not_rendered: input.not_rendered,
         input_is_utf8,
-        input,
+        input: text,
         external_effects: token_free_effects(),
-        raw: rendered.bytes,
+        raw: input.rendered.bytes,
         node,
     })
 }

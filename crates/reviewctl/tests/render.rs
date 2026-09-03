@@ -113,6 +113,11 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert!(input.contains("notes.md"), "{input}");
     assert_eq!(view["bytes"].as_u64().unwrap(), input.len() as u64);
     assert_eq!(view["manifest"]["rendered_bytes"], view["bytes"]);
+    assert_eq!(
+        view["cap_tokens"], 300_000,
+        "the fixture caps every Attempt at 300k"
+    );
+    assert_eq!(view["fits"], true);
     for effect in [
         "campaign_state",
         "gates",
@@ -254,4 +259,66 @@ to = { node = "ledger", port = "reports" }
     let missing = af(&state_home, &base);
     assert!(!missing.status.success());
     assert!(stderr(&missing).contains("--node"), "{}", stderr(&missing));
+}
+
+/// An input that alone exhausts its Worker's Attempt cap is refused before any Gate, Provider
+/// admission, or Worker — nothing charged — and `plan` says so first.
+#[test]
+fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = hub_repo_with_a_change(root.path());
+    // A 100-token cap on the correctness Worker: the 20 KB prompt cannot fit.
+    let pipeline = repo.join(".review/pipelines/heavy.toml");
+    let text = std::fs::read_to_string(&pipeline).unwrap();
+    let capped = text.replace(
+        "id = \"correctness\"\nkind = \"reviewer\"\n",
+        "id = \"correctness\"\nkind = \"reviewer\"\nbudget = { attempt = 100 }\n",
+    );
+    assert_ne!(capped, text);
+    std::fs::write(&pipeline, capped).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "tiny cap"]);
+    let state_home = root.path().join("state");
+    let repo_arg = repo.to_str().unwrap();
+    let selectors = [
+        "--repo",
+        repo_arg,
+        "--pipeline",
+        ".review/pipelines/heavy.toml",
+        "--policy-rev",
+        "HEAD",
+        "--base",
+        "HEAD~2",
+        "--candidate",
+        "HEAD",
+    ];
+
+    let mut plan_args = vec!["review", "plan"];
+    plan_args.extend(selectors);
+    plan_args.push("--json");
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(plan["pipeline"]["inputs_fit"], false);
+    let reservation = &plan["pipeline"]["reservations"][0];
+    assert_eq!(reservation["node"], "correctness");
+    assert_eq!(reservation["tokens"], 100);
+    assert_eq!(reservation["fits"], false);
+    assert!(reservation["input_tokens"].as_u64().unwrap() > 100);
+
+    let campaign_state = root.path().join("campaign");
+    let mut run_args = vec!["review", "run", "--campaign", "fit", "--state"];
+    run_args.push(campaign_state.to_str().unwrap());
+    run_args.extend(selectors);
+    run_args.extend(["--provider", "correctness=codex-ambient"]);
+    let refused = af(&state_home, &run_args);
+    assert!(!refused.status.success(), "the run must refuse");
+    let message = stderr(&refused);
+    assert!(message.contains("exhausts its Attempt cap"), "{message}");
+    assert!(message.contains("`correctness` receives"), "{message}");
+    assert!(
+        message.contains("Nothing was dispatched or charged"),
+        "{message}"
+    );
+    assert!(message.contains("Scatter"), "{message}");
 }

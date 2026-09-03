@@ -651,6 +651,15 @@ static Worker's reservation and the largest amount they can hold at once (`reser
 Worker when the run cap cannot admit that sum; `af review report` shows the cap that bounded
 each Attempt. Pipelines without node caps behave exactly as before.
 
+Before a Round admits any Provider, the kernel composes each model Worker's first-Attempt input
+with the same function `af review render` uses and measures it against that Worker's cap. An input
+that alone exhausts the cap — no room left for any output — is refused there, with nothing
+dispatched or charged, and the refusal names the bytes, the tokens, the cap, and the bounded
+alternatives: a narrower Base-to-candidate range, a larger `budget.attempt`, or a Scatter node so
+each shard fits. Nothing is ever truncated silently. `af review plan` reports the same numbers per
+Worker (`input_bytes`, `input_tokens`, `fits`, and `inputs_fit`) so the refusal is visible before a
+Campaign exists.
+
 How long an attempt took, and what its Provider reported per token kind, is recorded in a
 **sidecar** table beside the event stream (`attempt_wall` in the same `events.sqlite`). Nothing in
 identity, replay, the Ledger, or convergence reads it — the stream stays byte-for-byte

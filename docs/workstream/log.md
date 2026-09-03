@@ -1464,3 +1464,15 @@ invented. Header on stderr, raw bytes on stdout, `af/review-render@1` with `--js
 Provider, or spend. Tests prove rendered bytes equal what the Claude, Codex, and command adapters
 actually write to stdin. README documents the command and command Workers (sandbox cwd, cleared
 env, stdin JSON, no `.git` by construction). #32 can now refuse on the exact encoded size.
+
+## 2026-09-03 — Oversized Worker input is refused before admission (issue #32, first slice)
+
+`render`'s composition is now `first_attempt_input`, shared by `af review render`, `af review plan`,
+and `af review run`. Plan measures every packaged model Worker's first-Attempt input against the
+cap its dispatch reserves (`reservations[].input_bytes|input_tokens|fits`, `pipeline.inputs_fit`)
+and prints it per Worker; run composes the same input from the pinned pipeline and the Round's
+validated Change Set and refuses before any Gate, Provider admission, or Worker when the input
+alone exhausts the cap — nothing dispatched or charged, the refusal naming bytes, tokens, cap, and
+the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter node). Nothing is
+truncated. The automatic bounded-strategy selection with typed closure obligations is the
+remaining half of #32 and belongs with path routing (#40).

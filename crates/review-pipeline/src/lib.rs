@@ -316,6 +316,15 @@ impl RoundAuthority {
         &self.authority_snapshot_id
     }
 
+    /// The validated Change Set this Round reviews, when the Subject is a Diff.
+    pub fn change_set(&self) -> Option<&Arc<review_store::ResolvedChangeSet>> {
+        self.change_set.as_ref()
+    }
+
+    pub fn finding_identity_policy(&self) -> &str {
+        &self.finding_identity_policy
+    }
+
     pub fn campaign_manifest_id(&self) -> &str {
         &self.campaign_manifest_id
     }
