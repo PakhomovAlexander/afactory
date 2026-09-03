@@ -1290,6 +1290,29 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or(0)
         );
     }
+    if let Some(reservations) = plan["pipeline"]["reservations"]
+        .as_array()
+        .filter(|reservations| !reservations.is_empty())
+    {
+        let parts = reservations
+            .iter()
+            .map(|reservation| {
+                format!(
+                    "{} {} ({})",
+                    reservation["node"].as_str().unwrap_or("?"),
+                    reservation["tokens"].as_u64().unwrap_or(0),
+                    reservation["source"].as_str().unwrap_or("?")
+                )
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "reserve  {}; max simultaneous {}",
+            parts.join(" · "),
+            plan["pipeline"]["max_simultaneous_reservation"]
+                .as_u64()
+                .unwrap_or(0)
+        );
+    }
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
             "provider {} -> {}",
@@ -2173,6 +2196,9 @@ struct AttemptSpendView {
     spent_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    /// The reservation that bounded this Attempt: the node's own cap, or the pipeline's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reserved: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall: Option<AttemptWallView>,
 }
@@ -2346,6 +2372,8 @@ struct ReviewerSpendAccumulator {
 struct AttemptSpendAccumulator {
     outcome: String,
     spent_tokens: u64,
+    /// The reservation that bounded this Attempt — its node cap, or the pipeline's.
+    reserved: Option<u64>,
     broker_observed_tokens: u64,
     detail: Option<String>,
     terminal: bool,
@@ -2490,6 +2518,7 @@ fn report_spend(
                         AttemptSpendAccumulator {
                             outcome: "running".to_string(),
                             spent_tokens: payload.reserved.unwrap_or(0),
+                            reserved: payload.reserved,
                             broker_observed_tokens: 0,
                             detail: None,
                             terminal: false,
@@ -2629,6 +2658,7 @@ fn settle_attempt(
         .or_insert_with(|| AttemptSpendAccumulator {
             outcome: "running".to_string(),
             spent_tokens: 0,
+            reserved: None,
             broker_observed_tokens: 0,
             detail: None,
             terminal: false,
@@ -2657,6 +2687,7 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
                 outcome: attempt.outcome,
                 spent_tokens: attempt.spent_tokens,
                 detail: attempt.detail,
+                reserved: attempt.reserved,
                 wall: None,
             })
             .collect::<Vec<_>>();
@@ -2769,10 +2800,14 @@ fn print_report_text(report: &ReviewReportView) {
             );
             for attempt in &reviewer.attempts {
                 println!(
-                    "      attempt {}: {}, {} tokens{}{}",
+                    "      attempt {}: {}, {} tokens{}{}{}",
                     attempt.attempt_id,
                     attempt.outcome,
                     attempt.spent_tokens,
+                    attempt
+                        .reserved
+                        .map(|cap| format!(" (cap {cap})"))
+                        .unwrap_or_default(),
                     attempt_wall_suffix(attempt.wall.as_ref()),
                     attempt
                         .detail
@@ -2913,12 +2948,16 @@ fn print_report_markdown(report: &ReviewReportView) {
             for attempt in &reviewer.attempts {
                 println!();
                 println!(
-                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}",
+                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}{}",
                     round.round,
                     reviewer.reviewer,
                     attempt.attempt_id,
                     attempt.outcome,
                     attempt.spent_tokens,
+                    attempt
+                        .reserved
+                        .map(|cap| format!(" (cap {cap})"))
+                        .unwrap_or_default(),
                     attempt_wall_suffix(attempt.wall.as_ref()),
                     attempt
                         .detail
@@ -3853,19 +3892,20 @@ fn packaged_runner(command: &review_core::Command) -> String {
         .unwrap_or_default()
 }
 
+/// `static_reservation_tokens` is every static Worker's first Attempt together — each node's
+/// own cap where declared, the pipeline attempt cap elsewhere.
 fn require_static_attempt_capacity(
-    attempt_tokens: u64,
+    static_reservation_tokens: u64,
     run_tokens: u64,
     static_workers: usize,
     committed_tokens: u64,
 ) -> Result<(), String> {
-    let attempts = project::static_run_requirement(attempt_tokens, static_workers, 0)?;
     let required = committed_tokens
-        .checked_add(attempts)
+        .checked_add(static_reservation_tokens)
         .ok_or("Provider spend plus static Worker budget arithmetic overflow")?;
     if required > run_tokens {
         return Err(format!(
-            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for one {attempt_tokens}-token Attempt for each of {static_workers} required static Workers: cap {run_tokens}, required {required}"
+            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for the first Attempt of each of {static_workers} required static Workers ({static_reservation_tokens} tokens reserved together): cap {run_tokens}, required {required}"
         ));
     }
     Ok(())
@@ -3979,8 +4019,9 @@ fn admit_review_providers(
         let committed = store
             .round_committed_tokens(run_id, authority.round_event_id())
             .map_err(|error| error.to_string())?;
+        let static_reservation = project::max_simultaneous_reservation(loaded)?.unwrap_or(0);
         require_static_attempt_capacity(
-            budgets.attempt,
+            static_reservation,
             budgets.run,
             loaded.reviewers().len(),
             committed,
@@ -4942,9 +4983,9 @@ mod option_tests {
 
     #[test]
     fn provider_smoke_spend_cannot_consume_static_attempt_capacity() {
-        let error = require_static_attempt_capacity(300_000, 600_000, 2, 2).unwrap_err();
+        let error = require_static_attempt_capacity(600_000, 600_000, 2, 2).unwrap_err();
         assert!(error.contains("cap 600000, required 600002"), "{error}");
-        require_static_attempt_capacity(300_000, 600_002, 2, 2).unwrap();
+        require_static_attempt_capacity(600_000, 600_002, 2, 2).unwrap();
     }
 
     #[test]

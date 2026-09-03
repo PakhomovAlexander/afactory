@@ -628,6 +628,73 @@ fn exhaustion_mid_run_finishes_what_ran_and_reports_incomplete() {
     assert_eq!(kernel.spent(), Some(180_000));
 }
 
+/// A node with its own cap reserves that cap, not the pipeline's: alpha declares 50k, so the
+/// same 250k run that refused gamma above now admits all three (50k + 100k + 100k), and the
+/// dispatch receipt records the reservation that bounded each Attempt.
+#[test]
+fn a_node_cap_bounds_its_own_reservation_and_frees_the_run_for_the_rest() {
+    let mut run = run_fixture();
+    let pipeline = BUDGET_PIPELINE
+        .replace(
+            "id = \"r-alpha\"\nkind = \"reviewer\"\n",
+            "id = \"r-alpha\"\nkind = \"reviewer\"\nbudget = { attempt = 50000 }\n",
+        )
+        .replace(
+            "id = \"ledger\"\nkind = \"ledger\"\ninputs = [\"reports\"]\noutputs = [\"findings\"]\n",
+            "id = \"ledger\"\nkind = \"ledger\"\ninputs = [\"reports\"]\noutputs = [\"findings\"]\n\n[budgets]\nunit = \"tokens\"\nattempt = 100000\nrun = 250000\n",
+        );
+    assert!(pipeline.contains("budget = { attempt = 50000 }"));
+    assert!(pipeline.contains("[budgets]"));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &run.cas,
+        &mut run.store,
+        "run",
+        run.snapshot.clone(),
+        None,
+        &pipeline,
+    )
+    .with_checks(passing_check())
+    .with_budgets(100_000, 250_000)
+    .with_adapter("r-alpha", Box::new(Costed { cost: 40_000 }))
+    .with_adapter("r-beta", Box::new(Costed { cost: 90_000 }))
+    .with_adapter("r-gamma", Box::new(Costed { cost: 90_000 }));
+
+    let plan = three_reviewer_pipeline().plan().unwrap();
+    let report = Scheduler::new(&plan).with_parallelism(1).run(&kernel);
+    for done in ["r-alpha", "r-beta", "r-gamma"] {
+        assert!(
+            matches!(report.outcome(done), Some(NodeOutcome::Completed { .. })),
+            "{done} should have completed: {:?}",
+            report.outcome(done)
+        );
+    }
+    assert_eq!(kernel.spent(), Some(220_000));
+
+    let reserved: std::collections::BTreeMap<String, Option<u64>> = run
+        .store
+        .replay("run")
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == EventType::AttemptDispatchedV1)
+        .map(|event| {
+            let payload: AttemptDispatchedPayloadV1 =
+                serde_json::from_value(event.payload).unwrap();
+            (event.node_id.unwrap(), payload.reserved)
+        })
+        .collect();
+    assert_eq!(
+        reserved["r-alpha"],
+        Some(50_000),
+        "the node cap is the reservation"
+    );
+    assert_eq!(
+        reserved["r-beta"],
+        Some(100_000),
+        "others keep the pipeline cap"
+    );
+    assert_eq!(reserved["r-gamma"], Some(100_000));
+}
+
 /// A timeout retries: the first attempt is fenced and charged its full reservation (its true
 /// spend is unreportable), the retry answers, and both charges are on the books.
 #[test]

@@ -123,6 +123,27 @@ fn every_consumer_fixture_plans_with_this_binary() {
             "{}: a plan must report its external effects",
             fixture.display()
         );
+        // Reservation-aware planning: every static Worker's first Attempt, and their sum.
+        let reservations = document["pipeline"]["reservations"].as_array().unwrap();
+        assert!(!reservations.is_empty(), "{}", fixture.display());
+        let sum: u64 = reservations
+            .iter()
+            .map(|reservation| reservation["tokens"].as_u64().unwrap())
+            .sum();
+        assert_eq!(
+            document["pipeline"]["max_simultaneous_reservation"].as_u64(),
+            Some(sum),
+            "{}",
+            fixture.display()
+        );
+        assert!(
+            reservations.iter().all(|reservation| matches!(
+                reservation["source"].as_str(),
+                Some("node" | "pipeline")
+            )),
+            "{}",
+            fixture.display()
+        );
     }
 }
 
