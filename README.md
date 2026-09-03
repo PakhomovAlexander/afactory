@@ -619,6 +619,16 @@ that refuses anonymously is one nobody can raise correctly. A reservation is all
 scopes; an overrun commits rather than being refused, since the work is already paid for, and then
 closes the gate on the next dispatch.
 
+A Worker node may declare its own Attempt cap — `budget = { attempt = 150000 }` on the
+`[[nodes]]` entry — and its dispatch then reserves that amount instead of `[budgets].attempt`,
+at its own node scope as well as the run's. A cheap deterministic or comment Worker stops paying
+for the deep correctness Worker's headroom. The cap refines `[budgets]` and requires it, cannot
+exceed the run cap, and on a Scatter is each shard's reservation. `af review plan` prints every
+static Worker's reservation and the largest amount they can hold at once (`reservations`,
+`max_simultaneous_reservation` in `af/review-plan@1`); admission refuses before any Gate or
+Worker when the run cap cannot admit that sum; `af review report` shows the cap that bounded
+each Attempt. Pipelines without node caps behave exactly as before.
+
 How long an attempt took, and what its Provider reported per token kind, is recorded in a
 **sidecar** table beside the event stream (`attempt_wall` in the same `events.sqlite`). Nothing in
 identity, replay, the Ledger, or convergence reads it — the stream stays byte-for-byte

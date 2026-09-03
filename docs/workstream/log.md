@@ -1439,3 +1439,15 @@ column, per-Attempt duration and usage, and a Findings-by-disposition line (also
 summary with dispositions and wall. A store written before the sidecar reads as "not recorded",
 never as an error. AGENTS.md now requires every dogfood record to state wall-clock, usage, and
 dispositions including rejected and wontfix. No currency: prices belong to Providers.
+
+## 2026-09-03 — Per-node Attempt caps (issue #42, audit recommendation 3)
+
+`BudgetScope::Node` was reserved on every dispatch but never limited, and every Worker reserved
+the pipeline-wide attempt cap. `[[nodes]] budget = { attempt = N }` now declares a Worker's own
+cap: it is the reservation its dispatch takes (a dynamic shard inherits its Scatter's), its own
+node scope is limited to it, and `[budgets]` must exist and cover it. Planning prints each static
+Worker's reservation and their sum (`reservations`, `max_simultaneous_reservation`); provider
+admission and onboarding refuse against that sum instead of `attempt × workers`, with retry
+headroom measured by the largest cap; the spend report names the reservation that bounded each
+Attempt. Pipelines without node caps are unchanged, byte for byte. Replay now seeds committed
+spend per node as well as per Run and Scatter, so a resumed Round keeps counting against node caps.

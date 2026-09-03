@@ -668,6 +668,8 @@ struct ReplayedExecution {
     refusal_histories: BTreeMap<String, Vec<String>>,
     committed_tokens: u64,
     fan_out_committed: BTreeMap<String, u64>,
+    /// Charged tokens per Attempt node, so a resumed Round keeps counting against node caps.
+    node_committed: BTreeMap<String, u64>,
 }
 
 fn replay_execution(
@@ -1013,6 +1015,12 @@ fn replay_execution(
             .committed_tokens
             .checked_add(charged)
             .ok_or("replayed token charge overflow")?;
+        if let Some(node) = attempt_nodes.get(&attempt) {
+            let committed = replayed.node_committed.entry(node.clone()).or_default();
+            *committed = committed
+                .checked_add(charged)
+                .ok_or("replayed node token charge overflow")?;
+        }
         if let Some(scatter) = attempt_nodes
             .get(&attempt)
             .and_then(|node| node.split_once("#slice:").map(|(scatter, _)| scatter))
@@ -1038,6 +1046,12 @@ fn replay_execution(
             .committed_tokens
             .checked_add(charged)
             .ok_or("replayed token charge overflow")?;
+        {
+            let committed = replayed.node_committed.entry(node.clone()).or_default();
+            *committed = committed
+                .checked_add(charged)
+                .ok_or("replayed node token charge overflow")?;
+        }
         if let Some(scatter) = node.split_once("#slice:").map(|(scatter, _)| scatter) {
             let committed = replayed
                 .fan_out_committed
@@ -1176,6 +1190,9 @@ pub struct Kernel<'a> {
     /// captured static graph.
     dynamic_reviewer_bases: Mutex<BTreeMap<String, String>>,
     fan_out_cap: Option<u64>,
+    /// Worker nodes with their own Attempt cap (`[[nodes]] budget.attempt`); every other node
+    /// reserves the pipeline-wide attempt cap.
+    node_attempt_caps: BTreeMap<String, u64>,
     attempts: Mutex<AttemptLedger>,
     budgets: Option<Budgets>,
     /// Retries per node, spent on timeouts or an inadmissible returned result. A retry is a new
@@ -1221,6 +1238,7 @@ pub struct Kernel<'a> {
     node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
     replayed_spent: u64,
     replayed_fan_out_spent: BTreeMap<String, u64>,
+    replayed_node_spent: BTreeMap<String, u64>,
 }
 
 struct KernelBrokerBoundary<'kernel, 'store> {
@@ -1443,6 +1461,7 @@ impl<'a> Kernel<'a> {
             static_node_ids: BTreeSet::new(),
             dynamic_reviewer_bases: Mutex::new(BTreeMap::new()),
             fan_out_cap: None,
+            node_attempt_caps: BTreeMap::new(),
             attempts: Mutex::new(attempts),
             budgets: None,
             timeout_retries: 1,
@@ -1464,6 +1483,7 @@ impl<'a> Kernel<'a> {
             node_outputs: Mutex::new(BTreeMap::new()),
             replayed_spent: replayed.committed_tokens,
             replayed_fan_out_spent: replayed.fan_out_committed,
+            replayed_node_spent: replayed.node_committed,
         })
     }
 
@@ -1535,6 +1555,7 @@ impl<'a> Kernel<'a> {
         kernel.closeouts = loaded.closeouts().clone();
         kernel.static_node_ids = loaded.plan_order().iter().cloned().collect();
         kernel.fan_out_cap = loaded.budgets().and_then(|budgets| budgets.fan_out);
+        kernel.node_attempt_caps = loaded.node_attempt_caps().clone();
         Ok(kernel)
     }
 
@@ -1612,11 +1633,32 @@ impl<'a> Kernel<'a> {
                     .unwrap_or(0),
             );
         }
+        // A node that declared its own cap is limited at its own scope too, so a retry storm on
+        // one cheap Worker cannot spend what the pipeline reserved for the deep one.
+        for (node, cap) in &self.node_attempt_caps {
+            ledger = ledger
+                .with_limit(BudgetScope::Node(node.clone()), Budget::of(*cap))
+                .with_committed(
+                    BudgetScope::Node(node.clone()),
+                    self.replayed_node_spent.get(node).copied().unwrap_or(0),
+                );
+        }
         self.budgets = Some(Budgets {
             attempt_cap,
             ledger: Mutex::new(ledger),
         });
         self
+    }
+
+    /// What one Attempt of `node_id` reserves: the node's own cap, a dynamic shard's owning
+    /// Scatter cap, else the pipeline-wide attempt cap.
+    fn attempt_reservation(&self, node_id: &str, budgets: &Budgets) -> u64 {
+        let base = self.reviewer_binding_node(node_id);
+        self.node_attempt_caps
+            .get(node_id)
+            .or_else(|| self.node_attempt_caps.get(&base))
+            .copied()
+            .unwrap_or(budgets.attempt_cap)
     }
 
     fn reviewer_binding_node(&self, node_id: &str) -> String {
@@ -1954,11 +1996,12 @@ impl<'a> Kernel<'a> {
                     scopes.push(BudgetScope::FanOut(base));
                 }
                 scopes.push(BudgetScope::Run);
+                let amount = self.attempt_reservation(node_id, budgets);
                 let result = budgets
                     .ledger
                     .lock()
                     .expect("budget ledger")
-                    .reserve(&scopes, budgets.attempt_cap);
+                    .reserve(&scopes, amount);
                 Some(result.map_err(|error| {
                     if error.scope == BudgetScope::Run {
                         self.failure_classes

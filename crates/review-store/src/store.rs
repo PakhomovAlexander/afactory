@@ -1000,6 +1000,17 @@ struct AuthorityNode {
     slicing: Option<AuthoritySlicing>,
     #[serde(default)]
     closeout_for: Option<String>,
+    /// A Worker's own Attempt cap (review-config `NodeBudgetSpec`); mirrored so pinned authority
+    /// that declares one still validates here.
+    #[serde(default)]
+    budget: Option<AuthorityNodeBudget>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityNodeBudget {
+    attempt: u64,
 }
 
 #[allow(dead_code)]

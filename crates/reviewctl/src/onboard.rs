@@ -717,6 +717,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         execution: None,
         slicing: None,
         closeout_for: None,
+        budget: None,
     };
     let generation = NodeSpec {
         id: "generation".into(),
@@ -733,6 +734,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         execution: None,
         slicing: None,
         closeout_for: None,
+        budget: None,
     };
     let reviewers: Vec<NodeSpec> = ["correctness", "architecture"]
         .into_iter()
@@ -752,6 +754,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             execution: None,
             slicing: None,
             closeout_for: None,
+            budget: None,
         })
         .collect();
     let gather = NodeSpec {
@@ -769,6 +772,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         execution: None,
         slicing: None,
         closeout_for: None,
+        budget: None,
     };
     let ledger = NodeSpec {
         id: "ledger".into(),
@@ -785,6 +789,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         execution: None,
         slicing: None,
         closeout_for: None,
+        budget: None,
     };
 
     let mut nodes = vec![gate, generation];
@@ -884,31 +889,42 @@ fn validate_budget_arithmetic(definition: &Definition) -> Result<Vec<String>, St
     let Some(budget) = definition.budgets else {
         return Ok(Vec::new());
     };
-    let static_workers = definition
+    let workers: Vec<&NodeSpec> = definition
         .nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Reviewer)
-        .count();
-    let model_workers = definition
-        .nodes
+        .collect();
+    let static_workers = workers.len();
+    let model_workers = workers.iter().filter(|node| node.package.is_some()).count();
+    // Each Worker's own cap where declared, the pipeline attempt cap elsewhere.
+    let caps: Vec<u64> = workers
         .iter()
-        .filter(|node| node.kind == NodeKindSpec::Reviewer && node.package.is_some())
-        .count();
-    let required =
-        crate::project::static_run_requirement(budget.attempt, static_workers, model_workers)?;
+        .map(|node| {
+            node.budget
+                .map_or(budget.attempt, |node_budget| node_budget.attempt)
+        })
+        .collect();
+    let reservation = caps.iter().try_fold(0_u64, |sum, cap| {
+        sum.checked_add(*cap)
+            .ok_or("static Worker budget arithmetic overflow")
+    })?;
+    let required = reservation
+        .checked_add(model_workers as u64)
+        .ok_or("static Worker Provider budget arithmetic overflow")?;
     if required > budget.run {
         return Err(format!(
-            "run budget {} cannot admit one {}-token Attempt for each of {static_workers} static Workers (requires {required})",
-            budget.run, budget.attempt
+            "run budget {} cannot admit the first Attempt of each of {static_workers} static Workers (requires {required}: {reservation} reserved together plus {model_workers} Provider smoke floors)",
+            budget.run
         ));
     }
+    let largest = caps.iter().copied().max().unwrap_or(budget.attempt);
     let with_one_retry = required
-        .checked_add(budget.attempt)
+        .checked_add(largest)
         .ok_or("static Worker retry budget arithmetic overflow")?;
     if with_one_retry > budget.run {
         Ok(vec![format!(
-            "run budget {} admits the initial {static_workers} Workers but has no headroom for one {}-token retry",
-            budget.run, budget.attempt
+            "run budget {} admits the initial {static_workers} Workers but has no headroom for one {largest}-token retry",
+            budget.run
         )])
     } else {
         Ok(Vec::new())

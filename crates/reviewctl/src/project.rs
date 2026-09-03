@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use review_config::Loaded;
 use review_config::lock::Lockfile;
 use semver::Version;
 use serde::Deserialize;
@@ -75,22 +76,6 @@ impl ProjectFile {
     }
 }
 
-/// Conservative pre-dispatch requirement for one Attempt per static Worker plus the minimum
-/// durable charge for each model Provider smoke. Actual smoke spend replaces the floor at run
-/// time; onboarding uses it before any Provider has been selected.
-pub fn static_run_requirement(
-    attempt_tokens: u64,
-    static_workers: usize,
-    model_workers_without_actual_spend: usize,
-) -> Result<u64, String> {
-    let attempts = attempt_tokens
-        .checked_mul(static_workers as u64)
-        .ok_or("static Worker budget arithmetic overflow")?;
-    attempts
-        .checked_add(model_workers_without_actual_spend as u64)
-        .ok_or_else(|| "static Worker Provider budget arithmetic overflow".into())
-}
-
 fn validate_safe_name(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty()
         || !value.bytes().enumerate().all(|(index, byte)| {
@@ -153,9 +138,56 @@ pub(crate) fn check_lock_af_version(
     Ok(None)
 }
 
+/// One static Worker's first-Attempt reservation, as planning and admission count it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StaticReservation {
+    pub node: String,
+    pub tokens: u64,
+    /// `node` when the Worker declared its own cap, `pipeline` for the shared attempt cap.
+    pub source: &'static str,
+}
+
+/// Every static Worker's first-Attempt reservation, in node order. Empty when uncapped.
+pub(crate) fn static_reservations(loaded: &Loaded) -> Vec<StaticReservation> {
+    let Some(budgets) = loaded.budgets() else {
+        return Vec::new();
+    };
+    loaded
+        .reviewers()
+        .keys()
+        .map(|node| match loaded.node_attempt_caps().get(node) {
+            Some(cap) => StaticReservation {
+                node: node.clone(),
+                tokens: *cap,
+                source: "node",
+            },
+            None => StaticReservation {
+                node: node.clone(),
+                tokens: budgets.attempt,
+                source: "pipeline",
+            },
+        })
+        .collect()
+}
+
+/// The most the static Workers can hold reserved at once: every first Attempt together. This is
+/// what the run cap must admit before any Worker dispatches. `None` when uncapped.
+pub(crate) fn max_simultaneous_reservation(loaded: &Loaded) -> Result<Option<u64>, String> {
+    if loaded.budgets().is_none() {
+        return Ok(None);
+    }
+    static_reservations(loaded)
+        .iter()
+        .try_fold(0_u64, |sum, reservation| {
+            sum.checked_add(reservation.tokens)
+                .ok_or_else(|| "static Worker reservation arithmetic overflow".to_string())
+        })
+        .map(Some)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ProjectFile, static_run_requirement};
+    use super::ProjectFile;
 
     fn project(extra: &str, min_af: &str) -> String {
         format!(
@@ -186,10 +218,5 @@ mod tests {
     fn rejects_a_newer_required_binary() {
         let error = ProjectFile::parse(&project("", "999.0")).unwrap_err();
         assert!(error.contains("requires af >= 999.0.0"), "{error}");
-    }
-
-    #[test]
-    fn static_requirement_includes_one_token_per_model_smoke() {
-        assert_eq!(static_run_requirement(300_000, 2, 2).unwrap(), 600_002);
     }
 }

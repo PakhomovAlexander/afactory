@@ -188,6 +188,19 @@ pub struct NodeSpec {
     /// Marks a whole-Subject reviewer as the closeout for exactly one Scatter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closeout_for: Option<String>,
+    /// This Worker's own Attempt cap: the reservation its dispatch takes instead of the
+    /// pipeline-wide `[budgets].attempt`. `None` keeps the shared cap, so every pipeline written
+    /// before the field existed behaves exactly as it did. Refines `[budgets]`; requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<NodeBudgetSpec>,
+}
+
+/// A Worker node's own Attempt cap, in the pipeline's budget unit. On a Scatter it is each
+/// shard's reservation; the Scatter's `fan_out` still bounds the total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeBudgetSpec {
+    pub attempt: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -976,6 +989,8 @@ pub struct Loaded {
     closeouts: BTreeMap<String, String>,
     convergence: ConvergencePolicy,
     budgets: Option<BudgetSpec>,
+    /// Worker nodes that declared their own Attempt cap. Absent nodes reserve `[budgets].attempt`.
+    node_attempt_caps: BTreeMap<String, u64>,
     integration: Option<IntegrationSpec>,
 }
 
@@ -1043,6 +1058,20 @@ impl Loaded {
 
     pub fn budgets(&self) -> Option<&BudgetSpec> {
         self.budgets.as_ref()
+    }
+
+    /// Worker nodes that declared their own Attempt cap, by node ID.
+    pub fn node_attempt_caps(&self) -> &BTreeMap<String, u64> {
+        &self.node_attempt_caps
+    }
+
+    /// The reservation one Attempt of `node` takes: its own cap, else the pipeline's. `None`
+    /// when the pipeline is uncapped.
+    pub fn attempt_cap_for(&self, node: &str) -> Option<u64> {
+        self.node_attempt_caps
+            .get(node)
+            .copied()
+            .or_else(|| self.budgets.as_ref().map(|budgets| budgets.attempt))
     }
 
     pub fn integration(&self) -> Option<&IntegrationSpec> {
@@ -1295,6 +1324,45 @@ impl Definition {
                 ));
             }
         }
+        for node in &self.nodes {
+            let Some(node_budget) = node.budget else {
+                continue;
+            };
+            if !matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter) {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` is not a Worker but declares an Attempt cap",
+                    node.id
+                )));
+            }
+            let Some(budgets) = &self.budgets else {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` declares an Attempt cap but the pipeline has no [budgets]; a node cap refines the pipeline caps, it cannot replace them",
+                    node.id
+                )));
+            };
+            if node_budget.attempt == 0 {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` declares a zero-token Attempt cap, so it could never dispatch",
+                    node.id
+                )));
+            }
+            if node_budget.attempt > budgets.run {
+                return Err(ConfigError::Binding(format!(
+                    "node `{}` Attempt cap ({}) exceeds the run cap ({}); it could never reserve",
+                    node.id, node_budget.attempt, budgets.run
+                )));
+            }
+            if matches!(node.kind, NodeKindSpec::Scatter)
+                && budgets
+                    .fan_out
+                    .is_some_and(|fan_out| node_budget.attempt > fan_out)
+            {
+                return Err(ConfigError::Binding(format!(
+                    "Scatter `{}` per-shard Attempt cap ({}) exceeds its fan_out cap",
+                    node.id, node_budget.attempt
+                )));
+            }
+        }
         if self.convergence.clean_rounds == 0 || self.convergence.max_rounds == 0 {
             return Err(ConfigError::Binding(
                 "convergence round counts must be positive".to_string(),
@@ -1388,10 +1456,12 @@ impl Definition {
                             let authority =
                                 review_core::broker_authority_usage(&execution.operations)
                                     .expect("validated Broker authority");
-                            if authority > budgets.attempt {
+                            let attempt_cap =
+                                spec.budget.map_or(budgets.attempt, |budget| budget.attempt);
+                            if authority > attempt_cap {
                                 return Err(ConfigError::Binding(format!(
-                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds the attempt cap ({}); the dispatch reservation would not cover its capability",
-                                    spec.id, budgets.attempt
+                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds its attempt cap ({attempt_cap}); the dispatch reservation would not cover its capability",
+                                    spec.id
                                 )));
                             }
                         }
@@ -1535,6 +1605,11 @@ impl Definition {
             })
             .collect();
 
+        let node_attempt_caps = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.budget.map(|budget| (node.id.clone(), budget.attempt)))
+            .collect();
         Ok(Loaded {
             version: self.version,
             subject,
@@ -1549,6 +1624,7 @@ impl Definition {
             slicing,
             closeouts,
             budgets: self.budgets,
+            node_attempt_caps,
             integration,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,

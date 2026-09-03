@@ -214,6 +214,8 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             "topology": topology,
             "gates": checks,
             "budgets": loaded.budgets(),
+            "reservations": crate::project::static_reservations(&loaded),
+            "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(&loaded)?,
             "convergence": {
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
