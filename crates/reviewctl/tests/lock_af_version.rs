@@ -11,6 +11,7 @@ const CURRENT: &str = env!("CARGO_PKG_VERSION");
 fn af(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
+        .env("AF_SELF_OFFLINE", "1")
         .output()
         .unwrap()
 }

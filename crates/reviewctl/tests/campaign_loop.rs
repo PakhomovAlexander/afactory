@@ -40,7 +40,7 @@ fn invoke_reviewctl(
         .env("USER", "loop-test");
     let provider_registry = home.join(".config/afactory/providers.toml");
     if provider_registry.is_file() {
-        command.env("REVIEWCTL_PROVIDERS_FILE", provider_registry);
+        command.env("AF_PROVIDERS_FILE", provider_registry);
     }
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
@@ -1794,7 +1794,7 @@ gate = "major"
         ])
         .env("HOME", &home)
         .env("USER", "loop-test")
-        .env("REVIEWCTL_PROVIDERS_FILE", &provider_registry)
+        .env("AF_PROVIDERS_FILE", &provider_registry)
         .output()
         .unwrap();
     assert!(

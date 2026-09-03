@@ -8,4 +8,4 @@ set -euo pipefail
 cache_home="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}"
 target_dir="${AFACTORY_REVIEW_TARGET_DIR:-$cache_home/afactory/review-target}"
 mkdir -p "$target_dir"
-AFACTORY_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" make check
+AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" make check
