@@ -27,7 +27,11 @@ pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
 
 /// Resolve review authority and Subject without creating Campaign state or executing external
 /// work. CAS writes live only in the caller's temporary directory.
-pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_json::Value, String> {
+pub(super) fn resolve_plan(
+    options: &Options,
+    cas: &Cas,
+    repo: &Repo,
+) -> Result<ResolvedPlan, String> {
     if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
         return Err(
             "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
@@ -68,6 +72,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
         "edges": &definition.edges,
     });
     let loaded = definition
+        .clone()
         .load_with(&lockfile, &registry)
         .map_err(|error| error.to_string())?;
     require_demand_set_output(&loaded, &pipeline_path)?;
@@ -155,6 +160,71 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
     }
     let (candidate_snapshot_id, _) = publish_snapshot(&candidate, cas)?;
 
+    let selectors = serde_json::json!({
+        "compatibility_authority": options.authority,
+        "policy_rev": policy_ref,
+        "base": base_ref,
+        "candidate": candidate_selector,
+        "uncommitted": options.uncommitted,
+    });
+    let resolved = serde_json::json!({
+        "policy_revision": policy.source_revision,
+        "policy_snapshot_id": policy_snapshot_id,
+        "base_revision": base.as_ref().and_then(|snapshot| snapshot.source_revision.clone()),
+        "base_snapshot_id": base_snapshot_id,
+        "candidate_revision": candidate.source_revision,
+        "candidate_snapshot_id": candidate_snapshot_id,
+    });
+    let subject = serde_json::json!({
+        "kind": match loaded.subject_kind() {
+            SubjectKind::Diff => "diff",
+            SubjectKind::WholeTree => "whole-tree",
+        },
+        "empty": change_set.as_ref().is_some_and(|change_set| change_set.changed_paths.is_empty()),
+        "changed_paths": change_set.as_ref().map(|change_set| &change_set.changed_paths).cloned().unwrap_or_default(),
+        "renames": change_set.as_ref().map(|change_set| &change_set.renames).cloned().unwrap_or_default(),
+        "patch_bytes": change_set.as_ref().map(|change_set| change_set.canonical_patch().map(|patch| patch.len())).transpose()?.unwrap_or(0),
+    });
+    Ok(ResolvedPlan {
+        selectors,
+        resolved,
+        subject,
+        pipeline_path,
+        topology,
+        definition,
+        loaded,
+        change_set,
+    })
+}
+
+/// Everything `af review plan` resolves before projecting it to JSON — what `render` reuses, so
+/// the two can never disagree about policy, Subject, or pipeline.
+pub(super) struct ResolvedPlan {
+    pub selectors: serde_json::Value,
+    pub resolved: serde_json::Value,
+    pub subject: serde_json::Value,
+    pub pipeline_path: String,
+    pub topology: serde_json::Value,
+    pub definition: Definition,
+    pub loaded: review_config::Loaded,
+    pub change_set: Option<review_core::ChangeSetV1>,
+}
+
+fn token_free_effects() -> serde_json::Value {
+    serde_json::json!({
+        "campaign_state": false,
+        "gates": false,
+        "provider_admission": false,
+        "worker_dispatch": false,
+        "token_spend": false,
+    })
+}
+
+/// Resolve review authority and Subject without creating Campaign state or executing external
+/// work, and project the result as `af/review-plan@1`.
+pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_json::Value, String> {
+    let plan = resolve_plan(options, cas, repo)?;
+    let loaded = &plan.loaded;
     let mut providers = Vec::new();
     for (node, package) in loaded.packages() {
         let runner = Path::new(&package.runner.program)
@@ -184,38 +254,16 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
     Ok(serde_json::json!({
         "schema": "af/review-plan@1",
         "token_free": true,
-        "selectors": {
-            "compatibility_authority": options.authority,
-            "policy_rev": policy_ref,
-            "base": base_ref,
-            "candidate": candidate_selector,
-            "uncommitted": options.uncommitted,
-        },
-        "resolved": {
-            "policy_revision": policy.source_revision,
-            "policy_snapshot_id": policy_snapshot_id,
-            "base_revision": base.as_ref().and_then(|snapshot| snapshot.source_revision.clone()),
-            "base_snapshot_id": base_snapshot_id,
-            "candidate_revision": candidate.source_revision,
-            "candidate_snapshot_id": candidate_snapshot_id,
-        },
-        "subject": {
-            "kind": match loaded.subject_kind() {
-                SubjectKind::Diff => "diff",
-                SubjectKind::WholeTree => "whole-tree",
-            },
-            "empty": change_set.as_ref().is_some_and(|change_set| change_set.changed_paths.is_empty()),
-            "changed_paths": change_set.as_ref().map(|change_set| &change_set.changed_paths).cloned().unwrap_or_default(),
-            "renames": change_set.as_ref().map(|change_set| &change_set.renames).cloned().unwrap_or_default(),
-            "patch_bytes": change_set.as_ref().map(|change_set| change_set.canonical_patch().map(|patch| patch.len())).transpose()?.unwrap_or(0),
-        },
+        "selectors": plan.selectors,
+        "resolved": plan.resolved,
+        "subject": plan.subject,
         "pipeline": {
-            "path": pipeline_path,
-            "topology": topology,
+            "path": plan.pipeline_path,
+            "topology": plan.topology,
             "gates": checks,
             "budgets": loaded.budgets(),
-            "reservations": crate::project::static_reservations(&loaded),
-            "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(&loaded)?,
+            "reservations": crate::project::static_reservations(loaded),
+            "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
             "convergence": {
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
@@ -224,14 +272,190 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             },
         },
         "providers": providers,
-        "external_effects": {
-            "campaign_state": false,
-            "gates": false,
-            "provider_admission": false,
-            "worker_dispatch": false,
-            "token_spend": false,
-        },
+        "external_effects": token_free_effects(),
     }))
+}
+
+/// The exact input one Worker would receive on a first Attempt, composed by the same function
+/// its adapter calls at dispatch. Token-free: no Campaign state, Gate, Provider, or spend.
+#[derive(serde::Serialize)]
+pub(super) struct RenderView {
+    pub(super) schema: &'static str,
+    pub(super) token_free: bool,
+    pub(super) node: String,
+    pub(super) runner: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) package: Option<serde_json::Value>,
+    pub(super) transport: review_runner::InputTransport,
+    pub(super) bytes: usize,
+    pub(super) estimated_tokens: u64,
+    pub(super) manifest: review_runner::ContextManifest,
+    /// Campaign-bound inputs a real Attempt also receives; listed, never invented.
+    pub(super) not_rendered: Vec<String>,
+    pub(super) input_is_utf8: bool,
+    pub(super) input: String,
+    pub(super) external_effects: serde_json::Value,
+    #[serde(skip)]
+    pub(super) raw: Vec<u8>,
+}
+
+pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<RenderView, String> {
+    let node = options
+        .node
+        .clone()
+        .ok_or("review render requires `--node NODE`")?;
+    let plan = resolve_plan(options, cas, repo)?;
+    let spec = plan
+        .definition
+        .nodes
+        .iter()
+        .find(|spec| spec.id == node)
+        .ok_or_else(|| format!("pipeline `{}` has no node `{node}`", plan.pipeline_path))?;
+    if !matches!(spec.kind, review_config::NodeKindSpec::Reviewer) {
+        return Err(format!(
+            "node `{node}` is not a reviewer Worker; only Workers receive an input"
+        ));
+    }
+    let command = plan
+        .loaded
+        .reviewers()
+        .get(&node)
+        .ok_or_else(|| format!("node `{node}` has no runner"))?;
+    let result_contract = match spec.outputs.as_slice() {
+        [review_config::PortContractSpec::Typed(port)] => {
+            review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
+                .ok_or_else(|| {
+                    format!(
+                        "node `{node}` output `{}` has unsupported result type `{}`",
+                        port.name, port.artifact_type
+                    )
+                })?
+        }
+        [review_config::PortContractSpec::Name(_)] => review_core::ReviewerResultContract::V1,
+        _ => {
+            return Err(format!(
+                "reviewer `{node}` must declare exactly one result output"
+            ));
+        }
+    };
+    let mut inputs = review_runner::ReviewerInputs {
+        result_contract,
+        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string()),
+        ..Default::default()
+    };
+    let mut not_rendered = Vec::new();
+    for port in &spec.inputs {
+        let (name, artifact_type) = match port {
+            review_config::PortContractSpec::Typed(typed) => {
+                (typed.name.as_str(), typed.artifact_type.as_str())
+            }
+            review_config::PortContractSpec::Name(name) => {
+                (name.as_str(), review_core::contract::OPAQUE_V1)
+            }
+        };
+        let is_change_set = artifact_type == review_core::contract::CHANGE_SET_V1
+            || (plan.definition.version == 1
+                && artifact_type == review_core::contract::OPAQUE_V1
+                && name == "change_set");
+        if is_change_set {
+            let Some(change_set) = &plan.change_set else {
+                not_rendered.push(format!("{name}: a whole-tree Subject has no Change Set"));
+                continue;
+            };
+            // Published exactly as a run publishes it, so the artifact ID in the rendered
+            // metadata is the one a Campaign on this Subject would carry.
+            let value = serde_json::to_value(change_set).map_err(|error| error.to_string())?;
+            review_core::json::admit(&value).map_err(|error| error.to_string())?;
+            let encoded =
+                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
+            let artifact_id = cas.put(&encoded).map_err(|error| error.to_string())?;
+            inputs.artifacts.insert(
+                name.to_string(),
+                vec![
+                    review_runner::ReviewerInputArtifact::change_set_from_encoded(
+                        artifact_id,
+                        &encoded,
+                    )?,
+                ],
+            );
+        } else if name == "prior_findings"
+            || artifact_type == review_core::contract::FINDING_SET_V1
+            || artifact_type.contains("PriorFindings")
+        {
+            not_rendered.push(format!(
+                "{name}: prior Findings exist only inside a Campaign; a first Attempt receives none"
+            ));
+        } else {
+            not_rendered.push(format!("{name}: {artifact_type} is produced at run time"));
+        }
+    }
+    not_rendered.push(
+        "attempt authority: Campaign identifiers are bound at dispatch (a model Worker's `## Attempt authority` section, a command Worker's `attempt_context`)"
+            .to_string(),
+    );
+    let timeout = std::time::Duration::from_secs(1);
+    let runner = Path::new(&command.program)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let package = plan.loaded.packages().get(&node);
+    let adapter: Box<dyn review_runner::ReviewerAdapter> = match package {
+        Some(package) => match runner.as_str() {
+            "claude" => {
+                let mut adapter =
+                    review_runner_claude::ClaudeAdapter::from_package(package, timeout)
+                        .map_err(|error| format!("{node}: {error}"))?;
+                if let Some(focus) = &options.focus {
+                    adapter = adapter.with_focus(focus);
+                }
+                Box::new(adapter)
+            }
+            "codex" => {
+                let mut adapter = review_runner_codex::CodexAdapter::from_package(package, timeout)
+                    .map_err(|error| format!("{node}: {error}"))?;
+                if let Some(focus) = &options.focus {
+                    adapter = adapter.with_focus(focus);
+                }
+                Box::new(adapter)
+            }
+            other => {
+                return Err(format!(
+                    "node `{node}`: no adapter drives `{other}`; this af release knows claude and codex"
+                ));
+            }
+        },
+        None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
+    };
+    let rendered = adapter
+        .render_input(&inputs)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("node `{node}`: this adapter has no fixed input encoding"))?;
+    let (input, input_is_utf8) = match String::from_utf8(rendered.bytes.clone()) {
+        Ok(text) => (text, true),
+        Err(_) => (String::from_utf8_lossy(&rendered.bytes).into_owned(), false),
+    };
+    Ok(RenderView {
+        schema: "af/review-render@1",
+        token_free: true,
+        runner,
+        package: package.map(|package| {
+            serde_json::json!({
+                "name": package.name,
+                "version": package.version,
+                "digest": package.digest,
+            })
+        }),
+        transport: rendered.transport,
+        bytes: rendered.bytes.len(),
+        estimated_tokens: rendered.manifest.estimated_tokens,
+        manifest: rendered.manifest,
+        not_rendered,
+        input_is_utf8,
+        input,
+        external_effects: token_free_effects(),
+        raw: rendered.bytes,
+        node,
+    })
 }
 
 pub(super) struct PreparedRun {

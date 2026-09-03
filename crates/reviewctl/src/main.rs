@@ -81,6 +81,8 @@ struct Options {
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
     json: bool,
+    /// `af review render`: the Worker whose exact input to compose.
+    node: Option<String>,
 }
 
 impl Options {
@@ -463,6 +465,7 @@ fn usage() -> ! {
         \x20                       [--authority REV] (compatibility: policy + diff Base)\n\
         \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH] [--json]\n\
         \x20      af review plan    [run selector options] [--json] (token-free; no Campaign state)\n\
+        \x20      af review render  --node NODE [run selector options] [--focus TEXT] [--json] (token-free; the exact Worker input)\n\
         \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--light|--heavy] [--policy-rev REV --base REV] [--candidate REV|--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
         \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
@@ -529,6 +532,7 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
         provider_bindings: std::collections::BTreeMap::new(),
         provider_resumes: std::collections::BTreeMap::new(),
         json: false,
+        node: None,
     };
     let mut explicit_mode = false;
     while let Some(flag) = args.next() {
@@ -560,6 +564,7 @@ fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
                 explicit_mode = true;
             }
             "--json" => options.json = true,
+            "--node" => options.node = Some(value()),
             "--timeout-secs" => {
                 options.timeout = Some(Duration::from_secs(
                     value().parse().unwrap_or_else(|_| usage()),
@@ -1132,6 +1137,7 @@ fn main() {
     let command = args.next();
     let result = match command.as_deref() {
         Some("plan") => print_plan(&parse_run(args)),
+        Some("render") => print_render(&parse_run(args)),
         Some("run") => {
             init_review_workers();
             run(&parse_run(args)).map(exit_for_verdict)
@@ -1174,6 +1180,59 @@ fn main() {
         eprintln!("af review: {error}");
         std::process::exit(1);
     }
+}
+
+fn print_render(options: &Options) -> Result<(), String> {
+    let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let git_home = scratch.path().join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let repo = Repo::open(repository, git_home)
+        .with_timeout(authority::requested_git_timeout(options.git_timeout));
+    let view = authority::render(options, &cas, &repo)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&view).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+    // The header goes to stderr and the exact bytes to stdout, so `> prompt.md` is exact.
+    eprintln!("review render (token-free; no Campaign state)");
+    eprintln!("node      {} ({})", view.node, view.runner);
+    if let Some(package) = &view.package {
+        eprintln!(
+            "package   {} {} {}",
+            package["name"].as_str().unwrap_or("?"),
+            package["version"].as_str().unwrap_or("?"),
+            package["digest"].as_str().unwrap_or("?")
+        );
+    }
+    eprintln!(
+        "transport {}; {} bytes; about {} tokens",
+        match view.transport {
+            review_runner::InputTransport::Prompt => "prompt on stdin",
+            review_runner::InputTransport::Json => "typed JSON on stdin",
+        },
+        view.bytes,
+        view.estimated_tokens
+    );
+    for entry in &view.manifest.entries {
+        eprintln!(
+            "context   {} {} bytes ({})",
+            entry.name, entry.rendered_bytes, entry.required_by
+        );
+    }
+    for item in &view.not_rendered {
+        eprintln!("omitted   {item}");
+    }
+    eprintln!("effects   no state, Gates, Provider calls, Workers, or token spend");
+    let mut stdout = std::io::stdout().lock();
+    std::io::Write::write_all(&mut stdout, &view.raw).map_err(|error| error.to_string())?;
+    std::io::Write::flush(&mut stdout).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn print_plan(options: &Options) -> Result<(), String> {
@@ -4976,6 +5035,7 @@ mod option_tests {
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
             json: false,
+            node: None,
         };
         let error = options.resolved_state_dir().unwrap_err();
         assert!(error.contains("state must live under XDG state"));

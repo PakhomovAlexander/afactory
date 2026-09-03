@@ -1451,3 +1451,16 @@ admission and onboarding refuse against that sum instead of `attempt × workers`
 headroom measured by the largest cap; the spend report names the reservation that bounded each
 Attempt. Pipelines without node caps are unchanged, byte for byte. Replay now seeds committed
 spend per node as well as per Run and Scatter, so a resumed Round keeps counting against node caps.
+
+## 2026-09-03 — `af review render`: a Worker's exact input, token-free (issue #36)
+
+Prompt composition moved out of the Claude and Codex adapters into one pure function
+(`compose_model_prompt`; `compose_command_input` for command Workers), and every adapter gained
+`render_input`, the bytes it would send without sending them. `af review render --node NODE` reuses
+`plan`'s resolution (now `resolve_plan`) to compose that input for a first Attempt: package
+instructions, output contract, and the Change Set published exactly as a run publishes it;
+Campaign-bound data (Attempt authority, prior Findings, Gate decision) is listed as omitted, never
+invented. Header on stderr, raw bytes on stdout, `af/review-render@1` with `--json`; no state, Gate,
+Provider, or spend. Tests prove rendered bytes equal what the Claude, Codex, and command adapters
+actually write to stdin. README documents the command and command Workers (sandbox cwd, cleared
+env, stdin JSON, no `.git` by construction). #32 can now refuse on the exact encoded size.

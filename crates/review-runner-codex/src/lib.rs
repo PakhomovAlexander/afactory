@@ -28,9 +28,9 @@ use std::time::Duration;
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
-    ContextManifest, ModelRunner, ReceiptedReviewerReturn, ReviewerAdapter, ReviewerInputs,
-    ReviewerReturn, RunnerError, TokenUsage, parse_proposal_declaration, parse_stage_output_for,
-    result_contract,
+    InputTransport, ModelRunner, ReceiptedReviewerReturn, RenderedInput, ReviewerAdapter,
+    ReviewerInputs, ReviewerReturn, RunnerError, TokenUsage, compose_model_prompt,
+    parse_proposal_declaration, parse_stage_output_for,
 };
 use review_store::Cas;
 
@@ -194,6 +194,16 @@ impl ReviewerAdapter for CodexAdapter {
             .map(|receipt| receipt.returned)
     }
 
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+        let (prompt, manifest) =
+            compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
+        Ok(Some(RenderedInput {
+            transport: InputTransport::Prompt,
+            bytes: prompt.into_bytes(),
+            manifest,
+        }))
+    }
+
     fn invoke_receipted(
         &self,
         cas: &Cas,
@@ -206,35 +216,10 @@ impl ReviewerAdapter for CodexAdapter {
         let last_message = staging.path().join("last-message");
 
         // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
-        // rendered under an explicit heading rather than woven into the instructions.
-        let mut prompt = self.prompt.clone();
-        prompt.push_str(result_contract(inputs.result_contract));
-        let instruction_bytes = prompt.len();
-        inputs
-            .render_into(&mut prompt)
-            .map_err(RunnerError::Refused)?;
-        let mut context_manifest = ContextManifest::default();
-        context_manifest.record(
-            "worker_instructions",
-            "digest-pinned Worker package and output contract",
-            inputs
-                .attempt_context
-                .as_ref()
-                .and_then(|context| context.reviewer_package_artifact_id.clone()),
-            Some("review.kernel/ReviewerPackage@1".into()),
-            instruction_bytes,
-        );
-        context_manifest.record(
-            "role_scoped_inputs",
-            "exact Worker Input",
-            inputs
-                .attempt_context
-                .as_ref()
-                .map(|context| context.campaign_manifest_id.clone()),
-            None,
-            prompt.len() - instruction_bytes,
-        );
-        context_manifest.finish(prompt.len());
+        // rendered under an explicit heading rather than woven into the instructions. The same
+        // pure composition backs `render_input`, so what is sent is what can be audited.
+        let (prompt, context_manifest) =
+            compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
         let command = codex_command(
             &self.program,
             &self.model_flags,
