@@ -699,7 +699,7 @@ pub(crate) struct OnboardArgs {
     #[arg(long, value_name = "NAME=COMMAND", action = ArgAction::Append, help_heading = "Generate")]
     pub(crate) gate: Vec<String>,
     /// Write the previewed bundle (absent-only; never overwrites)
-    #[arg(long, help_heading = "Action", conflicts_with_all = ["refresh_lock", "migrate"])]
+    #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
     pub(crate) apply: bool,
     /// Repin the selected pipeline and its Workers after a reviewed edit
     #[arg(long, help_heading = "Action")]
