@@ -358,6 +358,18 @@ struct ReportOptions {
 struct CampaignsOptions {
     state_root: Option<PathBuf>,
     format: CampaignsFormat,
+    /// Walk every state directory for its size; costs seconds on large roots, so opt-in.
+    sizes: bool,
+}
+
+struct GcOptions {
+    state_root: Option<PathBuf>,
+    /// Campaigns whose newest store write is at least this many days old are candidates.
+    older_than_days: Option<u64>,
+    /// The newest N campaigns (by activity) are never candidates.
+    keep: Option<usize>,
+    apply: bool,
+    json: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -588,6 +600,151 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
     }
 }
 
+fn age_label(unix_ms: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let days = now.saturating_sub(unix_ms) / 86_400_000;
+    match days {
+        0 => "today".to_string(),
+        1 => "1 day ago".to_string(),
+        days => format!("{days} days ago"),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct GcCandidateView {
+    label: String,
+    id: String,
+    state_dir: String,
+    state_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activity_unix_ms: Option<u64>,
+    age_days: u64,
+    action: &'static str,
+}
+
+/// Reclaim Campaign state. Without `--apply` it only lists what would go; with it, whole
+/// Campaign directories are removed — never CAS objects inside a live Campaign, never anything
+/// the enumeration could not read (those are reported as problems and left alone).
+fn print_gc(options: &GcOptions) -> Result<(), String> {
+    let requested_root = match &options.state_root {
+        Some(root) => root.clone(),
+        None => xdg_state_root()?.join("af/review/campaigns"),
+    };
+    let root = resolve_filesystem_path(&requested_root)?;
+    let enumeration = enumerate_campaigns(&root, true)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let mut by_activity: Vec<&CampaignView> = enumeration.campaigns.iter().collect();
+    by_activity
+        .sort_by_key(|campaign| std::cmp::Reverse(campaign.last_activity_unix_ms.unwrap_or(0)));
+    let kept: BTreeSet<&str> = by_activity
+        .iter()
+        .take(options.keep.unwrap_or(0))
+        .map(|campaign| campaign.id.as_str())
+        .collect();
+    let mut candidates = Vec::new();
+    let mut reclaimed = 0_u64;
+    for campaign in &enumeration.campaigns {
+        let age_days = now.saturating_sub(campaign.last_activity_unix_ms.unwrap_or(0)) / 86_400_000;
+        let old_enough = options
+            .older_than_days
+            .is_none_or(|threshold| age_days >= threshold);
+        let candidate = old_enough && !kept.contains(campaign.id.as_str());
+        let action = if !candidate {
+            "keep"
+        } else if options.apply {
+            let path = root.join(&campaign.state_dir);
+            if std::fs::symlink_metadata(&path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+            {
+                return Err(format!(
+                    "refusing to remove {}: not a plain directory",
+                    path.display()
+                ));
+            }
+            std::fs::remove_dir_all(&path)
+                .map_err(|error| format!("removing {}: {error}", path.display()))?;
+            reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
+            "removed"
+        } else {
+            "would remove"
+        };
+        candidates.push(GcCandidateView {
+            label: campaign.label.clone(),
+            id: campaign.id.clone(),
+            state_dir: campaign.state_dir.clone(),
+            state_bytes: campaign.state_bytes.unwrap_or(0),
+            last_activity_unix_ms: campaign.last_activity_unix_ms,
+            age_days,
+            action,
+        });
+    }
+    let reclaimable: u64 = candidates
+        .iter()
+        .filter(|candidate| candidate.action != "keep")
+        .map(|candidate| candidate.state_bytes)
+        .sum();
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "af/review-gc@1",
+                "applied": options.apply,
+                "older_than_days": options.older_than_days,
+                "keep": options.keep,
+                "campaigns": candidates,
+                "reclaimable_bytes": reclaimable,
+                "reclaimed_bytes": reclaimed,
+                "problems": enumeration.problems,
+            }))
+            .map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "review gc ({}): {} campaigns, {} reclaimable{}",
+        if options.apply {
+            "applied"
+        } else {
+            "preview; add --apply to remove"
+        },
+        candidates.len(),
+        human_bytes(reclaimable),
+        if options.apply {
+            format!(", {} reclaimed", human_bytes(reclaimed))
+        } else {
+            String::new()
+        }
+    );
+    for candidate in &candidates {
+        println!(
+            "  {:<12} {} ({}): {}; {}",
+            candidate.action,
+            candidate.label.escape_debug(),
+            candidate.state_dir,
+            human_bytes(candidate.state_bytes),
+            candidate
+                .last_activity_unix_ms
+                .map(age_label)
+                .unwrap_or_else(|| "no store write recorded".to_string())
+        );
+    }
+    for problem in &enumeration.problems {
+        println!(
+            "  skipped      {}: {}",
+            problem.directory.escape_debug(),
+            problem.reason.escape_debug()
+        );
+    }
+    Ok(())
+}
+
 fn severity_of(arg: cli::SeverityArg) -> Severity {
     match arg {
         cli::SeverityArg::Minor => Severity::Minor,
@@ -613,7 +770,7 @@ pub(crate) fn campaign_names_for_completion() -> Vec<String> {
     let Ok(root) = xdg_state_root() else {
         return Vec::new();
     };
-    enumerate_campaigns(&root)
+    enumerate_campaigns(&root, false)
         .map(|enumeration| {
             enumeration
                 .campaigns
@@ -682,8 +839,27 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             },
         })
         .map(|()| 0),
-        R::Campaigns { state_root, format } => print_campaigns(&CampaignsOptions {
+        R::Gc {
             state_root,
+            older_than,
+            keep,
+            apply,
+            json,
+        } => print_gc(&GcOptions {
+            state_root,
+            older_than_days: older_than,
+            keep,
+            apply,
+            json,
+        })
+        .map(|()| 0),
+        R::Campaigns {
+            state_root,
+            format,
+            sizes,
+        } => print_campaigns(&CampaignsOptions {
+            state_root,
+            sizes,
             format: match format {
                 cli::ListFormatArg::Text => CampaignsFormat::Text,
                 cli::ListFormatArg::Json => CampaignsFormat::Json,
@@ -1728,6 +1904,61 @@ struct CampaignView {
     wall_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     findings: Option<FindingsSummaryView>,
+    /// The state directory's name beneath the root, and — when asked for — what it holds.
+    state_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_bytes: Option<u64>,
+    /// Newest write to the event store, as Unix milliseconds; what `gc` ages by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activity_unix_ms: Option<u64>,
+}
+
+/// Bytes under a state directory, following no symlinks. A directory that cannot be read counts
+/// as zero rather than failing the listing.
+fn directory_bytes(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let Ok(metadata) = entry.metadata() else {
+                return 0;
+            };
+            if metadata.is_dir() {
+                directory_bytes(&entry.path())
+            } else if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+fn newest_store_write_unix_ms(state: &Path) -> Option<u64> {
+    ["events.sqlite", "events.sqlite-wal"]
+        .iter()
+        .filter_map(|name| std::fs::metadata(state.join(name)).ok())
+        .filter_map(|metadata| metadata.modified().ok())
+        .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
+        .max()
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
@@ -1736,7 +1967,7 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
         None => xdg_state_root()?.join("af/review/campaigns"),
     };
     let root = resolve_filesystem_path(&requested_root)?;
-    let enumeration = enumerate_campaigns(&root)?;
+    let enumeration = enumerate_campaigns(&root, options.sizes)?;
     let view = CampaignListView {
         schema: "af/review-campaigns@1",
         campaigns: enumeration.campaigns,
@@ -1752,7 +1983,7 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
+fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumeration, String> {
     let root = resolve_filesystem_path(root)?;
     if !root.exists() {
         return Ok(CampaignEnumeration {
@@ -1931,7 +2162,14 @@ fn enumerate_campaigns(root: &Path) -> Result<CampaignEnumeration, String> {
                 }
             }
         }
-        let campaign = match read_campaign_view(&state, run_id, label.clone(), id.clone(), &store) {
+        let campaign = match read_campaign_view(
+            &state,
+            run_id,
+            label.clone(),
+            id.clone(),
+            &store,
+            with_sizes,
+        ) {
             Ok(campaign) => campaign,
             Err(reason) => {
                 problems.push(CampaignProblemView { directory, reason });
@@ -1963,6 +2201,7 @@ fn read_campaign_view(
     label: String,
     id: String,
     store: &EventStore,
+    with_sizes: bool,
 ) -> Result<CampaignView, String> {
     let opened = store
         .campaign_opened(run_id)
@@ -2031,6 +2270,12 @@ fn read_campaign_view(
         rounds,
         wall_ms,
         findings,
+        state_dir: state
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        state_bytes: with_sizes.then(|| directory_bytes(state)),
+        last_activity_unix_ms: newest_store_write_unix_ms(state),
     })
 }
 
@@ -2063,6 +2308,18 @@ fn print_campaigns_text(view: &CampaignListView) {
             Some(summary) => println!("  last closed: {summary}"),
             None => println!("  last closed: none"),
         }
+        println!(
+            "  state: {}{}{}",
+            campaign.state_dir,
+            campaign
+                .state_bytes
+                .map(|bytes| format!(", {}", human_bytes(bytes)))
+                .unwrap_or_default(),
+            campaign
+                .last_activity_unix_ms
+                .map(|at| format!("; last activity {}", age_label(at)))
+                .unwrap_or_default()
+        );
         if let Some(wall) = campaign.wall_ms {
             println!("  wall: {}", human_duration(wall));
         }
@@ -4593,7 +4850,7 @@ mod option_tests {
                 .unwrap_err()
                 .contains("both encoded and legacy")
         );
-        let Err(error) = enumerate_campaigns(&root) else {
+        let Err(error) = enumerate_campaigns(&root, false) else {
             panic!("ambiguous Campaign state was enumerated");
         };
         assert!(error.contains("both encoded and legacy"));
@@ -4620,7 +4877,7 @@ mod option_tests {
             super::campaign_state(&Some(legacy.clone()), " padded").unwrap(),
             std::fs::canonicalize(&legacy).unwrap()
         );
-        let enumeration = enumerate_campaigns(&root).unwrap();
+        let enumeration = enumerate_campaigns(&root, false).unwrap();
         assert_eq!(enumeration.campaigns.len(), 1);
         assert_eq!(enumeration.campaigns[0].label, " padded");
         assert!(enumeration.problems.is_empty());
@@ -4634,7 +4891,7 @@ mod option_tests {
         write_campaign_opening(&state, "legacy");
         std::fs::remove_dir_all(state.join("cas")).unwrap();
 
-        let enumeration = enumerate_campaigns(&root).unwrap();
+        let enumeration = enumerate_campaigns(&root, false).unwrap();
         assert!(enumeration.campaigns.is_empty());
         assert_eq!(enumeration.problems.len(), 1);
         assert!(!state.join("cas").exists());
@@ -4651,7 +4908,7 @@ mod option_tests {
         write_campaign_opening(&root.join("good"), "good");
         std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
 
-        let enumeration = enumerate_campaigns(&root).unwrap();
+        let enumeration = enumerate_campaigns(&root, false).unwrap();
         assert_eq!(enumeration.campaigns.len(), 1);
         assert_eq!(enumeration.campaigns[0].label, "good");
         assert_eq!(enumeration.problems.len(), 1);
@@ -4673,7 +4930,7 @@ mod option_tests {
         assert!(error.contains("legacy Campaign state"), "{error}");
         assert!(error.contains("events.sqlite"), "{error}");
 
-        let enumeration = enumerate_campaigns(&root).unwrap();
+        let enumeration = enumerate_campaigns(&root, false).unwrap();
         assert!(enumeration.campaigns.is_empty());
         assert!(
             enumeration
@@ -4695,7 +4952,7 @@ mod option_tests {
         std::os::unix::fs::symlink(outside.join("events.sqlite"), state.join("events.sqlite"))
             .unwrap();
 
-        let enumeration = enumerate_campaigns(&root).unwrap();
+        let enumeration = enumerate_campaigns(&root, false).unwrap();
         assert!(enumeration.campaigns.is_empty());
         assert_eq!(enumeration.problems.len(), 1);
         assert!(enumeration.problems[0].reason.contains("real regular file"));

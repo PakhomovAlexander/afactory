@@ -404,6 +404,34 @@ or Campaign state. This is how a human audits what a Worker sees.",
         /// Output format
         #[arg(long, value_enum, default_value_t = ListFormatArg::Text, help_heading = "Output")]
         format: ListFormatArg,
+        /// Walk each state directory for its size on disk (seconds on a large root)
+        #[arg(long)]
+        sizes: bool,
+    },
+    /// Reclaim Campaign state: list what would go; remove it only with --apply
+    #[command(
+        long_about = "List the Campaigns whose newest store write is at least --older-than days old \
+(never the --keep newest) and how much they hold on disk. Only --apply removes them, whole \
+Campaign directories at a time; directories the enumeration cannot read are reported and left \
+alone, and nothing inside a kept Campaign is ever touched.",
+        after_long_help = "Examples:\n  af review gc --older-than 14 --keep 5\n  af review gc --older-than 14 --keep 5 --apply\n  af review gc --keep 10 --json"
+    )]
+    Gc {
+        /// State root to reclaim under (default: XDG state)
+        #[arg(long, value_name = "DIR")]
+        state_root: Option<PathBuf>,
+        /// Campaigns whose newest store write is at least this many days old
+        #[arg(long, value_name = "DAYS", required_unless_present = "keep")]
+        older_than: Option<u64>,
+        /// Never touch the newest N Campaigns
+        #[arg(long, value_name = "N")]
+        keep: Option<usize>,
+        /// Remove the listed Campaign directories (default: preview only)
+        #[arg(long)]
+        apply: bool,
+        /// Machine-readable af/review-gc@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Resolve a finding without a fix: rejected, or tracked as wontfix
     #[command(

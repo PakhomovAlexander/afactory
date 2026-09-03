@@ -127,7 +127,17 @@ rejected, wontfix, contested), read from the store's sidecar — never from the 
 af review campaigns
 af review campaigns --format json
 af review campaigns --state-root .review/runs --format text
+af review gc --older-than 14 --keep 5          # preview: what would go, and how much
+af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directories
 ```
+
+Each Campaign keeps its own CAS, so state grows with every Subject materialized — a large
+repository costs hundreds of megabytes per Campaign. `campaigns` shows each Campaign's state
+directory and last store write, and its size on disk with `--sizes` (a walk that costs seconds on
+a large root); `af review gc` lists the Campaigns older than `--older-than` days
+(never the `--keep` newest) and, only with `--apply`, removes their whole state directories.
+Directories the enumeration cannot read are reported and left alone; nothing inside a kept
+Campaign is ever touched.
 
 New default state uses a deterministic opaque Campaign ID beneath the configured root; the label
 is never interpolated into a new filesystem path. Existing label-named directories remain readable,

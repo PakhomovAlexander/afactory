@@ -1476,3 +1476,12 @@ alone exhausts the cap — nothing dispatched or charged, the refusal naming byt
 the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter node). Nothing is
 truncated. The automatic bounded-strategy selection with typed closure obligations is the
 remaining half of #32 and belongs with path routing (#40).
+
+## 2026-09-03 — Campaign state has a size and a garbage collector (audit recommendation 6)
+
+`af review campaigns` now reports each Campaign's state directory and newest store write
+(`state_dir`, `last_activity_unix_ms`), and its bytes on disk with `--sizes` (`state_bytes`; the
+walk over 651k files on the owner's machine takes 21 s, so it is opt-in). `af review gc --older-than DAYS
+[--keep N]` lists the Campaigns that would go and how much they hold; only `--apply` removes them,
+whole directories at a time, never a symlink and never a directory the enumeration could not read.
+The owner's machine held 9.6 GB across 34 Campaigns with no way to see or reclaim it.
