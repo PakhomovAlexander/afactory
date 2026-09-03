@@ -94,3 +94,5 @@ options you rejected and why — that is the part future-you needs.
   Diffs](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)
 - [0042 — Require Provider bindings and isolate Claude
   reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
+- [0043 — Drop legacy `.review/` authority in
+  v0.8.0](0043-drop-legacy-review-authority-in-v0-8-0.md)

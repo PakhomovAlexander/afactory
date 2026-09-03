@@ -30,8 +30,10 @@ clean-window Campaign.
 V3.2 `af onboard` shipped in private release `v0.4.0` from exact `main` commit `bb9e5a3`; its
 supported release archives and checksum sidecars were downloaded and verified.
 Product rebranding must not rename
-`.review/`, `review.kernel/*` artifact types, persisted events, or established Review Kernel
-domain terms until a separate accepted migration ADR supersedes this rule. v1 adds the final
+`review.kernel/*` artifact types, persisted events, or established Review Kernel domain terms
+until a separate accepted migration ADR supersedes this rule; the `.review/` authority *layout*
+is dropped in `v0.8.0` by [ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
+which renames nothing persisted. v1 adds the final
 user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
 reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
@@ -96,7 +98,9 @@ budget, or sandbox boundary to make a test or review pass.
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
-  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)).
+  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Every dogfood record
+  states the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions including
+  rejected and wontfix, exactly as `af review report` prints them.
 - Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
   kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
   with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist

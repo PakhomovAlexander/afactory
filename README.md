@@ -98,7 +98,9 @@ last closed Round and verdict, and the complete closed-Round history. Use `--for
 versioned `af/review-campaigns@1` projection. `--state-root DIR` inspects an explicit root, including
 legacy label-named state such as a repository's gitignored `.review/runs/` directory.
 Unreadable or non-conforming entries are skipped and reported in the projection's `problems`
-array, so one bad backup or stale directory never hides healthy Campaigns.
+array, so one bad backup or stale directory never hides healthy Campaigns. Each entry also
+carries the wall-clock its Rounds took and a Finding summary by disposition (open, pending, fixed,
+rejected, wontfix, contested), read from the store's sidecar — never from the event stream.
 
 ```sh
 af review campaigns
@@ -616,3 +618,10 @@ and one attempt on a frontier model at maximum reasoning is not a rounding error
 that refuses anonymously is one nobody can raise correctly. A reservation is all-or-nothing across
 scopes; an overrun commits rather than being refused, since the work is already paid for, and then
 closes the gate on the next dispatch.
+
+How long an attempt took, and what its Provider reported per token kind, is recorded in a
+**sidecar** table beside the event stream (`attempt_wall` in the same `events.sqlite`). Nothing in
+identity, replay, the Ledger, or convergence reads it — the stream stays byte-for-byte
+deterministic — while `af review report`, `campaigns`, and `ledger` do, so a person can see the
+wall-clock of every Round and the usage of every Attempt. An absent row means not recorded, never
+zero.
