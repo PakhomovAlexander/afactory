@@ -1477,6 +1477,7 @@ the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter nod
 truncated. The automatic bounded-strategy selection with typed closure obligations is the
 remaining half of #32 and belongs with path routing (#40).
 
+
 ## 2026-09-03 — Campaign state has a size and a garbage collector (audit recommendation 6)
 
 `af review campaigns` now reports each Campaign's state directory and newest store write
@@ -1485,3 +1486,18 @@ walk over 651k files on the owner's machine takes 21 s, so it is opt-in). `af re
 [--keep N]` lists the Campaigns that would go and how much they hold; only `--apply` removes them,
 whole directories at a time, never a symlink and never a directory the enumeration could not read.
 The owner's machine held 9.6 GB across 34 Campaigns with no way to see or reclaim it.
+
+## 2026-09-03 — Route pipelines by changed paths; oversized Diffs switch to a bounded pipeline (#40, #32)
+
+`.af/af.toml` gains `[[routes]]` (name, root-anchored segment globs, target pipeline) and
+`[routing]` (`unmatched = default|refuse`, `ambiguous = refuse|first`, `oversized = <pipeline>`).
+Plan and Campaign open now capture Base and candidate first, compute the exact Change Set, select
+the pipeline from the canonical changed paths (both rename sides), then load it; an explicit
+`--pipeline` is never overridden and a continuation keeps the pinned pipeline. The oversized policy
+replaces the refusal from the first #32 slice with a switch to a named pipeline measured the same
+way — a Scatter pipeline with Complete coverage and required closeout keeps every path — and the
+run still refuses before admission when that one does not fit either. `af onboard` pins and
+validates every route target; `validate_af_project` accepts every declared candidate; input sizing
+skips Scatter nodes and closeout reviewers, which have no first-Attempt input to measure. Plan
+JSON carries `route`; open prints `route    …`.
+
