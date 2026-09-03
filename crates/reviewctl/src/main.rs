@@ -1211,13 +1211,18 @@ fn print_render(options: &Options) -> Result<(), String> {
         );
     }
     eprintln!(
-        "transport {}; {} bytes; about {} tokens",
+        "transport {}; {} bytes; about {} tokens{}",
         match view.transport {
             review_runner::InputTransport::Prompt => "prompt on stdin",
             review_runner::InputTransport::Json => "typed JSON on stdin",
         },
         view.bytes,
-        view.estimated_tokens
+        view.estimated_tokens,
+        match (view.cap_tokens, view.fits) {
+            (Some(cap), Some(true)) => format!("; fits its {cap}-token Attempt cap"),
+            (Some(cap), Some(false)) => format!("; EXCEEDS its {cap}-token Attempt cap"),
+            _ => String::new(),
+        }
     );
     for entry in &view.manifest.entries {
         eprintln!(
@@ -1371,6 +1376,21 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .as_u64()
                 .unwrap_or(0)
         );
+        for reservation in reservations {
+            let Some(bytes) = reservation["input_bytes"].as_u64() else {
+                continue;
+            };
+            println!(
+                "input    {} {bytes} bytes (about {} tokens){}",
+                reservation["node"].as_str().unwrap_or("?"),
+                reservation["input_tokens"].as_u64().unwrap_or(0),
+                if reservation["fits"].as_bool() == Some(false) {
+                    " — EXCEEDS its Attempt cap; run will refuse"
+                } else {
+                    ""
+                }
+            );
+        }
     }
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
@@ -4191,6 +4211,51 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             git_timeout.as_secs()
         ),
     );
+
+    // Every model Worker's first-Attempt input, measured against the cap its dispatch reserves,
+    // before any Gate, Provider admission, or Worker: an input that alone exhausts the cap is
+    // refused here, with nothing charged, rather than after paying for the whole prompt.
+    {
+        let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(authority.campaign_manifest_id())
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let pipeline_bytes = cas
+            .get(&manifest.pipeline.artifact_id)
+            .map_err(|error| error.to_string())?;
+        let definition = review_config::Definition::from_toml(
+            std::str::from_utf8(&pipeline_bytes)
+                .map_err(|error| format!("pinned pipeline is not UTF-8: {error}"))?,
+        )
+        .map_err(|error| error.to_string())?;
+        let change_set = authority.change_set().map_or(
+            authority::ChangeSetSource::None,
+            authority::ChangeSetSource::Resolved,
+        );
+        let sizes = authority::worker_input_sizes(
+            &cas,
+            &definition,
+            &loaded,
+            change_set,
+            focus.as_deref(),
+        )?;
+        for size in &sizes {
+            run_progress(
+                options,
+                format_args!(
+                    "input    {} {} bytes (about {} tokens){}",
+                    size.node,
+                    size.input_bytes,
+                    size.input_tokens,
+                    size.cap_tokens
+                        .map(|cap| format!(" of a {cap}-token Attempt cap"))
+                        .unwrap_or_default()
+                ),
+            );
+        }
+        authority::refuse_unfit_inputs(&sizes)?;
+    }
 
     let admissions = admit_review_providers(
         options, &state, &cas, &mut store, &run_id, &loaded, &authority,

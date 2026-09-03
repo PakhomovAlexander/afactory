@@ -144,6 +144,20 @@ fn every_consumer_fixture_plans_with_this_binary() {
             "{}",
             fixture.display()
         );
+        // Every model Worker's first-Attempt input is measured against its cap, token-free.
+        for reservation in reservations {
+            assert!(
+                reservation["input_bytes"].as_u64().unwrap() > 0,
+                "{reservation}"
+            );
+            assert_eq!(reservation["fits"], true, "{reservation}");
+        }
+        assert_eq!(
+            document["pipeline"]["inputs_fit"],
+            true,
+            "{}",
+            fixture.display()
+        );
     }
 }
 
