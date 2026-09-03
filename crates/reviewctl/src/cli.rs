@@ -100,13 +100,24 @@ bounded, charged preflight for the bindings you name.",
     /// Generate or validate `.af/` review authority for a repository
     #[command(
         long_about = "Generate or validate `.af/` review authority for a repository.\n\n\
-In a git repository with no `.af/`, plain `af onboard` previews a deterministic multi-review \
-authority and writes nothing. `--apply` creates the directory atomically: a diff pipeline, an \
-exact lock, Worker packages, and `.af/README.md`. Existing authority is validated in place; \
-`--refresh-lock` repins deliberately; `--migrate` upgrades legacy `.review/` policy.\n\n\
-Never: executes a Gate or model, reads a credential, creates Campaign state, commits, pushes, \
-or overwrites existing authority.",
-        after_long_help = "Examples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --migrate --apply"
+Behavior:\n\
+  * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
+  * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
+  * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
+  * With legacy .review/ and no .af/: validate every pipeline and the lock against this release \
+and name each pending format upgrade; --migrate --apply rewrites the pipelines in place, \
+additively. Scaffolding .af/ beside .review/ is refused.\n\
+  * .af/af.lock records the af release that wrote it. Inside such a project any `af` on PATH \
+runs that release (installing it on demand); --refresh-lock re-pins to the running release.\n\n\
+The command never calls a model, executes a Gate, reads credentials, creates Campaign state, \
+fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.\n\n\
+Trusting configured Worker authority and intentionally running `af review run` or `af task \
+start` authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or \
+stages of that Campaign or Task. Afactory does not ask for per-call confirmation.\n\n\
+Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
+deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
+explicitly requests convergence review, and repeat that explicit mode when resuming it.",
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --migrate --apply"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
