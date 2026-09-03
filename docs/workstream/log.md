@@ -1424,3 +1424,18 @@ Recorded the owner's call: the next release accepts review authority only under 
 resolving pinned `.review/...` paths; `review.kernel/*` types, events, and domain terms stay frozen.
 AGENTS.md's rebranding rule now excludes the layout; `docs/migration.md` and the backlog carry the
 release gate. The hub and the consumer fixture move to `.af/` before the release is cut.
+
+## 2026-09-03 — Wall-clock, usage, and dispositions become visible (audit recommendation 2)
+
+Every persisted event carries `occurred_at = 1970-01-01T00:00:00Z` by design, so nothing recorded
+how long a review took; provider usage per token kind lived only inside CAS provenance; and no
+report counted rejections, so precision was a feeling. A sidecar table (`attempt_wall` in
+`events.sqlite`) now records, per reviewer Attempt, its start, elapsed milliseconds, and the
+adapter's `TokenUsage` split — outside event identity, replay, the Ledger, and convergence, which
+stay byte-for-byte deterministic. `af review report` prints the Campaign wall-clock, a Round wall
+column, per-Attempt duration and usage, and a Findings-by-disposition line (also in
+`af/review-report@1` as `wall_ms`, `spend[].wall_ms`, `attempts[].wall`, `findings_summary`);
+`af review campaigns` carries `wall_ms` and `findings` per Campaign; `af review ledger` ends its
+summary with dispositions and wall. A store written before the sidecar reads as "not recorded",
+never as an error. AGENTS.md now requires every dogfood record to state wall-clock, usage, and
+dispositions including rejected and wontfix. No currency: prices belong to Providers.

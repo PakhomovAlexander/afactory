@@ -98,7 +98,9 @@ budget, or sandbox boundary to make a test or review pass.
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
-  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)).
+  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Every dogfood record
+  states the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions including
+  rejected and wontfix, exactly as `af review report` prints them.
 - Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
   kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
   with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist

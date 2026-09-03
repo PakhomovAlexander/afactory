@@ -388,6 +388,8 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     assert_eq!(campaigns["campaigns"][0]["last_closed_epoch"], 1);
     assert_eq!(campaigns["campaigns"][0]["verdict"], "fail (not_converged)");
     assert_eq!(campaigns["campaigns"][0]["rounds"][0]["round"], 1);
+    assert!(campaigns["campaigns"][0]["wall_ms"].is_u64());
+    assert!(campaigns["campaigns"][0]["findings"]["open"].is_u64());
     let id = campaigns["campaigns"][0]["id"].as_str().unwrap();
     assert!(id.starts_with("c-") && id.len() == 66, "{id}");
 
@@ -495,6 +497,8 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
         ledger_err.contains("1 required demands open/stale"),
         "{ledger_err}"
     );
+    assert!(ledger_err.contains("rejected"), "{ledger_err}");
+    assert!(ledger_err.contains("wall "), "{ledger_err}");
 
     let json_state = dir.path().join("json-state");
     let json_state = json_state.to_string_lossy().into_owned();
@@ -1022,6 +1026,18 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         report["spend"][0]["reviewers"][0]["attempts"][0]["outcome"],
         "selected"
     );
+    // The wall-clock sidecar rides beside the event stream: present, positive, never authority.
+    let wall = &report["spend"][0]["reviewers"][0]["attempts"][0]["wall"];
+    assert!(wall["elapsed_ms"].is_u64(), "{wall}");
+    assert!(wall["started_unix_ms"].as_u64().unwrap() > 0, "{wall}");
+    assert!(wall["usage"]["chargeable_tokens"].is_u64(), "{wall}");
+    assert!(
+        report["spend"][0]["wall_ms"].is_u64(),
+        "{}",
+        report["spend"][0]
+    );
+    assert!(report["wall_ms"].is_u64());
+    assert!(report["findings_summary"]["open"].is_u64());
 
     let (code, report_text, report_err) = reviewctl(
         &repo,

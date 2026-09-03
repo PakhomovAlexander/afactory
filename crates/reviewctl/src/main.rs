@@ -1416,12 +1416,20 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                 )
         })
         .count();
+    let summary = findings_summary(&findings);
+    let wall = wall_span_ms(
+        &store
+            .attempt_wall(&campaign_run_id(&options.campaign))
+            .map_err(|e| e.to_string())?,
+    );
     eprintln!(
-        "round {}; {} findings, {} open; {} required demands open/stale",
+        "round {}; {} findings: {}; {} required demands open/stale{}",
         ledger.round,
         findings.len(),
-        findings.iter().filter(|f| f.status == Status::Open).count(),
-        open_required_demands
+        findings_summary_line(&summary),
+        open_required_demands,
+        wall.map(|ms| format!("; wall {}", human_duration(ms)))
+            .unwrap_or_default()
     );
     Ok(())
 }
@@ -1738,6 +1746,10 @@ struct CampaignView {
     #[serde(skip_serializing_if = "Option::is_none")]
     verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    findings: Option<FindingsSummaryView>,
 }
 
 fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
@@ -2017,6 +2029,16 @@ fn read_campaign_view(
         .collect::<Vec<_>>();
     let rounds = report_rounds(&reports, &round_authority)?;
     let last = rounds.last();
+    let wall_ms = wall_span_ms(
+        &store
+            .attempt_wall(run_id)
+            .map_err(|error| error.to_string())?,
+    );
+    // A Ledger that fails to rebuild must not hide the Campaign from the listing: the
+    // summary is simply absent.
+    let findings = LedgerProjection::rebuild(store, &cas, run_id)
+        .ok()
+        .map(|projection| findings_summary(&projection.into_ledger().finding_views()));
     Ok(CampaignView {
         id,
         label,
@@ -2029,6 +2051,8 @@ fn read_campaign_view(
         last_closed_epoch: last.and_then(|round| round.epoch),
         verdict: last.map(|round| round.verdict.clone()),
         rounds,
+        wall_ms,
+        findings,
     })
 }
 
@@ -2060,6 +2084,12 @@ fn print_campaigns_text(view: &CampaignListView) {
         ) {
             Some(summary) => println!("  last closed: {summary}"),
             None => println!("  last closed: none"),
+        }
+        if let Some(wall) = campaign.wall_ms {
+            println!("  wall: {}", human_duration(wall));
+        }
+        if let Some(findings) = &campaign.findings {
+            println!("  findings: {}", findings_summary_line(findings));
         }
         println!("  history:");
         if campaign.rounds.is_empty() {
@@ -2098,6 +2128,9 @@ struct ReviewReportView {
     demands: Vec<review_core::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_not_gathered: Option<LatestRoundEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wall_ms: Option<u64>,
+    findings_summary: FindingsSummaryView,
     findings: Vec<review_store::Finding>,
 }
 
@@ -2118,6 +2151,8 @@ struct RoundSpendView {
     round: u32,
     epoch: u32,
     spent_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wall_ms: Option<u64>,
     reviewers: Vec<ReviewerSpendView>,
 }
 
@@ -2138,6 +2173,153 @@ struct AttemptSpendView {
     spent_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wall: Option<AttemptWallView>,
+}
+
+/// Wall-clock and provider usage from the store's sidecar; absent when the Attempt predates it.
+#[derive(serde::Serialize, Clone)]
+struct AttemptWallView {
+    started_unix_ms: u64,
+    elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<review_store::AttemptUsage>,
+}
+
+/// Findings by disposition, so precision is a number rather than a feeling.
+#[derive(serde::Serialize, Clone, Copy, Default)]
+struct FindingsSummaryView {
+    open: usize,
+    pending_verification: usize,
+    fixed: usize,
+    rejected: usize,
+    wontfix: usize,
+    contested: usize,
+}
+
+fn findings_summary(findings: &[review_store::Finding]) -> FindingsSummaryView {
+    findings
+        .iter()
+        .fold(FindingsSummaryView::default(), |mut summary, finding| {
+            match finding.status {
+                Status::Open => summary.open += 1,
+                Status::PendingVerification => summary.pending_verification += 1,
+                Status::Fixed => summary.fixed += 1,
+                Status::Rejected => summary.rejected += 1,
+                Status::Wontfix => summary.wontfix += 1,
+                Status::Contested => summary.contested += 1,
+            }
+            summary
+        })
+}
+
+fn findings_summary_line(summary: &FindingsSummaryView) -> String {
+    format!(
+        "{} open, {} pending, {} fixed, {} rejected, {} wontfix, {} contested",
+        summary.open,
+        summary.pending_verification,
+        summary.fixed,
+        summary.rejected,
+        summary.wontfix,
+        summary.contested
+    )
+}
+
+/// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
+/// summed across Rounds. `None` when nothing was recorded.
+fn wall_span_ms(rows: &[review_store::AttemptWall]) -> Option<u64> {
+    let mut spans: BTreeMap<(u32, u32), (u64, u64)> = BTreeMap::new();
+    for row in rows {
+        let end = row.started_unix_ms.saturating_add(row.elapsed_ms);
+        spans
+            .entry((row.round, row.epoch))
+            .and_modify(|(start, finish)| {
+                *start = (*start).min(row.started_unix_ms);
+                *finish = (*finish).max(end);
+            })
+            .or_insert((row.started_unix_ms, end));
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    Some(spans.values().fold(0_u64, |sum, (start, finish)| {
+        sum.saturating_add(finish.saturating_sub(*start))
+    }))
+}
+
+/// Attaches sidecar rows to the spend view and returns the campaign's wall-clock total.
+fn attach_attempt_wall(
+    spend: &mut [RoundSpendView],
+    rows: &[review_store::AttemptWall],
+) -> Option<u64> {
+    let by_attempt: BTreeMap<&str, &review_store::AttemptWall> = rows
+        .iter()
+        .map(|row| (row.attempt_id.as_str(), row))
+        .collect();
+    for round in spend.iter_mut() {
+        let mut in_round = Vec::new();
+        for reviewer in &mut round.reviewers {
+            for attempt in &mut reviewer.attempts {
+                if let Some(row) = by_attempt.get(attempt.attempt_id.as_str()) {
+                    attempt.wall = Some(AttemptWallView {
+                        started_unix_ms: row.started_unix_ms,
+                        elapsed_ms: row.elapsed_ms,
+                        usage: row.usage.clone(),
+                    });
+                    in_round.push((*row).clone());
+                }
+            }
+        }
+        round.wall_ms = wall_span_ms(&in_round);
+    }
+    wall_span_ms(rows)
+}
+
+fn human_duration(ms: u64) -> String {
+    let seconds = ms / 1000;
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+fn usage_summary(usage: &review_store::AttemptUsage) -> String {
+    let mut parts = Vec::new();
+    for (label, value) in [
+        ("in", usage.input_tokens),
+        ("out", usage.output_tokens),
+        ("cache-read", usage.cache_read_tokens),
+        ("cache-write", usage.cache_write_tokens),
+        ("reasoning", usage.reasoning_tokens),
+    ] {
+        if let Some(value) = value {
+            parts.push(format!("{label} {value}"));
+        }
+    }
+    if parts.is_empty() {
+        format!("chargeable {}", usage.chargeable_tokens)
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn attempt_wall_suffix(wall: Option<&AttemptWallView>) -> String {
+    wall.map(|wall| {
+        format!(
+            ", {}{}",
+            human_duration(wall.elapsed_ms),
+            wall.usage
+                .as_ref()
+                .map(|usage| format!(" ({})", usage_summary(usage)))
+                .unwrap_or_default()
+        )
+    })
+    .unwrap_or_default()
 }
 
 #[derive(serde::Serialize)]
@@ -2197,6 +2379,10 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
+    let mut spend = report_spend(&events, &round_authority)?;
+    let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
+    let wall_ms = attach_attempt_wall(&mut spend, &wall_rows);
+    let findings = ledger.finding_views();
     let view = ReviewReportView {
         schema: "af/review-report@1",
         campaign: options.campaign.clone(),
@@ -2207,10 +2393,12 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             .map(|event| report_verdict(event))
             .transpose()?,
         rounds,
-        spend: report_spend(&events, &round_authority)?,
+        spend,
         demands: ledger.demand_views(),
         recorded_not_gathered,
-        findings: ledger.finding_views(),
+        wall_ms,
+        findings_summary: findings_summary(&findings),
+        findings,
     };
 
     match options.format {
@@ -2469,6 +2657,7 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
                 outcome: attempt.outcome,
                 spent_tokens: attempt.spent_tokens,
                 detail: attempt.detail,
+                wall: None,
             })
             .collect::<Vec<_>>();
         let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
@@ -2524,6 +2713,7 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
         round: round.round,
         epoch: round.epoch,
         spent_tokens,
+        wall_ms: None,
         reviewers,
     })
 }
@@ -2535,6 +2725,13 @@ fn print_report_text(report: &ReviewReportView) {
     println!(
         "Final verdict: {}",
         report.final_verdict.as_deref().unwrap_or("not recorded")
+    );
+    if let Some(wall) = report.wall_ms {
+        println!("Wall-clock: {}", human_duration(wall));
+    }
+    println!(
+        "Findings: {}",
+        findings_summary_line(&report.findings_summary)
     );
     println!("Rounds:");
     if report.rounds.is_empty() {
@@ -2553,8 +2750,14 @@ fn print_report_text(report: &ReviewReportView) {
     println!("Spend:");
     for round in &report.spend {
         println!(
-            "  round {} epoch {}: {} tokens",
-            round.round, round.epoch, round.spent_tokens
+            "  round {} epoch {}: {} tokens{}",
+            round.round,
+            round.epoch,
+            round.spent_tokens,
+            round
+                .wall_ms
+                .map(|ms| format!(", {}", human_duration(ms)))
+                .unwrap_or_default()
         );
         for reviewer in &round.reviewers {
             println!(
@@ -2566,10 +2769,11 @@ fn print_report_text(report: &ReviewReportView) {
             );
             for attempt in &reviewer.attempts {
                 println!(
-                    "      attempt {}: {}, {} tokens{}",
+                    "      attempt {}: {}, {} tokens{}{}",
                     attempt.attempt_id,
                     attempt.outcome,
                     attempt.spent_tokens,
+                    attempt_wall_suffix(attempt.wall.as_ref()),
                     attempt
                         .detail
                         .as_deref()
@@ -2650,6 +2854,13 @@ fn print_report_markdown(report: &ReviewReportView) {
         "- Final verdict: {}",
         report.final_verdict.as_deref().unwrap_or("not recorded")
     );
+    if let Some(wall) = report.wall_ms {
+        println!("- Wall-clock: {}", human_duration(wall));
+    }
+    println!(
+        "- Findings: {}",
+        findings_summary_line(&report.findings_summary)
+    );
     println!();
     println!("## Runs");
     println!();
@@ -2668,15 +2879,24 @@ fn print_report_markdown(report: &ReviewReportView) {
     println!();
     println!("## Spend");
     println!();
-    println!("| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens |");
-    println!("| ---: | ---: | --- | ---: | ---: | ---: |");
+    println!(
+        "| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens | Round wall |"
+    );
+    println!("| ---: | ---: | --- | ---: | ---: | ---: | ---: |");
     for round in &report.spend {
+        let wall = round
+            .wall_ms
+            .map(human_duration)
+            .unwrap_or_else(|| "-".to_string());
         if round.reviewers.is_empty() {
-            println!("| {} | {} | - | 0 | 0 | 0 |", round.round, round.epoch);
+            println!(
+                "| {} | {} | - | 0 | 0 | 0 | {wall} |",
+                round.round, round.epoch
+            );
         }
         for reviewer in &round.reviewers {
             println!(
-                "| {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {wall} |",
                 round.round,
                 round.epoch,
                 reviewer.reviewer,
@@ -2693,12 +2913,13 @@ fn print_report_markdown(report: &ReviewReportView) {
             for attempt in &reviewer.attempts {
                 println!();
                 println!(
-                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}",
+                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}",
                     round.round,
                     reviewer.reviewer,
                     attempt.attempt_id,
                     attempt.outcome,
                     attempt.spent_tokens,
+                    attempt_wall_suffix(attempt.wall.as_ref()),
                     attempt
                         .detail
                         .as_deref()

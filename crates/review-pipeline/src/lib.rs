@@ -26,7 +26,7 @@ pub mod scatter;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, BudgetScope, Receipt, Reservation, Selection,
@@ -1794,6 +1794,42 @@ impl<'a> Kernel<'a> {
             }
         }
         event
+    }
+
+    /// Records how long one reviewer Attempt took and what its Provider reported, in the store's
+    /// sidecar. A failed sidecar write must never change an Attempt's fate, so it is not an
+    /// error here: the report then shows that Attempt as "not recorded".
+    fn record_attempt_wall(
+        &self,
+        node_id: &str,
+        attempt: &impl std::fmt::Display,
+        started: SystemTime,
+        elapsed: Duration,
+        usage: Option<&review_runner::TokenUsage>,
+    ) {
+        let millis = |duration: Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let wall = review_store::AttemptWall {
+            run_id: self.run_id.clone(),
+            attempt_id: attempt.to_string(),
+            node_id: node_id.to_string(),
+            round: self.authority.round,
+            epoch: self.authority.epoch,
+            started_unix_ms: started.duration_since(UNIX_EPOCH).map(millis).unwrap_or(0),
+            elapsed_ms: millis(elapsed),
+            usage: usage.map(|usage| review_store::AttemptUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+                chargeable_tokens: usage.chargeable_tokens,
+            }),
+        };
+        let _ = self
+            .store
+            .lock()
+            .expect("event store")
+            .record_attempt_wall(&wall);
     }
 
     fn append(&self, event: NewEvent) -> Result<(), String> {
@@ -3808,6 +3844,8 @@ impl<'a> Kernel<'a> {
                 }
             };
 
+            let wall_started = SystemTime::now();
+            let wall_clock = Instant::now();
             let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 adapter.invoke_with_broker(
                     self.cas,
@@ -3836,6 +3874,17 @@ impl<'a> Kernel<'a> {
                     return Err(error);
                 }
             };
+
+            // Wall-clock and provider usage live beside the event stream, never in it: identity,
+            // replay, the Ledger, and convergence ignore them; people read them through
+            // `af review report` and `af review campaigns`.
+            self.record_attempt_wall(
+                node_id,
+                &attempt,
+                wall_started,
+                wall_clock.elapsed(),
+                invoked.as_ref().ok().map(|receipted| &receipted.usage),
+            );
 
             match invoked {
                 Ok(receipted) => {

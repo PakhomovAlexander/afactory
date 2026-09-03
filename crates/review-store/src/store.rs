@@ -182,6 +182,43 @@ fn remember_validated_change_set(
     cache.insert(artifact_id, change_set);
 }
 
+/// Provider usage for one Attempt as the adapter reported it, per token kind. Absent kinds are
+/// ones the Provider did not expose, never zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AttemptUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    pub chargeable_tokens: u64,
+}
+
+/// Wall-clock and provider usage for one reviewer Attempt.
+///
+/// This is a **sidecar**, not an event: it carries no identity, and nothing in replay, the
+/// Ledger, or convergence reads it — the event stream stays byte-for-byte deterministic. It
+/// exists so a person can see how long a review took and what it consumed, through
+/// `af review report`, `af review campaigns`, and `af review ledger`. An absent row means "not
+/// recorded", never "zero".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AttemptWall {
+    pub run_id: String,
+    pub attempt_id: String,
+    pub node_id: String,
+    pub round: u32,
+    pub epoch: u32,
+    pub started_unix_ms: u64,
+    pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AttemptUsage>,
+}
+
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
@@ -226,7 +263,23 @@ impl EventStore {
              CREATE INDEX IF NOT EXISTS events_by_type_sequence
                  ON events (run_id, type, sequence DESC);
              CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
-                 ON events (run_id, causation_id, type, sequence);",
+                 ON events (run_id, causation_id, type, sequence);
+             CREATE TABLE IF NOT EXISTS attempt_wall (
+                 run_id             TEXT    NOT NULL,
+                 attempt_id         TEXT    NOT NULL,
+                 node_id            TEXT    NOT NULL,
+                 round              INTEGER NOT NULL,
+                 epoch              INTEGER NOT NULL,
+                 started_unix_ms    INTEGER NOT NULL,
+                 elapsed_ms         INTEGER NOT NULL,
+                 input_tokens       INTEGER,
+                 output_tokens      INTEGER,
+                 cache_read_tokens  INTEGER,
+                 cache_write_tokens INTEGER,
+                 reasoning_tokens   INTEGER,
+                 chargeable_tokens  INTEGER,
+                 PRIMARY KEY (run_id, attempt_id)
+             );",
         )?;
         Ok(Self {
             conn,
@@ -640,6 +693,97 @@ impl EventStore {
             .conn
             .prepare("SELECT DISTINCT run_id FROM events ORDER BY run_id")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::Sqlite)
+    }
+
+    /// Records the wall-clock sidecar for one Attempt. A second write for the same Attempt
+    /// replaces the first, so a retried write cannot double-count.
+    pub fn record_attempt_wall(&self, wall: &AttemptWall) -> Result<(), StoreError> {
+        fn bounded(value: u64, what: &str) -> Result<i64, StoreError> {
+            i64::try_from(value).map_err(|_| {
+                StoreError::Conflict(format!("attempt wall {what} exceeds SQLite range"))
+            })
+        }
+        fn optional(value: Option<u64>, what: &str) -> Result<Option<i64>, StoreError> {
+            value.map(|value| bounded(value, what)).transpose()
+        }
+        let (input, output, cache_read, cache_write, reasoning, chargeable) = match &wall.usage {
+            Some(usage) => (
+                optional(usage.input_tokens, "input tokens")?,
+                optional(usage.output_tokens, "output tokens")?,
+                optional(usage.cache_read_tokens, "cache-read tokens")?,
+                optional(usage.cache_write_tokens, "cache-write tokens")?,
+                optional(usage.reasoning_tokens, "reasoning tokens")?,
+                Some(bounded(usage.chargeable_tokens, "chargeable tokens")?),
+            ),
+            None => (None, None, None, None, None, None),
+        };
+        self.conn.execute(
+            "INSERT OR REPLACE INTO attempt_wall (
+                 run_id, attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                 reasoning_tokens, chargeable_tokens
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![
+                wall.run_id,
+                wall.attempt_id,
+                wall.node_id,
+                i64::from(wall.round),
+                i64::from(wall.epoch),
+                bounded(wall.started_unix_ms, "start")?,
+                bounded(wall.elapsed_ms, "elapsed")?,
+                input,
+                output,
+                cache_read,
+                cache_write,
+                reasoning,
+                chargeable,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The recorded wall-clock rows of a run, oldest first. A store written before the sidecar
+    /// existed has no table; that reads as no rows, not as an error.
+    pub fn attempt_wall(&self, run_id: &str) -> Result<Vec<AttemptWall>, StoreError> {
+        let present: i64 = self.conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'attempt_wall'",
+            [],
+            |row| row.get(0),
+        )?;
+        if present == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                    reasoning_tokens, chargeable_tokens
+             FROM attempt_wall WHERE run_id = ?1
+             ORDER BY started_unix_ms, attempt_id",
+        )?;
+        let rows = stmt.query_map([run_id], |row| {
+            let unsigned = |value: i64| u64::try_from(value).unwrap_or(0);
+            let optional = |value: Option<i64>| value.map(unsigned);
+            let chargeable: Option<i64> = row.get(11)?;
+            Ok(AttemptWall {
+                run_id: run_id.to_string(),
+                attempt_id: row.get(0)?,
+                node_id: row.get(1)?,
+                round: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                epoch: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
+                started_unix_ms: unsigned(row.get(4)?),
+                elapsed_ms: unsigned(row.get(5)?),
+                usage: chargeable.map(|chargeable| AttemptUsage {
+                    input_tokens: optional(row.get(6).ok().flatten()),
+                    output_tokens: optional(row.get(7).ok().flatten()),
+                    cache_read_tokens: optional(row.get(8).ok().flatten()),
+                    cache_write_tokens: optional(row.get(9).ok().flatten()),
+                    reasoning_tokens: optional(row.get(10).ok().flatten()),
+                    chargeable_tokens: unsigned(chargeable),
+                }),
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::Sqlite)
     }
