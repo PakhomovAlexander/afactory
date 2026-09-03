@@ -365,6 +365,28 @@ in canonical order (by node ID), never in arrival order.
 - The control: the same outcomes admitted in completion order produce *different* ledgers, and
   the shared finding changes owner. Without that, the barrier would be proving nothing.
 
+### Seeing exactly what a Worker receives
+
+`af review render --node NODE`, with the same selectors as `plan`, prints the exact bytes that
+Worker would receive on a first Attempt — the digest-pinned package instructions, the output
+contract, and the Diff Subject Change Set for a model Worker; the typed `ReviewerInputs` document
+for a command Worker — without creating Campaign state, calling a Provider, running a Gate, or
+spending a token. The composition is the same function the adapters call at dispatch, so the two
+cannot drift. Campaign-bound data is listed as omitted rather than invented: the Attempt
+authority section, prior Findings, and the Gate decision exist only inside a Campaign. `--json`
+returns `af/review-render@1` with the bytes, the context manifest, and the omissions; without it
+the header goes to stderr and the raw input to stdout, so `> prompt.md` is exact.
+
+### Command Workers
+
+A package whose runner is not `claude` or `codex` is a deterministic command Worker. It runs
+inside the materialized sandbox with that sandbox as its working directory, a cleared environment
+(`PATH` and `LC_ALL=C` only), the typed `ReviewerInputs` JSON on stdin (no stdin when the document
+is empty), and its stdout parsed as a `ReviewerResult`. The sandbox is a fresh materialization of
+the Snapshot manifest and has no `.git`: nothing in it can read history, config, or hooks from the
+reviewed repository. Such a Worker needs no Provider binding and spends no tokens, which is what
+makes a small deterministic check the cheapest node in a pipeline.
+
 ## Sandboxes, and what this provider is not
 
 `trusted_local` is a materialized copy of a snapshot in a temporary directory, optionally

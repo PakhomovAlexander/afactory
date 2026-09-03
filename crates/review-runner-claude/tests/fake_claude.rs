@@ -293,3 +293,49 @@ fn a_package_naming_another_runner_is_refused() {
         .unwrap_err();
     assert!(error.contains("drives claude"), "{error}");
 }
+
+/// `render_input` is the exact stdin the adapter writes: same bytes, same manifest, no spawn.
+#[test]
+fn rendered_input_is_exactly_what_the_stub_receives() {
+    let dir = tempfile::tempdir().unwrap();
+    let dump = dir.path().join("prompt-dump");
+    let stub_path = dir.path().join("claude");
+    std::fs::write(
+        &stub_path,
+        format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", dump.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let package = package(dir.path(), &stub_path);
+    let adapter =
+        review_runner_claude::ClaudeAdapter::from_package(&package, Duration::from_secs(10))
+            .unwrap()
+            .with_focus("the parser");
+    let inputs = review_runner::ReviewerInputs {
+        result_contract: review_core::ReviewerResultContract::V2,
+        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.into()),
+        refused_attempts: vec!["previous answer was not JSON".into()],
+        ..Default::default()
+    };
+
+    let rendered = adapter
+        .render_input(&inputs)
+        .unwrap()
+        .expect("claude renders");
+    assert_eq!(rendered.transport, review_runner::InputTransport::Prompt);
+    assert_eq!(
+        rendered.manifest.rendered_bytes,
+        rendered.bytes.len() as u64
+    );
+    assert!(!dump.exists(), "rendering must not spawn the model");
+
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let sandbox = dir.path().join("sandbox");
+    std::fs::create_dir_all(&sandbox).unwrap();
+    let _ = adapter.invoke(&cas, &sandbox, &inputs);
+    assert_eq!(std::fs::read(&dump).unwrap(), rendered.bytes);
+}

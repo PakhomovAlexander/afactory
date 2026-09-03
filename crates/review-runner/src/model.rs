@@ -477,6 +477,73 @@ pub fn estimate_tokens(rendered_bytes: usize) -> u64 {
     (rendered_bytes as u64).div_ceil(4)
 }
 
+/// How an adapter delivers its Worker Input to the process it spawns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputTransport {
+    /// A Markdown prompt on stdin: the package instructions, the output contract, then the
+    /// labelled inputs.
+    Prompt,
+    /// The typed `ReviewerInputs` JSON document on stdin; nothing when it encodes to `{}`.
+    Json,
+}
+
+/// The exact bytes a Worker receives, with the manifest that accounts for them. Produced
+/// without spawning anything, so a person can audit a package's real input token-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedInput {
+    pub transport: InputTransport,
+    pub bytes: Vec<u8>,
+    pub manifest: ContextManifest,
+}
+
+/// Compose a model Worker's prompt: the package instructions, the output contract, then the
+/// labelled inputs. A pure function of its arguments — no sandbox, Provider, or CAS — so what
+/// an adapter sends and what `af review render` shows are the same bytes by construction.
+pub fn compose_model_prompt(
+    instructions: &str,
+    inputs: &ReviewerInputs,
+) -> Result<(String, ContextManifest), String> {
+    let mut prompt = instructions.to_string();
+    prompt.push_str(result_contract(inputs.result_contract));
+    let instruction_bytes = prompt.len();
+    inputs.render_into(&mut prompt)?;
+    let mut manifest = ContextManifest::default();
+    manifest.record(
+        "worker_instructions",
+        "digest-pinned Worker package and output contract",
+        inputs
+            .attempt_context
+            .as_ref()
+            .and_then(|context| context.reviewer_package_artifact_id.clone()),
+        Some("review.kernel/ReviewerPackage@1".into()),
+        instruction_bytes,
+    );
+    manifest.record(
+        "role_scoped_inputs",
+        "exact Worker Input",
+        inputs
+            .attempt_context
+            .as_ref()
+            .map(|context| context.campaign_manifest_id.clone()),
+        None,
+        prompt.len() - instruction_bytes,
+    );
+    manifest.finish(prompt.len());
+    Ok((prompt, manifest))
+}
+
+/// Compose a command Worker's input: the typed document exactly as the command adapter
+/// writes it to stdin (an empty document is `{}`, which the adapter then omits).
+pub fn compose_command_input(
+    inputs: &ReviewerInputs,
+) -> Result<(Vec<u8>, ContextManifest), String> {
+    inputs.validate_refusal_history_bound()?;
+    let encoded = serde_json::to_vec(inputs).map_err(|error| error.to_string())?;
+    let manifest = ContextManifest::command_input(inputs)?;
+    Ok((encoded, manifest))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewerAttemptContext {
@@ -900,6 +967,13 @@ pub trait ReviewerAdapter: Send + Sync {
         inputs: &ReviewerInputs,
     ) -> Result<ReviewerReturn, RunnerError>;
 
+    /// The exact bytes this adapter would send for `inputs`, without sending them. `None` for
+    /// adapters with no fixed input encoding, such as in-process test stubs.
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+        let _ = inputs;
+        Ok(None)
+    }
+
     fn invoke_receipted(
         &self,
         cas: &Cas,
@@ -981,6 +1055,15 @@ fn invoke_command(
 }
 
 impl ReviewerAdapter for CommandAdapter {
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+        let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
+        Ok(Some(RenderedInput {
+            transport: InputTransport::Json,
+            bytes,
+            manifest,
+        }))
+    }
+
     fn invoke(
         &self,
         cas: &Cas,
@@ -999,6 +1082,15 @@ impl ReviewerAdapter for CommandAdapter {
 /// Programmatic callers retain the bounded default; reviewctl binds [`CommandAdapter`] with the
 /// exact timeout captured in the Campaign Manifest.
 impl ReviewerAdapter for Command {
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+        let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
+        Ok(Some(RenderedInput {
+            transport: InputTransport::Json,
+            bytes,
+            manifest,
+        }))
+    }
+
     fn invoke(
         &self,
         cas: &Cas,
