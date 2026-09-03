@@ -392,6 +392,32 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     assert!(campaigns["campaigns"][0]["findings"]["open"].is_u64());
     let id = campaigns["campaigns"][0]["id"].as_str().unwrap();
     assert!(id.starts_with("c-") && id.len() == 66, "{id}");
+    assert_eq!(campaigns["campaigns"][0]["state_dir"], "loop");
+    assert!(
+        campaigns["campaigns"][0]["last_activity_unix_ms"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(
+        campaigns["campaigns"][0].get("state_bytes").is_none(),
+        "sizes are opt-in: walking every state directory costs seconds on a large root"
+    );
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "campaigns",
+            "--state-root",
+            &root,
+            "--format",
+            "json",
+            "--sizes",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let sized: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(sized["campaigns"][0]["state_bytes"].as_u64().unwrap() > 0);
 
     let (code, stdout, stderr) = reviewctl(
         &repo,
@@ -1852,4 +1878,81 @@ gate = "major"
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(stdout.contains("done      reviewer"), "{stdout}");
+}
+
+/// `gc` previews by default and removes only whole Campaign directories on `--apply`; what it
+/// kept is still listed, what it removed is gone from the enumeration.
+#[test]
+fn gc_previews_then_removes_whole_campaign_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, _) = fixture(dir.path());
+    let root = dir.path().join("campaigns");
+    let state = root.join("loop").to_string_lossy().into_owned();
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "loop", "--state", &state],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let root = root.to_string_lossy().into_owned();
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["gc", "--state-root", &root, "--older-than", "0", "--json"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let preview: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(preview["schema"], "af/review-gc@1");
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["campaigns"][0]["label"], "loop");
+    assert_eq!(preview["campaigns"][0]["action"], "would remove");
+    assert!(preview["reclaimable_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(preview["reclaimed_bytes"], 0);
+    assert!(
+        std::path::Path::new(&state).exists(),
+        "a preview removes nothing"
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "gc",
+            "--state-root",
+            &root,
+            "--older-than",
+            "0",
+            "--keep",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let kept: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        kept["campaigns"][0]["action"], "keep",
+        "--keep protects the newest"
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["gc", "--state-root", &root, "--older-than", "0", "--apply"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("removed"), "{stdout}");
+    assert!(
+        !std::path::Path::new(&state).exists(),
+        "--apply removes the directory"
+    );
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "json"],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let campaigns: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(campaigns["campaigns"], serde_json::json!([]));
 }
