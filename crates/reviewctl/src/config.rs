@@ -44,6 +44,13 @@ pub(crate) struct LayerFile {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Config {
+    /// True when only the machine-owned layers (built-in, system, user, environment) were read.
+    /// The `[self]` policy — what to download, from where, and whether to exec it — is only ever
+    /// taken from such a load, so a repository can never steer it.
+    pub(crate) machine_scope: bool,
+    /// `[self]` tables found in directory, project, or local layers: reported, never merged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ignored: Vec<String>,
     /// Every file a layer would read, in ladder order, present or not.
     pub(crate) files: Vec<LayerFile>,
     /// The repository toplevel the project layers were taken from, when inside one.
@@ -80,6 +87,9 @@ pub(crate) struct SelfPolicy {
 
 impl Config {
     pub(crate) fn self_policy(&self) -> Result<SelfPolicy, String> {
+        if !self.machine_scope {
+            return Err("[self] policy must come from a machine-scope load (built-in, system, user, environment)".into());
+        }
         let table = self
             .effective
             .get("self")
@@ -203,7 +213,18 @@ pub(crate) fn git_toplevel(start: &Path) -> Option<PathBuf> {
 // ------------------------------------------------------------------------------------------
 // loading
 
+/// The whole ladder, for `af config show` and project-facing settings.
 pub(crate) fn load(repo: Option<&Path>) -> Result<Config, String> {
+    load_with(repo, false)
+}
+
+/// Built-in, system, user, and environment only: the layers a repository cannot write. This is
+/// the only load `af self` and dispatch consult.
+pub(crate) fn load_machine() -> Result<Config, String> {
+    load_with(None, true)
+}
+
+fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String> {
     let start = match repo {
         Some(repo) => repo.to_path_buf(),
         None => std::env::current_dir().map_err(|error| format!("current directory: {error}"))?,
@@ -237,21 +258,33 @@ pub(crate) fn load(repo: Option<&Path>) -> Result<Config, String> {
         ancestors.retain(|dir| *dir != directory_root.as_path());
     }
     ancestors.reverse();
-    for dir in ancestors {
-        planned.push(("directory", dir.join(".af/af.toml")));
-    }
-    if let Some(toplevel) = &toplevel {
-        planned.push(("project", toplevel.join(".af/af.toml")));
-        planned.push(("local", toplevel.join(".af/af.local.toml")));
+    if !machine_scope {
+        for dir in ancestors {
+            planned.push(("directory", dir.join(".af/af.toml")));
+        }
+        if let Some(toplevel) = &toplevel {
+            planned.push(("project", toplevel.join(".af/af.toml")));
+            planned.push(("local", toplevel.join(".af/af.local.toml")));
+        }
     }
 
+    let mut ignored = Vec::new();
     for (layer, path) in planned {
         let present = path.is_file();
         if present {
             let text = std::fs::read_to_string(&path)
                 .map_err(|error| format!("reading {}: {error}", path.display()))?;
-            let value: Value = toml::from_str(&text)
+            let mut value: Value = toml::from_str(&text)
                 .map_err(|error| format!("{}: {}", path.display(), error.message()))?;
+            if matches!(layer, "directory" | "project" | "local")
+                && let Some(table) = value.as_table_mut()
+                && table.remove("self").is_some()
+            {
+                ignored.push(format!(
+                    "[self] in {} ({layer} layer): machine-only table, ignored — see af help self",
+                    path.display()
+                ));
+            }
             let lines = key_lines(&text);
             record_origins(&value, "", layer, Some(&path), &lines, &mut origins);
             merge(&mut effective, value);
@@ -295,8 +328,10 @@ pub(crate) fn load(repo: Option<&Path>) -> Result<Config, String> {
     }
 
     Ok(Config {
+        machine_scope,
+        ignored,
         files,
-        toplevel,
+        toplevel: if machine_scope { None } else { toplevel },
         effective,
         origins,
     })
@@ -426,6 +461,9 @@ pub(crate) fn show(repo: Option<&Path>, origin: bool, json: bool) -> Result<(), 
     let mut out = String::new();
     if let Some(toplevel) = &config.toplevel {
         let _ = writeln!(out, "# repository: {}", toplevel.display());
+    }
+    for note in &config.ignored {
+        let _ = writeln!(out, "# ignored: {note}");
     }
     let mut leaves = Vec::new();
     flatten(&config.effective, "", &mut leaves);
@@ -575,6 +613,8 @@ mod tests {
     fn built_in_policy_is_valid() {
         let effective: Value = toml::from_str(BUILT_IN).unwrap();
         let config = Config {
+            machine_scope: true,
+            ignored: Vec::new(),
             files: Vec::new(),
             toplevel: None,
             effective,

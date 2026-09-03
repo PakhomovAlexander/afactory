@@ -104,19 +104,27 @@ fn read_receipt(paths: &Paths, version: &str) -> Option<Receipt> {
     toml::from_str(&text).ok()
 }
 
+/// The one predicate for "af `version` is installed": the binary is a file and beside it sits a
+/// receipt that names this version and this target. A bare binary someone dropped into the
+/// directory is not installed; dispatch, activation, listing, and pruning all ask this.
+fn installed(paths: &Paths, version: &str) -> Option<PathBuf> {
+    let binary = version_binary(paths, version);
+    if !binary.is_file() {
+        return None;
+    }
+    let receipt = read_receipt(paths, version)?;
+    (receipt.version == version && receipt.target == TARGET).then_some(binary)
+}
+
 fn installed_versions(paths: &Paths) -> Vec<Version> {
     let Ok(entries) = std::fs::read_dir(&paths.versions) else {
         return Vec::new();
     };
     let mut versions: Vec<Version> = entries
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().join("af").is_file())
-        .filter_map(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .and_then(|name| Version::parse(name).ok())
-        })
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| installed(paths, name).is_some())
+        .filter_map(|name| Version::parse(&name).ok())
         .collect();
     versions.sort();
     versions
@@ -624,29 +632,47 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
         return;
     };
     let why = match &lock {
-        Some(lock) => format!("{} pins af {version}", lock.display()),
-        None => format!("{VERSION_ENV}={version}"),
+        Some(lock) => format!("{} is pinned by af {version}", lock.display()),
+        None => format!("{VERSION_ENV}={version} was requested"),
     };
-    let mut binary = version_binary(&paths, &version);
-    if !binary.is_file() {
-        let policy = config::load(None).and_then(|config| config.self_policy());
-        let Ok(policy) = policy else {
-            return;
-        };
-        if offline() || !policy.install_pins {
-            eprintln!(
-                "af: {why}; running af {VERSION} because that version is not installed — fix: af self install {version}"
-            );
-            return;
-        }
-        match install(&paths, &policy, &version) {
-            Ok(installed) => binary = installed,
-            Err(error) => {
-                eprintln!("af: {why}; could not install it ({error}); running af {VERSION}");
-                return;
+    let binary = match installed(&paths, &version) {
+        Some(binary) => binary,
+        None => {
+            let policy = config::load_machine().and_then(|config| config.self_policy());
+            let attempt = match policy {
+                Err(error) => Err(format!("self policy: {error}")),
+                Ok(_) if offline() => Err(format!("{OFFLINE_ENV} is set")),
+                Ok(policy) if !policy.install_pins => {
+                    Err("[self] install_pins = false".to_string())
+                }
+                Ok(policy) => install(&paths, &policy, &version),
+            };
+            match attempt {
+                Ok(binary) => binary,
+                Err(reason) => {
+                    // Fail closed whenever running on would mean an older binary interpreting a
+                    // newer release's pin, or ignoring an explicit request. An older pin under a
+                    // newer binary is the #47 case: proceed and say so.
+                    let explicit = lock.is_none();
+                    let newer = match (Version::parse(&version), Version::parse(VERSION)) {
+                        (Ok(pinned), Ok(running)) => pinned > running,
+                        _ => true,
+                    };
+                    if explicit || newer {
+                        eprintln!(
+                            "af: {why}, {} this af {VERSION}, and that release is not installed ({reason}) — fix: af self install {version}",
+                            if explicit { "not" } else { "newer than" }
+                        );
+                        std::process::exit(1);
+                    }
+                    eprintln!(
+                        "af: {why}; that release is not installed ({reason}), so this af {VERSION} runs instead — fix: af self install {version}"
+                    );
+                    return;
+                }
             }
         }
-    }
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -681,7 +707,7 @@ pub(crate) fn after_command(argv: &[String]) {
         return;
     }
     let Ok(paths) = paths() else { return };
-    let Ok(policy) = config::load(None).and_then(|config| config.self_policy()) else {
+    let Ok(policy) = config::load_machine().and_then(|config| config.self_policy()) else {
         return;
     };
     if !policy.update_check || policy.auto_update == AutoUpdate::Never {
@@ -721,7 +747,7 @@ pub(crate) fn after_command(argv: &[String]) {
 /// The detached child: refresh the cache, and under `always` install and activate.
 pub(crate) fn refresh_check() -> Result<(), String> {
     let paths = paths()?;
-    let policy = config::load(None)?.self_policy()?;
+    let policy = config::load_machine()?.self_policy()?;
     if offline() {
         return Ok(());
     }
@@ -745,7 +771,7 @@ pub(crate) fn refresh_check() -> Result<(), String> {
     {
         let from = default_version(&paths).unwrap_or_else(|| VERSION.to_string());
         let latest = latest.to_string();
-        if !version_binary(&paths, &latest).is_file() {
+        if installed(&paths, &latest).is_none() {
             install(&paths, &policy, &latest)?;
         }
         set_default(&paths, &latest)?;
@@ -794,14 +820,14 @@ struct PolicyView {
 
 pub(crate) fn status(json: bool) -> Result<(), String> {
     let paths = paths()?;
-    let policy = config::load(None)?.self_policy()?;
+    let policy = config::load_machine()?.self_policy()?;
     let running = std::env::current_exe().map_err(|error| error.to_string())?;
-    let installed: Vec<String> = installed_versions(&paths)
+    let installed_list: Vec<String> = installed_versions(&paths)
         .iter()
         .map(ToString::to_string)
         .collect();
     let pin = pinned_version(Path::new(".")).map(|(version, lock)| PinView {
-        installed: version_binary(&paths, &version).is_file(),
+        installed: installed(&paths, &version).is_some(),
         version,
         lock,
     });
@@ -814,7 +840,7 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         running: running.clone(),
         receipt: running_receipt(&paths),
         default: default_version(&paths),
-        installed,
+        installed: installed_list,
         pin,
         last_check: state.last_check,
         latest: cache.latest,
@@ -905,7 +931,7 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
 
 pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(), String> {
     let paths = paths()?;
-    let policy = config::load(None)?.self_policy()?;
+    let policy = config::load_machine()?.self_policy()?;
     let channel = if rc { Channel::Rc } else { policy.channel };
     let src = source(&policy);
     let target = match version {
@@ -929,7 +955,7 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     }
     require_receipt(&paths)?;
     let target = target.to_string();
-    if !version_binary(&paths, &target).is_file() {
+    if installed(&paths, &target).is_none() {
         install(&paths, &policy, &target)?;
     }
     set_default(&paths, &target)?;
@@ -956,13 +982,12 @@ pub(crate) fn rollback() -> Result<(), String> {
 
 pub(crate) fn install_command(version: &str) -> Result<(), String> {
     let paths = paths()?;
-    let policy = config::load(None)?.self_policy()?;
+    let policy = config::load_machine()?.self_policy()?;
     let version = version.trim_start_matches('v');
     Version::parse(version).map_err(|error| format!("{version}: {error}"))?;
-    let binary = if version_binary(&paths, version).is_file() {
-        version_binary(&paths, version)
-    } else {
-        install(&paths, &policy, version)?
+    let binary = match installed(&paths, version) {
+        Some(binary) => binary,
+        None => install(&paths, &policy, version)?,
     };
     println!("af {version} installed at {}", binary.display());
     if default_version(&paths).is_none() {
@@ -1002,7 +1027,7 @@ pub(crate) fn remove(version: &str) -> Result<(), String> {
 pub(crate) fn prune() -> Result<(), String> {
     let paths = paths()?;
     require_receipt(&paths)?;
-    let policy = config::load(None)?.self_policy()?;
+    let policy = config::load_machine()?.self_policy()?;
     let keep = policy.keep_versions;
     let default = default_version(&paths);
     let pinned = pinned_version(Path::new(".")).map(|(version, _)| version);

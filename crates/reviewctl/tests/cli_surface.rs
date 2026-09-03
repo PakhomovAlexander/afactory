@@ -146,22 +146,22 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
     let work = root.path().join("work");
     write(
         &work.join(".af/af.toml"),
-        "[self]\nchannel = \"rc\"\n[defaults]\npipeline = \"shared\"\n",
+        "[ui]\ncolor = \"never\"\n[defaults]\npipeline = \"shared\"\n",
     );
     let project = work.join("proj");
     std::fs::create_dir_all(project.join(".git")).unwrap();
     write(
         &project.join(".af/af.toml"),
-        "version = 1\n[defaults]\npipeline = \"review\"\n",
+        "version = 1\n[defaults]\npipeline = \"review\"\n[self]\nsource = \"attacker/repo\"\n",
     );
     write(
         &project.join(".af/af.local.toml"),
-        "[self]\nkeep_versions = 5\n",
+        "[ui]\npager = \"less\"\n",
     );
     // Nothing below the toplevel is a layer.
     write(
         &project.join("sub/.af/af.toml"),
-        "[self]\nchannel = \"never-read\"\n",
+        "[ui]\ncolor = \"never-read\"\n",
     );
 
     let show = Command::new(AF)
@@ -181,36 +181,27 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
             .unwrap_or_else(|| panic!("{key} missing in\n{text}"))
             .to_string()
     };
+    let check = |key: &str, value: &str, origin: &str| {
+        let found = line(key);
+        assert!(
+            found.contains(value) && found.contains(origin),
+            "{key}: expected {value} from {origin}, got `{found}` in\n{text}"
+        );
+    };
+    check("self.auto_update", "\"never\"", "# user");
+    check("self.keep_versions", "= 9", "# user");
+    check("ui.color", "\"never\"", "# directory");
+    check("defaults.pipeline", "\"review\"", "# project");
+    check("ui.pager", "\"less\"", "# local");
+    check("self.check_every", "\"1h\"", "# environment");
+    check("self.install_pins", "true", "# built-in");
+    check("self.source", "PakhomovAlexander", "# built-in");
     assert!(
-        line("self.auto_update").contains("\"never\"")
-            && line("self.auto_update").contains("# user"),
+        text.contains("# ignored: [self] in") && text.contains("proj/.af/af.toml (project layer)"),
         "{text}"
     );
-    assert!(
-        line("self.channel").contains("\"rc\"") && line("self.channel").contains("# directory"),
-        "{text}"
-    );
-    assert!(
-        line("defaults.pipeline").contains("\"review\"")
-            && line("defaults.pipeline").contains("# project"),
-        "{text}"
-    );
-    assert!(
-        line("self.keep_versions").contains("= 5")
-            && line("self.keep_versions").contains("# local"),
-        "{text}"
-    );
-    assert!(
-        line("self.check_every").contains("\"1h\"")
-            && line("self.check_every").contains("# environment"),
-        "{text}"
-    );
-    assert!(line("self.install_pins").contains("# built-in"), "{text}");
     assert!(!text.contains("never-read"), "{text}");
-    assert!(
-        line("self.channel").contains("work/.af/af.toml:2"),
-        "{text}"
-    );
+    assert!(line("ui.color").contains("work/.af/af.toml:2"), "{text}");
 
     let json: serde_json::Value = serde_json::from_slice(
         &Command::new(AF)
@@ -224,8 +215,13 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
             .stdout,
     )
     .unwrap();
-    assert_eq!(json["effective"]["self"]["keep_versions"], 5);
-    assert_eq!(json["origins"]["self.channel"]["layer"], "directory");
+    assert_eq!(json["effective"]["self"]["keep_versions"], 9);
+    assert_eq!(
+        json["effective"]["self"]["source"],
+        "PakhomovAlexander/afactory"
+    );
+    assert_eq!(json["origins"]["ui.color"]["layer"], "directory");
+    assert_eq!(json["ignored"].as_array().unwrap().len(), 1);
     let layers: Vec<&str> = json["files"]
         .as_array()
         .unwrap()
@@ -565,4 +561,146 @@ fn refresh_check_caches_the_latest_and_applies_always() {
         .output()
         .unwrap();
     assert!(offline.status.success(), "{}", err(&offline));
+}
+
+#[test]
+fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed() {
+    let sandbox = Sandbox::new();
+    sandbox.publish("0.6.0", false);
+    write(
+        &sandbox.path("config/af/config.toml"),
+        "[self]\ninstall_pins = false\n",
+    );
+    let repo = sandbox.path("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // The repository asks for installs from elsewhere; the user said no installs. The user wins.
+    write(
+        &repo.join(".af/af.toml"),
+        "[self]\nsource = \"attacker/repo\"\ninstall_pins = true\n",
+    );
+    write(
+        &repo.join(".af/af.lock"),
+        "version = 1\naf_version = \"0.6.0\"\n\n[reviewers]\n",
+    );
+    let older = sandbox
+        .command(Path::new(AF))
+        .args(["review", "campaigns"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        !sandbox.versions().join("0.6.0").exists(),
+        "a repository must not trigger an install"
+    );
+    assert!(
+        err(&older).contains("af self install 0.6.0"),
+        "{}",
+        err(&older)
+    );
+    assert!(
+        older.status.success(),
+        "an older pin under a newer binary proceeds: {}",
+        err(&older)
+    );
+
+    // A newer pin that cannot be executed is a refusal, never a fallback to this binary.
+    write(
+        &repo.join(".af/af.lock"),
+        "version = 1\naf_version = \"9.9.9\"\n\n[reviewers]\n",
+    );
+    let newer = sandbox
+        .command(Path::new(AF))
+        .args(["review", "campaigns"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(newer.status.code(), Some(1), "{}", err(&newer));
+    assert!(
+        err(&newer).contains("9.9.9") && err(&newer).contains("af self install 9.9.9"),
+        "{}",
+        err(&newer)
+    );
+    assert!(out(&newer).is_empty(), "{}", out(&newer));
+
+    // An explicit AF_VERSION that is not installed is a refusal too.
+    let explicit = sandbox
+        .command(Path::new(AF))
+        .args(["review", "campaigns"])
+        .env("AF_VERSION", "5.5.5")
+        .env("AF_SELF_OFFLINE", "1")
+        .current_dir(sandbox.path("home"))
+        .output()
+        .unwrap();
+    assert_eq!(explicit.status.code(), Some(1), "{}", err(&explicit));
+    assert!(err(&explicit).contains("5.5.5"), "{}", err(&explicit));
+}
+
+#[test]
+fn a_bare_binary_without_a_receipt_is_not_installed() {
+    let sandbox = Sandbox::new();
+    sandbox.publish("0.6.0", false);
+    let dir = sandbox.versions().join("0.6.0");
+    write(&dir.join("af"), "#!/bin/sh\necho planted\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.join("af"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let status: serde_json::Value = serde_json::from_slice(
+        &sandbox
+            .command(Path::new(AF))
+            .args(["self", "status", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(status["installed"], serde_json::json!([]));
+
+    // Dispatch does not exec it; install replaces it with a verified, receipted binary.
+    let repo = sandbox.path("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    write(
+        &repo.join(".af/af.lock"),
+        "version = 1\naf_version = \"0.6.0\"\n\n[reviewers]\n",
+    );
+    let dispatched = sandbox
+        .command(Path::new(AF))
+        .args(["review", "campaigns"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        !out(&dispatched).contains("planted"),
+        "{}",
+        out(&dispatched)
+    );
+    assert!(
+        out(&dispatched).contains("fake af 0.6.0 review campaigns"),
+        "{}\n{}",
+        out(&dispatched),
+        err(&dispatched)
+    );
+    let receipt = std::fs::read_to_string(dir.join("receipt.toml")).unwrap();
+    assert!(receipt.contains("version = \"0.6.0\""), "{receipt}");
+}
+
+#[test]
+fn json_errors_are_one_document_on_stdout() {
+    let failed = Command::new(AF)
+        .args(["config", "show", "--json"])
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    let document: serde_json::Value = serde_json::from_slice(&failed.stdout)
+        .unwrap_or_else(|_| panic!("not JSON: {}", out(&failed)));
+    assert_eq!(document["schema"], "af/error@1");
+    assert!(
+        document["error"].as_str().unwrap().contains("HOME"),
+        "{document}"
+    );
+    assert_eq!(document["exit_code"], 1);
 }

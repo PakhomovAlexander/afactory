@@ -31,9 +31,11 @@ fi
 version="${tag#v}"
 asset="af-${tag}-${host}.tar.gz"
 
-if [ -x "$DATA/$version/af" ]; then
-  echo "af $version is already installed at $DATA/$version/af"
+if [ -x "$DATA/$version/af" ] && grep -q "^version = \"$version\"" "$DATA/$version/receipt.toml" 2>/dev/null \
+   && grep -q "^target = \"$host\"" "$DATA/$version/receipt.toml" 2>/dev/null; then
+  echo "af $version is already installed at $DATA/$version/af (receipt present)"
 else
+  # Absent, or a bare binary without a receipt: never adopt it — install fresh and replace it.
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT HUP INT TERM
   gh release download "$tag" --repo "$REPO" --pattern "$asset" --dir "$tmp"

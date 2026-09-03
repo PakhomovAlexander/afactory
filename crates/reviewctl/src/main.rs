@@ -1039,6 +1039,15 @@ fn main() {
     let code = match outcome {
         Ok(code) => code,
         Err(error) => {
+            if argv.iter().skip(1).any(|word| word == "--json") {
+                let document = serde_json::json!({
+                    "schema": "af/error@1",
+                    "command": prefix,
+                    "error": error,
+                    "exit_code": 1,
+                });
+                println!("{document}");
+            }
             eprintln!("{prefix}: {error}");
             1
         }
