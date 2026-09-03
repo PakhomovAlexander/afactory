@@ -23,47 +23,6 @@ const PIPELINE_NAME: &str = "review";
 const PIPELINE_VERSION: &str = "1.0.0";
 const WORKER_VERSION: &str = "1.0.0";
 
-const HELP: &str = r#"Set up or inspect trusted local review authority.
-
-Usage:
-  af onboard [--repo DIR] [--runner mixed|claude|codex]
-             [--gate NAME=COMMAND]... [--apply] [--json]
-  af onboard [--repo DIR] --refresh-lock [--json]
-  af onboard [--repo DIR] --migrate [--apply] [--json]
-  af onboard --help
-
-Behavior:
-  * Without .af/: preview a deterministic two-reviewer scaffold. --apply atomically creates it.
-  * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.
-  * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.
-  * With legacy .review/ and no .af/: validate every pipeline and the lock against this release
-    and name each pending format upgrade. --migrate --apply rewrites the pipelines in place,
-    additively — reviewer packages, budgets, convergence, checks, and edges are untouched.
-    Scaffolding .af/ beside .review/ is refused; remove .review/ first if you want a fresh bundle.
-  * .af/af.lock records the af release that wrote it. A newer af proceeds and notes the
-    difference; an older af refuses. --refresh-lock re-pins to the running release.
-
-The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
-fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
-
-Trusting configured Worker authority and intentionally running `af review run` or `af task start`
-authorizes delivery of each Worker's declared inputs for all Attempts and later Rounds or stages
-of that Campaign or Task. Afactory does not ask for per-call confirmation.
-
-Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the
-deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human
-explicitly requests convergence review, and repeat that explicit mode when resuming it.
-
-Runner profiles:
-  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)
-  claude  both Workers = Claude Opus/high
-  codex   both Workers = machine-configured Codex
-
-Gate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test
-script. If none is unambiguous, pass a trusted literal, for example:
-  af onboard --gate 'check=make check' --apply
-"#;
-
 const CORRECTNESS_PROMPT: &str = r#"# Correctness reviewer
 
 Review the exact kernel-selected Subject for concrete correctness defects at high depth. The
@@ -110,17 +69,6 @@ enum RunnerProfile {
 }
 
 impl RunnerProfile {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "mixed" => Ok(Self::Mixed),
-            "claude" => Ok(Self::Claude),
-            "codex" => Ok(Self::Codex),
-            _ => Err(format!(
-                "unknown runner profile `{value}`; expected mixed, claude, or codex"
-            )),
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
             Self::Mixed => "mixed",
@@ -243,11 +191,8 @@ struct Bundle {
     report: Report,
 }
 
-pub(super) fn command(args: impl Iterator<Item = String>) -> Result<(), String> {
-    let Some(options) = parse(args)? else {
-        print!("{HELP}");
-        return Ok(());
-    };
+pub(super) fn run_cli(args: crate::cli::OnboardArgs) -> Result<(), String> {
+    let options = options_from_cli(args)?;
     let report = execute(&options)?;
     if options.json {
         println!(
@@ -260,40 +205,30 @@ pub(super) fn command(args: impl Iterator<Item = String>) -> Result<(), String> 
     Ok(())
 }
 
-fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, String> {
-    let mut options = Options {
-        repo: PathBuf::from("."),
-        profile: RunnerProfile::Mixed,
-        gates: Vec::new(),
-        apply: false,
-        refresh_lock: false,
-        migrate: false,
-        json: false,
+fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
+    let profile = match args.runner {
+        crate::cli::RunnerArg::Mixed => RunnerProfile::Mixed,
+        crate::cli::RunnerArg::Claude => RunnerProfile::Claude,
+        crate::cli::RunnerArg::Codex => RunnerProfile::Codex,
     };
+    let mut gates = Vec::new();
     let mut gate_names = BTreeSet::new();
-    while let Some(flag) = args.next() {
-        let mut value = || {
-            args.next()
-                .ok_or_else(|| format!("{flag} requires a value"))
-        };
-        match flag.as_str() {
-            "--help" | "-h" => return Ok(None),
-            "--repo" => options.repo = PathBuf::from(value()?),
-            "--runner" => options.profile = RunnerProfile::parse(&value()?)?,
-            "--gate" => {
-                let gate = parse_gate(&value()?)?;
-                if !gate_names.insert(gate.name.clone()) {
-                    return Err(format!("duplicate Gate name `{}`", gate.name));
-                }
-                options.gates.push(gate);
-            }
-            "--apply" => options.apply = true,
-            "--refresh-lock" => options.refresh_lock = true,
-            "--migrate" => options.migrate = true,
-            "--json" => options.json = true,
-            _ => return Err(format!("unknown option `{flag}`; run `af onboard --help`")),
+    for value in &args.gate {
+        let gate = parse_gate(value)?;
+        if !gate_names.insert(gate.name.clone()) {
+            return Err(format!("duplicate Gate name `{}`", gate.name));
         }
+        gates.push(gate);
     }
+    let options = Options {
+        repo: args.repo,
+        profile,
+        gates,
+        apply: args.apply,
+        refresh_lock: args.refresh_lock,
+        migrate: args.migrate,
+        json: args.json,
+    };
     if options.apply && options.refresh_lock {
         return Err("--apply and --refresh-lock are mutually exclusive".to_string());
     }
@@ -315,7 +250,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             "--gate and --runner configure only a new `.af/` bundle; --migrate upgrades existing `.review/` policy in place".into(),
         );
     }
-    Ok(Some(options))
+    Ok(options)
 }
 
 fn parse_gate(value: &str) -> Result<Gate, String> {

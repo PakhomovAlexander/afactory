@@ -24,6 +24,27 @@ The legacy shell harness (`.agents/skills/self-review-heavy/scripts/`) is retire
 orchestrator but kept deliberately: it is the reference implementation that regenerates
 the synthetic fixture corpus, gated in CI.
 
+## Install
+
+One line installs the newest stable release into the self-managed layout
+(`$XDG_DATA_HOME/af/versions/<v>/`, default symlink at `~/.local/bin/af`) while the repository is
+private; `af` takes over from there:
+
+```sh
+gh api repos/PakhomovAlexander/afactory/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
+af self setup-shell --write     # completions + man pages for your shell
+af self status                  # what is installed, the default, and the pin that applies here
+af self update --check          # exit 10 when a newer release exists; `af self update` installs it
+```
+
+A project's `.af/af.lock` pins the release that wrote it; inside such a project any `af` on
+`PATH` execs that version, installing it on demand and verifying it against the release
+checksums. `af help self`, `af help layers`, and `af help exit-codes` explain the rest; every
+namespace and command has its own `--help`. Configuration merges built-in → `/etc/af` →
+`~/.config/af` → every `.af/af.toml` above the repository → `.af/af.toml` → `.af/af.local.toml`
+→ `AF_<TABLE>__<KEY>`; `af config show --origin` names where each value came from
+([ADR-0044](docs/adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)).
+
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction
 make pilot-check # deterministic Task start/deliver/recovery/operator smoke
@@ -533,8 +554,8 @@ edit with a project-toolchain image, never a generic moving tag.
 
 A cache request is resolved twice: project authority names only `cargo`, while machine-local
 operator policy selects the source and hard limits. The default policy path is
-`$XDG_CONFIG_HOME/afactory/caches.toml` (falling back to
-`$HOME/.config/afactory/caches.toml`); `AFACTORY_CACHE_POLICY_FILE` may select another absolute
+`$XDG_CONFIG_HOME/af/caches.toml` (falling back to
+`$HOME/.config/af/caches.toml`); `AF_CACHE_POLICY_FILE` may select another absolute
 file. Its v1 shape is:
 
 ```toml

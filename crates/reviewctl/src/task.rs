@@ -43,7 +43,6 @@ pub(super) struct DeliveryOptions {
     task_id: String,
     branch: String,
     worktree: PathBuf,
-    confirm: String,
     json: bool,
 }
 
@@ -55,122 +54,76 @@ pub(super) struct InspectOptions {
     json: bool,
 }
 
-pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Result<TaskOptions, String> {
-    let mut options = TaskOptions {
-        repo: PathBuf::from("."),
-        pipeline: PathBuf::from(".af/pipelines/implement.toml"),
-        state: None,
-        goal: String::new(),
-        authority: "HEAD".into(),
-        uncommitted: false,
-        timeout: None,
-        json: false,
-    };
-    let mut kind = None;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--kind" => kind = Some(value()?),
-            "--goal" => options.goal = value()?,
-            "--repo" => options.repo = PathBuf::from(value()?),
-            "--pipeline" => options.pipeline = PathBuf::from(value()?),
-            "--state" => options.state = Some(PathBuf::from(value()?)),
-            "--authority" => options.authority = value()?,
-            "--uncommitted" => options.uncommitted = true,
-            "--timeout-secs" => {
-                let seconds = value()?
-                    .parse::<u64>()
-                    .map_err(|_| "--timeout-secs must be an integer".to_string())?;
-                options.timeout = Some(Duration::from_secs(seconds));
-            }
-            "--json" => options.json = true,
-            _ => return Err(format!("unknown task flag `{flag}`")),
-        }
-    }
-    if kind.as_deref() != Some("implement") {
-        return Err("v2 supports exactly `--kind implement`".into());
-    }
-    if options.goal.trim().is_empty() {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn options_from_cli(
+    goal: String,
+    repo: PathBuf,
+    pipeline: PathBuf,
+    state: Option<PathBuf>,
+    authority: String,
+    uncommitted: bool,
+    timeout_secs: Option<u64>,
+    json: bool,
+) -> Result<TaskOptions, String> {
+    if goal.trim().is_empty() {
         return Err("an implement Task requires a non-empty --goal".into());
     }
-    if options.uncommitted && options.authority != "HEAD" {
+    if uncommitted && authority != "HEAD" {
         return Err("--uncommitted and an explicit --authority cannot be combined".into());
     }
-    Ok(options)
+    Ok(TaskOptions {
+        repo,
+        pipeline,
+        state,
+        goal,
+        authority,
+        uncommitted,
+        timeout: timeout_secs.map(Duration::from_secs),
+        json,
+    })
 }
 
-pub(super) fn parse_delivery(
-    mut args: impl Iterator<Item = String>,
+pub(super) fn delivery_from_cli(
+    task_id: String,
+    repo: PathBuf,
+    branch: String,
+    worktree: PathBuf,
+    confirm: String,
+    state: Option<PathBuf>,
+    json: bool,
 ) -> Result<DeliveryOptions, String> {
-    let task_id = args.next().ok_or("task deliver requires a Task ID")?;
     validate_task_id(&task_id)?;
-    let mut options = DeliveryOptions {
-        repo: PathBuf::from("."),
-        state: None,
-        task_id,
-        branch: String::new(),
-        worktree: PathBuf::new(),
-        confirm: String::new(),
-        json: false,
-    };
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--repo" => options.repo = PathBuf::from(value()?),
-            "--state" => options.state = Some(PathBuf::from(value()?)),
-            "--branch" => options.branch = value()?,
-            "--worktree" => options.worktree = PathBuf::from(value()?),
-            "--confirm" => options.confirm = value()?,
-            "--json" => options.json = true,
-            _ => return Err(format!("unknown task deliver flag `{flag}`")),
-        }
-    }
-    if options.branch.is_empty() || options.worktree.as_os_str().is_empty() {
+    if branch.is_empty() || worktree.as_os_str().is_empty() {
         return Err("task deliver requires --branch and --worktree".into());
     }
-    if options.confirm != options.task_id {
+    if confirm != task_id {
         return Err("--confirm must exactly equal the Task ID".into());
     }
-    Ok(options)
+    Ok(DeliveryOptions {
+        repo,
+        state,
+        task_id,
+        branch,
+        worktree,
+        json,
+    })
 }
 
-pub(super) fn parse_inspect(
-    mut args: impl Iterator<Item = String>,
-    require_task: bool,
+pub(super) fn inspect_from_cli(
+    task_id: Option<String>,
+    repo: PathBuf,
+    state: Option<PathBuf>,
+    json: bool,
 ) -> Result<InspectOptions, String> {
-    let mut options = InspectOptions {
-        repo: PathBuf::from("."),
-        state: None,
-        task_id: None,
-        json: false,
-    };
-    while let Some(argument) = args.next() {
-        let mut value = || {
-            args.next()
-                .ok_or_else(|| format!("{argument} needs a value"))
-        };
-        match argument.as_str() {
-            "--repo" => options.repo = PathBuf::from(value()?),
-            "--state" => options.state = Some(PathBuf::from(value()?)),
-            "--json" => options.json = true,
-            flag if flag.starts_with("--") => {
-                return Err(format!("unknown task inspection flag `{flag}`"));
-            }
-            task if options.task_id.is_none() => options.task_id = Some(task.to_string()),
-            _ => return Err("task inspection accepts at most one Task ID".into()),
-        }
-    }
-    if require_task != options.task_id.is_some() {
-        return Err(if require_task {
-            "task show requires a Task ID".into()
-        } else {
-            "task list does not accept a Task ID".into()
-        });
-    }
-    if let Some(task_id) = &options.task_id {
+    if let Some(task_id) = &task_id {
         validate_task_id(task_id)?;
     }
-    Ok(options)
+    Ok(InspectOptions {
+        repo,
+        state,
+        task_id,
+        json,
+    })
 }
 
 fn validate_task_id(task_id: &str) -> Result<(), String> {

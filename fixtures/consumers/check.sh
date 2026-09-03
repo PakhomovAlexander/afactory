@@ -19,7 +19,7 @@ if [ $# -eq 0 ]; then
   set -- "$root"/*/
 fi
 
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 AF_SELF_OFFLINE=1   # plan with THIS binary, never a pinned one
 status=0
 for fixture in "$@"; do
   fixture="${fixture%/}"

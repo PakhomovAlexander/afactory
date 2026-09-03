@@ -8,8 +8,8 @@ host path candidate-controlled execution authority.
 
 Pipeline format v3 may request a closed symbolic cache kind under `[gate]`, initially only
 `caches = ["cargo"]`. The pipeline never names a host path. Afactory resolves each requested kind
-through a versioned machine-local policy at `$XDG_CONFIG_HOME/afactory/caches.toml` (or the exact
-absolute file selected by `AFACTORY_CACHE_POLICY_FILE`). No mapping means no cache: a requested
+through a versioned machine-local policy at `$XDG_CONFIG_HOME/af/caches.toml` (or the exact
+absolute file selected by `AF_CACHE_POLICY_FILE`). No mapping means no cache: a requested
 kind fails before Gate command dispatch rather than falling back to an ambient package cache.
 
 One policy entry names an absolute real source directory and positive byte, filesystem-entry, and

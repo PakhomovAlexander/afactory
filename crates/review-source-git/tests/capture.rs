@@ -6,7 +6,7 @@ use common::{Fixture, cas_of, repo_of};
 use review_source_git::{Capture, CaptureError, CaptureObserver, materialize, worktree_state};
 
 fn workspace_root() -> std::path::PathBuf {
-    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+    std::env::var_os("AF_WORKSPACE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }

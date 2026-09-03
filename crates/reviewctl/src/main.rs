@@ -40,10 +40,14 @@ use sha2::{Digest, Sha256};
 
 mod authority;
 mod caches;
+mod cli;
+mod config;
 mod onboard;
 mod project;
 mod providers;
+mod selfmgmt;
 mod task;
+mod topics;
 mod tui;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,46 +462,6 @@ struct DemandWaiveOptions {
     reason: String,
 }
 
-fn usage() -> ! {
-    eprintln!(
-        "usage: af review [run]   [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--light|--heavy] [--policy-rev REV --base REV] [--candidate REV|--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
-        \x20                       [--authority REV] (compatibility: policy + diff Base)\n\
-        \x20                       [--provider NODE=PROVIDER_ID] [--resume-provider OPERATION_ID:EPOCH] [--json]\n\
-        \x20      af review plan    [run selector options] [--json] (token-free; no Campaign state)\n\
-        \x20      af review render  --node NODE [run selector options] [--focus TEXT] [--json] (token-free; the exact Worker input)\n\
-        \x20      af review tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
-         [--campaign NAME] [--light|--heavy] [--policy-rev REV --base REV] [--candidate REV|--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N] [--git-timeout-secs N]\n\
-        \x20      af review ledger  --campaign NAME [--state DIR] [--long]\n\
-        \x20      af review show    --campaign NAME [--state DIR] KEY\n\
-        \x20      af review export  --campaign NAME [--state DIR] PROPOSAL_ID [--allow-stale]\n\
-        \x20      af review export  --campaign NAME [--state DIR] --finding FINDING_ID [--allow-stale]\n\
-        \x20      af review report  --campaign NAME [--state DIR] [--format md|text|json]\n\
-        \x20      af review campaigns [--state-root DIR] [--format text|json]\n\
-        \x20      af review resolve --campaign NAME [--state DIR] KEY rejected|wontfix-tracked --policy REV --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
-        \x20      af review attest-change --campaign NAME [--state DIR] FINDING --region PATH[:START-END] --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
-        \x20      af review verify-fix --campaign NAME [--state DIR] FINDING ATTESTATION --policy REV --reason TEXT (--positive|--negative) [--verifier ACTOR] [--evidence ID]...\n\
-        \x20      af review challenge-resolution --campaign NAME [--state DIR] FINDING --kind new-evidence|higher-severity|outside-scope|expired --reason TEXT [--actor ACTOR] [--evidence ID]...\n\
-        \x20      af review policy-time advance --campaign NAME [--state DIR] TICK --reason TEXT [--actor ACTOR]\n\
-        \x20      af review group   --campaign NAME [--state DIR] FROM INTO\n\
-        \x20      af review ungroup --campaign NAME [--state DIR] FROM INTO\n\
-        \x20      af review evidence add --campaign NAME [--state DIR] DEMAND FILE [--actor ACTOR]\n\
-        \x20      af review evidence satisfy --campaign NAME [--state DIR] DEMAND EVIDENCE --policy REV --reason TEXT [--admit-reuse] [--actor ACTOR]\n\
-        \x20      af review demand waive --campaign NAME [--state DIR] DEMAND --policy REV --reason TEXT [--actor ACTOR]\n\
-        \x20      af provider status\n\
-        \x20      af provider doctor [review selector options] --provider NODE=PROVIDER_ID...\n\
-        \x20      af onboard [--repo DIR] [--runner mixed|claude|codex] [--gate NAME=COMMAND]... [--apply|--refresh-lock|--migrate [--apply]] [--json]\n\
-        \x20      af task start --kind implement --goal TEXT [--repo DIR] [--pipeline FILE] [--state DIR] [--authority REV|--uncommitted] [--timeout-secs N] [--json]\n\
-        \x20      af task deliver TASK_ID --repo DIR --branch NAME --worktree DIR --confirm TASK_ID [--state DIR] [--json]\n\
-        \x20      af task list [--repo DIR] [--state DIR] [--json]\n\
-        \x20      af task show TASK_ID [--repo DIR] [--state DIR] [--json]\n\
-        \x20      af --version\n\
-         \n\
-         wontfix-tracked also requires --max-severity, --tracking, and --expires-at-policy-time"
-    );
-    std::process::exit(2);
-}
-
 fn campaign_run_id(campaign: &str) -> String {
     format!("campaign-{campaign}")
 }
@@ -513,672 +477,575 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
     }
 }
 
-fn parse_run(mut args: impl Iterator<Item = String>) -> Options {
-    let mut options = Options {
-        repo: PathBuf::from("."),
-        pipeline: PathBuf::from(".af/pipelines/review.toml"),
-        state: None,
-        campaign: None,
-        focus: None,
-        policy_rev: None,
-        base: None,
-        candidate: None,
-        authority: None,
-        uncommitted: false,
-        restart_round: false,
-        mode: CampaignMode::Light,
-        timeout: None,
-        git_timeout: None,
-        provider_bindings: std::collections::BTreeMap::new(),
-        provider_resumes: std::collections::BTreeMap::new(),
-        json: false,
-        node: None,
-    };
-    let mut explicit_mode = false;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--repo" => options.repo = PathBuf::from(value()),
-            "--pipeline" => options.pipeline = PathBuf::from(value()),
-            "--state" => options.state = Some(PathBuf::from(value())),
-            "--campaign" => options.campaign = Some(value()),
-            "--focus" => options.focus = Some(value()),
-            "--policy-rev" => options.policy_rev = Some(value()),
-            "--base" => options.base = Some(value()),
-            "--candidate" => options.candidate = Some(value()),
-            "--authority" => options.authority = Some(value()),
-            "--uncommitted" => options.uncommitted = true,
-            "--restart-round" => options.restart_round = true,
-            "--light" => {
-                if explicit_mode {
-                    usage();
-                }
-                options.mode = CampaignMode::Light;
-                explicit_mode = true;
-            }
-            "--heavy" => {
-                if explicit_mode {
-                    usage();
-                }
-                options.mode = CampaignMode::Heavy;
-                explicit_mode = true;
-            }
-            "--json" => options.json = true,
-            "--node" => options.node = Some(value()),
-            "--timeout-secs" => {
-                options.timeout = Some(Duration::from_secs(
-                    value().parse().unwrap_or_else(|_| usage()),
-                ))
-            }
-            "--git-timeout-secs" => {
-                options.git_timeout = Some(Duration::from_secs(
-                    value().parse().unwrap_or_else(|_| usage()),
-                ))
-            }
-            "--provider" => {
-                let binding = value();
-                let (node, provider) = binding.split_once('=').unwrap_or_else(|| usage());
-                if node.is_empty()
-                    || provider.is_empty()
-                    || options
-                        .provider_bindings
-                        .insert(node.to_string(), provider.to_string())
-                        .is_some()
-                {
-                    usage();
-                }
-            }
-            "--resume-provider" => {
-                let token = value();
-                let (operation, epoch) = token.rsplit_once(':').unwrap_or_else(|| usage());
-                let epoch = epoch.parse::<u64>().unwrap_or_else(|_| usage());
-                if operation.len() != 26
-                    || !operation
-                        .bytes()
-                        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-                    || epoch == 0
-                    || options
-                        .provider_resumes
-                        .insert(operation.to_string(), epoch)
-                        .is_some()
-                {
-                    usage();
-                }
-            }
-            _ => usage(),
-        }
-    }
-    if options.authority.is_some() && (options.policy_rev.is_some() || options.base.is_some()) {
-        usage();
-    }
-    if options.candidate.is_some() && options.uncommitted {
-        usage();
-    }
-    options
-}
-
-fn parse_ledger(mut args: std::env::Args) -> LedgerOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut long = false;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--long" => long = true,
-            _ => usage(),
-        }
-    }
-    LedgerOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        long,
-    }
-}
-
-fn parse_show(mut args: std::env::Args) -> ShowOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut key = None;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            other if !other.starts_with("--") && key.is_none() => key = Some(other.to_string()),
-            _ => usage(),
-        }
-    }
-    ShowOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        key: key.unwrap_or_else(|| usage()),
-    }
-}
-
-fn parse_export(mut args: std::env::Args) -> ExportOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut proposal_id = None;
-    let mut finding_id = None;
-    let mut allow_stale = false;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--finding" => finding_id = Some(value()),
-            "--allow-stale" => allow_stale = true,
-            other if !other.starts_with("--") && proposal_id.is_none() => {
-                proposal_id = Some(other.to_string())
-            }
-            _ => usage(),
-        }
-    }
-    if proposal_id.is_some() == finding_id.is_some() {
-        usage();
-    }
-    ExportOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        proposal_id,
-        finding_id,
-        allow_stale,
-    }
-}
-
-fn parse_report(mut args: std::env::Args) -> ReportOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut format = ReportFormat::Markdown;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--format" => {
-                format = match value().as_str() {
-                    "md" => ReportFormat::Markdown,
-                    "text" => ReportFormat::Text,
-                    "json" => ReportFormat::Json,
-                    _ => usage(),
-                }
-            }
-            _ => usage(),
-        }
-    }
-    ReportOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        format,
-    }
-}
-
-fn parse_campaigns(mut args: std::env::Args) -> CampaignsOptions {
-    let mut state_root = None;
-    let mut format = CampaignsFormat::Text;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state-root" => state_root = Some(PathBuf::from(value())),
-            "--format" => {
-                format = match value().as_str() {
-                    "text" => CampaignsFormat::Text,
-                    "json" => CampaignsFormat::Json,
-                    _ => usage(),
-                }
-            }
-            _ => usage(),
-        }
-    }
-    CampaignsOptions { state_root, format }
-}
-
-fn parse_resolve(mut args: std::env::Args) -> ResolveOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut policy_revision = None;
-    let mut reason = None;
-    let mut evidence_ids = Vec::new();
-    let mut max_accepted_severity = None;
-    let mut tracking_reference = None;
-    let mut expires_at_policy_time = None;
-    let mut positional: Vec<String> = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--policy" => policy_revision = Some(value()),
-            "--reason" => reason = Some(value()),
-            "--evidence" => evidence_ids.push(value()),
-            "--max-severity" => {
-                max_accepted_severity = Some(match value().as_str() {
-                    "minor" => Severity::Minor,
-                    "major" => Severity::Major,
-                    "blocker" => Severity::Blocker,
-                    _ => usage(),
-                })
-            }
-            "--tracking" => tracking_reference = Some(value()),
-            "--expires-at-policy-time" => {
-                expires_at_policy_time = Some(value().parse().unwrap_or_else(|_| usage()))
-            }
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
-        }
-    }
-    let (Some(campaign), [key, status]) = (campaign, positional.as_slice()) else {
-        usage()
-    };
-    ResolveOptions {
-        state,
-        campaign,
-        key: key.clone(),
-        status: status.clone(),
-        actor,
-        policy_revision: policy_revision.unwrap_or_else(|| usage()),
-        reason: reason.unwrap_or_else(|| usage()),
-        evidence_ids,
-        max_accepted_severity,
-        tracking_reference,
-        expires_at_policy_time,
-    }
-}
-
-fn parse_changed_region(value: &str) -> review_core::ChangedRegionV1 {
+fn parse_changed_region(value: &str) -> Result<review_core::ChangedRegionV1, String> {
     let Some((path, lines)) = value.rsplit_once(':') else {
-        return review_core::ChangedRegionV1 {
+        return Ok(review_core::ChangedRegionV1 {
             path: value.into(),
             start_line: None,
             end_line: None,
-        };
+        });
     };
     let Some((start, end)) = lines.split_once('-') else {
-        usage()
+        return Err(format!("--region {value}: expected PATH or PATH:START-END"));
     };
-    review_core::ChangedRegionV1 {
+    let parse = |text: &str| {
+        text.parse::<u32>()
+            .map_err(|_| format!("--region {value}: line numbers must be integers"))
+    };
+    Ok(review_core::ChangedRegionV1 {
         path: path.into(),
-        start_line: Some(start.parse().unwrap_or_else(|_| usage())),
-        end_line: Some(end.parse().unwrap_or_else(|_| usage())),
-    }
+        start_line: Some(parse(start)?),
+        end_line: Some(parse(end)?),
+    })
 }
 
-fn parse_attest_change(mut args: std::env::Args) -> AttestChangeOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut reason = None;
-    let mut regions = Vec::new();
-    let mut evidence_ids = Vec::new();
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--reason" => reason = Some(value()),
-            "--region" => regions.push(parse_changed_region(&value())),
-            "--evidence" => evidence_ids.push(value()),
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
+/// A usage error clap could not express: print only the failing command's usage and exit 2.
+fn usage_error(command: &str, message: &str) -> ! {
+    eprintln!("error: {message}\n  try: af {command} --help");
+    std::process::exit(2);
+}
+
+fn run_options(args: cli::RunArgs, command: &str) -> Options {
+    let mut provider_bindings = BTreeMap::new();
+    for binding in &args.provider {
+        let Some((node, provider)) = binding.split_once('=') else {
+            usage_error(
+                command,
+                &format!("--provider {binding}: expected NODE=PROVIDER_ID"),
+            );
+        };
+        if node.is_empty() || provider.is_empty() {
+            usage_error(
+                command,
+                &format!("--provider {binding}: NODE and PROVIDER_ID must both be present"),
+            );
+        }
+        if provider_bindings
+            .insert(node.to_string(), provider.to_string())
+            .is_some()
+        {
+            usage_error(
+                command,
+                &format!("--provider {binding}: node `{node}` is bound twice"),
+            );
         }
     }
-    let [finding_id] = positional.as_slice() else {
-        usage()
-    };
-    AttestChangeOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        finding_id: finding_id.clone(),
-        actor,
-        reason: reason.unwrap_or_else(|| usage()),
-        regions,
-        evidence_ids,
-    }
-}
-
-fn parse_verify_fix(mut args: std::env::Args) -> VerifyFixOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut verifier = None;
-    let mut policy_revision = None;
-    let mut reason = None;
-    let mut positive = None;
-    let mut evidence_ids = Vec::new();
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--verifier" => verifier = Some(value()),
-            "--policy" => policy_revision = Some(value()),
-            "--reason" => reason = Some(value()),
-            "--positive" if positive.is_none() => positive = Some(true),
-            "--negative" if positive.is_none() => positive = Some(false),
-            "--evidence" => evidence_ids.push(value()),
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
+    let mut provider_resumes = BTreeMap::new();
+    for token in &args.resume_provider {
+        let Some((operation, epoch)) = token.rsplit_once(':') else {
+            usage_error(
+                command,
+                &format!("--resume-provider {token}: expected OPERATION_ID:EPOCH"),
+            );
+        };
+        let epoch = epoch.parse::<u64>().unwrap_or(0);
+        if operation.len() != 26
+            || !operation
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            || epoch == 0
+        {
+            usage_error(
+                command,
+                &format!(
+                    "--resume-provider {token}: OPERATION_ID is 26 lowercase alphanumerics and EPOCH is a positive integer"
+                ),
+            );
+        }
+        if provider_resumes
+            .insert(operation.to_string(), epoch)
+            .is_some()
+        {
+            usage_error(
+                command,
+                &format!("--resume-provider {token}: operation resumed twice"),
+            );
         }
     }
-    let [finding_id, attestation_id] = positional.as_slice() else {
-        usage()
-    };
-    VerifyFixOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        finding_id: finding_id.clone(),
-        attestation_id: attestation_id.clone(),
-        verifier,
-        policy_revision: policy_revision.unwrap_or_else(|| usage()),
-        reason: reason.unwrap_or_else(|| usage()),
-        positive: positive.unwrap_or_else(|| usage()),
-        evidence_ids,
+    Options {
+        repo: args.repo,
+        pipeline: args.pipeline,
+        state: args.state,
+        campaign: args.campaign,
+        focus: args.focus,
+        policy_rev: args.policy_rev,
+        base: args.base,
+        candidate: args.candidate,
+        authority: args.authority,
+        uncommitted: args.uncommitted,
+        restart_round: args.restart_round,
+        node: args.node,
+        mode: if args.heavy {
+            CampaignMode::Heavy
+        } else {
+            CampaignMode::Light
+        },
+        timeout: args.timeout_secs.map(Duration::from_secs),
+        git_timeout: args.git_timeout_secs.map(Duration::from_secs),
+        provider_bindings,
+        provider_resumes,
+        json: args.json,
     }
 }
 
-fn parse_challenge_resolution(mut args: std::env::Args) -> ChallengeResolutionOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut kind = None;
-    let mut reason = None;
-    let mut evidence_ids = Vec::new();
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--reason" => reason = Some(value()),
-            "--evidence" => evidence_ids.push(value()),
-            "--kind" => {
-                kind = Some(match value().as_str() {
-                    "new-evidence" => review_core::ResolutionChallengeKind::NewEvidence,
-                    "higher-severity" => review_core::ResolutionChallengeKind::HigherSeverity,
-                    "outside-scope" => review_core::ResolutionChallengeKind::OutsideScope,
-                    "expired" => review_core::ResolutionChallengeKind::Expired,
-                    _ => usage(),
-                })
+fn severity_of(arg: cli::SeverityArg) -> Severity {
+    match arg {
+        cli::SeverityArg::Minor => Severity::Minor,
+        cli::SeverityArg::Major => Severity::Major,
+        cli::SeverityArg::Blocker => Severity::Blocker,
+    }
+}
+
+fn challenge_kind_of(arg: cli::ChallengeKindArg) -> review_core::ResolutionChallengeKind {
+    match arg {
+        cli::ChallengeKindArg::NewEvidence => review_core::ResolutionChallengeKind::NewEvidence,
+        cli::ChallengeKindArg::HigherSeverity => {
+            review_core::ResolutionChallengeKind::HigherSeverity
+        }
+        cli::ChallengeKindArg::OutsideScope => review_core::ResolutionChallengeKind::OutsideScope,
+        cli::ChallengeKindArg::Expired => review_core::ResolutionChallengeKind::Expired,
+    }
+}
+
+/// Campaign labels under the default state root, for shell completion. Bounded: one directory
+/// listing, no Store beyond the manifest each campaign already exposes.
+pub(crate) fn campaign_names_for_completion() -> Vec<String> {
+    let Ok(root) = xdg_state_root() else {
+        return Vec::new();
+    };
+    enumerate_campaigns(&root)
+        .map(|enumeration| {
+            enumeration
+                .campaigns
+                .into_iter()
+                .map(|campaign| campaign.label)
+                .filter(|label| !label.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
+    use cli::ReviewCommand as R;
+    let command = match namespace.command {
+        Some(command) => command,
+        None => R::Run(namespace.run),
+    };
+    match command {
+        R::Run(args) => {
+            init_review_workers();
+            let verdict = run(&run_options(args, "review run"))?;
+            Ok(match verdict {
+                RunVerdict::Pass => 0,
+                RunVerdict::Fail(_) => 3,
+                RunVerdict::Incomplete { .. } => 4,
+            })
+        }
+        R::Plan(args) => print_plan(&run_options(args, "review plan")).map(|()| 0),
+        R::Render(args) => print_render(&run_options(args, "review render")).map(|()| 0),
+        R::Tui(args) => {
+            init_review_workers();
+            tui::launch(run_options(args, "review tui")).map(|()| 0)
+        }
+        R::Ledger { selector, long } => print_ledger(&LedgerOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            long,
+        })
+        .map(|()| 0),
+        R::Show { selector, key } => show(&ShowOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            key,
+        })
+        .map(|()| 0),
+        R::Export {
+            selector,
+            proposal,
+            finding,
+            allow_stale,
+        } => export_proposal(&ExportOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            proposal_id: proposal,
+            finding_id: finding,
+            allow_stale,
+        })
+        .map(|()| 0),
+        R::Report { selector, format } => print_report(&ReportOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            format: match format {
+                cli::ReportFormatArg::Md => ReportFormat::Markdown,
+                cli::ReportFormatArg::Text => ReportFormat::Text,
+                cli::ReportFormatArg::Json => ReportFormat::Json,
+            },
+        })
+        .map(|()| 0),
+        R::Campaigns { state_root, format } => print_campaigns(&CampaignsOptions {
+            state_root,
+            format: match format {
+                cli::ListFormatArg::Text => CampaignsFormat::Text,
+                cli::ListFormatArg::Json => CampaignsFormat::Json,
+            },
+        })
+        .map(|()| 0),
+        R::Resolve {
+            selector,
+            key,
+            status,
+            policy,
+            reason,
+            actor,
+            max_severity,
+            tracking,
+            expires_at_policy_time,
+        } => resolve(&ResolveOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            key,
+            status,
+            actor: actor.actor,
+            policy_revision: policy,
+            reason,
+            evidence_ids: actor.evidence,
+            max_accepted_severity: max_severity.map(severity_of),
+            tracking_reference: tracking,
+            expires_at_policy_time,
+        })
+        .map(|()| 0),
+        R::AttestChange {
+            selector,
+            finding,
+            region,
+            reason,
+            actor,
+        } => {
+            let regions = region
+                .iter()
+                .map(|value| parse_changed_region(value))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|message| usage_error("review attest-change", &message));
+            attest_change(&AttestChangeOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                finding_id: finding,
+                actor: actor.actor,
+                reason,
+                regions,
+                evidence_ids: actor.evidence,
+            })
+            .map(|()| 0)
+        }
+        R::VerifyFix {
+            selector,
+            finding,
+            attestation,
+            policy,
+            reason,
+            positive,
+            negative: _,
+            verifier,
+            evidence,
+        } => verify_fix(&VerifyFixOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            finding_id: finding,
+            attestation_id: attestation,
+            verifier,
+            policy_revision: policy,
+            reason,
+            positive,
+            evidence_ids: evidence,
+        })
+        .map(|()| 0),
+        R::ChallengeResolution {
+            selector,
+            finding,
+            kind,
+            reason,
+            actor,
+        } => challenge_resolution(&ChallengeResolutionOptions {
+            state: selector.state,
+            campaign: selector.campaign,
+            finding_id: finding,
+            kind: challenge_kind_of(kind),
+            actor: actor.actor,
+            reason,
+            evidence_ids: actor.evidence,
+        })
+        .map(|()| 0),
+        R::PolicyTime { command } => match command {
+            cli::PolicyTimeCommand::Advance {
+                selector,
+                tick,
+                reason,
+                actor,
+            } => advance_policy_time(&PolicyTimeOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                tick,
+                actor,
+                reason,
+            })
+            .map(|()| 0),
+        },
+        R::Group {
+            selector,
+            from,
+            into,
+        } => group(
+            &GroupOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                from,
+                into,
+            },
+            false,
+        )
+        .map(|()| 0),
+        R::Ungroup {
+            selector,
+            from,
+            into,
+        } => group(
+            &GroupOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                from,
+                into,
+            },
+            true,
+        )
+        .map(|()| 0),
+        R::Evidence { command } => match command {
+            cli::EvidenceCommand::Add {
+                selector,
+                demand,
+                file,
+                actor,
+            } => add_evidence(&EvidenceAddOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                demand_id: demand,
+                file,
+                actor,
+            })
+            .map(|()| 0),
+            cli::EvidenceCommand::Satisfy {
+                selector,
+                demand,
+                evidence,
+                policy,
+                reason,
+                admit_reuse,
+                actor,
+            } => satisfy_evidence(&EvidenceSatisfyOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                demand_id: demand,
+                evidence_id: evidence,
+                policy_revision: policy,
+                reason,
+                actor,
+                admit_reuse,
+            })
+            .map(|()| 0),
+        },
+        R::Demand { command } => match command {
+            cli::DemandCommand::Waive {
+                selector,
+                demand,
+                policy,
+                reason,
+                actor,
+            } => waive_demand(&DemandWaiveOptions {
+                state: selector.state,
+                campaign: selector.campaign,
+                demand_id: demand,
+                actor,
+                policy_revision: policy,
+                reason,
+            })
+            .map(|()| 0),
+        },
+    }
+}
+
+fn help_command(words: &[String]) -> Result<i32, String> {
+    use clap::CommandFactory as _;
+    let mut root = cli::Af::command();
+    if words.is_empty() {
+        root.print_long_help().map_err(|error| error.to_string())?;
+        return Ok(0);
+    }
+    if words.len() == 1
+        && let Some((topic, about, text)) = topics::find(&words[0])
+    {
+        println!("af help {topic} — {about}\n\n{text}");
+        return Ok(0);
+    }
+    let mut current = &mut root;
+    for word in words {
+        match current.find_subcommand_mut(word) {
+            Some(sub) => current = sub,
+            None => {
+                let topics: Vec<&str> = topics::TOPICS.iter().map(|(name, _, _)| *name).collect();
+                eprintln!(
+                    "error: `{}` is neither a topic nor a command\n  topics: {}\n  try: af --help",
+                    words.join(" "),
+                    topics.join(", ")
+                );
+                return Ok(2);
             }
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
         }
     }
-    let [finding_id] = positional.as_slice() else {
-        usage()
-    };
-    ChallengeResolutionOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        finding_id: finding_id.clone(),
-        kind: kind.unwrap_or_else(|| usage()),
-        actor,
-        reason: reason.unwrap_or_else(|| usage()),
-        evidence_ids,
-    }
-}
-
-fn parse_policy_time(mut args: std::env::Args) -> PolicyTimeOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut reason = None;
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--reason" => reason = Some(value()),
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
-        }
-    }
-    let [tick] = positional.as_slice() else {
-        usage()
-    };
-    PolicyTimeOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        tick: tick.parse().unwrap_or_else(|_| usage()),
-        actor,
-        reason: reason.unwrap_or_else(|| usage()),
-    }
-}
-
-fn parse_group(mut args: std::env::Args) -> GroupOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
-        }
-    }
-    let (Some(campaign), [from, into]) = (campaign, positional.as_slice()) else {
-        usage()
-    };
-    GroupOptions {
-        state,
-        campaign,
-        from: from.clone(),
-        into: into.clone(),
-    }
-}
-
-fn parse_evidence_add(mut args: std::env::Args) -> EvidenceAddOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
-        }
-    }
-    let (Some(campaign), [demand_id, file]) = (campaign, positional.as_slice()) else {
-        usage()
-    };
-    EvidenceAddOptions {
-        state,
-        campaign,
-        demand_id: demand_id.clone(),
-        file: PathBuf::from(file),
-        actor,
-    }
-}
-
-fn parse_evidence_satisfy(mut args: std::env::Args) -> EvidenceSatisfyOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut policy_revision = None;
-    let mut reason = None;
-    let mut actor = None;
-    let mut admit_reuse = false;
-    let mut positional = Vec::new();
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--policy" => policy_revision = Some(value()),
-            "--reason" => reason = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--admit-reuse" if !admit_reuse => admit_reuse = true,
-            other if !other.starts_with("--") => positional.push(other.to_string()),
-            _ => usage(),
-        }
-    }
-    let (Some(campaign), Some(policy_revision), Some(reason), [demand_id, evidence_id]) =
-        (campaign, policy_revision, reason, positional.as_slice())
-    else {
-        usage()
-    };
-    EvidenceSatisfyOptions {
-        state,
-        campaign,
-        demand_id: demand_id.clone(),
-        evidence_id: evidence_id.clone(),
-        policy_revision,
-        reason,
-        actor,
-        admit_reuse,
-    }
-}
-
-fn parse_demand_waive(mut args: std::env::Args) -> DemandWaiveOptions {
-    let mut state = None;
-    let mut campaign = None;
-    let mut actor = None;
-    let mut policy_revision = None;
-    let mut reason = None;
-    let mut demand_id = None;
-    while let Some(flag) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| usage());
-        match flag.as_str() {
-            "--state" => state = Some(PathBuf::from(value())),
-            "--campaign" => campaign = Some(value()),
-            "--actor" => actor = Some(value()),
-            "--policy" => policy_revision = Some(value()),
-            "--reason" => reason = Some(value()),
-            other if !other.starts_with("--") && demand_id.is_none() => {
-                demand_id = Some(other.to_string())
-            }
-            _ => usage(),
-        }
-    }
-    DemandWaiveOptions {
-        state,
-        campaign: campaign.unwrap_or_else(|| usage()),
-        demand_id: demand_id.unwrap_or_else(|| usage()),
-        actor,
-        policy_revision: policy_revision.unwrap_or_else(|| usage()),
-        reason: reason.unwrap_or_else(|| usage()),
-    }
+    let name = current.get_name().to_string();
+    let path = format!("af {}", words.join(" "));
+    current
+        .clone()
+        .name(name)
+        .bin_name(path)
+        .print_long_help()
+        .map_err(|error| error.to_string())?;
+    Ok(0)
 }
 
 fn main() {
-    let mut args = std::env::args();
-    args.next();
-    let namespace = args.next();
-    if matches!(namespace.as_deref(), Some("--version" | "-V")) {
-        println!("af {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-    if namespace.as_deref() == Some("provider") {
-        match args.next().as_deref() {
-            Some("status") if args.next().is_none() => providers::print_status(),
-            Some("doctor") => {
-                if let Err(error) = provider_doctor(&parse_run(args)) {
-                    eprintln!("af provider: {error}");
-                    std::process::exit(1);
-                }
-            }
-            _ => usage(),
+    use clap::{CommandFactory as _, Parser as _};
+    let argv: Vec<String> = std::env::args().collect();
+    clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
+    selfmgmt::maybe_dispatch(&argv);
+    let parsed = cli::Af::parse();
+    if parsed.version {
+        if let Err(error) = selfmgmt::print_version(parsed.json) {
+            eprintln!("af: {error}");
+            std::process::exit(1);
         }
         return;
     }
-    if namespace.as_deref() == Some("onboard") {
-        match onboard::command(args) {
-            Ok(()) => return,
-            Err(error) => {
-                eprintln!("af onboard: {error}");
-                std::process::exit(1);
-            }
-        }
-    }
-    if namespace.as_deref() == Some("task") {
-        let result = match args.next().as_deref() {
-            Some("start") => {
-                init_review_workers();
-                task::start(task::parse(args).unwrap_or_else(|_| usage())).map(|verified| {
-                    if !verified {
-                        std::process::exit(3);
-                    }
-                })
-            }
-            Some("deliver") => {
-                task::deliver(task::parse_delivery(args).unwrap_or_else(|_| usage()))
-            }
-            Some("list") => {
-                task::list(task::parse_inspect(args, false).unwrap_or_else(|_| usage()))
-            }
-            Some("show") => task::show(task::parse_inspect(args, true).unwrap_or_else(|_| usage())),
-            _ => usage(),
-        };
-        match result {
-            Ok(()) => return,
-            Err(error) => {
-                eprintln!("af task: {error}");
-                std::process::exit(1);
-            }
-        }
-    }
-    if namespace.as_deref() != Some("review") {
-        usage();
-    }
-    let command = args.next();
-    let result = match command.as_deref() {
-        Some("plan") => print_plan(&parse_run(args)),
-        Some("render") => print_render(&parse_run(args)),
-        Some("run") => {
-            init_review_workers();
-            run(&parse_run(args)).map(exit_for_verdict)
-        }
-        Some("ledger") => print_ledger(&parse_ledger(args)),
-        Some("show") => show(&parse_show(args)),
-        Some("export") => export_proposal(&parse_export(args)),
-        Some("report") => print_report(&parse_report(args)),
-        Some("campaigns") => print_campaigns(&parse_campaigns(args)),
-        Some("resolve") => resolve(&parse_resolve(args)),
-        Some("attest-change") => attest_change(&parse_attest_change(args)),
-        Some("verify-fix") => verify_fix(&parse_verify_fix(args)),
-        Some("challenge-resolution") => challenge_resolution(&parse_challenge_resolution(args)),
-        Some("policy-time") => match args.next().as_deref() {
-            Some("advance") => advance_policy_time(&parse_policy_time(args)),
-            _ => usage(),
-        },
-        Some("group") => group(&parse_group(args), false),
-        Some("ungroup") => group(&parse_group(args), true),
-        Some("evidence") => match args.next().as_deref() {
-            Some("add") => add_evidence(&parse_evidence_add(args)),
-            Some("satisfy") => satisfy_evidence(&parse_evidence_satisfy(args)),
-            _ => usage(),
-        },
-        Some("demand") => match args.next().as_deref() {
-            Some("waive") => waive_demand(&parse_demand_waive(args)),
-            _ => usage(),
-        },
-        Some("tui") => {
-            init_review_workers();
-            tui::launch(parse_run(args))
-        }
-        Some(flag) if flag.starts_with("--") => {
-            init_review_workers();
-            run(&parse_run(std::iter::once(flag.to_string()).chain(args))).map(exit_for_verdict)
-        }
-        _ => usage(),
+    let Some(command) = parsed.command else {
+        let _ = cli::Af::command().print_help();
+        std::process::exit(2);
     };
-    if let Err(error) = result {
-        eprintln!("af review: {error}");
-        std::process::exit(1);
+    let (prefix, outcome): (&str, Result<i32, String>) = match command {
+        cli::Command::Review(namespace) => ("af review", review_command(namespace)),
+        cli::Command::Provider { command } => (
+            "af provider",
+            match command {
+                cli::ProviderCommand::Status => {
+                    providers::print_status();
+                    Ok(0)
+                }
+                cli::ProviderCommand::Doctor(args) => {
+                    provider_doctor(&run_options(args, "provider doctor")).map(|()| 0)
+                }
+            },
+        ),
+        cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
+        cli::Command::Task { command } => (
+            "af task",
+            match command {
+                cli::TaskCommand::Start {
+                    kind: _,
+                    goal,
+                    repo,
+                    pipeline,
+                    state,
+                    authority,
+                    uncommitted,
+                    timeout_secs,
+                    json,
+                } => task::options_from_cli(
+                    goal,
+                    repo,
+                    pipeline,
+                    state,
+                    authority,
+                    uncommitted,
+                    timeout_secs,
+                    json,
+                )
+                .and_then(|options| {
+                    init_review_workers();
+                    task::start(options)
+                })
+                .map(|verified| if verified { 0 } else { 3 }),
+                cli::TaskCommand::Deliver {
+                    task_id,
+                    repo,
+                    branch,
+                    worktree,
+                    confirm,
+                    state,
+                    json,
+                } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
+                    .and_then(task::deliver)
+                    .map(|()| 0),
+                cli::TaskCommand::List { inspect } => {
+                    task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+                        .and_then(task::list)
+                        .map(|()| 0)
+                }
+                cli::TaskCommand::Show { task_id, inspect } => {
+                    task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
+                        .and_then(task::show)
+                        .map(|()| 0)
+                }
+            },
+        ),
+        cli::Command::Config { command } => (
+            "af config",
+            match command {
+                cli::ConfigCommand::Show { origin, json, repo } => {
+                    config::show(repo.as_deref(), origin, json).map(|()| 0)
+                }
+                cli::ConfigCommand::Edit { layer, repo } => {
+                    config::edit(layer, repo.as_deref()).map(|()| 0)
+                }
+                cli::ConfigCommand::Paths { repo } => config::paths(repo.as_deref()).map(|()| 0),
+            },
+        ),
+        cli::Command::SelfCmd { command } => (
+            "af self",
+            match command {
+                cli::SelfCommand::Status { json } => selfmgmt::status(json).map(|()| 0),
+                cli::SelfCommand::Update { check, version, rc } => {
+                    selfmgmt::update(check, version, rc).map(|()| 0)
+                }
+                cli::SelfCommand::Rollback => selfmgmt::rollback().map(|()| 0),
+                cli::SelfCommand::Install { version } => {
+                    selfmgmt::install_command(&version).map(|()| 0)
+                }
+                cli::SelfCommand::Remove { version } => selfmgmt::remove(&version).map(|()| 0),
+                cli::SelfCommand::Prune => selfmgmt::prune().map(|()| 0),
+                cli::SelfCommand::SetupShell { shell, write } => {
+                    selfmgmt::setup_shell(shell, write).map(|()| 0)
+                }
+                cli::SelfCommand::Uninstall { purge } => selfmgmt::uninstall(purge).map(|()| 0),
+                cli::SelfCommand::Man { out_dir } => selfmgmt::man(&out_dir).map(|()| 0),
+                cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
+            },
+        ),
+        cli::Command::Completions { shell } => (
+            "af completions",
+            selfmgmt::completion_script(shell).map(|script| {
+                print!("{script}");
+                0
+            }),
+        ),
+        cli::Command::Help { words } => ("af help", help_command(&words)),
+    };
+    let code = match outcome {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("{prefix}: {error}");
+            1
+        }
+    };
+    selfmgmt::after_command(&argv);
+    if code != 0 {
+        std::process::exit(code);
     }
 }
 
@@ -4504,14 +4371,6 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         _ => {}
     }
     Ok(verdict)
-}
-
-fn exit_for_verdict(verdict: RunVerdict) {
-    match verdict {
-        RunVerdict::Pass => {}
-        RunVerdict::Fail(_) => std::process::exit(3),
-        RunVerdict::Incomplete { .. } => std::process::exit(4),
-    }
 }
 
 #[cfg(test)]

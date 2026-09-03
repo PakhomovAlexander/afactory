@@ -36,6 +36,10 @@ sha2 = "0.10.9"
 shell-words = "1.1.1"
 tempfile = "3.27.0"
 toml = "0.8.23"
+clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"] }
+clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
+clap_mangen = "0.2.31"
+toml_edit = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"] }

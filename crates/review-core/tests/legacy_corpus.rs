@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use review_core::{FindingReport, LegacyStageOutput, json};
 
 fn workspace_root() -> PathBuf {
-    std::env::var_os("AFACTORY_WORKSPACE_ROOT")
+    std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
