@@ -40,6 +40,8 @@ Behavior:
     and name each pending format upgrade. --migrate --apply rewrites the pipelines in place,
     additively — reviewer packages, budgets, convergence, checks, and edges are untouched.
     Scaffolding .af/ beside .review/ is refused; remove .review/ first if you want a fresh bundle.
+  * .af/af.lock records the af release that wrote it. A newer af proceeds and notes the
+    difference; an older af refuses. --refresh-lock re-pins to the running release.
 
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state,
 fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.
@@ -231,6 +233,8 @@ struct Report {
     next_steps: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pipelines: Vec<LegacyPipeline>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_af_version: Option<String>,
 }
 
 struct Bundle {
@@ -436,6 +440,9 @@ fn print_human(report: &Report) {
             }
         }
     }
+    if let Some(version) = &report.lock_af_version {
+        println!("lock        pinned by af {version}");
+    }
     println!("topology");
     for line in &report.topology {
         println!("  {line}");
@@ -612,6 +619,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
     }
 
     let mut lockfile = Lockfile::empty();
+    lockfile.af_version = Some(env!("CARGO_PKG_VERSION").to_string());
     for (name, files) in &worker_files {
         lockfile.workers.insert(
             name.clone(),
@@ -659,6 +667,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         warnings,
         files: files.keys().cloned().collect(),
         pipelines: Vec::new(),
+        lock_af_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         next_steps: vec![
             format!(
                 "Review this plan, then run `af onboard --repo {} --runner {} --apply`.",
@@ -1112,7 +1121,9 @@ selectors, but explicit selectors are preferred.
 Edit the ordinary files under `.af/`, then explicitly run `af onboard --refresh-lock`. That
 command recomputes only the selected pipeline pin and the Worker packages it references. Review
 the authority and lock diff together, run `af onboard` again, then commit through the project's
-normal controls. Never weaken a Gate or boundary merely to obtain a passing review.
+normal controls. Never weaken a Gate or boundary merely to obtain a passing review. The lock
+also records the `af` release that wrote it: a newer `af` proceeds and notes the difference, an
+older `af` refuses until the lock is re-pinned.
 "#
     )
 }
@@ -1299,6 +1310,7 @@ fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<()
 fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
     let authority = parse_existing(repo)?;
     validate_no_stale_pins(repo, &authority.lock)?;
+    let lock_note = crate::project::check_lock_af_version(&authority.lock, ".af/af.lock")?;
     validate_pipeline_pin(
         &authority.lock,
         &authority.selected,
@@ -1343,7 +1355,8 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         .as_ref()
         .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
         .unwrap_or((None, None));
-    let warnings = validate_budget_arithmetic(&authority.definition)?;
+    let mut warnings = validate_budget_arithmetic(&authority.definition)?;
+    warnings.extend(lock_note);
     let mut files = vec![
         ".af/af.lock".to_string(),
         ".af/af.toml".to_string(),
@@ -1379,6 +1392,7 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         warnings,
         files,
         pipelines: Vec::new(),
+        lock_af_version: authority.lock.af_version.clone(),
         next_steps: vec![
             "Run `af provider status`; Provider credentials remain machine-local.".into(),
             "Follow `.af/README.md` to capture a pull request in a disposable worktree.".into(),
@@ -1426,6 +1440,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
     }
     let registry = Registry::new([repo.join(".af/workers")]);
     let mut refreshed = authority.lock.clone();
+    refreshed.af_version = Some(env!("CARGO_PKG_VERSION").to_string());
     refreshed
         .workers
         .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
@@ -1588,6 +1603,7 @@ fn inspect_legacy(
     let lock = Lockfile::from_toml(&read_authority_text(&legacy.root.join("review.lock"))?)
         .map_err(|error| error.to_string())?;
     let registry = Registry::new([legacy.root.join("reviewers")]);
+    let lock_note = crate::project::check_lock_af_version(&lock, ".review/review.lock")?;
 
     let mut pipelines = Vec::new();
     let mut first: Option<(Definition, review_config::Loaded)> = None;
@@ -1677,7 +1693,8 @@ fn inspect_legacy(
         .as_ref()
         .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
         .unwrap_or((None, None));
-    let warnings = validate_budget_arithmetic(&definition)?;
+    let mut warnings = validate_budget_arithmetic(&definition)?;
+    warnings.extend(lock_note);
     let mut files = vec![".review/review.lock".to_string()];
     files.extend(pipelines.iter().map(|pipeline| pipeline.path.clone()));
     for package in loaded.packages().values() {
@@ -1722,6 +1739,7 @@ fn inspect_legacy(
         warnings,
         files,
         pipelines,
+        lock_af_version: lock.af_version.clone(),
         next_steps,
     })
 }

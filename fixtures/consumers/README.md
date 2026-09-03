@@ -11,7 +11,7 @@ Each directory here is one consumer-shaped policy, copied verbatim:
 
 | Fixture | Mirrors | Layout |
 |---------|---------|--------|
-| `hub/` | `PakhomovAlexander/afactory-hub` `.review/` as of hub PR #11 (2026-09-02) | legacy `.review/`: two model reviewer nodes (architecture, performance), two gate checks, digest-pinned packages, `review.lock` |
+| `hub/` | `PakhomovAlexander/afactory-hub` `.review/` as of 2026-09-02 (single correctness reviewer, adopted the same day) | legacy `.review/`: one correctness reviewer node mirroring this repo's `.review/reviewers/correctness`, two gate checks, `review.lock` |
 
 ## What checks them
 
