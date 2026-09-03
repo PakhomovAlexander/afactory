@@ -339,6 +339,31 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
     assert!(stderr.contains("do not start another Campaign"));
 
+    // A one-Round Campaign that stopped with Findings stopped by policy; the report says so.
+    let (code, report_json, report_err) = reviewctl(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "explicit-light",
+            "--state",
+            &state,
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{report_json}\n{report_err}");
+    let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
+    assert_eq!(
+        report["final_verdict"],
+        "fail (light Round complete; findings open)"
+    );
+    assert_eq!(
+        report["rounds"][0]["verdict"],
+        "fail (light Round complete; findings open)"
+    );
+
     let invalid_state = dir.path().join("invalid-mode");
     let invalid_state = invalid_state.to_string_lossy().into_owned();
     let (code, stdout, stderr) = reviewctl_light(

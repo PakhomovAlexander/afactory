@@ -119,7 +119,10 @@ last closed Round and verdict, and the complete closed-Round history. Use `--for
 versioned `af/review-campaigns@1` projection. `--state-root DIR` inspects an explicit root, including
 legacy label-named state such as a repository's gitignored `.review/runs/` directory.
 Unreadable or non-conforming entries are skipped and reported in the projection's `problems`
-array, so one bad backup or stale directory never hides healthy Campaigns. Each entry also
+array, so one bad backup or stale directory never hides healthy Campaigns. A one-Round Campaign —
+the light default — that stops with Findings stopped by policy, and its verdict reads
+`fail (light Round complete; findings open)` rather than `exhausted`; `exhausted` is reserved for a
+multi-Round Campaign that ran out of Rounds. Each entry also
 carries the wall-clock its Rounds took and a Finding summary by disposition (open, pending, fixed,
 rejected, wontfix, contested), read from the store's sidecar — never from the event stream.
 

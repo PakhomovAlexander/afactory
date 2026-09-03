@@ -2005,7 +2005,11 @@ fn read_campaign_view(
         .iter()
         .filter(|event| event.event_type.is_run_report())
         .collect::<Vec<_>>();
-    let rounds = report_rounds(&reports, &round_authority)?;
+    let rounds = report_rounds(
+        &reports,
+        &round_authority,
+        Some(manifest.convergence.max_rounds),
+    )?;
     let last = rounds.last();
     let wall_ms = wall_span_ms(
         &store
@@ -2358,7 +2362,8 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .filter(|event| event.event_type.is_run_report())
         .collect();
     let round_authority = report_round_authority(&events)?;
-    let rounds = report_rounds(&reports, &round_authority)?;
+    let rounds_cap = campaign_rounds_cap(&store, &cas, &run_id);
+    let rounds = report_rounds(&reports, &round_authority, rounds_cap)?;
     let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
@@ -2373,7 +2378,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         ledger_round: ledger.round,
         final_verdict: reports
             .last()
-            .map(|event| report_verdict(event))
+            .map(|event| report_verdict(event, rounds_cap))
             .transpose()?,
         rounds,
         spend,
@@ -2398,6 +2403,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
 fn report_rounds(
     reports: &[&review_core::RunEvent],
     round_authority: &BTreeMap<String, (u32, u32)>,
+    rounds_cap: Option<u32>,
 ) -> Result<Vec<ReportRoundView>, String> {
     reports
         .iter()
@@ -2411,7 +2417,7 @@ fn report_rounds(
                 run: index + 1,
                 round: authority.map(|(round, _)| *round),
                 epoch: authority.map(|(_, epoch)| *epoch),
-                verdict: report_verdict(event)?,
+                verdict: report_verdict(event, rounds_cap)?,
                 reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
             })
         })
@@ -3180,7 +3186,12 @@ fn one_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join(" ")
 }
 
-fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
+/// `rounds_cap` is the Campaign's pinned Round limit: a one-Round Campaign that stops with
+/// Findings stopped by policy, and its verdict says so rather than "exhausted".
+fn report_verdict(
+    event: &review_core::RunEvent,
+    rounds_cap: Option<u32>,
+) -> Result<String, String> {
     match event.event_type {
         EventType::RunReportV1 => event.payload["verdict"]
             .as_str()
@@ -3196,7 +3207,7 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
                 } => "fail (not_converged)".to_string(),
                 RunVerdictV2::Fail {
                     reason: RunFailureReasonV2::Exhausted,
-                } => "fail (exhausted)".to_string(),
+                } => exhausted_label(rounds_cap),
                 RunVerdictV2::Incomplete { missing_nodes } => {
                     format!("incomplete ({} missing nodes)", missing_nodes.len())
                 }
@@ -3205,23 +3216,23 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
         EventType::RunReportV3 => {
             let report: RunReportPayloadV3 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
+            Ok(render_verdict_v3(report.verdict, rounds_cap))
         }
         EventType::RunReportV4 => {
             let report: RunReportPayloadV4 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
+            Ok(render_verdict_v3(report.verdict, rounds_cap))
         }
         EventType::RunReportV5 => {
             let report: RunReportPayloadV5 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
+            Ok(render_verdict_v3(report.verdict, rounds_cap))
         }
         _ => Err(format!("{} is not a run report", event.event_type)),
     }
 }
 
-fn render_verdict_v3(verdict: RunVerdictV3) -> String {
+fn render_verdict_v3(verdict: RunVerdictV3, rounds_cap: Option<u32>) -> String {
     match verdict {
         RunVerdictV3::Pass => "pass".to_string(),
         RunVerdictV3::Fail {
@@ -3232,11 +3243,31 @@ fn render_verdict_v3(verdict: RunVerdictV3) -> String {
         } => "fail (authority_unavailable)".to_string(),
         RunVerdictV3::Fail {
             reason: RunFailureReasonV3::Exhausted,
-        } => "fail (exhausted)".to_string(),
+        } => exhausted_label(rounds_cap),
         RunVerdictV3::Incomplete { missing_nodes } => {
             format!("incomplete ({} missing nodes)", missing_nodes.len())
         }
     }
+}
+
+/// "Exhausted" means the Round limit was reached with Findings still open. For a Campaign whose
+/// limit is one Round — the light default — that is the designed stop, not a shortfall, so the
+/// label says what happened and what comes next.
+fn exhausted_label(rounds_cap: Option<u32>) -> String {
+    match rounds_cap {
+        Some(1) => "fail (light Round complete; findings open)".to_string(),
+        _ => "fail (exhausted)".to_string(),
+    }
+}
+
+/// The Round limit the Campaign Manifest pinned, when the Campaign opened normally.
+fn campaign_rounds_cap(store: &EventStore, cas: &Cas, run_id: &str) -> Option<u32> {
+    let opened = store.campaign_opened(run_id).ok().flatten()?;
+    let opened: review_core::CampaignOpenedPayloadV1 =
+        serde_json::from_value(opened.payload).ok()?;
+    let manifest: review_core::CampaignManifestV1 =
+        serde_json::from_value(cas.get_json(&opened.campaign_manifest_id).ok()?).ok()?;
+    Some(manifest.convergence.max_rounds)
 }
 
 fn markdown_line(value: &str) -> String {
@@ -4934,7 +4965,7 @@ mod option_tests {
                 "spent_tokens": 9
             }),
         );
-        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new()).unwrap();
+        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new(), None).unwrap();
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].run, 1);
         assert_eq!(rounds[0].round, None);

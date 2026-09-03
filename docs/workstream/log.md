@@ -1476,3 +1476,12 @@ alone exhausts the cap — nothing dispatched or charged, the refusal naming byt
 the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter node). Nothing is
 truncated. The automatic bounded-strategy selection with typed closure obligations is the
 remaining half of #32 and belongs with path routing (#40).
+
+## 2026-09-03 — A completed light Round no longer reports "exhausted" (audit recommendation 4)
+
+The light default is one Round, then fix and gate; a light Campaign that stopped with Findings
+therefore always read `fail (exhausted)`, the same label as a heavy Campaign that ran out of Rounds.
+`report` and `campaigns` now render a one-Round Campaign's stop as `fail (light Round complete;
+findings open)`, reading the pinned Round limit from the Campaign Manifest; `exhausted` stays for
+multi-Round Campaigns. Exit codes and the machine-readable outcome (`kind: fail, reason:
+exhausted`, `next_action: fix_then_gate`) are unchanged.
