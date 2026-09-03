@@ -1190,6 +1190,7 @@ fn created_next_steps() -> Vec<String> {
 }
 
 struct ExistingAuthority {
+    project: crate::project::ProjectFile,
     selected: String,
     pipeline_path: PathBuf,
     pipeline_text: String,
@@ -1200,7 +1201,8 @@ struct ExistingAuthority {
 fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
     let project_path = repo.join(".af/af.toml");
     let project_text = read_authority_text(&project_path)?;
-    let selected = selected_pipeline(&project_text)?;
+    let project = crate::project::ProjectFile::parse(&project_text)?;
+    let selected = project.review_pipeline().to_string();
     let pipeline_path = repo.join(format!(".af/pipelines/{selected}.toml"));
     let pipeline_text = read_authority_text(&pipeline_path)?;
     let definition = Definition::from_toml(&pipeline_text).map_err(|error| error.to_string())?;
@@ -1208,6 +1210,7 @@ fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
     let lock = Lockfile::from_toml(&read_authority_text(&lock_path)?)
         .map_err(|error| error.to_string())?;
     Ok(ExistingAuthority {
+        project,
         selected,
         pipeline_path,
         pipeline_text,
@@ -1273,6 +1276,21 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         .clone()
         .load_with(&authority.lock, &registry)
         .map_err(|error| error.to_string())?;
+    // Every pipeline a route or the oversized policy can select is authority too: present,
+    // pinned, and loadable, or the route would fail at the first matching change.
+    for candidate in authority.project.pipeline_candidates() {
+        if candidate == authority.selected {
+            continue;
+        }
+        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        let text = read_authority_text(&path)
+            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
+        validate_pipeline_pin(&authority.lock, &candidate, text.as_bytes())?;
+        Definition::from_toml(&text)
+            .map_err(|error| format!("route target `{candidate}`: {error}"))?
+            .load_with(&authority.lock, &registry)
+            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
+    }
 
     let gates = authority
         .definition
@@ -1380,12 +1398,28 @@ fn runner_model(command: &review_core::Command) -> String {
 
 fn refresh_lock(repo: &Path) -> Result<Report, String> {
     let authority = parse_existing(repo)?;
-    let referenced: BTreeSet<String> = authority
-        .definition
-        .nodes
-        .iter()
-        .filter_map(|node| node.package.clone())
-        .collect();
+    let mut candidates: Vec<(String, String)> =
+        vec![(authority.selected.clone(), authority.pipeline_text.clone())];
+    for candidate in authority.project.pipeline_candidates() {
+        if candidate == authority.selected {
+            continue;
+        }
+        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        let text = read_authority_text(&path)
+            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
+        candidates.push((candidate, text));
+    }
+    let mut referenced: BTreeSet<String> = BTreeSet::new();
+    for (name, text) in &candidates {
+        let definition =
+            Definition::from_toml(text).map_err(|error| format!("pipeline `{name}`: {error}"))?;
+        referenced.extend(
+            definition
+                .nodes
+                .iter()
+                .filter_map(|node| node.package.clone()),
+        );
+    }
     if referenced.is_empty() {
         return Err("selected pipeline references no Worker package".into());
     }
@@ -1406,23 +1440,26 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         refreshed.workers.insert(name.clone(), pin);
         refreshed.reviewers.remove(&name);
     }
-    let version = refreshed
-        .pipelines
-        .get(&authority.selected)
-        .map(|pin| pin.version.clone())
-        .unwrap_or_else(|| PIPELINE_VERSION.to_string());
-    refreshed.pipelines.insert(
-        authority.selected.clone(),
-        Pin {
-            version,
-            digest: review_store::canonical::blob_content_id(authority.pipeline_text.as_bytes()),
-        },
-    );
-    authority
-        .definition
-        .clone()
-        .load_with(&refreshed, &registry)
-        .map_err(|error| error.to_string())?;
+    for (name, text) in &candidates {
+        let version = refreshed
+            .pipelines
+            .get(name)
+            .map(|pin| pin.version.clone())
+            .unwrap_or_else(|| PIPELINE_VERSION.to_string());
+        refreshed.pipelines.insert(
+            name.clone(),
+            Pin {
+                version,
+                digest: review_store::canonical::blob_content_id(text.as_bytes()),
+            },
+        );
+    }
+    for (name, text) in &candidates {
+        Definition::from_toml(text)
+            .map_err(|error| format!("pipeline `{name}`: {error}"))?
+            .load_with(&refreshed, &registry)
+            .map_err(|error| format!("pipeline `{name}`: {error}"))?;
+    }
     atomic_replace_authority(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
     inspect_existing(repo, "lock_refreshed")
 }

@@ -220,9 +220,10 @@ pub(crate) struct RunArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
-    /// Pipeline definition, relative to the repository
-    #[arg(long, value_name = "FILE", default_value = REVIEW_PIPELINE, help_heading = "Selector")]
-    pub(crate) pipeline: PathBuf,
+    /// Pipeline definition, relative to the repository [default: .af/pipelines/review.toml, or
+    /// the pipeline the project's routes select from the changed paths]
+    #[arg(long, value_name = "FILE", help_heading = "Selector")]
+    pub(crate) pipeline: Option<PathBuf>,
     /// Explicit Campaign state directory (outside the repository)
     #[arg(long, value_name = "DIR", help_heading = "Selector")]
     pub(crate) state: Option<PathBuf>,
