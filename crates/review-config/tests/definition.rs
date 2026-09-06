@@ -710,17 +710,17 @@ outputs = ["decision"]
 /// fails here, exactly as it would fail a real run.
 ///
 /// The assertions are deliberately structural. This test ships into every hub and runs against
-/// **that hub's** `.review/`, which the docs invite it to change — add a reviewer, add a check,
+/// **that hub's** `.af/`, which the docs invite it to change — add a reviewer, add a check,
 /// retune the budgets. Pinning the shipped pipeline's node list or its counts would mean a hub
 /// that configured itself as documented failed its own CI. What must hold for any pipeline of
 /// this shape is asserted instead, and each assertion below would fail on a real mistake.
 #[test]
 fn the_checked_in_pipeline_loads() {
-    let review_dir = workspace_root().join(".review");
-    let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
-    let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
+    let review_dir = workspace_root().join(".af");
+    let text = std::fs::read_to_string(review_dir.join("pipelines/review.toml")).unwrap();
+    let lock_text = std::fs::read_to_string(review_dir.join("af.lock")).unwrap();
     let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
-    let registry = review_config::lock::Registry::new([review_dir.join("reviewers")]);
+    let registry = review_config::lock::Registry::new([review_dir.join("workers")]);
     let loaded = Definition::from_toml(&text)
         .unwrap()
         .load_with(&lockfile, &registry)
@@ -765,23 +765,25 @@ fn the_checked_in_pipeline_loads() {
     assert!(!loaded.plan_order().is_empty());
 }
 
+/// A hub generated from the Project Hub template embeds this workspace and carries its own
+/// `.af/` policy; when that is where this test runs, that policy must load too.
 #[test]
 fn the_template_repository_self_review_pipeline_loads_when_present() {
     let repo = workspace_root().join("../../..");
-    if !repo.join("template/.review").is_dir() {
+    if !repo.join("template/.af").is_dir() {
         return;
     }
-    let review_dir = repo.join(".review");
-    let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
-    let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
+    let review_dir = repo.join(".af");
+    let text = std::fs::read_to_string(review_dir.join("pipelines/review.toml")).unwrap();
+    let lock_text = std::fs::read_to_string(review_dir.join("af.lock")).unwrap();
     let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
-    let registry = review_config::lock::Registry::new([review_dir.join("reviewers")]);
+    let registry = review_config::lock::Registry::new([review_dir.join("workers")]);
     let loaded = Definition::from_toml(&text)
         .unwrap()
         .load_with(&lockfile, &registry)
         .map_err(|error| error.to_string())
         .unwrap();
-    assert_eq!(loaded.packages().len(), 4);
+    assert!(!loaded.packages().is_empty());
 }
 
 /// Budgets validate at load: caps that could never admit a dispatch are refused as config

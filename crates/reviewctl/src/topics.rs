@@ -71,6 +71,7 @@ const ENVIRONMENT: &str = "\
   AF_VERSION              run this installed version regardless of the project's pin
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
   AF_RELEASE_SOURCE       a local directory of releases (<tag>/<asset>) instead of GitHub
+  AF_RELEASE_KEY          a minisign .pub file to verify SHA256SUMS with, instead of the embedded key
   AF_PROVIDERS_FILE       absolute path of the provider registry (default: ~/.config/af/providers.toml)
   AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy (default: ~/.config/af/caches.toml)
   AF_DISPATCHED_FROM      set by af when it execs a pinned version; never set it yourself
@@ -110,10 +111,25 @@ Layout
   $XDG_CACHE_HOME/af/self/latest.toml         the cached release check
 
 Pins
-  A project's `.af/af.lock` records the af release that wrote it. When you run `af` inside such a
-  project, af execs that version, installing it on demand and verifying it against the release
-  checksums. AF_SELF_OFFLINE=1 or `[self] install_pins = false` refuses instead, printing the
-  `af self install <v>` to run. AF_VERSION=<v> overrides the pin for one invocation.
+  A project's `.af/af.lock` records the af release that wrote it and, per target, the digest of
+  that release's archive: the pin names bytes, not just a version. When you run `af` inside such a
+  project, af execs that version; if it is absent, af installs it only when the archive it
+  downloads matches the lock's digest for this machine's target, and an installed copy must carry
+  that digest too. A pin without a digest for this target is never installed on demand:
+  `af self install <v>` trusts the release checksums explicitly, and `af onboard --refresh-lock`
+  run online records every target. AF_SELF_OFFLINE=1 or `[self] install_pins = false` refuses,
+  printing the command to run. AF_VERSION=<v> overrides the pin for one invocation;
+  `af onboard --refresh-lock --af <v>` moves the pin to <v> (that release writes the lock).
+
+  Only a released, receipted binary writes a pin; a source build leaves the lock unpinned or the
+  existing pin untouched. Nothing older than 0.7.1 — the first release with `af self` — is ever
+  dispatched to or made the default: it could not read the lock or update itself back.
+
+What binds bytes
+  Under a lock: the lock's digest. Outside one: the release's SHA256SUMS, which every release
+  since 0.8.0 signs (minisign) with the key embedded in the binary at build time; an unsigned or
+  badly signed SHA256SUMS is refused. `af self status` shows whether this build carries the key;
+  a receipt's verified_by says which check installed each version (lock, minisign, sha256sums).
 
 Updates — `[self]` in ~/.config/af/config.toml
   update_check = true      look for a newer release, at most once per check_every
@@ -132,7 +148,8 @@ Updates — `[self]` in ~/.config/af/config.toml
 Commands
   af self status | update [--check] | rollback | install V | remove V | prune
   af self setup-shell [--write] | uninstall [--purge]
-  af self refuses to touch a binary it did not install (brew, cargo install, a launcher).";
+  af self refuses to touch a binary it did not install (brew, cargo install, a launcher).
+  remove and prune keep the default and every version a project seen on this machine pins.";
 
 const TRUST: &str = "\
 Keys that can execute code or move money — environments, tools, worker commands, hooks — apply

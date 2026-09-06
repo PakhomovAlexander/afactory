@@ -25,24 +25,24 @@ credential is written into a project, pipeline, reviewer package, or release art
 
 ## Legacy `.review/` policies
 
-Consumers that onboarded before `.af/` existed still carry `.review/pipelines/*.toml`,
-`.review/review.lock`, and `.review/reviewers/`. That layout stays accepted: `af review plan|run`
-read it through the same authority layer, and `af onboard` now recognizes it.
+Consumers that onboarded before `.af/` existed carried `.review/pipelines/*.toml`,
+`.review/review.lock`, and `.review/reviewers/`. Since `v0.8.0` that layout is no longer read for
+new Campaigns ([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
+[ADR-0045](adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)); `af review plan|run` refuse
+a `.review/…` pipeline path and name the command that moves the policy. Stored Campaigns whose
+manifests recorded `.review/…` paths stay replayable.
 
-- `af onboard` on a repository with `.review/` and no `.af/` validates every pipeline and the
-  lock against this release's pipeline format and names each pending upgrade
-  (status `legacy` when nothing is pending, `legacy-outdated` otherwise). It writes nothing.
-- `af onboard --migrate --apply` rewrites each outdated pipeline in place. Upgrades are
-  additive and idempotent — today the only one adds the `review.kernel/DemandSet@1` Ledger
-  output that M4 made mandatory — and never touch reviewer packages, budgets, convergence,
-  checks, or edges. The lock pins only reviewer packages, so it does not change. Review and
-  commit the diff on the trusted base branch, then `af review plan`.
-- Scaffolding `.af/` beside `.review/` is refused so a repository never carries two
-  authorities. Moving to `.af/` is a deliberate step: remove `.review/`, then `af onboard --apply`.
+- `af onboard` on a repository with `.review/` and no `.af/` previews the `.af/` it becomes:
+  every pipeline with the format upgrades it needs applied (comments intact; `heavy` becomes
+  `review`, the `.af/` default), every reviewer package those pipelines reference byte for byte
+  as a Worker package (unreferenced packages are named and left behind), a
+  project file, and a lock pinning Workers, pipelines, and — when a receipted release runs the
+  command — the `af` release itself. It writes nothing.
+- `af onboard --migrate --apply` writes that `.af/` atomically and only when absent, leaving
+  `.review/` in place. Review the diff, commit it on the trusted base branch, delete `.review/`,
+  run `af onboard` to validate, then `af review plan`.
+- Scaffolding `.af/` beside `.review/` is refused so a repository never carries two authorities.
 
-Deprecation: [ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md) drops `.review/`
-authority in `v0.8.0`; that release ships `af onboard --migrate` converting a `.review/`
-repository into `.af/` ([#52](https://github.com/PakhomovAlexander/afactory/issues/52)). Persisted
-`review.kernel/*` types, events, and stored Campaign replay are untouched. Until then, consumers
+Persisted `review.kernel/*` types, events, and stored Campaign replay are untouched. Consumers
 run their pinned release's `af review plan` after every pin bump; the hub does this with `make
 review-plan`, and the release workflow plans `fixtures/consumers/` with every built binary.

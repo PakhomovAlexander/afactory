@@ -200,7 +200,7 @@ pub(super) fn resolve_plan(
         .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
     let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
     let requested_path = authority_path(&options.repo, &options.pipeline)?;
-    let layout = authority_layout(&requested_path)?;
+    let layout = authority_layout(&requested_path, false)?;
     let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
         .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
@@ -848,7 +848,7 @@ fn open_new(
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
     let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
-    let layout = authority_layout(pipeline_path)?;
+    let layout = authority_layout(pipeline_path, false)?;
     let lock_path = layout.lock.clone();
     let lock_bytes = authority_bytes(&snapshot.manifest, cas, &lock_path)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
@@ -1388,7 +1388,7 @@ fn validate_manifest_authority(
     {
         return Err("CampaignManifest authority files are not reachable from its Snapshot".into());
     }
-    let layout = authority_layout(&manifest.pipeline.path)?;
+    let layout = authority_layout(&manifest.pipeline.path, true)?;
     for (package, _) in captured.values() {
         for (path, artifact_id) in &package.files {
             let authority_path = format!("{}/{}/{path}", layout.registry, package.name);
@@ -2457,13 +2457,16 @@ fn captured_registry(
     Ok(packages)
 }
 
-struct AuthorityLayout {
-    root: String,
-    lock: String,
-    registry: String,
+pub(crate) struct AuthorityLayout {
+    pub(crate) root: String,
+    pub(crate) lock: String,
+    pub(crate) registry: String,
 }
 
-fn authority_layout(pipeline: &str) -> Result<AuthorityLayout, String> {
+/// The authority files a pipeline path implies. `recorded` says the path comes from a stored
+/// Campaign Manifest: such a Campaign may still name the retired `.review/` layout and stays
+/// replayable, while a new invocation may not (ADR-0043, since v0.8.0).
+fn authority_layout(pipeline: &str, recorded: bool) -> Result<AuthorityLayout, String> {
     let root = Path::new(pipeline)
         .parent()
         .and_then(Path::parent)
@@ -2476,17 +2479,22 @@ fn authority_layout(pipeline: &str) -> Result<AuthorityLayout, String> {
             lock: ".af/af.lock".to_string(),
             registry: ".af/workers".to_string(),
         }),
-        ".review" => Ok(AuthorityLayout {
+        ".review" if recorded => Ok(AuthorityLayout {
             root: root.to_string(),
             lock: ".review/review.lock".to_string(),
             registry: ".review/reviewers".to_string(),
         }),
+        ".review" => Err(
+            "`.review/` authority is no longer read for new Campaigns (since v0.8.0, ADR-0043) — fix: `af onboard --migrate --apply` moves it to `.af/`; commit the result and delete `.review/`"
+                .to_string(),
+        ),
         _ => Err("the pipeline path must live under `.af/pipelines/`".to_string()),
     }
 }
 
-pub(crate) fn review_dir(pipeline: &str) -> Result<String, String> {
-    authority_layout(pipeline).map(|layout| layout.root)
+/// The layout for a pipeline path given on the command line.
+pub(crate) fn authority_paths(pipeline: &str) -> Result<AuthorityLayout, String> {
+    authority_layout(pipeline, false)
 }
 
 fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {

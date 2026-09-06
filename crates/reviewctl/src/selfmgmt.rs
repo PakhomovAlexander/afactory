@@ -1,12 +1,17 @@
 //! `af self`: the binary managing itself, and the dispatch that honours a project's pin.
 //!
 //! Layout: every installed version under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt; the
-//! default is the `$XDG_BIN_HOME/af` symlink; activation history in `$XDG_STATE_HOME/af/self.toml`;
-//! the cached release check in `$XDG_CACHE_HOME/af/self/latest.toml`. Releases come from a
-//! `ReleaseSource`: GitHub through `gh` (the private repository, no token stored) or a local
-//! directory (`AF_RELEASE_SOURCE`, the second implementation and the test double).
+//! default is the `$XDG_BIN_HOME/af` symlink; activation history and the pinned projects this
+//! machine has seen in `$XDG_STATE_HOME/af/self.toml`; the cached release check in
+//! `$XDG_CACHE_HOME/af/self/latest.toml`. Releases come from a `ReleaseSource`: GitHub through
+//! `gh` (the private repository, no token stored) or a local directory (`AF_RELEASE_SOURCE`, the
+//! second implementation and the test double).
+//!
+//! What binds bytes: under a project lock, the digest the lock records for this target; outside
+//! one, the release's `SHA256SUMS`, which every release since `FIRST_SIGNED` signs with the key
+//! embedded at build time. A pin without a digest for this target is never installed on demand.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
@@ -15,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::CommandFactory as _;
 use clap_complete::engine::CompletionCandidate;
+use review_config::lock::AfPin;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,10 +31,21 @@ use crate::config::{self, AutoUpdate, Channel, SelfPolicy};
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const TARGET: &str = env!("AF_TARGET");
 pub(crate) const COMMIT: &str = env!("AF_GIT_COMMIT");
+/// The minisign public key the release job signs `SHA256SUMS` with, embedded at build time from
+/// `crates/reviewctl/keys/release.pub`. Empty in a build without the file (a source build).
+const RELEASE_KEY: &str = env!("AF_RELEASE_KEY");
+/// The first release whose `SHA256SUMS` is signed. Older releases carry checksums only.
+const FIRST_SIGNED: &str = "0.8.0";
+/// The first release with `af self`. Anything older could not update itself back and cannot read
+/// a pinned lock, so it is never made the default and never dispatched to.
+const OLDEST_SELF_MANAGED: &str = "0.7.1";
 const OFFLINE_ENV: &str = "AF_SELF_OFFLINE";
 const DISPATCHED_ENV: &str = "AF_DISPATCHED_FROM";
 const VERSION_ENV: &str = "AF_VERSION";
 const SOURCE_ENV: &str = "AF_RELEASE_SOURCE";
+const KEY_ENV: &str = "AF_RELEASE_KEY";
+/// Pinned projects remembered for `remove` and `prune`; the oldest entries age out.
+const MAX_SEEN_PINS: usize = 64;
 
 // ------------------------------------------------------------------------------------------
 // records
@@ -40,6 +57,8 @@ pub(crate) struct Receipt {
     pub(crate) source: String,
     pub(crate) asset: String,
     pub(crate) sha256: String,
+    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`),
+    /// `sha256sums` (an unsigned one), or `sha256-sidecar` (releases before `SHA256SUMS`).
     pub(crate) verified_by: String,
     pub(crate) installed_at: String,
 }
@@ -50,12 +69,23 @@ struct SelfState {
     activations: Vec<Activation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_check: Option<String>,
+    /// Every project lock dispatch has honoured on this machine, so `remove` and `prune` keep
+    /// the versions those projects still pin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pins: Vec<SeenPin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Activation {
     version: String,
     at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SeenPin {
+    lock: PathBuf,
+    version: String,
+    seen: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -155,6 +185,11 @@ fn running_receipt(paths: &Paths) -> Option<Receipt> {
     read_receipt(paths, version)
 }
 
+/// The running binary's install receipt, when `af self` (or the installer) installed it.
+pub(crate) fn self_receipt() -> Option<Receipt> {
+    paths().ok().and_then(|paths| running_receipt(&paths))
+}
+
 fn require_receipt(paths: &Paths) -> Result<Receipt, String> {
     running_receipt(paths).ok_or_else(|| {
         format!(
@@ -162,6 +197,25 @@ fn require_receipt(paths: &Paths) -> Result<Receipt, String> {
             paths.versions.display()
         )
     })
+}
+
+/// One installer at a time per layout: two dispatches racing to install the same pin would
+/// otherwise replace a directory the other is about to exec.
+fn install_lock(paths: &Paths) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(&paths.versions)
+        .map_err(|error| format!("creating {}: {error}", paths.versions.display()))?;
+    let path = paths.versions.join(".lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+        .map_err(|error| format!("locking {}: {error}", path.display()))?;
+    Ok(file)
 }
 
 fn read_state(paths: &Paths) -> SelfState {
@@ -402,6 +456,133 @@ fn newest(tags: &[String], channel: Channel) -> Option<Version> {
         .max()
 }
 
+fn parse_version(version: &str) -> Result<Version, String> {
+    Version::parse(version).map_err(|error| format!("{version}: {error}"))
+}
+
+/// The floor under every version `af self` will activate or dispatch to.
+fn require_self_managed(version: &str) -> Result<(), String> {
+    let parsed = parse_version(version)?;
+    let floor = Version::parse(OLDEST_SELF_MANAGED).expect("the floor is a version");
+    if parsed < floor {
+        return Err(format!(
+            "af {version} predates self-management (the first release with `af self` is {OLDEST_SELF_MANAGED}); it can be neither the default nor a dispatch target"
+        ));
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------
+// the release key and the checksum file
+
+/// Where this binary's release key comes from: `AF_RELEASE_KEY` (a minisign `.pub` file; a
+/// developer knob, like `AF_RELEASE_SOURCE`), the key embedded at build time, or nothing.
+fn release_key() -> Result<Option<(minisign_verify::PublicKey, &'static str)>, String> {
+    if let Some(path) = std::env::var_os(KEY_ENV).filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(path);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("reading {KEY_ENV} {}: {error}", path.display()))?;
+        let key = minisign_verify::PublicKey::decode(&text)
+            .map_err(|error| format!("{KEY_ENV} {}: {error}", path.display()))?;
+        return Ok(Some((key, "environment")));
+    }
+    if RELEASE_KEY.trim().is_empty() {
+        return Ok(None);
+    }
+    let key = minisign_verify::PublicKey::from_base64(RELEASE_KEY.trim())
+        .map_err(|error| format!("the embedded release key is malformed: {error}"))?;
+    Ok(Some((key, "embedded")))
+}
+
+fn release_key_source() -> &'static str {
+    match release_key() {
+        Ok(Some((_, source))) => source,
+        Ok(None) => "none",
+        Err(_) => "malformed",
+    }
+}
+
+/// The release's `SHA256SUMS`, verified as far as the release and this build allow: the
+/// signature for releases since `FIRST_SIGNED` when a key is available (a missing or bad
+/// signature is a refusal), a signature when an older release happens to carry one, and the
+/// bare file otherwise. Returns the text and how it was verified.
+fn verified_sums(
+    src: &dyn ReleaseSource,
+    tag: &str,
+    version: &Version,
+    dir: &Path,
+) -> Result<(String, &'static str), String> {
+    let sums_path = src
+        .fetch(tag, "SHA256SUMS", dir)
+        .map_err(|error| format!("release {tag} has no SHA256SUMS: {error}"))?;
+    let sums = std::fs::read_to_string(&sums_path).map_err(|error| error.to_string())?;
+    let Some((key, _)) = release_key()? else {
+        return Ok((sums, "sha256sums"));
+    };
+    let signed_era = *version >= Version::parse(FIRST_SIGNED).expect("a version");
+    let signature = match src.fetch(tag, "SHA256SUMS.minisig", dir) {
+        Ok(path) => std::fs::read_to_string(&path).map_err(|error| error.to_string())?,
+        Err(error) if signed_era => {
+            return Err(format!(
+                "release {tag} has no SHA256SUMS.minisig ({error}); releases since {FIRST_SIGNED} must be signed — refusing to install from checksums alone"
+            ));
+        }
+        Err(_) => return Ok((sums, "sha256sums")),
+    };
+    let signature = minisign_verify::Signature::decode(&signature)
+        .map_err(|error| format!("SHA256SUMS.minisig of {tag}: {error}"))?;
+    key.verify(sums.as_bytes(), &signature, false)
+        .map_err(|error| {
+            format!("SHA256SUMS of {tag} does not verify against the release key: {error}")
+        })?;
+    Ok((sums, "minisign"))
+}
+
+fn find_sum(sums: &str, asset: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let name = parts.next()?.trim_start_matches('*');
+        (name == asset).then(|| hash.to_string())
+    })
+}
+
+/// Every archive digest a release publishes, keyed by target: what a lock records.
+fn parse_sums(sums: &str, version: &str) -> BTreeMap<String, String> {
+    let prefix = format!("af-v{version}-");
+    sums.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let hash = parts.next()?;
+            let name = parts.next()?.trim_start_matches('*');
+            let target = name.strip_prefix(&prefix)?.strip_suffix(".tar.gz")?;
+            (!target.is_empty() && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| (target.to_string(), format!("sha256:{hash}")))
+        })
+        .collect()
+}
+
+/// The per-target digests of a released version, from its verified `SHA256SUMS`, and how they
+/// were verified. Needs the release source; `AF_SELF_OFFLINE` refuses.
+pub(crate) fn release_digests(
+    version: &str,
+) -> Result<(BTreeMap<String, String>, &'static str), String> {
+    if offline() {
+        return Err(format!("{OFFLINE_ENV} is set"));
+    }
+    let parsed = parse_version(version)?;
+    let policy = config::load_machine()?.self_policy()?;
+    let src = source(&policy);
+    let tmp = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
+    let (sums, verified_by) =
+        verified_sums(src.as_ref(), &format!("v{version}"), &parsed, tmp.path())?;
+    let digests = parse_sums(&sums, version);
+    if digests.is_empty() {
+        return Err(format!("SHA256SUMS of v{version} lists no af archives"));
+    }
+    Ok((digests, verified_by))
+}
+
 // ------------------------------------------------------------------------------------------
 // install
 
@@ -411,13 +592,55 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-/// Download, verify against the release's checksums, extract, prove the version, and record a
-/// receipt. Never touches the default symlink.
-fn install(paths: &Paths, policy: &SelfPolicy, version: &str) -> Result<PathBuf, String> {
+/// Why an install did not happen. A mismatch is never a reason to run another version instead.
+enum InstallError {
+    /// The bytes fetched are not the bytes expected (lock digest or release checksums).
+    Mismatch(String),
+    Other(String),
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstallError::Mismatch(text) | InstallError::Other(text) => f.write_str(text),
+        }
+    }
+}
+
+impl From<String> for InstallError {
+    fn from(text: String) -> Self {
+        InstallError::Other(text)
+    }
+}
+
+/// Download, verify, extract, prove the version, and record a receipt. Never touches the default
+/// symlink. `expected` is the digest a project lock records for this target: when present it is
+/// the only thing the bytes must match; otherwise the release's checksums decide.
+fn install(
+    paths: &Paths,
+    policy: &SelfPolicy,
+    version: &str,
+    expected: Option<&str>,
+) -> Result<PathBuf, InstallError> {
     if offline() {
-        return Err(format!(
+        return Err(InstallError::Other(format!(
             "af {version} is not installed and {OFFLINE_ENV} is set — fix: unset it and run `af self install {version}`"
-        ));
+        )));
+    }
+    require_self_managed(version)?;
+    let parsed = parse_version(version)?;
+    let _guard = install_lock(paths)?;
+    if let Some(binary) = installed(paths, version) {
+        // Another installer finished first; under a lock its bytes must still be the lock's.
+        if let (Some(expected), Some(receipt)) = (expected, read_receipt(paths, version))
+            && receipt.sha256 != strip_sha256(expected)
+        {
+            return Err(InstallError::Mismatch(format!(
+                "installed af {version} (sha256 {}) is not the release the project lock recorded for {TARGET} ({expected})",
+                receipt.sha256
+            )));
+        }
+        return Ok(binary);
     }
     let src = source(policy);
     let tag = format!("v{version}");
@@ -429,31 +652,26 @@ fn install(paths: &Paths, policy: &SelfPolicy, version: &str) -> Result<PathBuf,
     );
     let archive = src.fetch(&tag, &asset, tmp.path())?;
     let actual = sha256_file(&archive)?;
-    let (expected, verified_by) = match src.fetch(&tag, "SHA256SUMS", tmp.path()) {
-        Ok(sums) => (
-            find_sum(
-                &std::fs::read_to_string(&sums).map_err(|error| error.to_string())?,
-                &asset,
-            )
-            .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?,
-            "sha256sums",
-        ),
-        Err(_) => {
-            let sidecar = src.fetch(&tag, &format!("{asset}.sha256"), tmp.path())?;
-            let text = std::fs::read_to_string(&sidecar).map_err(|error| error.to_string())?;
+    let (expected, verified_by) = match expected {
+        Some(digest) => (strip_sha256(digest).to_string(), "lock"),
+        None => {
+            let (sums, verified_by) = verified_sums(src.as_ref(), &tag, &parsed, tmp.path())?;
             (
-                text.split_whitespace()
-                    .next()
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("{asset}.sha256 is empty"))?,
-                "sha256-sidecar",
+                find_sum(&sums, &asset)
+                    .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?,
+                verified_by,
             )
         }
     };
     if actual != expected {
-        return Err(format!(
-            "checksum mismatch for {asset}\nexpected {expected}\nactual   {actual}"
-        ));
+        return Err(InstallError::Mismatch(format!(
+            "checksum mismatch for {asset} ({})\nexpected {expected}\nactual   {actual}",
+            if verified_by == "lock" {
+                "against the project lock's digest"
+            } else {
+                "against the release checksums"
+            }
+        )));
     }
     let unpack = tmp.path().join("unpack");
     std::fs::create_dir_all(&unpack).map_err(|error| error.to_string())?;
@@ -465,13 +683,15 @@ fn install(paths: &Paths, policy: &SelfPolicy, version: &str) -> Result<PathBuf,
         .status()
         .map_err(|error| format!("running tar: {error}"))?;
     if !status.success() {
-        return Err(format!("tar could not extract {asset}"));
+        return Err(InstallError::Other(format!(
+            "tar could not extract {asset}"
+        )));
     }
     let extracted = unpack.join("af");
     if !extracted.is_file() {
-        return Err(format!(
+        return Err(InstallError::Other(format!(
             "{asset} does not contain an `af` binary at its root"
-        ));
+        )));
     }
     #[cfg(unix)]
     {
@@ -486,9 +706,9 @@ fn install(paths: &Paths, policy: &SelfPolicy, version: &str) -> Result<PathBuf,
         .map_err(|error| format!("running the downloaded af: {error}"))?;
     let reported = String::from_utf8_lossy(&reported.stdout).trim().to_string();
     if reported != format!("af {version}") {
-        return Err(format!(
+        return Err(InstallError::Other(format!(
             "release binary reported `{reported}`, expected `af {version}`"
-        ));
+        )));
     }
     let dir = version_dir(paths, version);
     let staging = paths
@@ -520,17 +740,9 @@ fn install(paths: &Paths, policy: &SelfPolicy, version: &str) -> Result<PathBuf,
     Ok(dir.join("af"))
 }
 
-fn find_sum(sums: &str, asset: &str) -> Option<String> {
-    sums.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        let hash = parts.next()?;
-        let name = parts.next()?.trim_start_matches('*');
-        (name == asset).then(|| hash.to_string())
-    })
-}
-
 /// Retarget the default symlink atomically and record the activation.
 fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
+    require_self_managed(version)?;
     let binary = version_binary(paths, version);
     if !binary.is_file() {
         return Err(format!(
@@ -578,13 +790,23 @@ fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
 // ------------------------------------------------------------------------------------------
 // pins and dispatch
 
-/// The `af` version a repository pins, and where the lock is.
-pub(crate) fn pinned_version(repo: &Path) -> Option<(String, PathBuf)> {
+/// The `af` pin a repository's lock records, and where the lock is.
+pub(crate) struct Pinned {
+    pub(crate) pin: AfPin,
+    pub(crate) lock: PathBuf,
+}
+
+/// The pin a repository carries, read leniently so a lock written by a newer release still
+/// dispatches to it.
+pub(crate) fn pinned(repo: &Path) -> Option<Pinned> {
     let toplevel = config::git_toplevel(repo)?;
     let lock = toplevel.join(".af/af.lock");
     let text = std::fs::read_to_string(&lock).ok()?;
-    let lockfile = review_config::lock::Lockfile::from_toml(&text).ok()?;
-    lockfile.af_version.map(|version| (version, lock))
+    review_config::lock::pinned_af(&text).map(|pin| Pinned { pin, lock })
+}
+
+fn strip_sha256(digest: &str) -> &str {
+    digest.strip_prefix("sha256:").unwrap_or(digest)
 }
 
 fn repo_from_argv(argv: &[String]) -> PathBuf {
@@ -601,6 +823,25 @@ fn repo_from_argv(argv: &[String]) -> PathBuf {
     PathBuf::from(".")
 }
 
+/// `af onboard --af V`: run the onboarding under release V (moving a pin forward means the new
+/// release must write the lock), the same override as `AF_VERSION` for one command.
+fn onboard_af_from_argv(argv: &[String]) -> Option<String> {
+    if argv.get(1).map(String::as_str) != Some("onboard") {
+        return None;
+    }
+    let mut iter = argv.iter().skip(2);
+    while let Some(word) = iter.next() {
+        if word == "--af" {
+            return iter
+                .next()
+                .map(|value| value.trim_start_matches('v').to_string());
+        } else if let Some(value) = word.strip_prefix("--af=") {
+            return Some(value.trim_start_matches('v').to_string());
+        }
+    }
+    None
+}
+
 fn exempt_from_dispatch(argv: &[String]) -> bool {
     let first = argv.get(1).map(String::as_str);
     matches!(
@@ -612,67 +853,200 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
         .any(|word| matches!(word.as_str(), "--version" | "-V" | "--help" | "-h"))
 }
 
+struct Request {
+    version: String,
+    /// The digest the lock records for this target, when a lock made the request.
+    digest: Option<String>,
+    lock: Option<PathBuf>,
+}
+
+/// Remember that a lock pinned a version on this machine, so `remove` and `prune` keep it.
+fn record_seen_pin(paths: &Paths, lock: &Path, version: &str) {
+    let mut state = read_state(paths);
+    let lock = std::fs::canonicalize(lock).unwrap_or_else(|_| lock.to_path_buf());
+    if state
+        .pins
+        .iter()
+        .any(|seen| seen.lock == lock && seen.version == version)
+    {
+        return;
+    }
+    state.pins.retain(|seen| seen.lock != lock);
+    state.pins.push(SeenPin {
+        lock,
+        version: version.to_string(),
+        seen: iso_now(),
+    });
+    let overflow = state.pins.len().saturating_sub(MAX_SEEN_PINS);
+    state.pins.drain(..overflow);
+    let _ = write_state(paths, &state);
+}
+
+/// Every version some project on this machine still pins: the lock in the current directory
+/// and every lock dispatch has honoured that still exists and still pins. Forgotten entries are
+/// dropped from the state on the way.
+fn pinned_everywhere(paths: &Paths) -> BTreeSet<String> {
+    let mut versions = BTreeSet::new();
+    if let Some(here) = pinned(Path::new(".")) {
+        versions.insert(here.pin.version);
+    }
+    let mut state = read_state(paths);
+    let before = state.pins.len();
+    state.pins.retain_mut(|seen| {
+        let Some(text) = std::fs::read_to_string(&seen.lock).ok() else {
+            return false;
+        };
+        let Some(pin) = review_config::lock::pinned_af(&text) else {
+            return false;
+        };
+        seen.version = pin.version.clone();
+        versions.insert(pin.version);
+        true
+    });
+    if state.pins.len() != before {
+        let _ = write_state(paths, &state);
+    }
+    versions
+}
+
 /// Exec the version this project pins, when it is not the one running. Installs it on demand.
 /// Returns only when the running binary should continue.
 pub(crate) fn maybe_dispatch(argv: &[String]) {
     if exempt_from_dispatch(argv) || std::env::var_os(DISPATCHED_ENV).is_some() {
         return;
     }
-    let requested = match std::env::var(VERSION_ENV) {
-        Ok(version) if !version.trim().is_empty() => Some((version.trim().to_string(), None)),
-        _ => pinned_version(&repo_from_argv(argv)).map(|(version, lock)| (version, Some(lock))),
+    let explicit = std::env::var(VERSION_ENV)
+        .ok()
+        .map(|version| version.trim().trim_start_matches('v').to_string())
+        .filter(|version| !version.is_empty())
+        .or_else(|| onboard_af_from_argv(argv));
+    let request = match explicit {
+        Some(version) => Request {
+            version,
+            digest: None,
+            lock: None,
+        },
+        None => match pinned(&repo_from_argv(argv)) {
+            Some(Pinned { pin, lock }) => Request {
+                digest: pin.digest_for(TARGET).map(str::to_string),
+                version: pin.version,
+                lock: Some(lock),
+            },
+            None => return,
+        },
     };
-    let Some((version, lock)) = requested else {
-        return;
-    };
-    if version == VERSION {
-        return;
-    }
     let Ok(paths) = paths() else {
         return;
     };
-    let why = match &lock {
-        Some(lock) => format!("{} is pinned by af {version}", lock.display()),
-        None => format!("{VERSION_ENV}={version} was requested"),
+    if request.version == VERSION {
+        // The pin names this very release: the running bytes must still be the lock's bytes.
+        if let (Some(lock), Some(expected), Some(receipt)) = (
+            &request.lock,
+            request.digest.as_deref(),
+            running_receipt(&paths),
+        ) && receipt.sha256 != strip_sha256(expected)
+        {
+            eprintln!(
+                "af: {} pins af {VERSION}, but this af (sha256 {}) is not the release the lock recorded for {TARGET} ({expected}) — fix: af self remove {VERSION} && af self install {VERSION}, or re-pin with `{VERSION_ENV}={VERSION} af onboard --refresh-lock`",
+                lock.display(),
+                receipt.sha256
+            );
+            std::process::exit(1);
+        }
+        if let Some(lock) = &request.lock {
+            record_seen_pin(&paths, lock, &request.version);
+        }
+        return;
+    }
+    let why = match &request.lock {
+        Some(lock) => format!("{} pins af {}", lock.display(), request.version),
+        None => format!("af {} was requested", request.version),
     };
-    let binary = match installed(&paths, &version) {
-        Some(binary) => binary,
+    // Below the floor nothing can run under a pin: an explicit request is refused; a lock's pin
+    // is treated like any older release this binary cannot dispatch to — it runs instead, and
+    // says so.
+    if let Err(reason) = require_self_managed(&request.version) {
+        if request.lock.is_none() {
+            eprintln!("af: {why}: {reason}");
+            std::process::exit(1);
+        }
+        eprintln!(
+            "af: {why}: {reason}; this af {VERSION} runs instead — fix: af onboard --refresh-lock --af <version>"
+        );
+        return;
+    }
+    let binary = match installed(&paths, &request.version) {
+        Some(binary) => {
+            // The lock binds bytes, so an installed copy must carry the digest it records.
+            if let (Some(expected), Some(receipt)) = (
+                request.digest.as_deref(),
+                read_receipt(&paths, &request.version),
+            ) && receipt.sha256 != strip_sha256(expected)
+            {
+                eprintln!(
+                    "af: {why}, but the installed af {} (sha256 {}) is not the release the lock recorded for {TARGET} ({expected}) — fix: af self remove {0} && af self install {0}, or re-pin with `af onboard --refresh-lock --af {0}`",
+                    request.version, receipt.sha256
+                );
+                std::process::exit(1);
+            }
+            binary
+        }
         None => {
             let policy = config::load_machine().and_then(|config| config.self_policy());
             let attempt = match policy {
-                Err(error) => Err(format!("self policy: {error}")),
-                Ok(_) if offline() => Err(format!("{OFFLINE_ENV} is set")),
-                Ok(policy) if !policy.install_pins => {
-                    Err("[self] install_pins = false".to_string())
+                Err(error) => Err(InstallError::Other(format!("self policy: {error}"))),
+                Ok(_) if offline() => Err(InstallError::Other(format!("{OFFLINE_ENV} is set"))),
+                Ok(policy) if !policy.install_pins => Err(InstallError::Other(
+                    "[self] install_pins = false".to_string(),
+                )),
+                Ok(_) if request.lock.is_some() && request.digest.is_none() => {
+                    Err(InstallError::Other(format!(
+                        "the lock records no digest for {TARGET}, and a pin without bytes is never installed on demand"
+                    )))
                 }
-                Ok(policy) => install(&paths, &policy, &version),
+                Ok(policy) => install(&paths, &policy, &request.version, request.digest.as_deref()),
             };
             match attempt {
                 Ok(binary) => binary,
-                Err(reason) => {
+                Err(InstallError::Mismatch(reason)) => {
+                    eprintln!("af: {why}, and the release could not be installed: {reason}");
+                    std::process::exit(1);
+                }
+                Err(InstallError::Other(reason)) => {
                     // Fail closed whenever running on would mean an older binary interpreting a
                     // newer release's pin, or ignoring an explicit request. An older pin under a
                     // newer binary is the #47 case: proceed and say so.
-                    let explicit = lock.is_none();
-                    let newer = match (Version::parse(&version), Version::parse(VERSION)) {
+                    let explicit = request.lock.is_none();
+                    let newer = match (Version::parse(&request.version), Version::parse(VERSION)) {
                         (Ok(pinned), Ok(running)) => pinned > running,
                         _ => true,
                     };
+                    let fix = if request.lock.is_some() && request.digest.is_none() {
+                        format!(
+                            "af onboard --refresh-lock --af {0} (online, records digests), or af self install {0} to trust the release checksums",
+                            request.version
+                        )
+                    } else {
+                        format!("af self install {}", request.version)
+                    };
                     if explicit || newer {
                         eprintln!(
-                            "af: {why}, {} this af {VERSION}, and that release is not installed ({reason}) — fix: af self install {version}",
+                            "af: {why}, {} this af {VERSION}, and that release is not installed ({reason}) — fix: {fix}",
                             if explicit { "not" } else { "newer than" }
                         );
                         std::process::exit(1);
                     }
                     eprintln!(
-                        "af: {why}; that release is not installed ({reason}), so this af {VERSION} runs instead — fix: af self install {version}"
+                        "af: {why}; that release is not installed ({reason}), so this af {VERSION} runs instead — fix: {fix}"
                     );
                     return;
                 }
             }
         }
     };
+    if let Some(lock) = &request.lock {
+        record_seen_pin(&paths, lock, &request.version);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -772,7 +1146,7 @@ pub(crate) fn refresh_check() -> Result<(), String> {
         let from = default_version(&paths).unwrap_or_else(|| VERSION.to_string());
         let latest = latest.to_string();
         if installed(&paths, &latest).is_none() {
-            install(&paths, &policy, &latest)?;
+            install(&paths, &policy, &latest, None).map_err(|error| error.to_string())?;
         }
         set_default(&paths, &latest)?;
         cache.auto_updated_to = Some(latest);
@@ -789,11 +1163,13 @@ struct StatusView {
     version: &'static str,
     target: &'static str,
     commit: &'static str,
+    release_key: &'static str,
     running: PathBuf,
     receipt: Option<Receipt>,
     default: Option<String>,
     installed: Vec<String>,
     pin: Option<PinView>,
+    pinned_projects: Vec<SeenPin>,
     last_check: Option<String>,
     latest: Option<String>,
     policy: PolicyView,
@@ -805,6 +1181,8 @@ struct PinView {
     version: String,
     lock: PathBuf,
     installed: bool,
+    /// The digest the lock records for this machine's target: the bytes the pin binds.
+    digest: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -826,10 +1204,11 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         .iter()
         .map(ToString::to_string)
         .collect();
-    let pin = pinned_version(Path::new(".")).map(|(version, lock)| PinView {
-        installed: installed(&paths, &version).is_some(),
-        version,
-        lock,
+    let pin = pinned(Path::new(".")).map(|pinned| PinView {
+        installed: installed(&paths, &pinned.pin.version).is_some(),
+        digest: pinned.pin.digest_for(TARGET).map(str::to_string),
+        version: pinned.pin.version,
+        lock: pinned.lock,
     });
     let state = read_state(&paths);
     let cache = read_cache(&paths);
@@ -837,11 +1216,13 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         version: VERSION,
         target: TARGET,
         commit: COMMIT,
+        release_key: release_key_source(),
         running: running.clone(),
         receipt: running_receipt(&paths),
         default: default_version(&paths),
         installed: installed_list,
         pin,
+        pinned_projects: state.pins,
         last_check: state.last_check,
         latest: cache.latest,
         policy: PolicyView {
@@ -884,6 +1265,15 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
             "   (no receipt: not installed by af self)"
         }
     );
+    println!(
+        "key:        {}",
+        match view.release_key {
+            "embedded" => "embedded release key (SHA256SUMS signatures verified)".to_string(),
+            "environment" => format!("{KEY_ENV} (SHA256SUMS signatures verified)"),
+            "none" => "none (this build verifies checksums only; not a release build)".to_string(),
+            other => other.to_string(),
+        }
+    );
     match &view.default {
         Some(version) => println!("default:    {} -> af {version}", paths.bin.display()),
         None => println!("default:    {} (absent)", paths.bin.display()),
@@ -898,16 +1288,30 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
     );
     match &view.pin {
         Some(pin) => println!(
-            "pin here:   af {} ({}){}",
+            "pin here:   af {} ({}) · {} · {}",
             pin.version,
             pin.lock.display(),
-            if pin.installed {
-                ""
+            if pin.digest.is_some() {
+                format!("bytes bound for {TARGET}")
             } else {
-                "   not installed — af self install"
+                format!(
+                    "no digest for {TARGET} (af onboard --refresh-lock --af {} records one)",
+                    pin.version
+                )
+            },
+            if pin.installed {
+                "installed".to_string()
+            } else {
+                format!("not installed — af self install {}", pin.version)
             }
         ),
         None => println!("pin here:   none"),
+    }
+    if !view.pinned_projects.is_empty() {
+        println!(
+            "pinned:     {} project(s) seen; their versions survive remove and prune",
+            view.pinned_projects.len()
+        );
     }
     println!(
         "last check: {}{}",
@@ -953,10 +1357,11 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
         println!("af {VERSION} is up to date");
         return Ok(());
     }
-    require_receipt(&paths)?;
     let target = target.to_string();
+    require_self_managed(&target)?;
+    require_receipt(&paths)?;
     if installed(&paths, &target).is_none() {
-        install(&paths, &policy, &target)?;
+        install(&paths, &policy, &target, None).map_err(|error| error.to_string())?;
     }
     set_default(&paths, &target)?;
     println!("af {target} is now the default ({})", paths.bin.display());
@@ -984,10 +1389,10 @@ pub(crate) fn install_command(version: &str) -> Result<(), String> {
     let paths = paths()?;
     let policy = config::load_machine()?.self_policy()?;
     let version = version.trim_start_matches('v');
-    Version::parse(version).map_err(|error| format!("{version}: {error}"))?;
+    parse_version(version)?;
     let binary = match installed(&paths, version) {
         Some(binary) => binary,
-        None => install(&paths, &policy, version)?,
+        None => install(&paths, &policy, version, None).map_err(|error| error.to_string())?,
     };
     println!("af {version} installed at {}", binary.display());
     if default_version(&paths).is_none() {
@@ -1001,23 +1406,22 @@ pub(crate) fn remove(version: &str) -> Result<(), String> {
     let paths = paths()?;
     require_receipt(&paths)?;
     let version = version.trim_start_matches('v');
+    // Only an installed version names a directory to remove: a version string is never a path.
+    parse_version(version)?;
+    if installed(&paths, version).is_none() {
+        return Err(format!("af {version} is not installed"));
+    }
     if default_version(&paths).as_deref() == Some(version) {
         return Err(format!(
             "af {version} is the default — fix: af self update or af self rollback first"
         ));
     }
-    if let Some((pinned, lock)) = pinned_version(Path::new("."))
-        && pinned == version
-    {
+    if pinned_everywhere(&paths).contains(version) {
         return Err(format!(
-            "af {version} is pinned by {} — fix: run this outside that project",
-            lock.display()
+            "af {version} is pinned by a project this machine has seen (`af self status --json` lists them) — fix: re-pin those projects first"
         ));
     }
     let dir = version_dir(&paths, version);
-    if !dir.is_dir() {
-        return Err(format!("af {version} is not installed"));
-    }
     std::fs::remove_dir_all(&dir)
         .map_err(|error| format!("removing {}: {error}", dir.display()))?;
     println!("af {version} removed");
@@ -1030,13 +1434,13 @@ pub(crate) fn prune() -> Result<(), String> {
     let policy = config::load_machine()?.self_policy()?;
     let keep = policy.keep_versions;
     let default = default_version(&paths);
-    let pinned = pinned_version(Path::new(".")).map(|(version, _)| version);
+    let pinned = pinned_everywhere(&paths);
     let versions = installed_versions(&paths);
     let mut removed = 0;
     let total = versions.len();
     for (index, version) in versions.iter().enumerate() {
         let version = version.to_string();
-        let protected = Some(&version) == default.as_ref() || Some(&version) == pinned.as_ref();
+        let protected = Some(&version) == default.as_ref() || pinned.contains(&version);
         let within_keep = total - index <= keep;
         if protected || within_keep {
             continue;
@@ -1047,7 +1451,7 @@ pub(crate) fn prune() -> Result<(), String> {
         removed += 1;
     }
     if removed == 0 {
-        println!("nothing to prune (keeping {keep}, plus the default and any pin)");
+        println!("nothing to prune (keeping {keep}, plus the default and every pin seen)");
     }
     Ok(())
 }
@@ -1233,6 +1637,7 @@ struct VersionView {
     version: &'static str,
     commit: &'static str,
     target: &'static str,
+    release_key: &'static str,
     dispatched_from: Option<String>,
     receipt: Option<PathBuf>,
 }
@@ -1250,6 +1655,7 @@ pub(crate) fn print_version(json: bool) -> Result<(), String> {
         version: VERSION,
         commit: COMMIT,
         target: TARGET,
+        release_key: release_key_source(),
         dispatched_from: std::env::var(DISPATCHED_ENV).ok(),
         receipt,
     };
@@ -1279,14 +1685,33 @@ mod tests {
     }
 
     #[test]
-    fn sums_are_found_by_asset_name() {
+    fn sums_are_found_by_asset_name_and_parsed_per_target() {
         let sums = "abc  af-v0.8.0-x.tar.gz\ndef *af-v0.8.0-y.tar.gz\n";
         assert_eq!(find_sum(sums, "af-v0.8.0-y.tar.gz").as_deref(), Some("def"));
         assert_eq!(find_sum(sums, "nope"), None);
+        let hex = "0".repeat(64);
+        let sums = format!(
+            "{hex}  af-v0.8.0-aarch64-apple-darwin.tar.gz\n{hex}  af-v0.8.0-x86_64-unknown-linux-musl.tar.gz\nshort  af-v0.8.0-bad.tar.gz\n{hex}  install.sh\n"
+        );
+        let digests = parse_sums(&sums, "0.8.0");
+        assert_eq!(
+            digests.keys().cloned().collect::<Vec<_>>(),
+            vec!["aarch64-apple-darwin", "x86_64-unknown-linux-musl"]
+        );
+        assert_eq!(digests["aarch64-apple-darwin"], format!("sha256:{hex}"));
+        assert!(parse_sums(&sums, "0.9.0").is_empty());
     }
 
     #[test]
-    fn dispatch_exemptions() {
+    fn the_floor_is_the_first_self_managing_release() {
+        assert!(require_self_managed("0.7.0").is_err());
+        assert!(require_self_managed("0.7.1").is_ok());
+        assert!(require_self_managed("0.8.0-rc.1").is_ok());
+        assert!(require_self_managed("latest").is_err());
+    }
+
+    #[test]
+    fn dispatch_exemptions_and_overrides() {
         let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         assert!(exempt_from_dispatch(&argv(&["af", "self", "status"])));
         assert!(exempt_from_dispatch(&argv(&[
@@ -1300,6 +1725,24 @@ mod tests {
         assert_eq!(
             repo_from_argv(&argv(&["af", "review", "--repo=/y"])),
             PathBuf::from("/y")
+        );
+        assert_eq!(
+            onboard_af_from_argv(&argv(&[
+                "af",
+                "onboard",
+                "--refresh-lock",
+                "--af",
+                "v0.9.0"
+            ])),
+            Some("0.9.0".to_string())
+        );
+        assert_eq!(
+            onboard_af_from_argv(&argv(&["af", "onboard", "--af=0.9.0"])),
+            Some("0.9.0".to_string())
+        );
+        assert_eq!(
+            onboard_af_from_argv(&argv(&["af", "review", "--af", "1"])),
+            None
         );
     }
 }

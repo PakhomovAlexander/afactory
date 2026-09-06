@@ -1,4 +1,5 @@
-//! `.review/review.lock`: a reviewer pinned by content digest, never `latest`.
+//! `.af/af.lock`: a reviewer pinned by content digest, never `latest`; since v0.8.0 also the
+//! `af` release that wrote the lock, pinned by its archive digests.
 //!
 //! A reviewer is a package — a directory holding `reviewer.toml` (name, version, the runner
 //! command) and whatever prompt or support files it needs. Packages live in registries searched
@@ -400,16 +401,51 @@ pub struct Pin {
     pub digest: String,
 }
 
-/// The lockfile itself — `.review/review.lock`, TOML.
+/// The `af` release a lock pins, and the bytes that release has: one archive digest per target,
+/// copied from the release's signed `SHA256SUMS` when the lock was written.
+///
+/// The version alone would pin a *name*; the digests pin the *bytes*. Dispatch installs a pinned
+/// release on demand only when the archive it downloads matches the digest recorded here for the
+/// running machine's target, so a re-uploaded or substituted asset never runs under a lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfPin {
+    pub version: String,
+    /// `<target triple>` → `sha256:<hex>` of `af-v<version>-<target>.tar.gz`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub digests: BTreeMap<String, String>,
+}
+
+impl AfPin {
+    pub fn version_only(version: &str) -> AfPin {
+        AfPin {
+            version: version.to_string(),
+            digests: BTreeMap::new(),
+        }
+    }
+
+    pub fn digest_for(&self, target: &str) -> Option<&str> {
+        self.digests.get(target).map(String::as_str)
+    }
+}
+
+/// The lockfile itself — `.af/af.lock`, TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lockfile {
     pub version: u32,
-    /// The `af` release that wrote this lock (`af onboard --apply` or `--refresh-lock`). A newer
-    /// `af` proceeds and notes the difference; an older `af` refuses, because it cannot know what
-    /// the newer release meant by these pins. Absent on locks written before the pin existed.
+    /// The pin as release 0.7.1 wrote it: the version only. Read for compatibility, normalised
+    /// into `af` on parse, never written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub af_version: Option<String>,
+    af_version: Option<String>,
+    /// The `af` release that wrote this lock (`af onboard --apply`, `--migrate --apply`, or
+    /// `--refresh-lock`) and its per-target archive digests. A newer `af` proceeds and notes the
+    /// difference; an older `af` refuses, because it cannot know what the newer release meant by
+    /// these pins; inside the project, any `af` on `PATH` dispatches to the pinned release.
+    /// Absent on locks written before the pin existed, and on locks written by a build that has
+    /// no install receipt (a source build pins nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub af: Option<AfPin>,
     #[serde(default)]
     pub reviewers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -605,27 +641,101 @@ pub fn package_digest(name: &str, root: &Path) -> Result<String, LockError> {
     Ok(package_digest_from_files(&collect(name, root)?))
 }
 
+/// Only the `af` pin, read leniently: dispatch must find the pin in any lock a *newer* release
+/// wrote, so it ignores every field it does not know instead of refusing the whole file.
+pub fn pinned_af(text: &str) -> Option<AfPin> {
+    let value: toml::Value = toml::from_str(text).ok()?;
+    let table = value.as_table()?;
+    if let Some(af) = table.get("af").and_then(toml::Value::as_table) {
+        let version = af.get("version")?.as_str()?.to_string();
+        let digests = af
+            .get("digests")
+            .and_then(toml::Value::as_table)
+            .map(|digests| {
+                digests
+                    .iter()
+                    .filter_map(|(target, digest)| {
+                        digest
+                            .as_str()
+                            .map(|digest| (target.clone(), digest.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(AfPin { version, digests });
+    }
+    table
+        .get("af_version")
+        .and_then(toml::Value::as_str)
+        .map(AfPin::version_only)
+}
+
+fn validate_af_pin(pin: &AfPin) -> Result<(), LockError> {
+    if semver::Version::parse(&pin.version).is_err() {
+        return Err(LockError::Parse(format!(
+            "af pin `{}` is not a semantic version",
+            pin.version
+        )));
+    }
+    for (target, digest) in &pin.digests {
+        if target.is_empty()
+            || !target
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(LockError::Parse(format!(
+                "af pin digest target `{target}` is not a target triple"
+            )));
+        }
+        if !well_formed_digest(digest) {
+            return Err(LockError::MalformedDigest {
+                name: format!("af ({target})"),
+                digest: digest.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Lockfile {
     pub fn empty() -> Lockfile {
         Lockfile {
             version: 1,
             af_version: None,
+            af: None,
             reviewers: BTreeMap::new(),
             workers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
         }
     }
 
+    /// The pinned `af` version, whichever shape wrote it.
+    pub fn af_version(&self) -> Option<&str> {
+        self.af.as_ref().map(|pin| pin.version.as_str())
+    }
+
     /// Parse and validate. A floating version or malformed digest is refused *here*, so a bad
     /// pin cannot sit latent in a file that parses.
     pub fn from_toml(text: &str) -> Result<Lockfile, LockError> {
-        let lockfile: Lockfile =
+        let mut lockfile: Lockfile =
             toml::from_str(text).map_err(|e| LockError::Parse(e.to_string()))?;
         if lockfile.version != 1 {
             return Err(LockError::Parse(format!(
                 "unsupported lockfile version {}; this kernel understands version 1",
                 lockfile.version
             )));
+        }
+        match (lockfile.af_version.take(), &lockfile.af) {
+            (Some(_), Some(_)) => {
+                return Err(LockError::Parse(
+                    "lock carries both `af_version` and `[af]`; a pin has one home".into(),
+                ));
+            }
+            (Some(version), None) => lockfile.af = Some(AfPin::version_only(&version)),
+            (None, _) => {}
+        }
+        if let Some(pin) = &lockfile.af {
+            validate_af_pin(pin)?;
         }
         for pins in [&lockfile.reviewers, &lockfile.workers, &lockfile.pipelines] {
             for (name, pin) in pins {

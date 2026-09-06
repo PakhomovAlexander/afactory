@@ -32,8 +32,12 @@ supported release archives and checksum sidecars were downloaded and verified.
 Product rebranding must not rename
 `review.kernel/*` artifact types, persisted events, or established Review Kernel domain terms
 until a separate accepted migration ADR supersedes this rule; the `.review/` authority *layout*
-is dropped in `v0.8.0` by [ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
-which renames nothing persisted. v1 adds the final
+is no longer read for new Campaigns since `v0.8.0`
+([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
+[ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md): `af onboard --migrate
+--apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
+through `make release` and the release workflow; a lock pins the release's bytes, not just its
+version (ADR-0045). v1 adds the final
 user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
 reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
 Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,

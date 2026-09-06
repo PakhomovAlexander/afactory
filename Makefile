@@ -1,4 +1,4 @@
-.PHONY: check fmt lint test fixtures build pilot-check consumer-check review-kernel-container-probes
+.PHONY: check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes
 
 check: fmt lint test fixtures
 
@@ -24,6 +24,11 @@ pilot-check:
 # release leaves draft. The same check runs inside `make check` through the reviewctl tests.
 consumer-check: build
 	fixtures/consumers/check.sh target/release/af
+
+# Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
+# workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
+release:
+	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)"
 
 # Live containment and the v3 Gate route. These stay outside `make check` because a missing
 # daemon is a hard failure here, never a skip disguised as success.

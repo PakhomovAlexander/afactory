@@ -50,6 +50,24 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Re-pin one `.af/` pipeline after editing it: the lock binds pipelines by digest.
+fn repin(repo: &Path, name: &str) {
+    let lock_path = repo.join(".af/af.lock");
+    let mut lock = std::fs::read_to_string(&lock_path)
+        .ok()
+        .map(|text| review_config::lock::Lockfile::from_toml(&text).unwrap())
+        .unwrap_or_else(review_config::lock::Lockfile::empty);
+    let bytes = std::fs::read(repo.join(format!(".af/pipelines/{name}.toml"))).unwrap();
+    lock.pipelines.insert(
+        name.into(),
+        review_config::lock::Pin {
+            version: "1.0.0".into(),
+            digest: review_store::canonical::blob_content_id(&bytes),
+        },
+    );
+    std::fs::write(lock_path, lock.to_toml()).unwrap();
+}
+
 /// The hub fixture plus one committed change, so the Diff Subject has a real patch.
 fn hub_repo_with_a_change(root: &Path) -> PathBuf {
     let repo = root.join("consumer");
@@ -75,7 +93,7 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
         "--repo",
         repo_arg,
         "--pipeline",
-        ".review/pipelines/heavy.toml",
+        ".af/pipelines/review.toml",
         "--policy-rev",
         "HEAD",
         "--base",
@@ -99,8 +117,7 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert_eq!(view["package"]["name"], "correctness");
     let input = view["input"].as_str().unwrap();
     let instructions =
-        std::fs::read_to_string(hub_fixture().join(".review/reviewers/correctness/reviewer.md"))
-            .unwrap();
+        std::fs::read_to_string(hub_fixture().join(".af/workers/correctness/reviewer.md")).unwrap();
     assert!(
         input.starts_with(&instructions),
         "the verified package bytes lead"
@@ -151,10 +168,14 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
 fn a_command_worker_receives_the_typed_document_and_non_workers_are_refused() {
     let root = tempfile::tempdir().unwrap();
     let repo = root.path().join("consumer");
-    std::fs::create_dir_all(repo.join(".review/pipelines")).unwrap();
-    std::fs::write(repo.join(".review/review.lock"), "version = 1\n").unwrap();
+    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
     std::fs::write(
-        repo.join(".review/pipelines/check.toml"),
+        repo.join(".af/af.toml"),
+        "version = 1\n[project]\nname = \"consumer\"\nmin_af = \"0.6\"\n[defaults]\npipeline = \"check\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join(".af/pipelines/check.toml"),
         r#"version = 2
 
 [subject]
@@ -204,6 +225,7 @@ to = { node = "ledger", port = "reports" }
 "#,
     )
     .unwrap();
+    repin(&repo, "check");
     std::fs::write(repo.join("README.md"), "hello\n").unwrap();
     git(&repo, &["init", "-q"]);
     git(&repo, &["add", "-A"]);
@@ -216,7 +238,7 @@ to = { node = "ledger", port = "reports" }
         "--repo",
         repo_arg,
         "--pipeline",
-        ".review/pipelines/check.toml",
+        ".af/pipelines/check.toml",
         "--policy-rev",
         "HEAD",
         "--json",
@@ -268,7 +290,7 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     let root = tempfile::tempdir().unwrap();
     let repo = hub_repo_with_a_change(root.path());
     // A 100-token cap on the correctness Worker: the 20 KB prompt cannot fit.
-    let pipeline = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = repo.join(".af/pipelines/review.toml");
     let text = std::fs::read_to_string(&pipeline).unwrap();
     let capped = text.replace(
         "id = \"correctness\"\nkind = \"reviewer\"\n",
@@ -276,6 +298,7 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     );
     assert_ne!(capped, text);
     std::fs::write(&pipeline, capped).unwrap();
+    repin(&repo, "review");
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "tiny cap"]);
     let state_home = root.path().join("state");
@@ -284,7 +307,7 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
         "--repo",
         repo_arg,
         "--pipeline",
-        ".review/pipelines/heavy.toml",
+        ".af/pipelines/review.toml",
         "--policy-rev",
         "HEAD",
         "--base",

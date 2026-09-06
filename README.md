@@ -26,24 +26,49 @@ the synthetic fixture corpus, gated in CI.
 
 ## Install
 
-One line installs the newest stable release into the self-managed layout
+One line installs the newest stable release (by semantic version) into the self-managed layout
 (`$XDG_DATA_HOME/af/versions/<v>/`, default symlink at `~/.local/bin/af`) while the repository is
 private; `af` takes over from there:
 
 ```sh
 gh api repos/PakhomovAlexander/afactory/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
 af self setup-shell --write     # completions + man pages for your shell
-af self status                  # what is installed, the default, and the pin that applies here
+af self status                  # what is installed, the default, the release key, the pin here
 af self update --check          # exit 10 when a newer release exists; `af self update` installs it
 ```
 
-A project's `.af/af.lock` pins the release that wrote it; inside such a project any `af` on
-`PATH` execs that version, installing it on demand and verifying it against the release
-checksums. `af help self`, `af help layers`, and `af help exit-codes` explain the rest; every
-namespace and command has its own `--help`. Configuration merges built-in → `/etc/af` →
-`~/.config/af` → every `.af/af.toml` above the repository → `.af/af.toml` → `.af/af.local.toml`
-→ `AF_<TABLE>__<KEY>`; `af config show --origin` names where each value came from
-([ADR-0044](docs/adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)).
+Releases are built for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
+`aarch64-unknown-linux-musl` (static: no glibc floor). Every release from 0.8.0 ships a signed
+`SHA256SUMS`; the binary embeds the release public key (`crates/reviewctl/keys/release.pub`) and
+refuses an unsigned or badly signed release. Nothing older than 0.7.1 — the first release with
+`af self` — is ever activated or dispatched to.
+
+A project's `.af/af.lock` pins the release that wrote it **and its archive digest per target**;
+inside such a project any `af` on `PATH` execs that version, installing it on demand only when the
+bytes match the lock. `af onboard --refresh-lock` re-pins to the running release; `--af VERSION`
+runs it under another release, which is how a pin moves forward; a source build pins nothing.
+`af help self`, `af help layers`, and `af help exit-codes` explain the rest; every namespace and
+command has its own `--help`. Configuration merges built-in → `/etc/af` → `~/.config/af` →
+every `.af/af.toml` above the repository → `.af/af.toml` → `.af/af.local.toml` →
+`AF_<TABLE>__<KEY>`; `af config show --origin` names where each value came from
+([ADR-0044](docs/adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md),
+[ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
+
+## Release
+
+A release is one pull request, merged:
+
+```sh
+make release VERSION=0.8.0 COMPAT="requires \`af onboard --migrate --apply\` for .review/ consumers"
+```
+
+`scripts/release.sh` bumps the workspace version, writes the `CHANGELOG.md` section from the pull
+requests merged since the last release, and opens `release: vX.Y.Z`. Merging it makes
+`.github/workflows/release.yml` tag the commit, run `make check` on Linux and macOS, build every
+target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the key in the
+`MINISIGN_SECRET_KEY` secret, and publish. Legacy `.review/` policy is no longer read for new
+Campaigns since 0.8.0 ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md)):
+`af onboard --migrate --apply` moves a consumer to `.af/`.
 
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction
@@ -526,8 +551,9 @@ Three properties, end to end:
 ## Defining a pipeline
 
 A review is described in a file rather than constructed in code —
-[`.review/pipelines/heavy.toml`](../../.review/pipelines/heavy.toml) is the hub's own, and a test
-asserts it loads, because a checked-in example that does not parse reads as a working reference.
+[`.af/pipelines/review.toml`](.af/pipelines/review.toml) is this repository's own, and a test
+asserts it loads through its lock and Worker registry, because a checked-in example that does
+not parse reads as a working reference.
 
 Everything is validated before a node runs, and every failure is fatal: a pipeline that is 90%
 valid is not 90% of a review. Unknown fields are refused, so `gated_bye` is an error rather than

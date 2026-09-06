@@ -1,15 +1,18 @@
-//! `.af/af.lock` records the `af` release that wrote it. A newer `af` proceeds and notes the
-//! difference, an older `af` refuses, and a lock without the pin stays silent.
+//! `.af/af.lock` records the `af` release that wrote it and the bytes that release has. A
+//! receipted binary pins itself with every target's digest; a source build pins nothing and keeps
+//! an existing pin. A newer `af` proceeds and notes the difference, an older `af` refuses, and a
+//! lock without the pin stays silent.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use review_config::lock::Lockfile;
+use review_config::lock::{AfPin, Lockfile};
 
-const CURRENT: &str = env!("CARGO_PKG_VERSION");
+mod common;
+use common::{AF, Sandbox, TARGET, VERSION};
 
 fn af(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    Command::new(AF)
         .args(args)
         .env("AF_SELF_OFFLINE", "1")
         .output()
@@ -31,7 +34,7 @@ fn report(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// A freshly onboarded repository: `.af/` scaffolded by this binary, `.git` present.
+/// A freshly onboarded repository: `.af/` scaffolded by the (receipt-less) test binary.
 fn onboarded_repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -53,7 +56,7 @@ fn read_lock(repo: &Path) -> Lockfile {
 
 fn set_lock_af_version(repo: &Path, version: Option<&str>) {
     let mut lock = read_lock(repo);
-    lock.af_version = version.map(str::to_string);
+    lock.af = version.map(AfPin::version_only);
     std::fs::write(lock_path(repo), lock.to_toml()).unwrap();
 }
 
@@ -95,19 +98,116 @@ fn plan(repo: &Path) -> Output {
 }
 
 #[test]
-fn apply_and_refresh_pin_the_running_release() {
+fn a_source_build_pins_nothing_and_says_so() {
     let root = tempfile::tempdir().unwrap();
     let repo = onboarded_repo(root.path());
-    assert_eq!(read_lock(&repo).af_version.as_deref(), Some(CURRENT));
+    assert_eq!(read_lock(&repo).af, None);
 
     let validated = report(&onboard(&repo, &["--json"]));
-    assert_eq!(validated["lock_af_version"], CURRENT);
+    assert!(validated.get("lock_af_version").is_none());
     assert_eq!(validated["warnings"].as_array().unwrap().len(), 0);
 
-    set_lock_af_version(&repo, Some("0.0.1"));
-    let refreshed = onboard(&repo, &["--refresh-lock"]);
-    assert!(refreshed.status.success(), "{}", stderr(&refreshed));
-    assert_eq!(read_lock(&repo).af_version.as_deref(), Some(CURRENT));
+    // A refresh by a source build keeps whatever pin is there.
+    set_lock_af_version(&repo, Some("0.7.1"));
+    let refreshed = report(&onboard(&repo, &["--refresh-lock", "--json"]));
+    assert_eq!(read_lock(&repo).af_version(), Some("0.7.1"));
+    assert!(
+        refreshed["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("no install receipt")),
+        "{refreshed}"
+    );
+}
+
+#[test]
+fn a_receipted_release_pins_itself_with_every_published_digest() {
+    let sandbox = Sandbox::new();
+    // The "release" of the version under test: its SHA256SUMS lists this target and one more.
+    let digest = sandbox.publish(VERSION, false);
+    let real = sandbox.adopt_real_binary_with(&digest);
+    let repo = sandbox.path("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let created = sandbox
+        .command(&real)
+        .args(["onboard", "--repo"])
+        .arg(&repo)
+        .args([
+            "--runner",
+            "codex",
+            "--gate",
+            "check=make check",
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let created = report(&created);
+    assert_eq!(created["lock_af_version"], VERSION);
+    let targets = created["lock_af_targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 2, "{targets:?}");
+    let lock = read_lock(&repo);
+    let pin = lock.af.as_ref().unwrap();
+    assert_eq!(pin.version, VERSION);
+    assert_eq!(
+        pin.digest_for(TARGET),
+        Some(format!("sha256:{digest}").as_str())
+    );
+    assert!(pin.digest_for("other-target").is_some());
+    let text = std::fs::read_to_string(lock_path(&repo)).unwrap();
+    assert!(text.contains("[af]\nversion = "), "{text}");
+    assert!(text.contains("[af.digests]"), "{text}");
+
+    // Without the release source, the receipt still pins this target's bytes, with a warning.
+    set_lock_af_version(&repo, None);
+    let refreshed = sandbox
+        .command(&real)
+        .args(["onboard", "--repo"])
+        .arg(&repo)
+        .args(["--refresh-lock", "--json"])
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    let refreshed = report(&refreshed);
+    assert_eq!(refreshed["lock_af_targets"], serde_json::json!([TARGET]));
+    assert!(
+        refreshed["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("digest for")),
+        "{refreshed}"
+    );
+    let pin = read_lock(&repo).af.unwrap();
+    assert_eq!(
+        pin.digest_for(TARGET),
+        Some(format!("sha256:{digest}").as_str())
+    );
+}
+
+#[test]
+fn a_release_whose_published_digest_disagrees_with_the_receipt_is_not_pinned() {
+    let sandbox = Sandbox::new();
+    sandbox.publish(VERSION, false);
+    // Installed from bytes the release no longer lists (a re-uploaded asset, or a mirror).
+    let real = sandbox.adopt_real_binary_with(&"f".repeat(64));
+    let repo = sandbox.path("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let refused = sandbox
+        .command(&real)
+        .args(["onboard", "--repo"])
+        .arg(&repo)
+        .args(["--runner", "codex", "--gate", "check=make check", "--apply"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("re-uploaded") && stderr(&refused).contains("af self install"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!repo.join(".af").exists(), "nothing is written on refusal");
 }
 
 #[test]
@@ -119,11 +219,13 @@ fn a_newer_af_proceeds_and_says_so() {
     let validated = report(&onboard(&repo, &["--json"]));
     assert_eq!(validated["lock_af_version"], "0.0.1");
     let warnings = validated["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1);
-    let warning = warnings[0].as_str().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warning.contains("0.0.1") && warning.contains("--refresh-lock"),
-        "{warning}"
+        warnings.iter().any(|warning| {
+            let warning = warning.as_str().unwrap();
+            warning.contains("0.0.1") && warning.contains("--refresh-lock")
+        }),
+        "{warnings:?}"
     );
 
     commit_all(&repo);
@@ -177,4 +279,24 @@ fn an_unpinned_lock_stays_silent() {
         "{}",
         stderr(&planned)
     );
+}
+
+#[test]
+fn the_0_7_1_lock_shape_is_read_and_rewritten_as_a_table() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo(root.path());
+    let text = std::fs::read_to_string(lock_path(&repo)).unwrap();
+    std::fs::write(
+        lock_path(&repo),
+        text.replacen(
+            "version = 1\n",
+            &format!("version = 1\naf_version = \"{VERSION}\"\n"),
+            1,
+        ),
+    )
+    .unwrap();
+    let validated = report(&onboard(&repo, &["--json"]));
+    assert_eq!(validated["lock_af_version"], VERSION);
+    assert_eq!(validated["warnings"].as_array().unwrap().len(), 0);
+    assert_eq!(read_lock(&repo).af_version(), Some(VERSION));
 }

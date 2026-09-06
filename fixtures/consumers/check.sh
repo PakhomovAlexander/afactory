@@ -24,7 +24,7 @@ status=0
 for fixture in "$@"; do
   fixture="${fixture%/}"
   name="$(basename "$fixture")"
-  if [ ! -d "$fixture/.review" ] && [ ! -d "$fixture/.af" ]; then
+  if [ ! -d "$fixture/.af" ]; then
     continue
   fi
   tmp="$(mktemp -d)"
@@ -33,11 +33,7 @@ for fixture in "$@"; do
   git -C "$tmp" -c user.name=consumer -c user.email=consumer@example.invalid add -A
   git -C "$tmp" -c user.name=consumer -c user.email=consumer@example.invalid \
     commit -q -m "consumer fixture $name"
-  pipeline_args=()
-  if [ -f "$fixture/.review/pipelines/heavy.toml" ]; then
-    pipeline_args=(--pipeline .review/pipelines/heavy.toml)
-  fi
-  if out="$("$af" review plan --repo "$tmp" ${pipeline_args[@]+"${pipeline_args[@]}"} \
+  if out="$("$af" review plan --repo "$tmp" \
       --policy-rev HEAD --base HEAD --candidate HEAD --json 2>&1)"; then
     if printf '%s' "$out" | grep -q '"schema": *"af/review-plan@1"'; then
       echo "ok   $name"
