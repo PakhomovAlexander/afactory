@@ -1,5 +1,0 @@
-version = 1
-
-[reviewers.correctness]
-version = "1.0.0"
-digest = "sha256:b164787386e6c53fca45042da0ee9c282092c1826e71ae59812cd9a32fcb6d5e"

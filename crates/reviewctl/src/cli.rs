@@ -104,11 +104,16 @@ Behavior:\n\
   * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
   * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
-  * With legacy .review/ and no .af/: validate every pipeline and the lock against this release \
-and name each pending format upgrade; --migrate --apply rewrites the pipelines in place, \
-additively. Scaffolding .af/ beside .review/ is refused.\n\
-  * .af/af.lock records the af release that wrote it. Inside such a project any `af` on PATH \
-runs that release (installing it on demand); --refresh-lock re-pins to the running release.\n\n\
+  * With legacy .review/ and no .af/: preview the `.af/` it becomes — pipelines with format \
+upgrades applied, the reviewer packages they reference byte for byte, a project file, a lock; \
+--migrate --apply \
+writes it (absent-only) and leaves .review/ for you to delete. Since v0.8.0 `.review/` is no \
+longer read for new Campaigns; scaffolding .af/ beside it is refused.\n\
+  * .af/af.lock records the af release that wrote it and the archive digest of that release for \
+every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
+only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
+the command under another installed-or-installable release, which is how a pin moves forward. A \
+build without an install receipt (a source build) pins nothing.\n\n\
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state, \
 fetches a PR, commits, pushes, comments, or overwrites an existing .af/ directory.\n\n\
 Trusting configured Worker authority and intentionally running `af review run` or `af task \
@@ -117,7 +122,7 @@ stages of that Campaign or Task. Afactory does not ask for per-call confirmation
 Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
 deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
 explicitly requests convergence review, and repeat that explicit mode when resuming it.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --migrate --apply"
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0\n  af onboard --migrate --apply"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
@@ -158,10 +163,12 @@ last-wins, arrays replace. See `af help layers`.",
         long_about = "Install, update, roll back, and remove af itself.\n\n\
 Installed versions live under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt each; the \
 default is the `~/.local/bin/af` symlink. A project whose `.af/af.lock` pins another version \
-is run by that version: `af` execs it, installing it on demand. Updates are checked by a \
-detached, rate-limited child and applied by the policy in `[self]` (see `af help self`).\n\n\
-Never: touches a binary it did not install, stores a token, or changes the version a pinned \
-project runs.",
+is run by that version: `af` execs it, installing it on demand when the archive matches the \
+digest the lock records. Outside a lock, releases are verified against their signed \
+`SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
+in `[self]` (see `af help self`).\n\n\
+Never: touches a binary it did not install, stores a token, changes the version a pinned \
+project runs, or activates a release older than 0.7.1 (the first that can update itself).",
         after_long_help = "Examples:\n  af self status\n  af self update --check\n  af self update\n  af self rollback\n  af self setup-shell --write"
     )]
     SelfCmd {
@@ -733,9 +740,12 @@ pub(crate) struct OnboardArgs {
     /// Repin the selected pipeline and its Workers after a reviewed edit
     #[arg(long, help_heading = "Action")]
     pub(crate) refresh_lock: bool,
-    /// Upgrade legacy `.review/` policy in place (preview; add --apply to write)
+    /// Move legacy `.review/` policy to `.af/` (preview; add --apply to write)
     #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
     pub(crate) migrate: bool,
+    /// Run this command under release VERSION, installing it on demand (how a pin moves)
+    #[arg(long, value_name = "VERSION", help_heading = "Action")]
+    pub(crate) af: Option<String>,
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
@@ -914,9 +924,11 @@ pub(crate) enum SelfCommand {
     /// Install a newer release as the default (or just check for one)
     #[command(
         long_about = "Install a newer release as the default.\n\nDownloads the release for this \
-machine's target, verifies it against the release's SHA256SUMS, installs it beside the other \
-versions, and retargets the default symlink atomically. The previous version stays installed \
-for `af self rollback`.\n\nNever: changes what a pinned project runs, or stores a token.",
+machine's target, verifies it against the release's SHA256SUMS (signed with the release key \
+since 0.8.0; the signature is required), installs it beside the other versions, and retargets \
+the default symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
+Never: changes what a pinned project runs, activates a release older than 0.7.1, or stores a \
+token.",
         after_long_help = "Examples:\n  af self update --check        exit 10 when a newer release exists\n  af self update\n  af self update --version 0.9.0"
     )]
     Update {

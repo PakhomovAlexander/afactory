@@ -1402,9 +1402,10 @@ impl App {
             .map_err(|_| "the TUI pipeline must be inside --repo".to_string())?
             .to_str()
             .ok_or_else(|| "the pipeline path must be UTF-8".to_string())?;
-        let review_root = repository.join(crate::authority::review_dir(relative_pipeline)?);
-        let reviewers_root = review_root.join("reviewers");
-        let lock_path = review_root.join("review.lock");
+        let layout = crate::authority::authority_paths(relative_pipeline)?;
+        let review_root = repository.join(&layout.root);
+        let reviewers_root = repository.join(&layout.registry);
+        let lock_path = repository.join(&layout.lock);
         refuse_symlink(&reviewers_root, "reviewer registry")?;
         refuse_symlink(&lock_path, "review lock")?;
 

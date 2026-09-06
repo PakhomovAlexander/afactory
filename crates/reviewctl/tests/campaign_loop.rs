@@ -44,7 +44,7 @@ fn invoke_reviewctl(
     }
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
-        let mut authority = vec!["--pipeline", ".review/pipelines/heavy.toml"];
+        let mut authority = vec!["--pipeline", PIPELINE];
         if !actual
             .iter()
             .any(|argument| matches!(*argument, "--authority" | "--policy-rev"))
@@ -75,9 +75,37 @@ fn reviewctl_light(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, Str
 
 /// A pipeline whose one reviewer answers from the sandbox content: a finding while the
 /// defect marker is present, a clean verdict once it is gone.
+const PIPELINE: &str = ".af/pipelines/review.toml";
+
+fn pipeline_path(repo: &Path) -> PathBuf {
+    repo.join(PIPELINE)
+}
+
+/// `.af/` authority is digest-pinned: every pipeline edit re-pins the lock, keeping Worker pins.
+fn set_pipeline(repo: &Path, text: &str) {
+    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+    std::fs::write(pipeline_path(repo), text).unwrap();
+    repin(repo);
+}
+
+fn repin(repo: &Path) {
+    let lock_path = repo.join(".af/af.lock");
+    let mut lock = std::fs::read_to_string(&lock_path)
+        .ok()
+        .map(|text| review_config::lock::Lockfile::from_toml(&text).unwrap())
+        .unwrap_or_else(review_config::lock::Lockfile::empty);
+    let bytes = std::fs::read(pipeline_path(repo)).unwrap();
+    lock.pipelines.insert(
+        "review".into(),
+        review_config::lock::Pin {
+            version: "1.0.0".into(),
+            digest: review_store::canonical::blob_content_id(&bytes),
+        },
+    );
+    std::fs::write(lock_path, lock.to_toml()).unwrap();
+}
+
 fn write_review_config(repo: &Path) {
-    std::fs::create_dir_all(repo.join(".review/pipelines")).unwrap();
-    std::fs::write(repo.join(".review/review.lock"), "version = 1\n").unwrap();
     let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
     let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
     let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"disputes\":[]}"#;
@@ -150,28 +178,13 @@ max_rounds = 3
 gate = "major"
 "#
     );
-    std::fs::write(repo.join(".review/pipelines/heavy.toml"), pipeline).unwrap();
-
     std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
     std::fs::write(
         repo.join(".af/af.toml"),
         "version = 1\n[project]\nname = \"fixture\"\nmin_af = \"0.6\"\n[defaults]\npipeline = \"review\"\n",
     )
     .unwrap();
-    std::fs::copy(
-        repo.join(".review/pipelines/heavy.toml"),
-        repo.join(".af/pipelines/review.toml"),
-    )
-    .unwrap();
-    let pipeline = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
-    std::fs::write(
-        repo.join(".af/af.lock"),
-        format!(
-            "version = 1\n[pipelines.review]\nversion = \"1.0.0\"\ndigest = \"{}\"\n",
-            review_store::canonical::blob_content_id(&pipeline)
-        ),
-    )
-    .unwrap();
+    set_pipeline(repo, &pipeline);
 }
 
 fn write_disposition_config(repo: &Path) {
@@ -196,9 +209,9 @@ fi
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&reviewer, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    std::fs::write(
-        repo.join(".review/pipelines/heavy.toml"),
-        format!(
+    set_pipeline(
+        repo,
+        &format!(
             r#"version = 2
 [subject]
 kind = "whole-tree"
@@ -241,8 +254,7 @@ gate = "major"
 "#,
             reviewer.display()
         ),
-    )
-    .unwrap();
+    );
 }
 
 fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
@@ -556,7 +568,7 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
 fn pipeline_policy_can_classify_reviewer_demands_as_advisory() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline_path = pipeline_path(&repo);
     let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
     let advisory = pipeline.replacen(
         "id = \"architecture\"\nkind = \"reviewer\"\n",
@@ -564,7 +576,7 @@ fn pipeline_policy_can_classify_reviewer_demands_as_advisory() {
         1,
     );
     assert_ne!(advisory, pipeline);
-    std::fs::write(&pipeline_path, advisory).unwrap();
+    set_pipeline(&repo, &advisory);
     std::fs::write(repo.join("DEMAND"), b"advisory\n").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "classify advisory demand"]);
@@ -582,13 +594,9 @@ fn pipeline_policy_can_classify_reviewer_demands_as_advisory() {
 fn waiver_remains_current_when_the_subject_advances() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline_path = pipeline_path(&repo);
     let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
-    std::fs::write(
-        &pipeline_path,
-        pipeline.replace("max_rounds = 3", "max_rounds = 2"),
-    )
-    .unwrap();
+    set_pipeline(&repo, &pipeline.replace("max_rounds = 3", "max_rounds = 2"));
     std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "request evidence"]);
@@ -647,13 +655,9 @@ fn waiver_remains_current_when_the_subject_advances() {
 fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline_path = pipeline_path(&repo);
     let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
-    std::fs::write(
-        &pipeline_path,
-        pipeline.replace("max_rounds = 3", "max_rounds = 2"),
-    )
-    .unwrap();
+    set_pipeline(&repo, &pipeline.replace("max_rounds = 3", "max_rounds = 2"));
     std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(
@@ -741,13 +745,13 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
 fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let pipeline_path = repo.join(".review/pipelines/heavy.toml");
+    let pipeline_path = pipeline_path(&repo);
     let pipeline = std::fs::read_to_string(&pipeline_path).unwrap();
     let demand_port = "  { name = \"demands\", type = \"review.kernel/DemandSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"same_subject\" },\n";
     let without_demand = pipeline.replace(demand_port, "");
     assert_ne!(without_demand, pipeline, "fixture must declare DemandSet");
-    std::fs::write(&pipeline_path, without_demand).unwrap();
-    git(&repo, &home, &["add", ".review/pipelines/heavy.toml"]);
+    set_pipeline(&repo, &without_demand);
+    git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "remove demand output"]);
 
     let (code, stdout, stderr) = reviewctl(
@@ -758,7 +762,7 @@ fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
     assert_eq!(code, 1, "{stdout}\n{stderr}");
     assert!(
         stderr.contains(
-            "canonical pipeline `.review/pipelines/heavy.toml` Ledger node must declare a review.kernel/DemandSet@1 output"
+            "canonical pipeline `.af/pipelines/review.toml` Ledger node must declare a review.kernel/DemandSet@1 output"
         ),
         "{stderr}"
     );
@@ -1614,7 +1618,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
         ),
     )
     .unwrap();
-    let reviewers = repo.join(".review/reviewers");
+    let reviewers = repo.join(".af/workers");
     let package = reviewers.join("tester");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
@@ -1639,11 +1643,11 @@ args = []
     .unwrap();
     let registry = review_config::lock::Registry::new([&reviewers]);
     let mut lockfile = review_config::lock::Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "tester".into(),
         review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
     );
-    std::fs::write(repo.join(".review/review.lock"), lockfile.to_toml()).unwrap();
+    std::fs::write(repo.join(".af/af.lock"), lockfile.to_toml()).unwrap();
     let pipeline = r#"
 version = 2
 [subject]
@@ -1689,7 +1693,7 @@ max_rounds = 2
 gate = "major"
 "#
     .to_string();
-    std::fs::write(repo.join(".review/pipelines/heavy.toml"), pipeline).unwrap();
+    set_pipeline(&repo, &pipeline);
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "declare diff subject"]);
 
@@ -1699,7 +1703,7 @@ gate = "major"
         &[
             "plan",
             "--pipeline",
-            ".review/pipelines/heavy.toml",
+            PIPELINE,
             "--policy-rev",
             "HEAD",
             "--base",
@@ -1732,7 +1736,7 @@ gate = "major"
         &[
             "plan",
             "--pipeline",
-            ".review/pipelines/heavy.toml",
+            PIPELINE,
             "--policy-rev",
             "HEAD",
             "--base",
@@ -1802,7 +1806,7 @@ gate = "major"
             "--repo",
             repo.to_str().unwrap(),
             "--pipeline",
-            ".review/pipelines/heavy.toml",
+            PIPELINE,
             "--campaign",
             "diff",
             "--state",

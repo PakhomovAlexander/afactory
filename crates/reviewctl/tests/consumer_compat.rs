@@ -58,19 +58,11 @@ fn materialize(fixture: &Path) -> (tempfile::TempDir, PathBuf) {
     (root, repo)
 }
 
-fn pipeline_flag(repo: &Path) -> Option<&'static str> {
-    repo.join(".review/pipelines/heavy.toml")
-        .is_file()
-        .then_some(".review/pipelines/heavy.toml")
-}
-
 fn plan(repo: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
     command.args(["review", "plan", "--repo", repo.to_str().unwrap()]);
-    if let Some(pipeline) = pipeline_flag(repo) {
-        command.args(["--pipeline", pipeline]);
-    }
     command
+        .env("AF_SELF_OFFLINE", "1")
         .args([
             "--policy-rev",
             "HEAD",
@@ -88,7 +80,7 @@ fn consumer_fixtures() -> Vec<PathBuf> {
     let mut fixtures: Vec<PathBuf> = std::fs::read_dir(fixtures_root())
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.join(".review").is_dir() || path.join(".af").is_dir())
+        .filter(|path| path.join(".af").is_dir())
         .collect();
     fixtures.sort();
     fixtures
@@ -162,11 +154,12 @@ fn every_consumer_fixture_plans_with_this_binary() {
 }
 
 /// The break that motivated this fixture (v0.7.0 rejected the hub's pipeline for lacking a
-/// `DemandSet@1` Ledger output) must stay detectable: the pre-fix shape is still refused.
+/// `DemandSet@1` Ledger output) must stay detectable: the pre-fix shape is still refused, even
+/// once the lock has been refreshed to pin the edited pipeline.
 #[test]
 fn the_hub_pipeline_without_a_demand_set_output_is_still_rejected() {
     let (_root, repo) = materialize(&fixtures_root().join("hub"));
-    let pipeline = repo.join(".review/pipelines/heavy.toml");
+    let pipeline = repo.join(".af/pipelines/review.toml");
     let text = std::fs::read_to_string(&pipeline).unwrap();
     let demands_line = text
         .lines()
@@ -175,6 +168,21 @@ fn the_hub_pipeline_without_a_demand_set_output_is_still_rejected() {
     let without = text.replace(&format!("{demands_line}\n"), "");
     assert_ne!(text, without);
     std::fs::write(&pipeline, without).unwrap();
+    let refreshed = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "onboard",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--refresh-lock",
+        ])
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        refreshed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
     git(&repo, &["commit", "-q", "-am", "pre-v0.7.0 pipeline"]);
 
     let output = plan(&repo);

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/review-core", "crates/review-broker", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/reviewctl"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.88"
 publish = false

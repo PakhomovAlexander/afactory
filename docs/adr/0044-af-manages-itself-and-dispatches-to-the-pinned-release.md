@@ -2,6 +2,9 @@
 
 **Status:** accepted (2026-09-03) — owner-approved in the hub workstream "af as a self-managed
 CLI" (hub ADR-0007 moves the consumer pin into `af.lock`); implements kernel issues #55–#59.
+Part 2's "verifying it against the release checksums" is revised by
+[ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): under a lock, the lock's own
+per-target digest is what the bytes must match.
 
 Consumers ran `af` through per-repository launcher scripts that carried a version and digests,
 while `af.lock` (ADR for #47) already recorded the release that wrote it and could only warn or

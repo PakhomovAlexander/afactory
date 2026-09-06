@@ -775,7 +775,7 @@ mod legacy_upgrade_tests {
 
     const HUB_PIPELINE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/consumers/hub/.review/pipelines/heavy.toml"
+        "/../../fixtures/consumers/hub/.af/pipelines/review.toml"
     ));
 
     fn without_demand_set(text: &str) -> String {

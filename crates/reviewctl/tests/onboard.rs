@@ -47,7 +47,13 @@ fn preview_detects_gate_and_writes_nothing() {
             .iter()
             .any(|line| line == "correctness.result -> gather.correctness")
     );
-    assert_eq!(report["warnings"].as_array().unwrap().len(), 0);
+    // A source build (this test binary) pins no af release, and the preview says so.
+    let warnings = report["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].as_str().unwrap().contains("no install receipt"),
+        "{warnings:?}"
+    );
     assert!(!repo.join(".af").exists());
 }
 

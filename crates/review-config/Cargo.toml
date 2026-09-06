@@ -13,6 +13,7 @@ review-core = { path = "../review-core" }
 review-runner = { path = "../review-runner" }
 review-graph = { path = "../review-graph" }
 review-store = { path = "../review-store" }
+semver = "1.0.27"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 toml = "0.8.23"

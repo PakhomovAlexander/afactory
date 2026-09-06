@@ -2,7 +2,7 @@
 //!
 //! Until now a pipeline existed only as Rust. That is fine for proving properties and useless
 //! for a project that wants to describe its own review, so this is the file format — the
-//! `.review/` shape the design's project layout describes.
+//! `.af/` shape the design's project layout describes.
 //!
 //! **Format note.** The design's examples are YAML; this is TOML. The shape is unchanged — nodes,
 //! typed ports, edges, gated_by, checks, convergence policy — and the loader is a set of serde

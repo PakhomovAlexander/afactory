@@ -1,10 +1,13 @@
-# The heavy review, as a definition rather than as code.
+# The hub's review pipeline, as a definition rather than as code.
 #
-# This is the hub's own pipeline: the shape /self-review-heavy runs today, expressed for the
-# kernel. Reviewers are packages from .review/reviewers/, pinned by content digest in
-# .review/review.lock — re-lock with
-# `cargo run -p review-config --example lock -- .review/reviewers correctness` and replace the
-# lock with its exact output.
+# One high-effort correctness reviewer, one required clean Round, at most two Rounds — the shape
+# the kernel adopted in ADR-0027 after the two-specialist, two-million-token pipeline never
+# converged. The reviewer is a package from .review/reviewers/, pinned by content digest in
+# .review/review.lock. The package and lock entry mirror the kernel repo's
+# `.review/reviewers/correctness` byte for byte: to change the package, copy the kernel's package
+# and lock entry together, or produce the digest with the kernel's lock generator
+# (`cargo run -p review-config --example lock -- .review/reviewers correctness` there). The pinned
+# release must still accept this file: `make review-plan` proves it without spending tokens.
 version = 2
 check_timeout_seconds = 3600
 

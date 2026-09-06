@@ -176,6 +176,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -325,6 +335,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ct-codecs"
+version = "1.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49fb0c6640b4507ebd99ff67677009e381ba5eee1d14df78de4a3d16eb123c39"
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,6 +370,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -560,8 +577,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -593,6 +612,15 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "icu_collections"
@@ -726,6 +754,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
 ]
 
 [[package]]
@@ -865,6 +902,24 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "minisign"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aefd422a7a8b5efced01cd7cdf3771e62ebecbc90e3d27695002d3af6af94586"
+dependencies = [
+ "ct-codecs",
+ "getrandom 0.4.3",
+ "rpassword",
+ "scrypt",
+]
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "mio"
@@ -1049,6 +1104,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1219,7 +1284,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-attempt"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "serde",
  "sha2",
@@ -1227,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "review-broker"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64",
  "review-core",
@@ -1237,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "review-check"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1250,13 +1315,14 @@ dependencies = [
 
 [[package]]
 name = "review-config"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "review-check",
  "review-core",
  "review-graph",
  "review-runner",
  "review-store",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
@@ -1266,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "review-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64",
  "jsonschema",
@@ -1276,21 +1342,21 @@ dependencies = [
 
 [[package]]
 name = "review-graph"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "review-core",
 ]
 
 [[package]]
 name = "review-parallel"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "review-pipeline"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "review-attempt",
  "review-broker",
@@ -1309,14 +1375,14 @@ dependencies = [
 
 [[package]]
 name = "review-process"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "nix 0.30.1",
 ]
 
 [[package]]
 name = "review-runner"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "jsonschema",
  "review-broker",
@@ -1330,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-claude"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "review-config",
  "review-core",
@@ -1342,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-codex"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "review-config",
  "review-core",
@@ -1356,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "review-sandbox"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "exacl",
  "nix 0.30.1",
@@ -1375,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-git"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "jsonschema",
  "notify",
@@ -1392,7 +1458,7 @@ dependencies = [
 
 [[package]]
 name = "review-store"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "nix 0.30.1",
  "reflink-copy",
@@ -1407,12 +1473,14 @@ dependencies = [
 
 [[package]]
 name = "reviewctl"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
  "crossterm",
+ "minisign",
+ "minisign-verify",
  "nix 0.30.1",
  "portable-pty",
  "review-attempt",
@@ -1446,6 +1514,27 @@ name = "roff"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
+
+[[package]]
+name = "rpassword"
+version = "7.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "rusqlite"
@@ -1490,6 +1579,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "salsa20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1503,6 +1601,17 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scrypt"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0516a385866c09368f0b5bcd1caff3366aace790fcd46e2bb032697bb172fd1f"
+dependencies = [
+ "pbkdf2",
+ "salsa20",
+ "sha2",
+]
 
 [[package]]
 name = "semver"
@@ -1661,6 +1770,12 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"

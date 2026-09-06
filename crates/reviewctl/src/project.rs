@@ -367,11 +367,11 @@ pub(crate) fn check_lock_af_version(
     lock: &Lockfile,
     lock_path: &str,
 ) -> Result<Option<String>, String> {
-    let Some(pinned) = lock.af_version.as_deref() else {
+    let Some(pinned) = lock.af_version() else {
         return Ok(None);
     };
     let pinned = Version::parse(pinned).map_err(|error| {
-        format!("authority lock `{lock_path}` records an invalid af_version `{pinned}`: {error}")
+        format!("authority lock `{lock_path}` records an invalid af version `{pinned}`: {error}")
     })?;
     let current = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("running af version is invalid: {error}"))?;
