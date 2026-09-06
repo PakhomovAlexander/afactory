@@ -252,7 +252,7 @@ pub(super) fn resolve_plan(
     };
     let pipeline = load(&route.pipeline_path)?;
     if let Some((project_bytes, _)) = &project {
-        validate_af_project(project_bytes, &pipeline.path)?;
+        validate_af_project(project_bytes, &pipeline.path, &lockfile)?;
     }
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
@@ -994,7 +994,7 @@ fn open_new(
     let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
     let project_policy_ids = match &project {
         Some((project_bytes, _)) => {
-            validate_af_project(project_bytes, pipeline_path)?;
+            validate_af_project(project_bytes, pipeline_path, &lockfile)?;
             vec![cas.put(project_bytes).map_err(|error| error.to_string())?]
         }
         None => Vec::new(),
@@ -2497,7 +2497,14 @@ pub(crate) fn authority_paths(pipeline: &str) -> Result<AuthorityLayout, String>
     authority_layout(pipeline, false)
 }
 
-fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
+/// A pipeline may be requested explicitly when the project can select it (default, routes,
+/// oversized) or when the lock pins it: every `.af/pipelines/*.toml` that `af onboard
+/// --refresh-lock` saw is declared policy, whether or not a route ever picks it.
+fn validate_af_project(
+    bytes: &[u8],
+    pipeline_path: &str,
+    lockfile: &Lockfile,
+) -> Result<(), String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
     let project = crate::project::ProjectFile::parse(text)?;
@@ -2506,14 +2513,24 @@ fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> 
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    if !candidates.contains(name) {
+    if !candidates.contains(name) && !lockfile.pipelines.contains_key(name) {
         return Err(format!(
-            "authority project declares pipelines {} (default, routes, oversized) but invocation requested `{pipeline_path}`",
+            "authority declares pipelines {} (default, routes, oversized) and pins {} in `.af/af.lock`, but invocation requested `{pipeline_path}` — fix: add the file under `.af/pipelines/` and run `af onboard --refresh-lock` at the policy revision",
             candidates
                 .iter()
                 .map(|candidate| format!("`.af/pipelines/{candidate}.toml`"))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            if lockfile.pipelines.is_empty() {
+                "nothing".to_string()
+            } else {
+                lockfile
+                    .pipelines
+                    .keys()
+                    .map(|pinned| format!("`{pinned}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         ));
     }
     Ok(())
@@ -2531,7 +2548,11 @@ fn validate_af_pipeline_pin(
     let pin = lockfile
         .pipelines
         .get(name)
-        .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
+        .ok_or_else(|| {
+            format!(
+                "pipeline `{name}` is not pinned in `.af/af.lock` — fix: af onboard --refresh-lock, then commit the lock at the policy revision"
+            )
+        })?;
     let found = review_store::canonical::blob_content_id(bytes);
     if pin.digest != found {
         return Err(format!(

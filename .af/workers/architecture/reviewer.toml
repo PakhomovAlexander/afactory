@@ -1,0 +1,14 @@
+name = "architecture"
+version = "1.0.0"
+subjects = ["whole-tree", "diff"]
+
+[runner]
+program = "claude"
+# Architecture and project culture: the deepest model, extended effort. The adapter owns its
+# permissions, output schema, and isolation flags; only the model and effort live here.
+args = [
+  { value = "--model" },
+  { value = "claude-fable-5-1" },
+  { value = "--effort" },
+  { value = "xhigh" },
+]

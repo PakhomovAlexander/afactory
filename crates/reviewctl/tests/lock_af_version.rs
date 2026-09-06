@@ -11,10 +11,17 @@ use review_config::lock::{AfPin, Lockfile};
 mod common;
 use common::{AF, Sandbox, TARGET, VERSION};
 
+/// Runs the binary under test with an empty self-managed layout, so a pin in a test lock can
+/// never dispatch to a release installed on the developer's machine.
 fn af(args: &[&str]) -> Output {
+    let layout = std::env::temp_dir().join(format!("af-lock-tests-{}", std::process::id()));
     Command::new(AF)
         .args(args)
         .env("AF_SELF_OFFLINE", "1")
+        .env("XDG_DATA_HOME", layout.join("data"))
+        .env("XDG_STATE_HOME", layout.join("state"))
+        .env("XDG_CACHE_HOME", layout.join("cache"))
+        .env("XDG_BIN_HOME", layout.join("bin"))
         .output()
         .unwrap()
 }

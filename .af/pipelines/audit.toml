@@ -1,0 +1,166 @@
+# The audit pipeline: the whole tree, four specialists, one Ledger.
+#
+# Not a change review. The Subject is the repository as it stands at the policy revision, so
+# run it explicitly and on a committed tree:
+#
+#   af review plan --pipeline .af/pipelines/audit.toml --policy-rev HEAD --candidate HEAD \
+#     --provider architecture=<claude provider> --provider performance=<claude provider> \
+#     --provider tests=<codex provider> --provider bugs=<codex provider>
+#   af review run  --campaign audit-<date> (same selectors) --json      # light: one Round
+#
+# Each reviewer is a digest-pinned package under .af/workers/ with its own model and effort.
+# The gate runs the project's own check first through scripts/verify.sh, which reuses the
+# machine's build cache from a read-only tree; a red tree gets no reviewer and spends nothing.
+version = 3
+check_timeout_seconds = 3600
+
+[subject]
+kind = "whole-tree"
+
+[[checks]]
+name = "check"
+program = "bash"
+args = [{ value = "scripts/verify.sh", provenance = "literal" }]
+required = true
+
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+inputs = []
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+# Prior Findings arrive through a wired port: empty in Round 1, the earlier Rounds' Ledger after.
+[[nodes]]
+id = "generation"
+kind = "generation"
+inputs = []
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+demands = "required"
+gated_by = "gate"
+package = "architecture"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "tests"
+kind = "reviewer"
+demands = "required"
+gated_by = "gate"
+package = "tests"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "bugs"
+kind = "reviewer"
+demands = "required"
+gated_by = "gate"
+package = "bugs"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "performance"
+kind = "reviewer"
+demands = "required"
+gated_by = "gate"
+package = "performance"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [
+  { name = "architecture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "tests", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "bugs", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "performance", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "architecture", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "architecture", port = "prior_findings" }
+[[edges]]
+from = { node = "architecture", port = "result" }
+to = { node = "gather", port = "architecture" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "tests", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "tests", port = "prior_findings" }
+[[edges]]
+from = { node = "tests", port = "result" }
+to = { node = "gather", port = "tests" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "bugs", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "bugs", port = "prior_findings" }
+[[edges]]
+from = { node = "bugs", port = "result" }
+to = { node = "gather", port = "bugs" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "performance", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "performance", port = "prior_findings" }
+[[edges]]
+from = { node = "performance", port = "result" }
+to = { node = "gather", port = "performance" }
+
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+
+# Four whole-tree specialists at once: each Attempt is capped, the Round admits all four first
+# Attempts plus one retry, and a second Round only re-checks what the first one found.
+[budgets]
+unit = "tokens"
+attempt = 350000
+run = 1800000
+
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"

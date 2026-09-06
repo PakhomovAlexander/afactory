@@ -702,7 +702,7 @@ number of segments; paths are matched in their canonical encoded form, so a non-
 pipeline, so later Rounds never re-route. An explicit `--pipeline` always wins and is reported as
 `explicit`; a whole-tree Subject has no changed paths and follows the `unmatched` policy. Every
 pipeline a route or the oversized policy names is authority: `af onboard --refresh-lock` pins them
-all and `af onboard` refuses a missing or unpinned target.
+all and `af onboard` refuses a missing or unpinned target. Any pipeline file under `.af/pipelines/` is declared policy once `af onboard --refresh-lock` has pinned it, so a pipeline no route ever selects — a whole-tree audit, say — is run with `--pipeline` alone.
 
 The oversized policy is the bounded strategy for a Diff whose first-Attempt input exhausts a
 Worker's cap: instead of refusing, plan and open switch to the named pipeline — typically a

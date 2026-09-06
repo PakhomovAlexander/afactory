@@ -1336,7 +1336,11 @@ fn validate_pipeline_pin(lock: &Lockfile, name: &str, bytes: &[u8]) -> Result<()
     let pin = lock
         .pipelines
         .get(name)
-        .ok_or_else(|| format!("pipeline `{name}` is not pinned in `.af/af.lock`"))?;
+        .ok_or_else(|| {
+            format!(
+                "pipeline `{name}` is not pinned in `.af/af.lock` — fix: af onboard --refresh-lock, then commit the lock at the policy revision"
+            )
+        })?;
     let found = review_store::canonical::blob_content_id(bytes);
     if pin.digest != found {
         return Err(format!(
@@ -1362,20 +1366,29 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         .clone()
         .load_with(&authority.lock, &registry)
         .map_err(|error| error.to_string())?;
-    // Every pipeline a route or the oversized policy can select is authority too: present,
-    // pinned, and loadable, or the route would fail at the first matching change.
+    // Every pipeline file under `.af/pipelines/` is authority: pinned, and — for review
+    // pipelines — loadable against the pinned Workers, whether a route selects it or only an
+    // explicit `--pipeline` ever does. Route targets must exist as files too.
+    let files = pipeline_files(repo)?;
     for candidate in authority.project.pipeline_candidates() {
-        if candidate == authority.selected {
+        if !files.iter().any(|file| file.name == candidate) {
+            return Err(format!(
+                "route target `{candidate}`: `.af/pipelines/{candidate}.toml` is missing"
+            ));
+        }
+    }
+    for file in &files {
+        if file.name == authority.selected {
             continue;
         }
-        let path = repo.join(crate::project::pipeline_path_for(&candidate));
-        let text = read_authority_text(&path)
-            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
-        validate_pipeline_pin(&authority.lock, &candidate, text.as_bytes())?;
-        Definition::from_toml(&text)
-            .map_err(|error| format!("route target `{candidate}`: {error}"))?
+        validate_pipeline_pin(&authority.lock, &file.name, file.text.as_bytes())?;
+        if file.kind == PipelineKind::Task {
+            continue;
+        }
+        Definition::from_toml(&file.text)
+            .map_err(|error| format!("pipeline `{}`: {error}", file.name))?
             .load_with(&authority.lock, &registry)
-            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
+            .map_err(|error| format!("pipeline `{}`: {error}", file.name))?;
     }
 
     let gates = authority
@@ -1483,19 +1496,76 @@ fn runner_model(command: &review_core::Command) -> String {
     }
 }
 
-fn refresh_lock(repo: &Path) -> Result<Report, String> {
-    let authority = parse_existing(repo)?;
-    let mut candidates: Vec<(String, String)> =
-        vec![(authority.selected.clone(), authority.pipeline_text.clone())];
-    for candidate in authority.project.pipeline_candidates() {
-        if candidate == authority.selected {
+/// What a `.af/pipelines/*.toml` file is: a review pipeline (the graph this module validates)
+/// or a Task pipeline (`kind = "implement"`, validated by `af task` when it starts). Both are
+/// pinned by digest; only review pipelines are loaded here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineKind {
+    Review,
+    Task,
+}
+
+struct PipelineFile {
+    name: String,
+    text: String,
+    kind: PipelineKind,
+}
+
+/// Every pipeline file under `.af/pipelines/`, sorted by name. The directory is policy: a file
+/// there is declared, and `--refresh-lock` pins all of them.
+fn pipeline_files(repo: &Path) -> Result<Vec<PipelineFile>, String> {
+    let dir = repo.join(".af/pipelines");
+    let entries =
+        std::fs::read_dir(&dir).map_err(|error| format!("listing {}: {error}", dir.display()))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("listing {}: {error}", dir.display()))?
+            .path();
+        if path.extension().is_none_or(|extension| extension != "toml") {
             continue;
         }
-        let path = repo.join(crate::project::pipeline_path_for(&candidate));
-        let text = read_authority_text(&path)
-            .map_err(|error| format!("route target `{candidate}`: {error}"))?;
-        candidates.push((candidate, text));
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| format!("{}: the pipeline file name is not UTF-8", path.display()))?
+            .to_string();
+        if !safe_name(&name) {
+            return Err(format!(
+                "{}: `{name}` is not a safe pipeline name",
+                path.display()
+            ));
+        }
+        let text = read_authority_text(&path)?;
+        let kind = match toml::from_str::<toml::Value>(&text)
+            .map_err(|error| format!("pipeline `{name}`: {error}"))?
+            .get("kind")
+            .and_then(toml::Value::as_str)
+        {
+            Some("implement") => PipelineKind::Task,
+            _ => PipelineKind::Review,
+        };
+        files.push(PipelineFile { name, text, kind });
     }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(files)
+}
+
+fn refresh_lock(repo: &Path) -> Result<Report, String> {
+    let authority = parse_existing(repo)?;
+    let files = pipeline_files(repo)?;
+    for candidate in authority.project.pipeline_candidates() {
+        if !files.iter().any(|file| file.name == candidate) {
+            return Err(format!(
+                "route target `{candidate}`: `.af/pipelines/{candidate}.toml` is missing"
+            ));
+        }
+    }
+    let candidates: Vec<(String, String)> = files
+        .iter()
+        .filter(|file| file.kind == PipelineKind::Review)
+        .map(|file| (file.name.clone(), file.text.clone()))
+        .collect();
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     for (name, text) in &candidates {
         let definition =
@@ -1508,7 +1578,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         );
     }
     if referenced.is_empty() {
-        return Err("selected pipeline references no Worker package".into());
+        return Err("no review pipeline references a Worker package".into());
     }
     let registry = Registry::new([repo.join(".af/workers")]);
     let mut refreshed = authority.lock.clone();
@@ -1536,17 +1606,19 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         refreshed.workers.insert(name.clone(), pin);
         refreshed.reviewers.remove(&name);
     }
-    for (name, text) in &candidates {
+    // Every pipeline file is pinned by digest, Task pipelines included; a Task pipeline's own
+    // validation happens when `af task start` reads it.
+    for file in &files {
         let version = refreshed
             .pipelines
-            .get(name)
+            .get(&file.name)
             .map(|pin| pin.version.clone())
             .unwrap_or_else(|| PIPELINE_VERSION.to_string());
         refreshed.pipelines.insert(
-            name.clone(),
+            file.name.clone(),
             Pin {
                 version,
-                digest: review_store::canonical::blob_content_id(text.as_bytes()),
+                digest: review_store::canonical::blob_content_id(file.text.as_bytes()),
             },
         );
     }

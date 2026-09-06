@@ -1,0 +1,14 @@
+name = "tests"
+version = "1.0.0"
+subjects = ["whole-tree", "diff"]
+
+[runner]
+program = "codex"
+# Tests and CI/CD. The adapter owns exec, sandbox, output-schema, and stdin arguments.
+# gpt-5.6-asta was the first choice; Codex refuses it on a ChatGPT account, so terra stands in.
+args = [
+  { value = "--model" },
+  { value = "gpt-5.6-terra" },
+  { value = "-c" },
+  { value = 'model_reasoning_effort="high"' },
+]

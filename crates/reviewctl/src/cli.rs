@@ -103,7 +103,9 @@ bounded, charged preflight for the bindings you name.",
 Behavior:\n\
   * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
-  * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
+  * --refresh-lock: explicitly re-pin every pipeline under .af/pipelines/ and the Workers the \
+review pipelines reference; a pinned pipeline may be requested with --pipeline even when no \
+route selects it.\n\
   * With legacy .review/ and no .af/: preview the `.af/` it becomes — pipelines with format \
 upgrades applied, the reviewer packages they reference byte for byte, a project file, a lock; \
 --migrate --apply \

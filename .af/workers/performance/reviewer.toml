@@ -1,0 +1,13 @@
+name = "performance"
+version = "1.0.0"
+subjects = ["whole-tree", "diff"]
+
+[runner]
+program = "claude"
+# Performance: a claim without a measurement is a Demand, never a Finding.
+args = [
+  { value = "--model" },
+  { value = "claude-opus-5" },
+  { value = "--effort" },
+  { value = "xhigh" },
+]

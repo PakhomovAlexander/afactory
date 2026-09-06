@@ -38,9 +38,12 @@ fn git(repo: &Path, args: &[&str]) {
     );
 }
 
+/// `af review run` requires `HOME`; a sandboxed gate (the kernel's own review pipeline) runs
+/// `make check` without one, so the test provides it instead of inheriting the machine's.
 fn af(state_home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
+        .env("HOME", state_home.parent().unwrap_or(state_home))
         .env("XDG_STATE_HOME", state_home)
         .output()
         .unwrap()

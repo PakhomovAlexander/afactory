@@ -1,0 +1,13 @@
+name = "bugs"
+version = "1.0.0"
+subjects = ["whole-tree", "diff"]
+
+[runner]
+program = "codex"
+# Concrete defects across the whole tree: the highest reasoning effort.
+args = [
+  { value = "--model" },
+  { value = "gpt-5.6-sol" },
+  { value = "-c" },
+  { value = 'model_reasoning_effort="xhigh"' },
+]

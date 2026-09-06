@@ -16,3 +16,16 @@ package = "implementer"
 
 [worker.evaluator]
 package = "evaluator"
+
+# The audit pipeline's specialists (`.af/pipelines/audit.toml`, run with --pipeline).
+[worker.architecture]
+package = "architecture"
+
+[worker.tests]
+package = "tests"
+
+[worker.bugs]
+package = "bugs"
+
+[worker.performance]
+package = "performance"
