@@ -415,7 +415,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
                 "max_rounds": convergence.max_rounds,
-                "gate": format!("{:?}", convergence.gate).to_lowercase(),
+                "gate": serde_name(&convergence.gate),
             },
         },
         "providers": providers,
@@ -1080,7 +1080,7 @@ fn open_new(
         convergence: CampaignConvergenceV1 {
             clean_rounds: convergence.clean_rounds,
             max_rounds: convergence.max_rounds,
-            gate: format!("{:?}", convergence.gate).to_lowercase(),
+            gate: serde_name(&convergence.gate),
         },
         reviewer_timeout_seconds: options
             .timeout
@@ -1291,7 +1291,7 @@ fn validate_manifest_authority(
     let convergence = selected_convergence(mode, loaded.convergence());
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds
-        || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
+        || manifest.convergence.gate != serde_name(&convergence.gate)
     {
         return Err(format!(
             "CampaignManifest convergence differs from requested {} mode; resume with the mode that opened this Campaign",
@@ -2341,6 +2341,16 @@ fn latest_demand_set_id(
     Ok(genesis_id.to_string())
 }
 
+/// The persisted spelling of a serde enum value: its serde name, never Rust `Debug`. A variant
+/// rename then changes a schema-pinned string (which schema parity catches) instead of silently
+/// changing Campaign manifests, Worker input rows, and JSON documents.
+pub(crate) fn serde_name<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value).expect("a serde enum serializes") {
+        serde_json::Value::String(name) => name,
+        other => other.to_string(),
+    }
+}
+
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
     ledger
         .finding_views()
@@ -2350,10 +2360,10 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
                 && !matches!(finding.status, Status::Rejected | Status::Wontfix)
         })
         .map(|finding| {
-            let severity = format!("{:?}", finding.severity).to_lowercase();
+            let severity = serde_name(&finding.severity);
             let effective_severity = finding
                 .convergence_severity
-                .map(|effective| format!("{effective:?}").to_lowercase());
+                .map(|effective| serde_name(&effective));
             let scope = finding.convergence_scope_label();
             let mut row = serde_json::json!({
                 "key": finding.key,
@@ -2600,6 +2610,28 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
+
+    /// Campaign manifests, Worker prior-Finding rows, and the JSON documents used to spell a
+    /// Severity as its lowercased Rust `Debug` name. The serde name replaces it and must be
+    /// byte-identical, or every pinned `CampaignManifest@1` gate and every measured Worker
+    /// input would change under a refactor.
+    #[test]
+    fn serde_names_match_the_lowercased_debug_spellings_they_replace() {
+        use review_core::Severity;
+        for (severity, legacy) in [
+            (Severity::Minor, "minor"),
+            (Severity::Major, "major"),
+            (Severity::Blocker, "blocker"),
+        ] {
+            assert_eq!(super::serde_name(&severity), legacy);
+        }
+        assert_eq!(super::serde_name(&Some(Severity::Major)), "major");
+        assert_eq!(super::serde_name(&None::<Severity>), "null");
+        assert_eq!(
+            super::serde_name(&review_core::RunSuppressionReasonV2::GateBlocked),
+            "gate_blocked"
+        );
+    }
 
     fn attempt_event(
         sequence: u64,

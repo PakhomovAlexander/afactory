@@ -1121,6 +1121,27 @@ impl RunVerdict {
     }
 }
 
+/// The persisted classification of a scheduler suppression. `RunSuppressionReasonV2` is the
+/// schema-pinned vocabulary every RunReport since `@2` carries in `outcomes[].reason`; the
+/// graph's own enum never reaches a payload through `Debug`.
+pub fn run_suppression_reason(reason: review_graph::SuppressionReason) -> RunSuppressionReasonV2 {
+    match reason {
+        review_graph::SuppressionReason::GateBlocked => RunSuppressionReasonV2::GateBlocked,
+        review_graph::SuppressionReason::UpstreamMissing => RunSuppressionReasonV2::UpstreamMissing,
+    }
+}
+
+/// The string a suppressed node's `missing_nodes[].reason` carries: the same serde name as its
+/// `outcomes[].reason`, so one payload cannot spell one suppression two ways.
+fn suppression_reason_label(reason: review_graph::SuppressionReason) -> String {
+    match serde_json::to_value(run_suppression_reason(reason))
+        .expect("RunSuppressionReasonV2 serializes")
+    {
+        serde_json::Value::String(name) => name,
+        other => other.to_string(),
+    }
+}
+
 /// Combine what ran with what converged. Completeness is checked first: convergence is a
 /// statement about the findings that exist, and says nothing about the reviewers that never
 /// produced any.
@@ -1131,7 +1152,9 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
         .filter_map(|(id, outcome)| match outcome {
             NodeOutcome::Completed { .. } => None,
             NodeOutcome::Failed { error, .. } => Some((id.clone(), error.clone())),
-            NodeOutcome::Suppressed { reason } => Some((id.clone(), format!("{reason:?}"))),
+            NodeOutcome::Suppressed { reason } => {
+                Some((id.clone(), suppression_reason_label(*reason)))
+            }
         })
         .collect();
     if report.outcomes.iter().any(|(_, outcome)| {
@@ -2242,14 +2265,7 @@ impl<'a> Kernel<'a> {
                         error: error.clone(),
                     },
                     NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
-                        reason: match reason {
-                            review_graph::SuppressionReason::GateBlocked => {
-                                RunSuppressionReasonV2::GateBlocked
-                            }
-                            review_graph::SuppressionReason::UpstreamMissing => {
-                                RunSuppressionReasonV2::UpstreamMissing
-                            }
-                        },
+                        reason: run_suppression_reason(*reason),
                     },
                 };
                 RunNodeReportV2 {

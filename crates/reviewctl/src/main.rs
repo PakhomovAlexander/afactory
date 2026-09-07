@@ -1545,12 +1545,12 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
             finding.key,
-            format!("{:?}", finding.severity).to_lowercase(),
+            authority::serde_name(&finding.severity),
             finding.status.as_str(),
             finding.convergence_scope_label(),
             finding
                 .convergence_severity
-                .map(|severity| format!("{severity:?}").to_lowercase())
+                .map(|severity| authority::serde_name(&severity))
                 .unwrap_or_else(|| "-".to_string()),
             finding.file,
             finding.line.map_or("-".to_string(), |l| l.to_string()),
@@ -1801,10 +1801,10 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     }
     println!(
         "severity={} effective_severity={} status={} scope={} location={}:{}",
-        format!("{:?}", finding.severity).to_lowercase(),
+        authority::serde_name(&finding.severity),
         finding
             .convergence_severity
-            .map(|severity| format!("{severity:?}").to_lowercase())
+            .map(|severity| authority::serde_name(&severity))
             .unwrap_or_else(|| "-".to_string()),
         finding.status.as_str(),
         finding.convergence_scope_label(),
@@ -1819,7 +1819,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             index + 1,
             attached.source,
             attached.round,
-            format!("{:?}", attached.severity).to_lowercase(),
+            authority::serde_name(&attached.severity),
             attached.scope_label(),
             attached.file,
             attached
@@ -1854,9 +1854,9 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     println!("\nhistory:");
     for transition in &finding.history {
         println!(
-            "  round {}: {:?}{}",
+            "  round {}: {}{}",
             transition.round,
-            transition.kind,
+            authority::serde_name(&transition.kind),
             transition
                 .note
                 .as_deref()
@@ -4509,9 +4509,13 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             NodeOutcome::Failed { error, .. } => {
                 run_progress(options, format_args!("  FAILED    {node}: {error}"))
             }
-            NodeOutcome::Suppressed { reason } => {
-                run_progress(options, format_args!("  never-ran {node}: {reason:?}"))
-            }
+            NodeOutcome::Suppressed { reason } => run_progress(
+                options,
+                format_args!(
+                    "  never-ran {node}: {}",
+                    authority::serde_name(&review_pipeline::run_suppression_reason(*reason))
+                ),
+            ),
         }
     }
 
@@ -4524,14 +4528,14 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         run_progress(
             options,
             format_args!(
-                "  [{:?}] {}:{} - {} ({:?})",
-                finding.severity,
+                "  [{}] {}:{} - {} ({})",
+                authority::serde_name(&finding.severity),
                 finding.file,
                 finding
                     .line
                     .map_or("?".to_string(), |line| line.to_string()),
                 finding.title,
-                finding.status
+                finding.status.as_str()
             ),
         );
     }
@@ -4606,9 +4610,9 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             .map(|finding| {
                 serde_json::json!({
                     "key": finding.key,
-                    "severity": format!("{:?}", finding.severity).to_lowercase(),
+                    "severity": authority::serde_name(&finding.severity),
                     "effective_severity": finding.convergence_severity
-                        .map(|severity| format!("{severity:?}").to_lowercase()),
+                        .map(|severity| authority::serde_name(&severity)),
                     "status": finding.status.as_str(),
                     "scope": finding.convergence_scope_label(),
                     "file": finding.file,
@@ -4635,7 +4639,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
                 NodeOutcome::Suppressed { reason } => serde_json::json!({
                     "node": node,
                     "kind": "suppressed",
-                    "reason": format!("{reason:?}").to_lowercase(),
+                    "reason": authority::serde_name(&review_pipeline::run_suppression_reason(*reason)),
                 }),
             })
             .collect::<Vec<_>>();
