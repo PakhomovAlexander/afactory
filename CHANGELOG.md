@@ -12,19 +12,27 @@ release pages only.
 - A `0.7.1` default cannot read a lock written by `0.8.0` (its `[af]` table is an unknown field
   to the older parser), so it neither dispatches to `0.8.0` nor plans: run `af self update`
   first on such a machine.
-- Each reviewer must disposition only the prior Findings it reported, while still being
-  delivered — and still allowed to name — the whole Round-wide union. Membership stays the
-  union, coverage becomes the reviewer's own rows, derived by the kernel at delivery time from
-  each row's `source` and the pinned pipeline's receiving reviewer nodes. The Round's
-  prior-Finding document is unchanged: exactly `subject_id`, `round`, `prior_findings`, the
-  three keys `0.7.1` reads, so a Round this release starts still resumes on an older `af`.
+- Each reviewer must disposition only its own rows of the prior Finding union — the rows whose
+  `source` names its node, plus any orphan row — while still being delivered, and still allowed
+  to name, the whole Round-wide union. Membership stays the union, coverage becomes the node's
+  own partition, derived by the kernel at delivery time from each row's `source` and the pinned
+  pipeline's receiving reviewer nodes. A reviewer that reads a peer's row and finds the claim
+  wrong still disputes it, which is the only route to `contested`. The Round's prior-Finding
+  document is unchanged: exactly `subject_id`, `round`, `prior_findings`, the three keys `0.7.1`
+  reads, so a Round this release starts still resumes on an older `af`.
+- The reviewer's input says which rows those are. Nothing delivered tells a Worker its own node
+  id, so the coverage keys travel beside the shared document as `required_finding_ids`, and the
+  rendered prompt asks for exactly one disposition per key under `required_dispositions`, states
+  that another reviewer owes the rest of the Set, and permits — without requiring — a `dispute`
+  entry for a peer's row whose claim is wrong. `MAX_PRIOR_FINDINGS_BYTES` measures the rows and
+  that key list together.
 - What that saves and what it does not: the output-side obligation shrinks from R×N dispositions
-  to N across R reviewers; the delivered input bytes are unchanged, because the union is
-  delivered whole. Delivering only the reviewer's own rows would save those bytes too, but it
-  would make a cross-reviewer Dispute and a cross-reviewer Proposal claim structurally
-  impossible — `contested` is the only route by which peer review challenges a wrong claim — so
-  that trade needs its own ADR and is not made here. The reviewer prompt still asks for a
-  disposition per delivered Finding; only the kernel's obligation has narrowed.
+  to N across R reviewers, and the prompt now asks for N. The delivered prior-Finding document is
+  byte-identical for every reviewer, because the union is delivered whole; the only addition is
+  the compact list of keys that node owes. Delivering only the reviewer's own rows would save
+  those bytes too, but it would make a cross-reviewer Dispute and a cross-reviewer Proposal claim
+  structurally impossible — `contested` is the only route by which peer review challenges a wrong
+  claim — so that trade needs its own ADR and is not made here.
 - A Scatter that completes without one `Completed` shard (`all_shards_required = false`, every
   shard refused or failed) no longer closes a Round leaving its prior Findings undispositioned:
   its rows become orphan for that Round and join the coverage of the receiving nodes still to be

@@ -708,6 +708,13 @@ pub struct ReviewerInputs {
     pub prior_findings: Option<serde_json::Value>,
     #[serde(skip)]
     pub prior_findings_artifact_id: Option<String>,
+    /// The Findings this node owes a disposition for: its own partition of the delivered union
+    /// (`review-pipeline`'s `round_coverage`). The whole union is still delivered and any of it
+    /// may still be named — membership is the union, coverage is this list. `None` means no
+    /// partition was supplied, and every delivered Finding is required; a reviewer is never
+    /// left to guess which rows it owes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_finding_ids: Option<Vec<String>>,
     /// Pinned Campaign policy used only to choose the matching prior-claim instructions.
     #[serde(skip)]
     pub finding_identity_policy: Option<String>,
@@ -884,10 +891,30 @@ impl ReviewerInputs {
             ));
         }
         if let Some(prior) = &self.prior_findings {
+            // The coverage partition, if the kernel supplied one. Only `ReviewerResult@2` has
+            // dispositions to partition; without a list every delivered Finding is required,
+            // which is what the pre-partition wording already says.
+            let required_dispositions = match self.result_contract {
+                ReviewerResultContract::V2 => self.required_finding_ids.as_deref(),
+                ReviewerResultContract::V1 => None,
+            };
             let persistence_guidance = match (
                 self.result_contract,
                 self.finding_identity_policy.as_deref(),
             ) {
+                (
+                    ReviewerResultContract::V2,
+                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
+                ) if required_dispositions.is_some() => {
+                    "The Findings listed under `required_dispositions` below are yours: return \
+                     exactly one `dispositions` entry for each of them — `corroborate` when the \
+                     defect persists, `not_reproduced` when the current Subject no longer \
+                     exhibits it, or `dispute` when the claim is wrong. Another reviewer owes \
+                     the rest of this Set; do not work through them, but you may add a `dispute` \
+                     entry for one whose claim you find wrong. Every disposition needs a \
+                     concrete reason. Do not use omission as a disposition, and do not emit a \
+                     second flat report for a Finding you have dispositioned."
+                }
                 (
                     ReviewerResultContract::V2,
                     Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
@@ -933,7 +960,7 @@ impl ReviewerInputs {
                      the current code no longer exhibits: do not re-report it."
                 }
                 ReviewerResultContract::V2 => {
-                    "A finding the current code no longer exhibits still requires a \
+                    "A finding you owe that the current code no longer exhibits still requires a \
                      `not_reproduced` disposition."
                 }
             };
@@ -948,11 +975,19 @@ impl ReviewerInputs {
                      reason; do not emit a duplicate flat report for that Finding"
                 }
             };
-            if rendered.len() > MAX_PRIOR_FINDINGS_BYTES {
+            // The coverage list is part of this section, so the bound measures both. Keys only:
+            // one compact array, never a second copy of the rows.
+            let required_section = match required_dispositions {
+                Some(required) => format!(
+                    "\n\n`required_dispositions`:\n\n```json\n{}\n```",
+                    serde_json::to_string(required).map_err(|error| error.to_string())?
+                ),
+                None => String::new(),
+            };
+            let section_bytes = rendered.len() + required_section.len();
+            if section_bytes > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
-                    "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    rendered.len(),
-                    MAX_PRIOR_FINDINGS_BYTES
+                    "exact prior Finding Set with its required-disposition list is {section_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
                 ));
             }
             prompt.push_str(&format!(
@@ -966,7 +1001,7 @@ impl ReviewerInputs {
                  repository-relative `file`; use an empty `file` to report it change-wide. \
                  {absence_guidance} `scope` defaults to `in`; `effective_severity` defaults to `severity`, \
                  while a null effective severity means the finding is recorded and triageable \
-                 but does not block this Subject.\n\n```json\n{rendered}\n```"
+                 but does not block this Subject.\n\n```json\n{rendered}\n```{required_section}"
             ));
         }
         let change_sets: Vec<_> = self

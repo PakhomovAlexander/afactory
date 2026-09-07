@@ -369,6 +369,14 @@ impl Kernel<'_> {
             })
             .unwrap_or_default();
         required_finding_ids.retain(|id| permitted_finding_ids.iter().any(|kept| kept == id));
+        // State the coverage partition in the Worker's own context. Without it a reviewer cannot
+        // tell its rows from a peer's: a row's `source` names the reporting node, and nothing
+        // delivered tells a Worker its own node id or which sources are orphan this Round. The
+        // shared prior-Finding artifact is untouched — this is keys only, beside it.
+        if exact_finding_set && inputs.prior_findings.is_some() {
+            inputs.required_finding_ids =
+                Some(required_finding_ids.iter().cloned().collect::<Vec<_>>());
+        }
 
         let mut retry_failures: Vec<String> = Vec::new();
         let broker_fence_authority = self
