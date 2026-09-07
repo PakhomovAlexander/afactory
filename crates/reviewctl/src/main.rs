@@ -1435,6 +1435,24 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or(0)
         );
     }
+    let mut parallel = format!(
+        "parallel {} Workers at once (pipeline max_parallel)",
+        plan["pipeline"]["max_parallel"].as_u64().unwrap_or(0)
+    );
+    if let Some(fanout) = plan["pipeline"]["scatter_fanout"]
+        .as_object()
+        .filter(|fanout| !fanout.is_empty())
+    {
+        parallel.push_str("; shards ");
+        parallel.push_str(
+            &fanout
+                .iter()
+                .map(|(node, bound)| format!("{node} up to {bound} at once"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    println!("{parallel}");
     if let Some(reservations) = plan["pipeline"]["reservations"]
         .as_array()
         .filter(|reservations| !reservations.is_empty())
@@ -2394,6 +2412,10 @@ struct ReviewReportView {
     recorded_not_gathered: Option<LatestRoundEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
+    /// The scheduler's bound on simultaneously running nodes, from the pinned pipeline of the
+    /// latest Round. Absent when no Round has started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_parallel: Option<usize>,
     findings_summary: FindingsSummaryView,
     findings: Vec<review_store::Finding>,
 }
@@ -2651,6 +2673,19 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
     let mut spend = report_spend(&events, &round_authority)?;
     let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
     let wall_ms = attach_attempt_wall(&mut spend, &wall_rows);
+    let max_parallel = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == EventType::RoundStartedV1)
+        .map(|round| pinned_pipeline_definition(round, &cas))
+        .transpose()?
+        .map(|definition| {
+            definition
+                .max_parallel
+                .map_or(review_graph::DEFAULT_MAX_PARALLEL, |bound| {
+                    usize::try_from(bound).unwrap_or(usize::MAX)
+                })
+        });
     let findings = ledger.finding_views();
     let view = ReviewReportView {
         schema: "af/review-report@1",
@@ -2666,6 +2701,7 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         demands: ledger.demand_views(),
         recorded_not_gathered,
         wall_ms,
+        max_parallel,
         findings_summary: findings_summary(&findings),
         findings,
     };
@@ -3001,6 +3037,9 @@ fn print_report_text(report: &ReviewReportView) {
     if let Some(wall) = report.wall_ms {
         println!("Wall-clock: {}", human_duration(wall));
     }
+    if let Some(max_parallel) = report.max_parallel {
+        println!("Parallel: {max_parallel} Workers at once (pinned pipeline max_parallel)");
+    }
     println!(
         "Findings: {}",
         findings_summary_line(&report.findings_summary)
@@ -3132,6 +3171,9 @@ fn print_report_markdown(report: &ReviewReportView) {
     );
     if let Some(wall) = report.wall_ms {
         println!("- Wall-clock: {}", human_duration(wall));
+    }
+    if let Some(max_parallel) = report.max_parallel {
+        println!("- Parallel: {max_parallel} Workers at once (pinned pipeline max_parallel)");
     }
     println!(
         "- Findings: {}",
@@ -3925,7 +3967,11 @@ impl LatestRoundEvidence {
     }
 }
 
-fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<String, String> {
+/// The pipeline definition a Round's Campaign Manifest pins, read back from the CAS.
+fn pinned_pipeline_definition(
+    round_event: &review_core::RunEvent,
+    cas: &Cas,
+) -> Result<review_config::Definition, String> {
     let round: review_core::RoundStartedPayloadV1 =
         serde_json::from_value(round_event.payload.clone()).map_err(|error| error.to_string())?;
     let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
@@ -3938,8 +3984,11 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
         .get(&manifest.pipeline.artifact_id)
         .map_err(|error| error.to_string())?;
     let pipeline = std::str::from_utf8(&pipeline).map_err(|error| error.to_string())?;
-    let definition =
-        review_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())?;
+    review_config::Definition::from_toml(pipeline).map_err(|error| error.to_string())
+}
+
+fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<String, String> {
+    let definition = pinned_pipeline_definition(round_event, cas)?;
     let mut ledger_nodes = definition
         .nodes
         .iter()
@@ -4371,6 +4420,13 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             timeout.as_secs(),
             check_timeout.as_secs(),
             git_timeout.as_secs()
+        ),
+    );
+    run_progress(
+        options,
+        format_args!(
+            "parallel {} Workers at once (pinned pipeline max_parallel)",
+            loaded.max_parallel()
         ),
     );
 

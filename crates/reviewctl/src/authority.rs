@@ -410,6 +410,12 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             "budgets": loaded.budgets(),
             "reservations": reservations,
             "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+            "max_parallel": loaded.max_parallel(),
+            "scatter_fanout": loaded
+                .slicing()
+                .values()
+                .map(|policy| (policy.scatter.clone(), policy.max_fanout))
+                .collect::<BTreeMap<_, _>>(),
             "inputs_fit": input_sizes.iter().all(|size| size.fits),
             "convergence": {
                 "mode": options.mode.as_str(),

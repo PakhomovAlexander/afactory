@@ -834,6 +834,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         }),
         checks,
         check_timeout_seconds: Some(3600),
+        max_parallel: None,
         gate: Some(GateExecutionSpec {
             provider: SandboxProviderSpec::TrustedLocal,
             required_isolation: IsolationSpec::None,
