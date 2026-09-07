@@ -1365,18 +1365,21 @@ impl ModelRunner {
             overflowed: false,
             spool_error: None,
         };
+        // No input means no pipe on fd 0: a provider CLI that branches on whether stdin is a
+        // pipe — several read a prompt from one — must see exactly what it saw before this
+        // path streamed its stdout.
+        let writer = input.map(|input| {
+            move |stdin: &mut dyn Write| match stdin.write_all(&input) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                Err(error) => Err(error),
+            }
+        });
         let outcome = run_supervised_duplex_with_abort(
             &mut cmd,
             self.timeout,
             ExitPolicy::PreserveProcessGroup,
-            move |stdin: &mut dyn Write| match input {
-                Some(input) => match stdin.write_all(&input) {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-                    Err(error) => Err(error),
-                },
-                None => Ok(()),
-            },
+            writer,
             |stdout: &mut dyn Read, abort: AbortSignal| stream.drain(stdout, abort),
         );
         stream.finish();

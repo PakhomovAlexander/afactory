@@ -164,7 +164,7 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    run_supervised_duplex_with_abort(command, timeout, exit_policy, writer, |stdout, _| {
+    run_supervised_duplex_with_abort(command, timeout, exit_policy, Some(writer), |stdout, _| {
         reader(stdout)
     })
 }
@@ -173,11 +173,15 @@ where
 /// [`AbortSignal`]. On abort the process group is killed, its exit reaped, and the call returns
 /// [`SupervisedError::OutputRefused`]; whatever the reader retained through captured state is
 /// still the caller's, exactly as on a deadline.
+///
+/// `writer` decides what fd 0 is, exactly as it does for [`run_supervised`]: `Some` gives the
+/// child a pipe, `None` gives it `/dev/null`. Which one a child sees is observable — CLIs that
+/// read a prompt from stdin branch on it — so a caller with no input must not hand one a pipe.
 pub fn run_supervised_duplex_with_abort<I, R, F, G>(
     command: &mut std::process::Command,
     timeout: Duration,
     exit_policy: ExitPolicy,
-    writer: F,
+    writer: Option<F>,
     reader: G,
 ) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
 where
@@ -186,7 +190,11 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read, AbortSignal) -> R + Send,
 {
-    command.stdin(Stdio::piped());
+    command.stdin(if writer.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     #[cfg(unix)]
@@ -198,12 +206,15 @@ where
     let mut child = command.spawn().map_err(SupervisedError::Spawn)?;
     let pid = child.id();
     std::thread::scope(|scope| {
-        let mut stdin = child.stdin.take().expect("stdin was piped");
-        let (input_send, input_receive) = std::sync::mpsc::channel();
-        scope.spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut stdin)));
-            let _ = input_send.send(result);
+        let input_receive = writer.map(|writer| {
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            let (input_send, input_receive) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut stdin)));
+                let _ = input_send.send(result);
+            });
+            input_receive
         });
 
         let (waited_send, waited_receive) = std::sync::mpsc::channel();
@@ -235,25 +246,30 @@ where
             kill_process_group(pid);
         }
 
-        let input = match input_receive.recv_timeout(stdin_writer_wait(deadline)) {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                return Err(SupervisedError::Stdin(std::io::Error::other(
-                    "input writer panicked",
-                )));
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                kill_process_group(pid);
-                return Err(SupervisedError::TimedOut {
-                    stdout: Vec::new(),
-                    stderr: collect_after_kill(stderr),
-                });
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(SupervisedError::Stdin(std::io::Error::other(
-                    "input writer stopped without a result",
-                )));
-            }
+        let input = match input_receive {
+            // No writer, so nothing was delivered and nothing can have failed: the child was
+            // given `/dev/null` on fd 0 and never had a pipe to wait on.
+            None => Ok(()),
+            Some(receiver) => match receiver.recv_timeout(stdin_writer_wait(deadline)) {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => {
+                    return Err(SupervisedError::Stdin(std::io::Error::other(
+                        "input writer panicked",
+                    )));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    kill_process_group(pid);
+                    return Err(SupervisedError::TimedOut {
+                        stdout: Vec::new(),
+                        stderr: collect_after_kill(stderr),
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(SupervisedError::Stdin(std::io::Error::other(
+                        "input writer stopped without a result",
+                    )));
+                }
+            },
         };
         let output = match output_receive.recv_timeout(OUTPUT_DRAIN_GRACE) {
             Ok(Ok(output)) => output,

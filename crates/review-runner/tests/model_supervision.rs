@@ -241,6 +241,26 @@ fn reviewer_stdout_past_the_ceiling_ends_the_process_and_is_malformed_output() {
     );
 }
 
+/// A capture with no input gives the child `/dev/null` on fd 0, not an open pipe. Provider CLIs
+/// branch on it — several read a prompt from stdin when it is a pipe — so what fd 0 *is* is part
+/// of the invocation, not an implementation detail of how stdout is drained.
+#[test]
+fn a_capture_without_input_leaves_the_child_no_pipe_on_stdin() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10));
+    let probe = sh("if [ -p /dev/stdin ]; then echo pipe; else echo not-a-pipe; fi");
+
+    let capture = runner.capture(&cas, &probe).unwrap();
+    assert_eq!(capture.stdout, b"not-a-pipe\n");
+
+    // With input there is a pipe, and the input arrives.
+    let echo = sh("cat; if [ -p /dev/stdin ]; then echo pipe; else echo not-a-pipe; fi");
+    let capture = runner
+        .capture_with_stdin(&cas, &echo, b"prompt\n".to_vec())
+        .unwrap();
+    assert_eq!(capture.stdout, b"prompt\npipe\n");
+}
+
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.
 #[test]
 fn an_ungranted_variable_never_reaches_the_child() {
