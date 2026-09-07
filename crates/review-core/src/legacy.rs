@@ -1,9 +1,9 @@
 //! Importer for the shell harness's stage output.
 //!
 //! `/self-review-heavy` reviewers emit one JSON object per stage per round, validated by
-//! `.agents/skills/self-review-heavy/scripts/findings.schema.json`. The acceptance corpus for
+//! `compat/legacy-harness/findings.schema.json`. The acceptance corpus for
 //! [`FindingReport`] is a set of frozen real review bundles under
-//! `tools/review-kernel/fixtures/legacy/` — private review data, so the corpus ships only in
+//! `fixtures/legacy/` — private review data, so the corpus ships only in
 //! the hub it was captured in, so the tests that read it are `#[ignore]`d rather than skipped
 //! at runtime — cargo shows `ignored`, where a runtime skip would print `ok`.
 //! The bar it set stands: a contract that cannot ingest real reviewer output unchanged is the

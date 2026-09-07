@@ -47,7 +47,9 @@ pub const MAX_DERIVED_SNAPSHOT_BYTES_V1: u64 = 4 * 1024 * 1024 * 1024;
 /// marker for the context manifest but no event references them.
 pub const WORKER_PACKAGE_V1: &str = "af/worker-package@1";
 pub const IMPLEMENT_INPUT_V1: &str = "af/implement-input@1";
-pub const EVALUATE_INPUT_V1: &str = "af/evaluate-input@1";
+/// `@2`: `mutations` is the bounded summary (counts, a sorted sample, the derived-snapshot
+/// artifact id) instead of the complete path lists that `@1` inlined (audit finding, ADR-0046).
+pub const EVALUATE_INPUT_V2: &str = "af/evaluate-input@2";
 
 /// Where Task events land. The one implementation is the CLI's SQLite Task log. An
 /// implementation must call [`admit_task_artifact`] before its row becomes durable, so the log
@@ -709,7 +711,7 @@ pub struct EvaluationInput<'a> {
 impl EvaluationInput<'_> {
     pub fn render(&self) -> serde_json::Value {
         serde_json::json!({
-            "schema": EVALUATE_INPUT_V1,
+            "schema": EVALUATE_INPUT_V2,
             "task_id": self.task_id,
             "goal": self.goal,
             "source_snapshot_id": self.source_snapshot_id,
