@@ -11,6 +11,9 @@ license.workspace = true
 base64 = "0.22.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+# The pipeline definition is pinned as TOML bytes; `PipelineDefinition::from_toml` is the one
+# parser every reader of that authority calls.
+toml = "0.8.23"
 
 [dev-dependencies]
 jsonschema = { version = "0.26.1", default-features = false }

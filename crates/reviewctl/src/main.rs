@@ -4765,8 +4765,10 @@ mod option_tests {
     }
 
     fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
+        // Pinned authority replays through the shape the loader admitted, so the fixture is
+        // a pipeline the loader would admit: a review needs a reviewer.
         let pipeline = format!(
-            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
+            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"reviewer\"\nkind = \"reviewer\"\nrunner = {{ program = \"/bin/true\" }}\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
         );
         let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
         let opaque = cas.put(b"pinned authority").unwrap();

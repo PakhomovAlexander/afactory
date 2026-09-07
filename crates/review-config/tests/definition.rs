@@ -1068,3 +1068,238 @@ id = "gate""#,
         "{error}"
     );
 }
+
+/// Every checked-in review pipeline — the kernel's own `.af/pipelines/`, the consumer fixture's,
+/// and the legacy `.review/` hub fixture's — goes through the one shape both readers share:
+/// parsed by `PipelineDefinition::from_toml` and admitted by `PipelineDefinition::validate`
+/// exactly as pinned-authority replay admits it, then loaded through this crate's path. What
+/// replay reads off the shape — version, Subject, node IDs and kinds, every port, the Gate's
+/// cache kinds, Integration policy, Execution Bindings, slicing, closeouts, and Attempt caps —
+/// must be what the loaded pipeline plans, so a field one path learned and the other did not
+/// fails here rather than as a Campaign that stops replaying. A Task pipeline under the same
+/// directory is not a review pipeline; the shape must refuse it rather than misread it.
+#[test]
+fn every_checked_in_pipeline_replays_the_shape_the_loader_plans() {
+    use std::collections::BTreeSet;
+
+    use review_config::NodeKindSpec;
+    use review_config::lock::{Lockfile, Registry};
+    use review_core::PipelineDefinition;
+    use review_graph::NodeKind;
+
+    fn graph_kind(kind: NodeKindSpec) -> NodeKind {
+        match kind {
+            NodeKindSpec::Generation => NodeKind::Generation,
+            NodeKindSpec::Gate => NodeKind::Gate,
+            NodeKindSpec::Reviewer => NodeKind::Reviewer,
+            NodeKindSpec::Slicer => NodeKind::Slicer,
+            NodeKindSpec::Scatter => NodeKind::Scatter,
+            NodeKindSpec::Gather => NodeKind::Gather,
+            NodeKindSpec::Ledger => NodeKind::Ledger,
+        }
+    }
+
+    let root = workspace_root();
+    let authorities = [
+        (root.join(".af"), "af.lock", "workers"),
+        (
+            root.join("fixtures/consumers/hub/.af"),
+            "af.lock",
+            "workers",
+        ),
+        (
+            root.join("crates/reviewctl/tests/fixtures/legacy-hub/.review"),
+            "review.lock",
+            "reviewers",
+        ),
+    ];
+    let mut reviewed = 0;
+    for (authority, lock, registry) in authorities {
+        let lock_text = std::fs::read_to_string(authority.join(lock)).unwrap();
+        let lockfile = Lockfile::from_toml(&lock_text).unwrap();
+        let registry = Registry::new([authority.join(registry)]);
+        let mut pipelines: Vec<_> = std::fs::read_dir(authority.join("pipelines"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "toml")
+            })
+            .collect();
+        pipelines.sort();
+        assert!(
+            !pipelines.is_empty(),
+            "{} declares no pipelines",
+            authority.display()
+        );
+        for path in pipelines {
+            let label = path.strip_prefix(&root).unwrap().display().to_string();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let table: toml::Table = toml::from_str(&text).unwrap();
+            if table.get("kind").and_then(toml::Value::as_str) == Some("implement") {
+                assert!(
+                    PipelineDefinition::from_toml(&text).is_err(),
+                    "{label}: a Task pipeline parsed as a review pipeline"
+                );
+                continue;
+            }
+
+            // The replay path: the shape's parser, then the shape's own rules.
+            let replayed = PipelineDefinition::from_toml(&text)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            replayed
+                .validate()
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            // The loader's path: the same parse under this crate's handle, then packages and
+            // the planned graph.
+            let definition = Definition::from_toml(&text).unwrap();
+            assert_eq!(
+                *definition, replayed,
+                "{label}: the loader's handle reshaped the definition"
+            );
+            let loaded = definition
+                .clone()
+                .load_with(&lockfile, &registry)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+
+            assert_eq!(loaded.version(), replayed.version, "{label}: version");
+            assert_eq!(
+                loaded.subject_kind(),
+                replayed.subject_kind(),
+                "{label}: Subject"
+            );
+            let declared: BTreeSet<&str> =
+                replayed.nodes.iter().map(|node| node.id.as_str()).collect();
+            let planned: BTreeSet<&str> = loaded.plan_order().iter().map(String::as_str).collect();
+            assert_eq!(
+                planned, declared,
+                "{label}: planned nodes are the declared nodes"
+            );
+            let sources = loaded.input_sources();
+            for node in &replayed.nodes {
+                for port in &node.outputs {
+                    assert!(
+                        loaded
+                            .node_kind_has_output_type(graph_kind(node.kind), port.artifact_type()),
+                        "{label}: `{}` output `{}` was not planned with type `{}`",
+                        node.id,
+                        port.name(),
+                        port.artifact_type()
+                    );
+                }
+                for port in &node.inputs {
+                    assert!(
+                        loaded.node_receives_port(&node.id, port.name()),
+                        "{label}: `{}` input `{}` was not planned",
+                        node.id,
+                        port.name()
+                    );
+                }
+                // Gating is transitive in the plan (a Gather behind gated reviewers is gated),
+                // so the declared direction is the invariant: a declared gate is a planned one.
+                if node.gated_by.is_some() {
+                    assert!(
+                        loaded.node_is_gated(&node.id),
+                        "{label}: `{}` declares gated_by but was not planned as gated",
+                        node.id
+                    );
+                }
+                assert_eq!(
+                    loaded.reviewers().contains_key(&node.id),
+                    node.kind.is_worker(),
+                    "{label}: `{}` binds a runner exactly when it is a Worker",
+                    node.id
+                );
+                assert_eq!(
+                    loaded.demand_requirements().contains_key(&node.id),
+                    node.kind.is_worker(),
+                    "{label}: `{}` Demand classification",
+                    node.id
+                );
+                assert_eq!(
+                    loaded.reviewer_execution().get(&node.id),
+                    node.execution.as_ref(),
+                    "{label}: `{}` Execution Binding",
+                    node.id
+                );
+                assert_eq!(
+                    loaded.slicing().get(&node.id),
+                    node.slicing.as_ref(),
+                    "{label}: `{}` slicing",
+                    node.id
+                );
+                assert_eq!(
+                    loaded.node_attempt_caps().get(&node.id).copied(),
+                    node.budget.map(|budget| budget.attempt),
+                    "{label}: `{}` Attempt cap",
+                    node.id
+                );
+                if let Some(scatter) = &node.closeout_for {
+                    assert_eq!(
+                        loaded.closeouts().get(scatter),
+                        Some(&node.id),
+                        "{label}: `{}` closeout",
+                        node.id
+                    );
+                }
+            }
+            for edge in &replayed.edges {
+                assert!(
+                    sources
+                        .get(&edge.to.node)
+                        .and_then(|ports| ports.get(&edge.to.port))
+                        .is_some_and(|nodes| nodes.contains(&edge.from.node)),
+                    "{label}: edge {}.{} -> {}.{} was not planned",
+                    edge.from.node,
+                    edge.from.port,
+                    edge.to.node,
+                    edge.to.port
+                );
+            }
+            assert_eq!(
+                loaded.gate_execution(),
+                replayed.gate.as_ref(),
+                "{label}: Gate Execution Binding and cache kinds"
+            );
+            assert_eq!(
+                loaded.integration(),
+                replayed.integration.as_ref(),
+                "{label}: Integration policy"
+            );
+            assert_eq!(
+                loaded.budgets(),
+                replayed.budgets.as_ref(),
+                "{label}: budgets"
+            );
+            assert_eq!(
+                loaded.checks().len(),
+                replayed.checks.len(),
+                "{label}: every declared check is bound"
+            );
+            assert_eq!(
+                loaded.check_timeout_seconds(),
+                replayed.check_timeout_seconds.unwrap_or(3600),
+                "{label}: check timeout"
+            );
+            let convergence = loaded.convergence();
+            assert_eq!(
+                (
+                    convergence.clean_rounds,
+                    convergence.max_rounds,
+                    convergence.gate
+                ),
+                (
+                    replayed.convergence.clean_rounds,
+                    replayed.convergence.max_rounds,
+                    review_core::Severity::from(replayed.convergence.gate),
+                ),
+                "{label}: convergence"
+            );
+            reviewed += 1;
+        }
+    }
+    assert!(
+        reviewed >= 4,
+        "only {reviewed} review pipelines were found; the checked-in set shrank"
+    );
+}

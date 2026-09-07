@@ -186,7 +186,9 @@ conventions for hub-owned Rust.
 ```text
 schemas/     the language-neutral contracts (JSON Schema 2020-12)
 crates/
-  review-core/   the Rust view of those contracts, plus the legacy importer
+  review-core/   the Rust view of those contracts, the pipeline definition
+                 shape every reader of pinned authority shares, and the
+                 legacy importer
   review-parallel/ configurable bounded executor shared by
                  filesystem-heavy infrastructure
   review-process/ bounded subprocess supervision shared by source capture,
