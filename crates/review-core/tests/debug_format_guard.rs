@@ -152,8 +152,7 @@ const ALLOWED: &[(&str, &str)] = &[
         "crates/review-store/src/legacy.rs",
         "\"in-scope Report {} challenged the scoped {:?} Resolution\",",
     ),
-    // quoted text: Campaign labels and names in error messages; non-serde types: the graph's
-    // `RunVerdict` progress line and the projection's `ScopeAuthorityKind`
+    // quoted text: Campaign labels and names in state-resolution errors
     (
         "crates/reviewctl/src/main.rs",
         "\"campaign name {campaign:?} must be a trimmed human label without separators, control characters, traversal forms, or the reserved opaque Campaign ID shape\"",
@@ -168,60 +167,66 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     (
         "crates/reviewctl/src/main.rs",
+        "\"legacy Campaign state {} blocks resolution of {campaign:?}: {error}\",",
+    ),
+    // quoted text: Campaign labels in `af review campaigns` enumeration errors
+    (
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"campaign {label:?} Round {} epoch {} refers to a different manifest\",",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing\",",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"campaign {label:?} is present in both encoded and legacy state directories beneath {}\",",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"campaign {label:?} opening and manifest disagree on authority Snapshot ID\"",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"campaign {label:?} state directory must be its opaque ID `{id}` or legacy label\"",
     ),
     (
-        "crates/reviewctl/src/main.rs",
-        "\"legacy Campaign state {} blocks resolution of {campaign:?}: {error}\",",
-    ),
-    (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         "\"legacy sibling state for campaign {label:?} blocks direct resolution: {reason}\"",
     ),
     (
-        "crates/reviewctl/src/main.rs",
-        "\"warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}\",",
-    ),
-    (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         ".map_err(|error| format!(\"reading campaign {label:?} manifest: {error}\"))?,",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         ".map_err(|error| format!(\"reading campaign {label:?} manifest: {error}\"))?;",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         ".map_err(|error| format!(\"reading campaign {label:?} opening: {error}\"))?;",
     ),
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/campaigns.rs",
         ".ok_or_else(|| format!(\"campaign {label:?} has no CampaignOpened event\"))?;",
     ),
+    // non-serde type: the projection's `ScopeAuthorityKind` in a report warning
     (
-        "crates/reviewctl/src/main.rs",
+        "crates/reviewctl/src/review/report.rs",
+        "\"warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}\",",
+    ),
+    // non-serde type: the graph's `RunVerdict` progress line
+    (
+        "crates/reviewctl/src/review/run.rs",
         "run_progress(options, format_args!(\"verdict  {verdict:?}\"));",
     ),
     // serde enum, human display only: the `af review show` history line, whose `Reported`
     // spelling is what operators and the CLI tests read; the projection is rebuilt, never
     // persisted from this text
-    ("crates/reviewctl/src/main.rs", "\"  round {}: {:?}{}\","),
+    (
+        "crates/reviewctl/src/review/ledger.rs",
+        "\"  round {}: {:?}{}\",",
+    ),
     // serde enums, human output only (onboard.rs and task.rs are outside this guard's fix set)
     (
         "crates/reviewctl/src/onboard.rs",
