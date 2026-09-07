@@ -218,6 +218,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "crates/reviewctl/src/main.rs",
         "run_progress(options, format_args!(\"verdict  {verdict:?}\"));",
     ),
+    // serde enum, human display only: the `af review show` history line, whose `Reported`
+    // spelling is what operators and the CLI tests read; the projection is rebuilt, never
+    // persisted from this text
+    ("crates/reviewctl/src/main.rs", "\"  round {}: {:?}{}\","),
     // serde enums, human output only (onboard.rs and task.rs are outside this guard's fix set)
     (
         "crates/reviewctl/src/onboard.rs",

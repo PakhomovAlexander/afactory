@@ -1872,9 +1872,9 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     println!("\nhistory:");
     for transition in &finding.history {
         println!(
-            "  round {}: {}{}",
+            "  round {}: {:?}{}",
             transition.round,
-            authority::serde_name(&transition.kind),
+            transition.kind,
             transition
                 .note
                 .as_deref()

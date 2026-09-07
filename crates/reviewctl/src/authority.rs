@@ -2378,6 +2378,25 @@ pub(crate) fn prior_finding_set_document(
     prior_findings: Vec<serde_json::Value>,
 ) -> serde_json::Value {
     let receiving = loaded.reviewer_nodes_receiving(review_core::contract::FINDING_SET_V1);
+    // A legacy pipeline publishes this document itself, as the Generation node's typed
+    // `PriorFindings@1` output (an opaque `findings` port in format 1), and every reviewer on
+    // that path receives the whole union verbatim: the store pins that artifact to exactly its
+    // frozen keys, and a partition would have no consumer. Only a pipeline whose reviewers
+    // take the exact `FindingSet@1` — where `run_reviewer` retains a node's partition — gets one.
+    let legacy_delivery = loaded.node_kind_has_output_type(
+        review_graph::NodeKind::Generation,
+        review_core::contract::PRIOR_FINDINGS_V1,
+    ) || loaded.node_kind_has_output_type(
+        review_graph::NodeKind::Generation,
+        review_core::contract::OPAQUE_V1,
+    );
+    if receiving.is_empty() || legacy_delivery {
+        return serde_json::json!({
+            "subject_id": subject_id,
+            "round": round,
+            "prior_findings": prior_findings,
+        });
+    }
     let assignments = prior_assignments(&prior_findings, &receiving);
     serde_json::json!({
         "subject_id": subject_id,
