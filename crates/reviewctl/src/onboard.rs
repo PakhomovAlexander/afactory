@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use review_config::lock::{AfPin, Lockfile, Pin, Registry};
 use review_config::{
     ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
-    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortContractSpec,
-    PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
+    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PipelineDefinition,
+    PortContractSpec, PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec,
+    TypedPortSpec,
 };
 use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
@@ -827,7 +828,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
     }
     edges.push(edge("gather", "reports", "ledger", "reports"));
 
-    Definition {
+    Definition::from(PipelineDefinition {
         version: 3,
         subject: Some(SubjectSpec {
             kind: SubjectKind::Diff,
@@ -855,7 +856,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             fan_out: None,
         }),
         integration: None,
-    }
+    })
 }
 
 fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {

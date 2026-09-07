@@ -13,6 +13,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use review_core::definition::{
+    CacheKindSpec, IntegrationSpec, NodeKindSpec, NodeSpec, PipelineDefinition, PortContractSpec,
+    ReviewerExecutionSpec, SlicingSpec, TypedPortSpec,
+};
 use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::Value;
@@ -932,194 +936,28 @@ impl EventStore {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityDefinition {
-    nodes: Vec<AuthorityNode>,
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    subject: Option<toml::Value>,
-    #[serde(default)]
-    checks: Vec<toml::Value>,
-    #[serde(default)]
-    check_timeout_seconds: Option<u64>,
-    #[serde(default)]
-    gate: Option<AuthorityGate>,
-    #[serde(default)]
-    edges: Vec<toml::Value>,
-    #[serde(default)]
-    budgets: Option<toml::Value>,
-    #[serde(default)]
-    convergence: Option<toml::Value>,
-    #[serde(default)]
-    integration: Option<AuthorityIntegration>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityIntegration {
-    #[serde(default)]
-    protected_paths: Vec<String>,
-    post_apply_checks: Vec<String>,
-    #[serde(default)]
-    reviewer_priority: Vec<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct AuthorityGate {
-    #[serde(default)]
-    caches: Vec<String>,
-    #[serde(flatten)]
-    _binding: std::collections::BTreeMap<String, toml::Value>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityNode {
-    id: String,
-    kind: String,
-    #[serde(default)]
-    demands: Option<review_core::DemandRequirement>,
-    #[serde(default)]
-    inputs: Vec<AuthorityPort>,
-    #[serde(default = "default_authority_outputs")]
-    outputs: Vec<AuthorityPort>,
-    #[serde(default)]
-    gated_by: Option<String>,
-    #[serde(default)]
-    package: Option<String>,
-    #[serde(default)]
-    runner: Option<toml::Value>,
-    #[serde(default)]
-    execution: Option<AuthorityReviewerExecution>,
-    #[serde(default)]
-    slicing: Option<AuthoritySlicing>,
-    #[serde(default)]
-    closeout_for: Option<String>,
-    /// A Worker's own Attempt cap (review-config `NodeBudgetSpec`); mirrored so pinned authority
-    /// that declares one still validates here.
-    #[serde(default)]
-    budget: Option<AuthorityNodeBudget>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityNodeBudget {
-    attempt: u64,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthoritySlicing {
-    scatter: String,
-    max_paths_per_slice: usize,
-    max_fanout: u32,
-    coverage: review_core::SliceCoverageV1,
-    all_shards_required: bool,
-    closeout: AuthorityCloseoutMode,
-    #[serde(default)]
-    waiver_policy_id: Option<String>,
-    #[serde(default)]
-    waiver_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum AuthorityCloseoutMode {
-    Required,
-    Waived,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityReviewerExecution {
-    credential_mode: review_core::BrokerCredentialModeV1,
-    #[serde(default)]
-    auto_apply: bool,
-    #[serde(default)]
-    operations: Vec<review_core::BrokerOperationPolicyV1>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(untagged)]
-enum AuthorityPort {
-    Name(String),
-    Detailed(AuthorityPortDetails),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorityPortDetails {
-    name: String,
-    #[serde(rename = "type")]
-    artifact_type: String,
-    cardinality: String,
-    #[serde(default)]
-    optional: bool,
-    snapshot_affinity: String,
-}
-
-impl AuthorityPort {
-    fn name(&self) -> &str {
-        match self {
-            Self::Name(name) => name,
-            Self::Detailed(port) => &port.name,
-        }
-    }
-
-    fn artifact_type(&self) -> &str {
-        match self {
-            Self::Name(_) => review_core::contract::OPAQUE_V1,
-            Self::Detailed(port) => &port.artifact_type,
-        }
-    }
-
-    fn cardinality(&self) -> &str {
-        match self {
-            Self::Name(_) => "one",
-            Self::Detailed(port) => &port.cardinality,
-        }
-    }
-
-    fn optional(&self) -> bool {
-        match self {
-            Self::Name(_) => false,
-            Self::Detailed(port) => port.optional,
-        }
-    }
-
-    fn snapshot_affinity(&self) -> &str {
-        match self {
-            Self::Name(_) => "any",
-            Self::Detailed(port) => &port.snapshot_affinity,
-        }
-    }
-}
-
+/// The pinned pipeline as replay reads it: the one shared shape
+/// ([`PipelineDefinition`]), admitted by exactly the rules the loader applied when the Campaign
+/// opened, then indexed by node for the checks below. Nothing here re-describes that shape; a
+/// pipeline field is added in `review_core::definition` and reaches replay from there.
 struct AuthorityPlan {
     version: u32,
     pipeline_policy_id: String,
-    nodes: std::collections::BTreeMap<String, AuthorityNode>,
+    nodes: std::collections::BTreeMap<String, NodeSpec>,
     budgeted: bool,
     gate_bound: bool,
     gate_nodes: std::collections::BTreeSet<String>,
-    cache_kinds: std::collections::BTreeSet<String>,
-    reviewer_execution: std::collections::BTreeMap<String, AuthorityReviewerExecution>,
-    integration: Option<AuthorityIntegration>,
+    cache_kinds: std::collections::BTreeSet<CacheKindSpec>,
+    reviewer_execution: std::collections::BTreeMap<String, ReviewerExecutionSpec>,
+    integration: Option<IntegrationSpec>,
     check_names: Vec<String>,
 }
 
 impl AuthorityPlan {
-    fn reviewer_execution_for(&self, node: &str) -> Option<&AuthorityReviewerExecution> {
+    fn reviewer_execution_for(&self, node: &str) -> Option<&ReviewerExecutionSpec> {
         self.reviewer_execution.get(node).or_else(|| {
             let (owner, _) = node.split_once("#slice:")?;
-            (self.nodes.get(owner)?.kind == "scatter")
+            (self.nodes.get(owner)?.kind == NodeKindSpec::Scatter)
                 .then(|| self.reviewer_execution.get(owner))
                 .flatten()
         })
@@ -1128,8 +966,8 @@ impl AuthorityPlan {
 
 struct DynamicNodeAuthority {
     slice: review_core::ReviewSliceV1,
-    inputs: Vec<AuthorityPort>,
-    outputs: Vec<AuthorityPort>,
+    inputs: Vec<PortContractSpec>,
+    outputs: Vec<PortContractSpec>,
 }
 
 fn dynamic_node_authority(
@@ -1184,7 +1022,7 @@ fn dynamic_node_authority(
         let slicer = plan.nodes.get(&slicer_id).ok_or_else(|| {
             StoreError::Conflict("SliceSetAccepted@1 names a non-plan Slicer".into())
         })?;
-        if slicer.kind != "slicer" {
+        if slicer.kind != NodeKindSpec::Slicer {
             return Err(StoreError::Conflict(
                 "SliceSetAccepted@1 producer is not a pinned Slicer".into(),
             ));
@@ -1197,7 +1035,9 @@ fn dynamic_node_authority(
         let scatter = plan.nodes.get(&owner).ok_or_else(|| {
             StoreError::Conflict("pinned Slicer names an absent Scatter owner".into())
         })?;
-        if scatter.kind != "scatter" || !runtime_node.starts_with(&format!("{owner}#slice:")) {
+        if scatter.kind != NodeKindSpec::Scatter
+            || !runtime_node.starts_with(&format!("{owner}#slice:"))
+        {
             return Err(StoreError::Conflict(
                 "runtime node identity disagrees with its pinned Scatter".into(),
             ));
@@ -1208,12 +1048,12 @@ fn dynamic_node_authority(
             .filter(|port| port.artifact_type() != review_core::contract::SLICE_SET_V1)
             .cloned()
             .collect::<Vec<_>>();
-        inputs.push(AuthorityPort::Detailed(AuthorityPortDetails {
+        inputs.push(PortContractSpec::Typed(TypedPortSpec {
             name: "slice".into(),
             artifact_type: review_core::contract::REVIEW_SLICE_V1.into(),
-            cardinality: "one".into(),
+            cardinality: review_core::PortCardinality::One,
             optional: false,
-            snapshot_affinity: "same_subject".into(),
+            snapshot_affinity: review_core::SnapshotAffinity::SameSubject,
         }));
         let result_type = if inputs
             .iter()
@@ -1226,20 +1066,16 @@ fn dynamic_node_authority(
         resolved = Some(DynamicNodeAuthority {
             slice: slice.clone(),
             inputs,
-            outputs: vec![AuthorityPort::Detailed(AuthorityPortDetails {
+            outputs: vec![PortContractSpec::Typed(TypedPortSpec {
                 name: "out".into(),
                 artifact_type: result_type.into(),
-                cardinality: "one".into(),
+                cardinality: review_core::PortCardinality::One,
                 optional: false,
-                snapshot_affinity: "same_subject".into(),
+                snapshot_affinity: review_core::SnapshotAffinity::SameSubject,
             })],
         });
     }
     Ok(resolved)
-}
-
-fn default_authority_outputs() -> Vec<AuthorityPort> {
-    vec![AuthorityPort::Name("out".into())]
 }
 
 fn load_authority_plan(
@@ -1283,110 +1119,45 @@ fn load_authority_plan_id(
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
     let pipeline = std::str::from_utf8(&pipeline)
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is not UTF-8: {error}")))?;
-    let definition: AuthorityDefinition = toml::from_str(pipeline)
+    // The one shape the loader admitted when the Campaign opened, judged by the same rules: a
+    // pinned pipeline that fails here was never valid authority, whichever reader sees it first.
+    let definition = PipelineDefinition::from_toml(pipeline)
+        .and_then(|definition| definition.validate().map(|()| definition))
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is invalid: {error}")))?;
-    if !(1..=5).contains(&definition.version) {
-        return Err(StoreError::Conflict(
-            "pinned pipeline has no supported version".into(),
-        ));
-    }
-    let version = definition.version;
-    let integration = definition.integration.clone();
     let check_names = definition
         .checks
         .iter()
-        .filter_map(|check| check.get("name").and_then(toml::Value::as_str))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let gate_bound = definition.gate.is_some();
-    let cache_kinds: std::collections::BTreeSet<String> = definition
-        .gate
-        .as_ref()
-        .into_iter()
-        .flat_map(|gate| gate.caches.iter().cloned())
+        .map(|check| check.name.clone())
         .collect();
-    if definition
+    let gate_bound = definition.gate.is_some();
+    let cache_kinds = definition
         .gate
-        .as_ref()
-        .is_some_and(|gate| gate.caches.len() != cache_kinds.len())
-        || cache_kinds.iter().any(|kind| kind != "cargo")
-    {
-        return Err(StoreError::Conflict(
-            "pinned pipeline has duplicate or unsupported cache kinds".into(),
-        ));
-    }
-    let mut nodes = std::collections::BTreeMap::new();
-    for node in definition.nodes {
-        if node.id.trim().is_empty() || nodes.insert(node.id.clone(), node).is_some() {
-            return Err(StoreError::Conflict(
-                "pinned pipeline has empty or duplicate node IDs".into(),
-            ));
-        }
-    }
-    if nodes.is_empty() {
-        return Err(StoreError::Conflict("pinned pipeline has no nodes".into()));
-    }
+        .iter()
+        .flat_map(|gate| gate.caches.iter().copied())
+        .collect();
+    // Node IDs are unique and non-empty by the shape's rules, so indexing loses nothing.
+    let nodes: std::collections::BTreeMap<String, NodeSpec> = definition
+        .nodes
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
     let gate_nodes = nodes
         .values()
-        .filter(|node| node.kind == "gate")
+        .filter(|node| node.kind == NodeKindSpec::Gate)
         .map(|node| node.id.clone())
         .collect();
-    let mut reviewer_execution = std::collections::BTreeMap::new();
-    for node in nodes.values() {
-        match (definition.version, node.kind.as_str(), &node.execution) {
-            (4, "reviewer", Some(execution)) | (5, "reviewer" | "scatter", Some(execution)) => {
-                let mut names = std::collections::BTreeSet::new();
-                for operation in &execution.operations {
-                    operation.validate().map_err(StoreError::Conflict)?;
-                    if !names.insert(operation.name.as_str()) {
-                        return Err(StoreError::Conflict(
-                            "pinned reviewer execution has duplicate Broker operations".into(),
-                        ));
-                    }
-                }
-                review_core::broker_authority_usage(&execution.operations)
-                    .map_err(StoreError::Conflict)?;
-                let valid_shape = match execution.credential_mode {
-                    review_core::BrokerCredentialModeV1::Brokered => {
-                        !execution.operations.is_empty()
-                    }
-                    review_core::BrokerCredentialModeV1::CredentialFree
-                    | review_core::BrokerCredentialModeV1::TrustedUnsafe => {
-                        execution.operations.is_empty()
-                    }
-                };
-                if !valid_shape
-                    || (execution.auto_apply
-                        && execution.credential_mode
-                            == review_core::BrokerCredentialModeV1::TrustedUnsafe)
-                {
-                    return Err(StoreError::Conflict(
-                        "pinned reviewer Execution Binding contradicts its credential mode".into(),
-                    ));
-                }
-                reviewer_execution.insert(node.id.clone(), execution.clone());
-            }
-            (4, "reviewer", None) | (5, "reviewer" | "scatter", None) => {
-                return Err(StoreError::Conflict(
-                    "pinned reviewer-capable node has no Execution Binding".into(),
-                ));
-            }
-            (_, _, Some(_))
-                if !matches!(
-                    (definition.version, node.kind.as_str()),
-                    (4, "reviewer") | (5, "reviewer" | "scatter")
-                ) =>
-            {
-                return Err(StoreError::Conflict(
-                    "pinned reviewer Execution Binding is not valid for this pipeline version or node kind"
-                        .into(),
-                ));
-            }
-            _ => {}
-        }
-    }
+    // Only a reviewer-capable node of a v4/v5 pipeline carries an Execution Binding, and every
+    // such node must: the shape refused anything else above.
+    let reviewer_execution = nodes
+        .values()
+        .filter_map(|node| {
+            node.execution
+                .clone()
+                .map(|execution| (node.id.clone(), execution))
+        })
+        .collect();
     Ok(AuthorityPlan {
-        version,
+        version: definition.version,
         pipeline_policy_id: manifest.pipeline.artifact_id,
         nodes,
         budgeted,
@@ -1394,9 +1165,23 @@ fn load_authority_plan_id(
         gate_nodes,
         cache_kinds,
         reviewer_execution,
-        integration,
+        integration: definition.integration,
         check_names,
     })
+}
+
+/// The pinned cache kind a run-time cache report names. Both enums are closed: a new package
+/// manager adds a variant to each and one line here.
+fn pinned_cache_kind(kind: review_core::RunCacheKindV5) -> CacheKindSpec {
+    match kind {
+        review_core::RunCacheKindV5::Cargo => CacheKindSpec::Cargo,
+    }
+}
+
+fn cache_kind_name(kind: CacheKindSpec) -> &'static str {
+    match kind {
+        CacheKindSpec::Cargo => "cargo",
+    }
 }
 
 fn typed_json_artifacts(
@@ -1574,7 +1359,7 @@ fn insert_artifact_type(
 
 fn validate_plan_ports(
     prepared: &PreparedArtifacts,
-    expected: &[AuthorityPort],
+    expected: &[PortContractSpec],
     actual: &[review_core::PortArtifactsV1],
     subject_snapshot_id: &str,
     subject_base_snapshot_id: Option<&str>,
@@ -1596,28 +1381,18 @@ fn validate_plan_ports(
                 expected.name()
             ))
         })?;
-        let cardinality = match port.cardinality {
-            review_core::PortCardinality::One => "one",
-            review_core::PortCardinality::Many => "many",
-        };
-        let affinity = match port.snapshot_affinity {
-            review_core::SnapshotAffinity::SameSubject => "same_subject",
-            review_core::SnapshotAffinity::Unbound => "unbound",
-            review_core::SnapshotAffinity::Any => "any",
-        };
         if port.artifact_type != expected.artifact_type()
-            || cardinality != expected.cardinality()
+            || port.cardinality != expected.cardinality()
             || port.optional != expected.optional()
-            || affinity != expected.snapshot_affinity()
+            || port.snapshot_affinity != expected.snapshot_affinity()
         {
             return Err(StoreError::Conflict(format!(
                 "durable port '{}' contradicts the pinned contract",
                 expected.name()
             )));
         }
-        if affinity == "same_subject"
-            && port.subject_snapshot_id.as_deref() != Some(subject_snapshot_id)
-        {
+        let same_subject = port.snapshot_affinity == review_core::SnapshotAffinity::SameSubject;
+        if same_subject && port.subject_snapshot_id.as_deref() != Some(subject_snapshot_id) {
             return Err(StoreError::Conflict(format!(
                 "durable port '{}' is bound to the wrong Subject snapshot",
                 expected.name()
@@ -1630,7 +1405,7 @@ fn validate_plan_ports(
             {
                 validated_change_set = Some(change_set);
             }
-            if affinity == "same_subject"
+            if same_subject
                 && let Some(value) = prepared.json.get(artifact)
                 && value.get("type").is_some()
             {
@@ -2092,29 +1867,24 @@ fn validate_report_plan(
     }
     if event_type == EventType::RunReportV5 {
         let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
-        let actual: std::collections::BTreeSet<(String, String)> = report
+        let actual: std::collections::BTreeSet<(String, CacheKindSpec)> = report
             .cache_snapshots
             .into_iter()
-            .map(|snapshot| {
-                let kind = match snapshot.kind {
-                    review_core::RunCacheKindV5::Cargo => "cargo",
-                };
-                (snapshot.node, kind.to_string())
-            })
-            .chain(report.cache_failures.into_iter().map(|failure| {
-                let kind = match failure.kind {
-                    review_core::RunCacheKindV5::Cargo => "cargo",
-                };
-                (failure.node, kind.to_string())
-            }))
+            .map(|snapshot| (snapshot.node, pinned_cache_kind(snapshot.kind)))
+            .chain(
+                report
+                    .cache_failures
+                    .into_iter()
+                    .map(|failure| (failure.node, pinned_cache_kind(failure.kind))),
+            )
             .collect();
-        let expected: std::collections::BTreeSet<(String, String)> = plan
+        let expected: std::collections::BTreeSet<(String, CacheKindSpec)> = plan
             .gate_nodes
             .iter()
             .flat_map(|node| {
                 plan.cache_kinds
                     .iter()
-                    .map(move |kind| (node.clone(), kind.clone()))
+                    .map(move |kind| (node.clone(), *kind))
             })
             .collect();
         if actual != expected {
@@ -2927,12 +2697,11 @@ fn validate_campaign_transition(
                                     "Cache Snapshot node '{node}' is absent from the pinned Gate plan"
                                 )));
                             }
-                            let kind = match snapshot.kind {
-                                review_core::RunCacheKindV5::Cargo => "cargo",
-                            };
-                            if plan.is_none_or(|plan| !plan.cache_kinds.contains(kind)) {
+                            let kind = pinned_cache_kind(snapshot.kind);
+                            if plan.is_none_or(|plan| !plan.cache_kinds.contains(&kind)) {
                                 return Err(StoreError::Conflict(format!(
-                                    "Cache Snapshot kind '{kind}' is absent from pinned authority"
+                                    "Cache Snapshot kind '{}' is absent from pinned authority",
+                                    cache_kind_name(kind)
                                 )));
                             }
                             let has_manifest = event
@@ -3455,7 +3224,7 @@ fn validate_campaign_transition(
                                             subject_base_snapshot_id.as_deref(),
                                             subject_change_set_id.as_deref(),
                                         )?;
-                                        expected.kind == "reviewer"
+                                        expected.kind == NodeKindSpec::Reviewer
                                     }
                                     None => {
                                         let dynamic = dynamic_node_authority(
@@ -3845,7 +3614,7 @@ fn validate_campaign_transition(
                                 || !event.artifact_refs.contains(&payload.slice_set_artifact_id)
                                 || plan
                                     .and_then(|plan| plan.nodes.get(node))
-                                    .is_none_or(|node| node.kind != "slicer")
+                                    .is_none_or(|node| node.kind != NodeKindSpec::Slicer)
                             {
                                 return Err(StoreError::Conflict(
                                     "SliceSetAccepted@1 contradicts pinned Slicer authority".into(),
@@ -4730,15 +4499,12 @@ fn exact_subject_paths(
 fn expected_slice_set(
     cas: &Cas,
     plan: &AuthorityPlan,
-    policy: &AuthoritySlicing,
+    policy: &SlicingSpec,
     subject_id: &str,
     subject: &review_core::SubjectV1,
 ) -> Result<review_core::SliceSetV1, StoreError> {
-    if policy.max_paths_per_slice == 0 || policy.max_fanout == 0 {
-        return Err(StoreError::Conflict(
-            "captured slicing policy has a zero bound".into(),
-        ));
-    }
+    // Non-zero bounds and a consistent closeout are the shape's rules; a plan only exists here
+    // after they held.
     let paths = exact_subject_paths(cas, subject)?;
     if paths.is_empty()
         || paths.len().div_ceil(policy.max_paths_per_slice) > policy.max_fanout as usize
@@ -4747,28 +4513,9 @@ fn expected_slice_set(
             "captured slicing policy cannot cover the exact Subject paths".into(),
         ));
     }
-    let closeout = match policy.closeout {
-        AuthorityCloseoutMode::Required => {
-            if policy.waiver_policy_id.is_some() || policy.waiver_reason.is_some() {
-                return Err(StoreError::Conflict(
-                    "captured required closeout carries waiver authority".into(),
-                ));
-            }
-            review_core::CloseoutPolicyV1::Required
-        }
-        AuthorityCloseoutMode::Waived => review_core::CloseoutPolicyV1::Waived {
-            policy_id: policy.waiver_policy_id.clone().ok_or_else(|| {
-                StoreError::Conflict("captured closeout waiver has no policy ID".into())
-            })?,
-            reason: policy
-                .waiver_reason
-                .clone()
-                .filter(|reason| !reason.trim().is_empty())
-                .ok_or_else(|| {
-                    StoreError::Conflict("captured closeout waiver has no reason".into())
-                })?,
-        },
-    };
+    let closeout = policy.closeout_policy().map_err(|error| {
+        StoreError::Conflict(format!("captured closeout policy is invalid: {error}"))
+    })?;
     let slices = paths
         .chunks(policy.max_paths_per_slice)
         .enumerate()
@@ -5288,7 +5035,7 @@ fn integration_binding_node<'a>(plan: &'a AuthorityPlan, node: &'a str) -> Optio
     let (owner, _) = node.split_once("#slice:")?;
     plan.nodes
         .get(owner)
-        .is_some_and(|node| node.kind == "scatter")
+        .is_some_and(|node| node.kind == NodeKindSpec::Scatter)
         .then_some(owner)
 }
 

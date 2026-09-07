@@ -728,6 +728,10 @@ provider = "trusted_local"
 required_isolation = "none"
 mode = "ephemeral-write"
 [[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
 outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
@@ -1022,6 +1026,10 @@ mode = "ephemeral-write"
 [[checks]]
 name = "gate"
 program = "/bin/true"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
