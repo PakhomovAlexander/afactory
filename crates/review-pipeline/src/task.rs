@@ -67,8 +67,9 @@ pub trait TaskLog {
     ) -> Result<(), String>;
 }
 
-/// Refuse a Task event whose artifact the CAS does not hold, and — where the event type
-/// declares one — whose artifact does not carry the `schema` marker that type references.
+/// Refuse a Task event whose artifact the CAS does not hold, and whose artifact is not the
+/// payload that event type references — by its `schema` marker where it carries one, and
+/// structurally where it does not.
 ///
 /// This reuses the exact CAS operations `EventStore::append` performs for a Campaign event:
 /// the object is re-verified and scheduled for the publication barrier, so a log row can only
@@ -84,16 +85,77 @@ pub fn admit_task_artifact(
         }
         other => format!("{event_type} artifact {artifact_id} failed verification: {other}"),
     };
-    let Some(schema) = event_type.artifact_schema() else {
-        return cas.prepare_for_publication(artifact_id).map_err(dangling);
-    };
     let value = cas
         .get_json_for_publication(artifact_id)
         .map_err(dangling)?;
+    let Some(schema) = event_type.artifact_schema() else {
+        // `GateCompleted@1` references a `CheckResult@1`, which predates the marker convention
+        // and carries none. Absent a marker the payload is checked against the shape the
+        // contract requires, so that one event type is not the Task log's one unvalidated slot.
+        return check_result_shape(&value).map_err(|why| {
+            format!("{event_type} must reference a `CheckResult@1` artifact: {artifact_id} ({why})")
+        });
+    };
     if value.get("schema").and_then(serde_json::Value::as_str) != Some(schema) {
         return Err(format!(
             "{event_type} must reference an `{schema}` artifact: {artifact_id}"
         ));
+    }
+    Ok(())
+}
+
+/// The structural contract of a `CheckResult@1` payload, mirroring what
+/// `schemas/check-result-v1.json` *requires*: a named check, one of three statuses, its rendered
+/// argument vector with each slot's provenance, and the status-dependent pair — a `not_run`
+/// check states a reason and has no exit code, a check that ran names its program and exit code.
+fn check_result_shape(value: &serde_json::Value) -> Result<(), String> {
+    let object = value.as_object().ok_or("not a JSON object")?;
+    let text = |name: &str| -> Result<&str, String> {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("`{name}` must be a non-empty string"))
+    };
+    text("name")?;
+    let status = text("status")?;
+    if !matches!(status, "passed" | "failed" | "not_run") {
+        return Err(format!(
+            "`status` must be passed, failed or not_run, not `{status}`"
+        ));
+    }
+    let args = object
+        .get("args")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("`args` must be an array")?;
+    for arg in args {
+        let arg = arg
+            .as_object()
+            .ok_or("every `args` entry must be an object")?;
+        if !arg.get("value").is_some_and(serde_json::Value::is_string) {
+            return Err("every `args` entry needs a string `value`".into());
+        }
+        if !matches!(
+            arg.get("provenance").and_then(serde_json::Value::as_str),
+            Some("literal" | "untrusted")
+        ) {
+            return Err("every `args` entry needs a literal or untrusted `provenance`".into());
+        }
+    }
+    if status == "not_run" {
+        text("reason")?;
+        if object.contains_key("exit_code") {
+            return Err("a check that never ran cannot carry an `exit_code`".into());
+        }
+    } else {
+        if object
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .is_none()
+        {
+            return Err("a check that ran must carry an integer `exit_code`".into());
+        }
+        text("program")?;
     }
     Ok(())
 }
@@ -1333,7 +1395,37 @@ mod tests {
             &evaluation,
         )
         .unwrap();
-        let check = cas.put_json(&serde_json::json!({"name": "gate"})).unwrap();
+        // `CheckResult@1` carries no `schema` marker, so `GateCompleted@1` is admitted on the
+        // shape the contract requires. A bare name is not a check result.
+        let shapeless = cas.put_json(&serde_json::json!({"name": "gate"})).unwrap();
+        let refused = log
+            .append(&cas, "task-x", TaskEventType::GateCompletedV1, &shapeless)
+            .unwrap_err();
+        assert!(
+            refused.contains("must reference a `CheckResult@1` artifact"),
+            "{refused}"
+        );
+        // A `not_run` check that states no reason is indistinguishable from one nobody defined.
+        let unexplained = cas
+            .put_json(&serde_json::json!({
+                "name": "gate", "status": "not_run", "args": [], "required": true,
+            }))
+            .unwrap();
+        assert!(
+            log.append(&cas, "task-x", TaskEventType::GateCompletedV1, &unexplained)
+                .unwrap_err()
+                .contains("`reason` must be a non-empty string")
+        );
+        let check = cas
+            .put_json(&serde_json::json!({
+                "name": "gate",
+                "status": "passed",
+                "exit_code": 0,
+                "program": "/bin/sh",
+                "args": [{"value": "-c", "provenance": "literal"}],
+                "required": true,
+            }))
+            .unwrap();
         log.append(&cas, "task-x", TaskEventType::GateCompletedV1, &check)
             .unwrap();
         assert_eq!(log.0.len(), 2);
