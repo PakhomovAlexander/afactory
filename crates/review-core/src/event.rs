@@ -1964,3 +1964,105 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
         _ => Ok(None),
     }
 }
+
+/// Artifact contracts a Task event may reference. The Task log carries no inline payload: every
+/// event names one immutable CAS object, and that object's `schema` marker is the payload
+/// contract. `af/snapshot@1` is referenced by ID from inside those records rather than by an
+/// event of its own.
+pub mod task_artifact {
+    pub const SNAPSHOT_V1: &str = "af/snapshot@1";
+    pub const TASK_OPENED_V1: &str = "af/task-opened@1";
+    pub const WORKER_EVIDENCE_V1: &str = "af/worker-evidence@1";
+    pub const DERIVED_SNAPSHOT_V1: &str = "af/derived-snapshot@1";
+    pub const TASK_EVALUATION_V1: &str = "af/task-evaluation@1";
+    pub const TASK_OUTCOME_V1: &str = "af/task-outcome@1";
+    pub const TASK_DELIVERY_PREPARED_V1: &str = "af/task-delivery-prepared@1";
+    pub const TASK_DELIVERY_V1: &str = "af/task-delivery@1";
+}
+
+/// The closed vocabulary of the Task log behind `af task` — a contract distinct from the
+/// Campaign log's [`EventType`] (ADR-0046). Adding a Task event is an explicit enum and schema
+/// change (`schemas/task-event-v1.json`); a bare string cannot enter the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TaskEventType {
+    #[serde(rename = "TaskOpened@1")]
+    TaskOpenedV1,
+    #[serde(rename = "WorkerCompleted@1")]
+    WorkerCompletedV1,
+    #[serde(rename = "SnapshotDerived@1")]
+    SnapshotDerivedV1,
+    #[serde(rename = "GateCompleted@1")]
+    GateCompletedV1,
+    #[serde(rename = "EvaluationCompleted@1")]
+    EvaluationCompletedV1,
+    #[serde(rename = "TaskCompleted@1")]
+    TaskCompletedV1,
+    #[serde(rename = "TaskDeliveryPrepared@1")]
+    TaskDeliveryPreparedV1,
+    #[serde(rename = "TaskDelivered@1")]
+    TaskDeliveredV1,
+    #[serde(rename = "TaskDeliveryFailed@1")]
+    TaskDeliveryFailedV1,
+}
+
+impl TaskEventType {
+    pub const ALL: [Self; 9] = [
+        Self::TaskOpenedV1,
+        Self::WorkerCompletedV1,
+        Self::SnapshotDerivedV1,
+        Self::GateCompletedV1,
+        Self::EvaluationCompletedV1,
+        Self::TaskCompletedV1,
+        Self::TaskDeliveryPreparedV1,
+        Self::TaskDeliveredV1,
+        Self::TaskDeliveryFailedV1,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskOpenedV1 => "TaskOpened@1",
+            Self::WorkerCompletedV1 => "WorkerCompleted@1",
+            Self::SnapshotDerivedV1 => "SnapshotDerived@1",
+            Self::GateCompletedV1 => "GateCompleted@1",
+            Self::EvaluationCompletedV1 => "EvaluationCompleted@1",
+            Self::TaskCompletedV1 => "TaskCompleted@1",
+            Self::TaskDeliveryPreparedV1 => "TaskDeliveryPrepared@1",
+            Self::TaskDeliveredV1 => "TaskDelivered@1",
+            Self::TaskDeliveryFailedV1 => "TaskDeliveryFailed@1",
+        }
+    }
+
+    /// The `schema` marker the referenced artifact must carry. `GateCompleted@1` references a
+    /// `CheckResult@1` (`schemas/check-result-v1.json`), which carries no marker of its own.
+    pub const fn artifact_schema(self) -> Option<&'static str> {
+        match self {
+            Self::TaskOpenedV1 => Some(task_artifact::TASK_OPENED_V1),
+            Self::WorkerCompletedV1 => Some(task_artifact::WORKER_EVIDENCE_V1),
+            Self::SnapshotDerivedV1 => Some(task_artifact::DERIVED_SNAPSHOT_V1),
+            Self::GateCompletedV1 => None,
+            Self::EvaluationCompletedV1 => Some(task_artifact::TASK_EVALUATION_V1),
+            Self::TaskCompletedV1 => Some(task_artifact::TASK_OUTCOME_V1),
+            Self::TaskDeliveryPreparedV1 => Some(task_artifact::TASK_DELIVERY_PREPARED_V1),
+            Self::TaskDeliveredV1 | Self::TaskDeliveryFailedV1 => {
+                Some(task_artifact::TASK_DELIVERY_V1)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for TaskEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TaskEventType {
+    type Err = UnknownEventType;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| UnknownEventType(value.to_string()))
+    }
+}
