@@ -26,6 +26,13 @@ release pages only.
   plan rescanned, so a node an admission readies competes for that slot. Budget reservations,
   and therefore which node a run cap exhausts, no longer follow how many completions a drain
   happened to collect.
+- The pre-flight run-budget gate consults `max_parallel`: it requires the run cap to cover the
+  `max_parallel` largest static Worker first-Attempt reservations, not every Worker's together,
+  and the refusal names the bound it applied. A Scatter node still counts its whole `max_fanout`,
+  which it reserves up front. `af review plan`'s `max_simultaneous_reservation` reports the same
+  number.
+- `af review report` refuses a pinned `max_parallel` this platform cannot represent instead of
+  printing `usize::MAX` as the bound the Round ran under.
 - `--timeout-secs` is documented as the per-Attempt Worker timeout, not a whole-run budget.
 - Persisted `missing_nodes[].reason` for a suppressed node uses the schema spelling
   (`gate_blocked`, `upstream_missing`); Provider failure fingerprints derive from the class's

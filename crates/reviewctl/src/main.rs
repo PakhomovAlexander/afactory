@@ -1707,9 +1707,13 @@ mod option_tests {
 
     #[test]
     fn provider_smoke_spend_cannot_consume_static_attempt_capacity() {
-        let error = require_static_attempt_capacity(600_000, 600_000, 2, 2).unwrap_err();
+        let error = require_static_attempt_capacity(600_000, 600_000, 6, 2, 2).unwrap_err();
         assert!(error.contains("cap 600000, required 600002"), "{error}");
-        require_static_attempt_capacity(600_000, 600_002, 2, 2).unwrap();
+        assert!(
+            error.contains("the 2 of 6 required static Workers"),
+            "the refusal must state the bound it applied: {error}"
+        );
+        require_static_attempt_capacity(600_000, 600_002, 6, 2, 2).unwrap();
     }
 
     #[test]
