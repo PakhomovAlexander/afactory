@@ -410,12 +410,18 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             "budgets": loaded.budgets(),
             "reservations": reservations,
             "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+            "max_parallel": loaded.max_parallel(),
+            "scatter_fanout": loaded
+                .slicing()
+                .values()
+                .map(|policy| (policy.scatter.clone(), policy.max_fanout))
+                .collect::<BTreeMap<_, _>>(),
             "inputs_fit": input_sizes.iter().all(|size| size.fits),
             "convergence": {
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
                 "max_rounds": convergence.max_rounds,
-                "gate": format!("{:?}", convergence.gate).to_lowercase(),
+                "gate": serde_name(&convergence.gate),
             },
         },
         "providers": providers,
@@ -1080,7 +1086,7 @@ fn open_new(
         convergence: CampaignConvergenceV1 {
             clean_rounds: convergence.clean_rounds,
             max_rounds: convergence.max_rounds,
-            gate: format!("{:?}", convergence.gate).to_lowercase(),
+            gate: serde_name(&convergence.gate),
         },
         reviewer_timeout_seconds: options
             .timeout
@@ -1291,7 +1297,7 @@ fn validate_manifest_authority(
     let convergence = selected_convergence(mode, loaded.convergence());
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds
-        || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
+        || manifest.convergence.gate != serde_name(&convergence.gate)
     {
         return Err(format!(
             "CampaignManifest convergence differs from requested {} mode; resume with the mode that opened this Campaign",
@@ -1710,13 +1716,14 @@ fn start_integrated_round(
     if manifest.content_digest() != snapshot.content_digest {
         return Err("derived Snapshot Manifest contradicts its content digest".into());
     }
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": committed.derived_subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
+    let prior_findings = prior_rows(ledger_projection.ledger());
+    let prior_count = prior_findings.len();
+    let prior_finding_set = prior_finding_set_document(
+        &campaign.loaded,
+        &committed.derived_subject_id,
+        round,
+        prior_findings,
+    );
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
@@ -2006,13 +2013,10 @@ fn capture_round(
         .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
+    let prior_findings = prior_rows(ledger_projection.ledger());
+    let prior_count = prior_findings.len();
+    let prior_finding_set =
+        prior_finding_set_document(&campaign.loaded, &subject_id, round, prior_findings);
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
@@ -2284,7 +2288,15 @@ fn validate_round_set(
     let object = value
         .as_object()
         .ok_or_else(|| format!("Round {items_field} set is not an object"))?;
-    let expected = BTreeSet::from(["subject_id", "round", items_field]);
+    let mut expected = BTreeSet::from(["subject_id", "round", items_field]);
+    // The per-node partition beside the union: present since it was introduced, absent in
+    // Rounds started before it, which keep their frozen whole-union delivery.
+    let assignments = (items_field == "prior_findings")
+        .then(|| object.get("assignments"))
+        .flatten();
+    if assignments.is_some() {
+        expected.insert("assignments");
+    }
     let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
     if actual != expected
         || value["subject_id"].as_str() != Some(subject_id)
@@ -2294,10 +2306,13 @@ fn validate_round_set(
             "Round {items_field} set does not match its Subject and round"
         ));
     }
-    value[items_field]
+    let items = value[items_field]
         .as_array()
-        .map(Vec::len)
-        .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
+        .ok_or_else(|| format!("Round {items_field} set does not contain an array"))?;
+    if let Some(assignments) = assignments {
+        validate_prior_assignments(assignments, items)?;
+    }
+    Ok(items.len())
 }
 
 fn latest_demand_set_id(
@@ -2341,6 +2356,144 @@ fn latest_demand_set_id(
     Ok(genesis_id.to_string())
 }
 
+/// The persisted spelling of a serde enum value: its serde name, never Rust `Debug`. A variant
+/// rename then changes a schema-pinned string (which schema parity catches) instead of silently
+/// changing Campaign manifests, Worker input rows, and JSON documents.
+pub(crate) fn serde_name<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value).expect("a serde enum serializes") {
+        serde_json::Value::String(name) => name,
+        other => other.to_string(),
+    }
+}
+
+/// The Round's prior-Finding assignment as one document: the Round-wide union that convergence,
+/// replay, and every Attempt's pinned input keep naming, plus `assignments` — the partition of
+/// that union across the reviewer nodes that receive it. Each reviewer is delivered and must
+/// disposition only its own rows (the smallest sufficient context, ADR-0028), while the union
+/// still drives convergence unchanged.
+pub(crate) fn prior_finding_set_document(
+    loaded: &review_config::Loaded,
+    subject_id: &str,
+    round: u32,
+    prior_findings: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let receiving = loaded.reviewer_nodes_receiving(review_core::contract::FINDING_SET_V1);
+    // A legacy pipeline publishes this document itself, as the Generation node's typed
+    // `PriorFindings@1` output (an opaque `findings` port in format 1), and every reviewer on
+    // that path receives the whole union verbatim: the store pins that artifact to exactly its
+    // frozen keys, and a partition would have no consumer. Only a pipeline whose reviewers
+    // take the exact `FindingSet@1` — where `run_reviewer` retains a node's partition — gets one.
+    let legacy_delivery = loaded.node_kind_has_output_type(
+        review_graph::NodeKind::Generation,
+        review_core::contract::PRIOR_FINDINGS_V1,
+    ) || loaded.node_kind_has_output_type(
+        review_graph::NodeKind::Generation,
+        review_core::contract::OPAQUE_V1,
+    );
+    if receiving.is_empty() || legacy_delivery {
+        return serde_json::json!({
+            "subject_id": subject_id,
+            "round": round,
+            "prior_findings": prior_findings,
+        });
+    }
+    let assignments = prior_assignments(&prior_findings, &receiving);
+    serde_json::json!({
+        "subject_id": subject_id,
+        "round": round,
+        "prior_findings": prior_findings,
+        "assignments": assignments,
+    })
+}
+
+/// Partition the union rows by their `source` node. The rule lives here, once:
+///
+/// - a row belongs to the receiving node its `source` names; a Scatter shard `node#slice:…`
+///   counts as its Scatter `node`, whose shards all inherit the Scatter's rows;
+/// - a row whose source is no receiving node — a reviewer with no `FindingSet@1` input, or a
+///   legacy imported source — goes to *every* receiving node, so an assigned Finding can never
+///   lose its disposition obligation by falling between reviewers;
+/// - every receiving node has an entry, empty when nothing is assigned to it.
+///
+/// Rows keep their union order inside each entry, and the node's partition is what
+/// `run_reviewer` delivers and requires dispositions for.
+fn prior_assignments(
+    prior_findings: &[serde_json::Value],
+    receiving: &[String],
+) -> BTreeMap<String, Vec<String>> {
+    let mut assignments: BTreeMap<String, Vec<String>> = receiving
+        .iter()
+        .map(|node| (node.clone(), Vec::new()))
+        .collect();
+    for row in prior_findings {
+        let Some(key) = row.get("key").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let source = row
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let base = source
+            .split_once("#slice:")
+            .map_or(source, |(base, _)| base);
+        match assignments.get_mut(base) {
+            Some(keys) => keys.push(key.to_string()),
+            None => {
+                for keys in assignments.values_mut() {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+    }
+    assignments
+}
+
+/// A stored partition is authority for its Round: it must be an object of node -> Finding
+/// keys, each key a row of the union, no key twice under one node, and every row assigned to
+/// at least one node.
+fn validate_prior_assignments(
+    assignments: &serde_json::Value,
+    prior_findings: &[serde_json::Value],
+) -> Result<(), String> {
+    let partition = assignments
+        .as_object()
+        .ok_or("Round prior Finding assignments are not an object")?;
+    let union: BTreeSet<&str> = prior_findings
+        .iter()
+        .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str))
+        .collect();
+    let mut covered = BTreeSet::new();
+    for (node, keys) in partition {
+        if node.trim().is_empty() {
+            return Err("Round prior Finding assignments name an empty reviewer".into());
+        }
+        let keys = keys.as_array().ok_or_else(|| {
+            format!("Round prior Finding assignment for `{node}` is not an array")
+        })?;
+        let mut seen = BTreeSet::new();
+        for key in keys {
+            let key = key.as_str().ok_or_else(|| {
+                format!("Round prior Finding assignment for `{node}` contains a non-string key")
+            })?;
+            if !union.contains(key) {
+                return Err(format!(
+                    "Round prior Finding assignment for `{node}` names a Finding outside the union"
+                ));
+            }
+            if !seen.insert(key) {
+                return Err(format!(
+                    "Round prior Finding assignment for `{node}` repeats a Finding"
+                ));
+            }
+            covered.insert(key);
+        }
+    }
+    if !partition.is_empty() && covered != union {
+        return Err("Round prior Finding assignments do not cover the union".into());
+    }
+    Ok(())
+}
+
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
     ledger
         .finding_views()
@@ -2350,10 +2503,10 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
                 && !matches!(finding.status, Status::Rejected | Status::Wontfix)
         })
         .map(|finding| {
-            let severity = format!("{:?}", finding.severity).to_lowercase();
+            let severity = serde_name(&finding.severity);
             let effective_severity = finding
                 .convergence_severity
-                .map(|effective| format!("{effective:?}").to_lowercase());
+                .map(|effective| serde_name(&effective));
             let scope = finding.convergence_scope_label();
             let mut row = serde_json::json!({
                 "key": finding.key,
@@ -2600,6 +2753,64 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
+
+    /// Campaign manifests, Worker prior-Finding rows, and the JSON documents used to spell a
+    /// Severity as its lowercased Rust `Debug` name. The serde name replaces it and must be
+    /// byte-identical, or every pinned `CampaignManifest@1` gate and every measured Worker
+    /// input would change under a refactor.
+    /// The partition rule: a row goes to the receiving node its `source` names (a shard to
+    /// its Scatter), an orphan row to every receiving node; the stored partition must cover
+    /// the union exactly once per node and name nothing outside it.
+    #[test]
+    fn prior_assignments_partition_by_source_and_send_orphans_everywhere() {
+        use serde_json::json;
+        let rows = vec![
+            json!({"key": "a", "source": "architecture"}),
+            json!({"key": "b", "source": "performance"}),
+            json!({"key": "c", "source": "scatter#slice:1:0123456789abcdef"}),
+            json!({"key": "d", "source": "legacy-import"}),
+        ];
+        let receiving: Vec<String> = ["architecture", "performance", "scatter"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let assignments = super::prior_assignments(&rows, &receiving);
+        assert_eq!(assignments["architecture"], vec!["a", "d"]);
+        assert_eq!(assignments["performance"], vec!["b", "d"]);
+        assert_eq!(assignments["scatter"], vec!["c", "d"]);
+        super::validate_prior_assignments(&json!(assignments), &rows).unwrap();
+
+        let dropped = json!({"architecture": ["a"], "performance": ["b"], "scatter": ["c"]});
+        let error = super::validate_prior_assignments(&dropped, &rows).unwrap_err();
+        assert!(error.contains("do not cover the union"), "{error}");
+        let foreign = json!({"architecture": ["a", "b", "c", "d", "z"]});
+        let error = super::validate_prior_assignments(&foreign, &rows).unwrap_err();
+        assert!(error.contains("outside the union"), "{error}");
+        let repeated = json!({"architecture": ["a", "a", "b", "c", "d"]});
+        let error = super::validate_prior_assignments(&repeated, &rows).unwrap_err();
+        assert!(error.contains("repeats a Finding"), "{error}");
+
+        let none: Vec<String> = Vec::new();
+        assert!(super::prior_assignments(&rows, &none).is_empty());
+    }
+
+    #[test]
+    fn serde_names_match_the_lowercased_debug_spellings_they_replace() {
+        use review_core::Severity;
+        for (severity, legacy) in [
+            (Severity::Minor, "minor"),
+            (Severity::Major, "major"),
+            (Severity::Blocker, "blocker"),
+        ] {
+            assert_eq!(super::serde_name(&severity), legacy);
+        }
+        assert_eq!(super::serde_name(&Some(Severity::Major)), "major");
+        assert_eq!(super::serde_name(&None::<Severity>), "null");
+        assert_eq!(
+            super::serde_name(&review_core::RunSuppressionReasonV2::GateBlocked),
+            "gate_blocked"
+        );
+    }
 
     fn attempt_event(
         sequence: u64,

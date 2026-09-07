@@ -152,6 +152,7 @@ pub struct Loaded {
     plan: Planned,
     checks: Vec<CheckDefinition>,
     check_timeout_seconds: u64,
+    max_parallel: usize,
     gate: Option<GateExecutionSpec>,
     reviewers: BTreeMap<String, Command>,
     demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
@@ -196,6 +197,29 @@ impl Loaded {
 
     pub fn check_timeout_seconds(&self) -> u64 {
         self.check_timeout_seconds
+    }
+
+    /// The bound on simultaneously running nodes the scheduler enforces for this pipeline.
+    pub fn max_parallel(&self) -> usize {
+        self.max_parallel
+    }
+
+    /// Reviewer and Scatter nodes, in plan order, that declare an input port of `artifact_type`
+    /// — for example every node that receives the exact prior `FindingSet@1`.
+    pub fn reviewer_nodes_receiving(&self, artifact_type: &str) -> Vec<String> {
+        self.plan
+            .order
+            .iter()
+            .filter(|id| {
+                let node = &self.plan.nodes[*id];
+                matches!(node.kind, NodeKind::Reviewer | NodeKind::Scatter)
+                    && node
+                        .inputs
+                        .iter()
+                        .any(|port| port.artifact_type == artifact_type)
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn gate_execution(&self) -> Option<&GateExecutionSpec> {
@@ -346,7 +370,9 @@ impl Loaded {
                 )));
             }
         }
-        Ok(Scheduler::new(&self.plan).run(dispatcher))
+        Ok(Scheduler::new(&self.plan)
+            .with_parallelism(self.max_parallel)
+            .run(dispatcher))
     }
 }
 
@@ -465,6 +491,13 @@ impl Definition {
         }
 
         let check_timeout_seconds = definition.check_timeout_seconds.unwrap_or(3600);
+        // `validate()` already refused zero; only the width conversion is this crate's.
+        let max_parallel = match definition.max_parallel {
+            None => review_graph::DEFAULT_MAX_PARALLEL,
+            Some(bound) => usize::try_from(bound).map_err(|_| {
+                ConfigError::Binding("max_parallel exceeds this platform".to_string())
+            })?,
+        };
         let plan = pipeline.plan().map_err(ConfigError::Plan)?;
         let checks = definition
             .checks
@@ -486,6 +519,7 @@ impl Definition {
             plan,
             checks,
             check_timeout_seconds,
+            max_parallel,
             gate: definition.gate,
             reviewers,
             demand_requirements,

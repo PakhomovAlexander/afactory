@@ -28,7 +28,7 @@ pub mod task;
 
 pub use mutations::mutation_summary;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1125,6 +1125,27 @@ impl RunVerdict {
     }
 }
 
+/// The persisted classification of a scheduler suppression. `RunSuppressionReasonV2` is the
+/// schema-pinned vocabulary every RunReport since `@2` carries in `outcomes[].reason`; the
+/// graph's own enum never reaches a payload through `Debug`.
+pub fn run_suppression_reason(reason: review_graph::SuppressionReason) -> RunSuppressionReasonV2 {
+    match reason {
+        review_graph::SuppressionReason::GateBlocked => RunSuppressionReasonV2::GateBlocked,
+        review_graph::SuppressionReason::UpstreamMissing => RunSuppressionReasonV2::UpstreamMissing,
+    }
+}
+
+/// The string a suppressed node's `missing_nodes[].reason` carries: the same serde name as its
+/// `outcomes[].reason`, so one payload cannot spell one suppression two ways.
+fn suppression_reason_label(reason: review_graph::SuppressionReason) -> String {
+    match serde_json::to_value(run_suppression_reason(reason))
+        .expect("RunSuppressionReasonV2 serializes")
+    {
+        serde_json::Value::String(name) => name,
+        other => other.to_string(),
+    }
+}
+
 /// Combine what ran with what converged. Completeness is checked first: convergence is a
 /// statement about the findings that exist, and says nothing about the reviewers that never
 /// produced any.
@@ -1135,7 +1156,9 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
         .filter_map(|(id, outcome)| match outcome {
             NodeOutcome::Completed { .. } => None,
             NodeOutcome::Failed { error, .. } => Some((id.clone(), error.clone())),
-            NodeOutcome::Suppressed { reason } => Some((id.clone(), format!("{reason:?}"))),
+            NodeOutcome::Suppressed { reason } => {
+                Some((id.clone(), suppression_reason_label(*reason)))
+            }
         })
         .collect();
     if report.outcomes.iter().any(|(_, outcome)| {
@@ -2246,14 +2269,7 @@ impl<'a> Kernel<'a> {
                         error: error.clone(),
                     },
                     NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
-                        reason: match reason {
-                            review_graph::SuppressionReason::GateBlocked => {
-                                RunSuppressionReasonV2::GateBlocked
-                            }
-                            review_graph::SuppressionReason::UpstreamMissing => {
-                                RunSuppressionReasonV2::UpstreamMissing
-                            }
-                        },
+                        reason: run_suppression_reason(*reason),
                     },
                 };
                 RunNodeReportV2 {
@@ -3717,7 +3733,10 @@ impl<'a> Kernel<'a> {
                         return Err(error);
                     }
                 };
-                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
+                let assignment_node = self.reviewer_binding_node(node_id);
+                if let Err(error) =
+                    retain_round_assignment(&mut set, &round_assignment, &assignment_node)
+                {
                     if let Some(prepared) = prepared.take() {
                         self.release_prepared_attempt(
                             node_id,
@@ -4473,7 +4492,12 @@ impl<'a> Kernel<'a> {
                 .emitting_contracts(vec![PortContract::new("out", result_contract)]);
             let mut dynamic_inputs = inherited_inputs.clone();
             dynamic_inputs.insert("slice".into(), vec![slice_record]);
-            match self.record_invocation(&dynamic_node, &dynamic_inputs) {
+            // Invocation and reservation both up front, in canonical Slice order: a shard
+            // the fan-out cap refuses is a durable Missing outcome before any shard runs.
+            match self
+                .record_invocation(&dynamic_node, &dynamic_inputs)
+                .and_then(|()| self.prepare_dispatch(&dynamic_node, &dynamic_inputs))
+            {
                 Ok(()) => runnable.push((slice.clone(), dynamic_node, dynamic_inputs)),
                 Err(error) => {
                     outcomes.insert(
@@ -4484,16 +4508,24 @@ impl<'a> Kernel<'a> {
             }
         }
 
-        // Dispatches above are durable in canonical Slice order. Model execution may now run on
-        // the shared bounded executor; receipts are committed below in the same canonical order.
-        let executed =
-            review_parallel::try_map_owned(runnable, |(slice, dynamic_node, inputs)| {
-                Ok::<_, String>((
+        // Dispatches above are durable in canonical Slice order. Shards are model calls that
+        // block for minutes, so they run on their own bounded thread set — never on the shared
+        // filesystem executor, whose width is the host's CPU count and whose workers the shards'
+        // own sandbox clone, seal, and CAS phases need. The in-flight bound is the Slice
+        // policy's `max_fanout`: the persisted SliceSet@1 carries it and validates
+        // `slices.len() <= max_fanout`, so the fan-out the plan declares is the fan-out that
+        // runs. Receipts are committed below in the same canonical order.
+        let executed = dispatch_shards(
+            runnable,
+            slice_set.max_fanout,
+            |(slice, dynamic_node, inputs)| {
+                (
                     slice,
                     dynamic_node.clone(),
                     self.run(&dynamic_node, &inputs),
-                ))
-            })?;
+                )
+            },
+        );
         for (slice, dynamic_node, result) in executed {
             let outcome = match result {
                 Ok(outputs) => match self.record_outputs(&dynamic_node, &outputs) {
@@ -5742,9 +5774,51 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
         .collect()
 }
 
+/// Run every shard on at most `bound` scoped threads and return the results in input order.
+/// Scoped, so a shard borrows the kernel like a static node does; bounded by the Slice policy,
+/// not by the machine, so a 32-shard policy on an 8-core host still runs 32 model calls at once
+/// while the filesystem executor stays free for the phases inside each shard.
+fn dispatch_shards<T, R>(items: Vec<T>, bound: u32, operation: impl Fn(T) -> R + Sync) -> Vec<R>
+where
+    T: Send,
+    R: Send,
+{
+    let count = items.len();
+    let workers = usize::try_from(bound)
+        .unwrap_or(usize::MAX)
+        .clamp(1, count.max(1));
+    let queue = Mutex::new(items.into_iter().enumerate().collect::<VecDeque<_>>());
+    let results: Mutex<Vec<Option<R>>> = Mutex::new((0..count).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let next = queue.lock().expect("shard queue").pop_front();
+                    let Some((index, item)) = next else {
+                        break;
+                    };
+                    let result = operation(item);
+                    results.lock().expect("shard results")[index] = Some(result);
+                }
+            });
+        }
+    });
+    results
+        .into_inner()
+        .expect("shard results")
+        .into_iter()
+        .map(|result| result.expect("every shard produced a result"))
+        .collect()
+}
+
+/// Reduce the exact FindingSet@1 to what `node` must examine this Round: the rows the Round's
+/// pinned assignment document partitions to it under `assignments` — or, for a Round started
+/// before partitions existed, the whole Round-wide union, which stays the frozen delivery for
+/// those Rounds. A dynamic shard passes its Scatter's id, the node the partition is keyed by.
 fn retain_round_assignment(
     set: &mut review_core::FindingSetV1,
     round_assignment: &serde_json::Value,
+    node: &str,
 ) -> Result<(), String> {
     let rows = round_assignment
         .get("prior_findings")
@@ -5770,8 +5844,35 @@ fn retain_round_assignment(
             "Round prior Finding assignment is not a subset of its exact FindingSet@1".into(),
         );
     }
+    let retained: BTreeSet<&str> = match round_assignment.get("assignments") {
+        None => assigned,
+        Some(assignments) => {
+            let partition = assignments
+                .as_object()
+                .ok_or("Round prior Finding assignments are not an object")?;
+            let mine = partition
+                .get(node)
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    format!("Round prior Finding assignment has no partition for reviewer `{node}`")
+                })?;
+            let mut retained = BTreeSet::new();
+            for key in mine {
+                let key = key.as_str().ok_or_else(|| {
+                    format!("Round prior Finding assignment for `{node}` contains a non-string key")
+                })?;
+                if !assigned.contains(key) {
+                    return Err(format!(
+                        "Round prior Finding assignment for `{node}` names a Finding outside the Round assignment"
+                    ));
+                }
+                retained.insert(key);
+            }
+            retained
+        }
+    };
     set.findings
-        .retain(|finding| assigned.contains(finding.finding_id.as_str()));
+        .retain(|finding| retained.contains(finding.finding_id.as_str()));
     Ok(())
 }
 
@@ -5848,6 +5949,13 @@ impl Dispatch for Kernel<'_> {
                 .expect("reviewer inputs")
                 .insert(node.id.clone(), artifact_ids(inputs));
         }
+        Ok(())
+    }
+
+    /// The reservation and durable dispatch of a reviewer's first Attempt happen here, on the
+    /// scheduler thread as the node takes its slot — never earlier, so a run cap is consumed in
+    /// dispatch order and a released reservation is available to the node dispatched next.
+    fn prepare_dispatch(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             let binding_node = self.reviewer_binding_node(&node.id);
             if !self.reviewers.contains_key(&binding_node) {
@@ -6532,11 +6640,104 @@ outputs = ["findings"]
                 "round": 2,
                 "prior_findings": [{"key": keep}]
             }),
+            "correctness",
         )
         .unwrap();
 
         assert_eq!(set.findings.len(), 1);
         assert_eq!(set.findings[0].finding_id, keep);
+    }
+
+    /// With a partition beside the union, a reviewer is delivered only its own rows; a Round
+    /// without one (started before partitions existed) still delivers the whole union; a node
+    /// the partition does not name is refused rather than silently given everything.
+    #[test]
+    fn a_partitioned_round_assignment_delivers_only_the_reviewers_own_rows() {
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let entry = |finding_id: String, source: &str| review_core::FindingSetEntryV1 {
+            finding_id,
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: source.into(),
+            last_seen_round: 1,
+            report_ids: vec![digest('d')],
+        };
+        let architecture_row = digest('a');
+        let performance_row = digest('b');
+        let orphan_row = digest('c');
+        let full_set = || review_core::FindingSetV1 {
+            subject_id: digest('d'),
+            round: 2,
+            prior_finding_set_id: digest('e'),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: vec![
+                entry(architecture_row.clone(), "architecture"),
+                entry(performance_row.clone(), "performance"),
+                entry(orphan_row.clone(), "imported"),
+            ],
+        };
+        let partitioned = serde_json::json!({
+            "subject_id": digest('f'),
+            "round": 2,
+            "prior_findings": [
+                {"key": architecture_row, "source": "architecture"},
+                {"key": performance_row, "source": "performance"},
+                {"key": orphan_row, "source": "imported"},
+            ],
+            "assignments": {
+                "architecture": [architecture_row, orphan_row],
+                "performance": [performance_row, orphan_row],
+            },
+        });
+
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &partitioned, "architecture").unwrap();
+        assert_eq!(
+            set.findings
+                .iter()
+                .map(|finding| finding.finding_id.clone())
+                .collect::<Vec<_>>(),
+            vec![architecture_row.clone(), orphan_row.clone()]
+        );
+
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &partitioned, "performance").unwrap();
+        assert_eq!(
+            set.findings
+                .iter()
+                .map(|finding| finding.finding_id.clone())
+                .collect::<Vec<_>>(),
+            vec![performance_row.clone(), orphan_row.clone()]
+        );
+
+        let error = retain_round_assignment(&mut full_set(), &partitioned, "tests").unwrap_err();
+        assert!(
+            error.contains("no partition for reviewer `tests`"),
+            "{error}"
+        );
+
+        let mut legacy = partitioned.clone();
+        legacy.as_object_mut().unwrap().remove("assignments");
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &legacy, "architecture").unwrap();
+        assert_eq!(
+            set.findings.len(),
+            3,
+            "a Round without a partition keeps the union"
+        );
     }
 
     #[test]

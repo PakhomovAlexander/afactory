@@ -11,9 +11,7 @@ pub fn encode_path(bytes: &[u8]) -> String {
         _ => {
             let mut encoded = String::with_capacity(bytes.len());
             for byte in bytes {
-                if byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
-                {
+                if is_literal_path_byte(*byte) {
                     encoded.push(*byte as char);
                 } else {
                     encoded.push_str(&format!("%{byte:02X}"));
@@ -22,6 +20,15 @@ pub fn encode_path(bytes: &[u8]) -> String {
             encoded
         }
     }
+}
+
+/// Whether `byte` stays literal in the percent spelling [`encode_path`] produces; every other
+/// byte is spelled `%XX`. This is the one definition of the alphabet: the manifest canonicality
+/// check in `review-source-git` calls it too, so the encoder and the checker cannot drift apart
+/// and silently change which Manifest spellings are canonical (Tree Digest identity depends on
+/// that spelling).
+pub fn is_literal_path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
 }
 
 /// Recover the raw path bytes named by [`encode_path`].
@@ -84,6 +91,27 @@ fn hex_value(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_byte_is_either_literal_or_percent_spelled_and_round_trips() {
+        for byte in 0..=u8::MAX {
+            let raw = [b'a', byte, b'z'];
+            let encoded = encode_path(&raw);
+            let expected_middle = if is_literal_path_byte(byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            };
+            assert!(
+                encoded == format!("a{expected_middle}z")
+                    || encoded == String::from_utf8_lossy(&raw),
+                "byte {byte:#04x} spelled {encoded:?}"
+            );
+            assert_eq!(decode_path(&encoded), raw, "byte {byte:#04x}");
+        }
+        assert!(!is_literal_path_byte(b'%'));
+        assert!(!is_literal_path_byte(b' '));
+    }
 
     #[test]
     fn encoding_is_lossless_and_literal_percents_are_unambiguous() {

@@ -279,6 +279,31 @@ fn reviewer_demand_classification_is_pipeline_owned() {
     ));
 }
 
+/// The scheduler's bound is pipeline policy: absent means the design default of four, a value
+/// is pinned with the rest of the pipeline, and zero is refused rather than read as sequential.
+#[test]
+fn max_parallel_defaults_to_four_and_is_validated() {
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert_eq!(loaded.max_parallel(), review_graph::DEFAULT_MAX_PARALLEL);
+    assert_eq!(loaded.max_parallel(), 4);
+
+    let configured = MINIMAL.replace("version = 2", "version = 2\nmax_parallel = 8");
+    assert_eq!(
+        Definition::from_toml(&configured)
+            .unwrap()
+            .load()
+            .unwrap()
+            .max_parallel(),
+        8
+    );
+
+    let zero = MINIMAL.replace("version = 2", "version = 2\nmax_parallel = 0");
+    assert!(matches!(
+        Definition::from_toml(&zero).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("max_parallel")
+    ));
+}
+
 #[test]
 fn check_timeout_is_validated_and_resolved_from_pipeline_authority() {
     let configured = MINIMAL.replace("version = 2", "version = 2\ncheck_timeout_seconds = 17");

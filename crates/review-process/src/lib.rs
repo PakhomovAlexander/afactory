@@ -21,6 +21,11 @@ pub enum SupervisedError {
         source: std::io::Error,
     },
     OutputHeld(&'static str),
+    /// The caller's stdout reader refused to read further (see [`AbortSignal`]); the process
+    /// group was ended. What the reader kept is the caller's; stderr up to the kill is here.
+    OutputRefused {
+        stderr: Vec<u8>,
+    },
 }
 
 impl std::fmt::Display for SupervisedError {
@@ -35,6 +40,12 @@ impl std::fmt::Display for SupervisedError {
             }
             Self::OutputHeld(stream) => {
                 write!(f, "process {stream} pipe was still held after 5 seconds")
+            }
+            Self::OutputRefused { .. } => {
+                write!(
+                    f,
+                    "process stdout was refused by its reader and the process was ended"
+                )
             }
         }
     }
@@ -117,6 +128,26 @@ where
     run_supervised_inner(command, Some(writer), timeout, exit_policy)
 }
 
+/// What the exact child wait can learn: the leader exited, or the stdout reader asked for the
+/// process group to end.
+enum Waited {
+    Exited(std::io::Result<ExitStatus>),
+    Abort,
+}
+
+/// Handed to a duplex stdout reader. `abort` ends the whole process group as soon as the
+/// supervisor observes it — a reader that has hit a byte ceiling stops the producer instead of
+/// letting it run to the deadline or block on a full pipe. Sending twice is harmless.
+pub struct AbortSignal {
+    sender: std::sync::mpsc::Sender<Waited>,
+}
+
+impl AbortSignal {
+    pub fn abort(&self) {
+        let _ = self.sender.send(Waited::Abort);
+    }
+}
+
 /// Run a bounded process with caller-defined streaming on both stdin and stdout. The callbacks
 /// execute on the shared process boundary's scoped threads, so a protocol parser can keep one
 /// object resident at a time while deadline and process-group policy remain centralized here.
@@ -132,6 +163,28 @@ where
     R: Send,
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
+{
+    run_supervised_duplex_with_abort(command, timeout, exit_policy, writer, |stdout, _| {
+        reader(stdout)
+    })
+}
+
+/// [`run_supervised_duplex`] whose stdout reader may end the process early through an
+/// [`AbortSignal`]. On abort the process group is killed, its exit reaped, and the call returns
+/// [`SupervisedError::OutputRefused`]; whatever the reader retained through captured state is
+/// still the caller's, exactly as on a deadline.
+pub fn run_supervised_duplex_with_abort<I, R, F, G>(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    writer: F,
+    reader: G,
+) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
+where
+    I: Send,
+    R: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
+    G: FnOnce(&mut dyn Read, AbortSignal) -> R + Send,
 {
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
@@ -153,18 +206,29 @@ where
             let _ = input_send.send(result);
         });
 
+        let (waited_send, waited_receive) = std::sync::mpsc::channel();
+        let abort = AbortSignal {
+            sender: waited_send.clone(),
+        };
         let mut stdout = child.stdout.take().expect("stdout was piped");
         let (output_send, output_receive) = std::sync::mpsc::channel();
         scope.spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader(&mut stdout)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reader(&mut stdout, abort)
+            }));
             let _ = output_send.send(result);
         });
 
         let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
         let deadline = Instant::now() + timeout;
-        let status = match wait_exact(child, deadline) {
-            Ok(status) => status,
+        let status = match wait_exact_or_abort(child, deadline, waited_send, waited_receive) {
+            Ok(Waited::Exited(Ok(status))) => status,
+            Ok(Waited::Exited(Err(error))) => return Err(SupervisedError::Wait(error)),
+            Ok(Waited::Abort) => {
+                return Err(SupervisedError::OutputRefused {
+                    stderr: collect_after_kill(stderr),
+                });
+            }
             Err(error) => return Err(error),
         };
         if exit_policy == ExitPolicy::KillProcessGroup {
@@ -381,6 +445,80 @@ fn collect_stderr(
     }
 }
 
+/// [`wait_exact`] that also listens for an [`AbortSignal`]: an abort kills the process group,
+/// reaps the leader within the drain grace, and reports `Waited::Abort`.
+#[cfg(unix)]
+fn wait_exact_or_abort(
+    mut child: std::process::Child,
+    deadline: Instant,
+    send: std::sync::mpsc::Sender<Waited>,
+    receive: std::sync::mpsc::Receiver<Waited>,
+) -> Result<Waited, SupervisedError> {
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = send.send(Waited::Exited(child.wait()));
+    });
+    match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Waited::Exited(Ok(status))) => Ok(Waited::Exited(Ok(status))),
+        Ok(Waited::Exited(Err(error))) => {
+            kill_process_group(pid);
+            Err(SupervisedError::Wait(error))
+        }
+        Ok(Waited::Abort) => {
+            kill_process_group(pid);
+            // Reap the leader so no zombie outlives the refusal; the waiter thread owns it.
+            let _ = receive.recv_timeout(OUTPUT_DRAIN_GRACE);
+            Ok(Waited::Abort)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            kill_process_group(pid);
+            let _ = receive.recv_timeout(OUTPUT_DRAIN_GRACE);
+            Err(SupervisedError::TimedOut {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            kill_process_group(pid);
+            Err(SupervisedError::Wait(std::io::Error::other(
+                "process waiter stopped without a result",
+            )))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_exact_or_abort(
+    mut child: std::process::Child,
+    deadline: Instant,
+    _send: std::sync::mpsc::Sender<Waited>,
+    receive: std::sync::mpsc::Receiver<Waited>,
+) -> Result<Waited, SupervisedError> {
+    let mut delay = Duration::from_millis(1);
+    loop {
+        if let Ok(Waited::Abort) = receive.try_recv() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(Waited::Abort);
+        }
+        match child.try_wait().map_err(SupervisedError::Wait)? {
+            Some(status) => return Ok(Waited::Exited(Ok(status))),
+            None if Instant::now() < deadline => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(20));
+            }
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SupervisedError::TimedOut {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                });
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn wait_exact(
     mut child: std::process::Child,
@@ -458,6 +596,48 @@ mod tests {
     fn an_expired_child_deadline_still_gets_stdin_writer_grace() {
         let expired = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         assert_eq!(stdin_writer_wait(expired), STDIN_EXIT_GRACE);
+    }
+
+    /// A reader that refuses further output ends the process at once: an endless producer is
+    /// gone long before its deadline, and what the reader kept is still in the caller's hands.
+    #[test]
+    fn an_aborting_reader_ends_the_process_group_before_the_deadline() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "yes"]);
+        let mut kept = Vec::new();
+        let started = Instant::now();
+        let outcome = run_supervised_duplex_with_abort(
+            &mut command,
+            Duration::from_secs(30),
+            ExitPolicy::PreserveProcessGroup,
+            |_stdin: &mut dyn Write| Ok::<(), ()>(()),
+            |stdout: &mut dyn Read, abort: AbortSignal| {
+                let mut buffer = [0_u8; 1024];
+                while kept.len() < 4096 {
+                    let read = stdout.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    kept.extend_from_slice(&buffer[..read]);
+                }
+                abort.abort();
+            },
+        );
+        let Err(error) = outcome else {
+            panic!("an aborted process completed normally");
+        };
+
+        assert!(
+            matches!(error, SupervisedError::OutputRefused { .. }),
+            "{error}"
+        );
+        assert!(kept.len() >= 4096);
+        assert!(kept.starts_with(b"y\ny\n"));
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

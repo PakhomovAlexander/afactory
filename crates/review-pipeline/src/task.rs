@@ -485,8 +485,14 @@ impl<'a> TaskKernel<'a> {
             if !gate_sealed.unchanged() {
                 result = mutated_gate_result(result, gate_sealed.mutations.paths());
             }
+            let result_value = serde_json::to_value(&result).map_err(|error| error.to_string())?;
+            // The serde spelling, never `Debug`: the same word the persisted result carries.
+            let status_name = result_value["status"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_owned();
             let result_artifact = cas
-                .put_json(&serde_json::to_value(&result).map_err(|error| error.to_string())?)
+                .put_json(&result_value)
                 .map_err(|error| error.to_string())?;
             progress.gates.push(GateEvidence {
                 name: result.name.clone(),
@@ -494,7 +500,7 @@ impl<'a> TaskKernel<'a> {
                 result_artifact: result_artifact.clone(),
             });
             self.append(TaskEventType::GateCompletedV1, &result_artifact)?;
-            (self.observer)(&format!("gate     {} -> {:?}", result.name, result.status));
+            (self.observer)(&format!("gate     {} -> {status_name}", result.name));
         }
         if progress
             .gates

@@ -628,6 +628,12 @@ pub struct PipelineDefinition {
     /// the authority layer and persisted in CampaignManifest@1.
     #[serde(default)]
     pub check_timeout_seconds: Option<u64>,
+    /// The most nodes the scheduler runs at once. Reviewers are model calls — minutes of
+    /// latency, no local CPU — so this bounds Provider concurrency, not host load. Absent means
+    /// the scheduler's default (`review_graph::DEFAULT_MAX_PARALLEL`); `af review plan` and
+    /// `af review report` print the effective value.
+    #[serde(default)]
+    pub max_parallel: Option<u32>,
     /// Required by pipeline format v3. Formats v1/v2 permanently retain their legacy local,
     /// read-only Gate behavior so pinned Campaign replay does not acquire new execution policy.
     #[serde(default)]
@@ -946,6 +952,9 @@ impl PipelineDefinition {
         }
         if self.check_timeout_seconds == Some(0) {
             return Err(invalid("check_timeout_seconds must be positive"));
+        }
+        if self.max_parallel == Some(0) {
+            return Err(invalid("max_parallel must be positive"));
         }
         Ok(())
     }

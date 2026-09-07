@@ -1778,6 +1778,16 @@ pub enum PortCardinality {
     Many,
 }
 
+impl PortCardinality {
+    /// The serde spelling, for diagnostics that must not depend on `Debug`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::Many => "many",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotAffinity {
@@ -1787,6 +1797,17 @@ pub enum SnapshotAffinity {
     Unbound,
     /// The consumer accepts either affinity. Intended for generic infrastructure only.
     Any,
+}
+
+impl SnapshotAffinity {
+    /// The serde spelling, for diagnostics that must not depend on `Debug`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SameSubject => "same_subject",
+            Self::Unbound => "unbound",
+            Self::Any => "any",
+        }
+    }
 }
 
 /// One complete resolved port entry in an invocation or output receipt.
