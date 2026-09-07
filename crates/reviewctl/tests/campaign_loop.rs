@@ -257,6 +257,107 @@ gate = "major"
     );
 }
 
+/// Two reviewers over one Subject. Each reports its own major Finding while `src/main.rs` still
+/// spins, and afterwards dispositions *every* Finding id its input carries — so what it was
+/// delivered is exactly what it dispositions.
+fn write_partition_config(repo: &Path) {
+    let mut programs = Vec::new();
+    for (node, title) in [
+        ("architecture", "Unbounded loop"),
+        ("performance", "Quadratic scan"),
+    ] {
+        let reviewer = repo.join(format!("{node}-reviewer.sh"));
+        std::fs::write(
+            &reviewer,
+            format!(
+                r#"#!/bin/sh
+input=$(cat)
+if grep -q 'loop {{}}' src/main.rs; then
+  printf '%s' '{{"verdict":"request-changes","summary":null,"findings":[{{"severity":"major","file":"src/main.rs","line":1,"title":"{title}","body":"{node} claim","fix":"fix it","confidence":0.9}}],"benchmark_demands":[],"dispositions":[]}}'
+else
+  ids=$(printf '%s' "$input" | grep -o '"finding_id":"[^"]*"' | sed 's/.*:"//; s/"$//')
+  dispositions=""
+  for id in $ids; do
+    entry=$(printf '{{"finding_id":"%s","position":"not_reproduced","reason":"absent from the current Subject"}}' "$id")
+    if [ -z "$dispositions" ]; then dispositions="$entry"; else dispositions="$dispositions,$entry"; fi
+  done
+  printf '{{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[%s]}}' "$dispositions"
+fi
+"#
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&reviewer, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        programs.push(reviewer);
+    }
+    set_pipeline(
+        repo,
+        &format!(
+            r#"version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+inputs = [{{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+runner = {{ program = "{}" }}
+[[nodes]]
+id = "performance"
+kind = "reviewer"
+inputs = [{{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+runner = {{ program = "{}" }}
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [
+  {{ name = "architecture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "performance", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "architecture", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "performance", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "architecture", port = "result" }}
+to = {{ node = "gather", port = "architecture" }}
+[[edges]]
+from = {{ node = "performance", port = "result" }}
+to = {{ node = "gather", port = "performance" }}
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 3
+gate = "major"
+"#,
+            programs[0].display(),
+            programs[1].display()
+        ),
+    );
+}
+
 fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
     let repo = dir.join("repo");
     let home = dir.join("home");
@@ -883,6 +984,129 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         dispatched.artifact_refs.contains(&set.prior_finding_set_id),
         "dispatch must pin the exact assignment Set"
     );
+}
+
+/// Round 2's prior-Finding assignment is partitioned by reporter: each reviewer is delivered,
+/// and must disposition, only the Finding it reported — not the whole Round-wide set — while
+/// the union still reaches the Ledger and convergence. A reviewer dispositioning only its own
+/// row completes the Round; both Findings stay open, so the Campaign does not converge.
+#[test]
+fn each_reviewer_dispositions_only_its_own_prior_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_partition_config(&repo);
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "two reviewers"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "partition", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 reports two majors\n{stdout}\n{stderr}");
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "partition", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "own-row dispositions complete the Round; Drops are not fixed authority\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("round    2"), "{stdout}");
+    assert!(!stdout.contains("Incomplete"), "{stdout}");
+
+    let state = Path::new(&state);
+    let cas = review_store::Cas::open(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let events = store.replay("campaign-partition").unwrap();
+
+    // The pinned Round document: the union plus a partition keyed by the reporting node.
+    let round = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == review_core::EventType::RoundStartedV1)
+        .expect("Round 2 start");
+    let round: review_core::RoundStartedPayloadV1 =
+        serde_json::from_value(round.payload.clone()).unwrap();
+    assert_eq!(round.round, 2);
+    let document = cas.get_json(&round.prior_finding_set_id).unwrap();
+    let union = document["prior_findings"].as_array().unwrap();
+    assert_eq!(union.len(), 2, "{document}");
+    let source_of = |key: &str| {
+        union
+            .iter()
+            .find(|row| row["key"].as_str() == Some(key))
+            .and_then(|row| row["source"].as_str())
+            .map(str::to_string)
+            .expect("assigned key is a union row")
+    };
+    let assignments = document["assignments"].as_object().unwrap();
+    assert_eq!(
+        assignments.keys().collect::<Vec<_>>(),
+        vec!["architecture", "performance"]
+    );
+    for (node, keys) in assignments {
+        let keys = keys.as_array().unwrap();
+        assert_eq!(
+            keys.len(),
+            1,
+            "{node} receives exactly its own row: {document}"
+        );
+        assert_eq!(&source_of(keys[0].as_str().unwrap()), node);
+    }
+
+    // What each reviewer dispositioned is exactly the row partitioned to it, and the reduced
+    // Round-2 FindingSet still holds the whole union.
+    let ledger_receipt = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeOutputReceiptV1
+                && event.node_id.as_deref() == Some("ledger")
+        })
+        .expect("Round 2 ledger receipt");
+    let receipt: review_core::NodeOutputReceiptPayloadV1 =
+        serde_json::from_value(ledger_receipt.payload.clone()).unwrap();
+    let set_envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(&receipt.outputs[0].artifact_ids[0]).unwrap()).unwrap();
+    let set: review_core::FindingSetV1 =
+        serde_json::from_value(set_envelope.payload.clone()).unwrap();
+    assert_eq!(set.round, 2);
+    assert_eq!(set.findings.len(), 2, "the union drives the Ledger");
+    assert!(set.findings.iter().all(|finding| finding.status == "open"));
+    let dispositions: Vec<review_core::FindingDispositionV1> = set_envelope
+        .input_artifacts
+        .iter()
+        .filter_map(|id| cas.get_json(id).ok())
+        .filter_map(|value| serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok())
+        .filter(|envelope| envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1)
+        .map(|envelope| serde_json::from_value(envelope.payload).unwrap())
+        .collect();
+    assert_eq!(
+        dispositions.len(),
+        2,
+        "one disposition per reviewer, not per pair"
+    );
+    for disposition in &dispositions {
+        assert_eq!(
+            disposition.position,
+            review_core::FindingDispositionPosition::NotReproduced
+        );
+        let reporter = set
+            .findings
+            .iter()
+            .find(|finding| finding.finding_id == disposition.finding_id)
+            .map(|finding| finding.source.clone())
+            .expect("disposition names a union Finding");
+        assert_eq!(
+            disposition.source, reporter,
+            "a reviewer dispositions only what it reported"
+        );
+    }
 }
 
 #[test]

@@ -3729,7 +3729,10 @@ impl<'a> Kernel<'a> {
                         return Err(error);
                     }
                 };
-                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
+                let assignment_node = self.reviewer_binding_node(node_id);
+                if let Err(error) =
+                    retain_round_assignment(&mut set, &round_assignment, &assignment_node)
+                {
                     if let Some(prepared) = prepared.take() {
                         self.release_prepared_attempt(
                             node_id,
@@ -5799,9 +5802,14 @@ where
         .collect()
 }
 
+/// Reduce the exact FindingSet@1 to what `node` must examine this Round: the rows the Round's
+/// pinned assignment document partitions to it under `assignments` — or, for a Round started
+/// before partitions existed, the whole Round-wide union, which stays the frozen delivery for
+/// those Rounds. A dynamic shard passes its Scatter's id, the node the partition is keyed by.
 fn retain_round_assignment(
     set: &mut review_core::FindingSetV1,
     round_assignment: &serde_json::Value,
+    node: &str,
 ) -> Result<(), String> {
     let rows = round_assignment
         .get("prior_findings")
@@ -5827,8 +5835,35 @@ fn retain_round_assignment(
             "Round prior Finding assignment is not a subset of its exact FindingSet@1".into(),
         );
     }
+    let retained: BTreeSet<&str> = match round_assignment.get("assignments") {
+        None => assigned,
+        Some(assignments) => {
+            let partition = assignments
+                .as_object()
+                .ok_or("Round prior Finding assignments are not an object")?;
+            let mine = partition
+                .get(node)
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    format!("Round prior Finding assignment has no partition for reviewer `{node}`")
+                })?;
+            let mut retained = BTreeSet::new();
+            for key in mine {
+                let key = key.as_str().ok_or_else(|| {
+                    format!("Round prior Finding assignment for `{node}` contains a non-string key")
+                })?;
+                if !assigned.contains(key) {
+                    return Err(format!(
+                        "Round prior Finding assignment for `{node}` names a Finding outside the Round assignment"
+                    ));
+                }
+                retained.insert(key);
+            }
+            retained
+        }
+    };
     set.findings
-        .retain(|finding| assigned.contains(finding.finding_id.as_str()));
+        .retain(|finding| retained.contains(finding.finding_id.as_str()));
     Ok(())
 }
 
@@ -6620,11 +6655,104 @@ outputs = ["findings"]
                 "round": 2,
                 "prior_findings": [{"key": keep}]
             }),
+            "correctness",
         )
         .unwrap();
 
         assert_eq!(set.findings.len(), 1);
         assert_eq!(set.findings[0].finding_id, keep);
+    }
+
+    /// With a partition beside the union, a reviewer is delivered only its own rows; a Round
+    /// without one (started before partitions existed) still delivers the whole union; a node
+    /// the partition does not name is refused rather than silently given everything.
+    #[test]
+    fn a_partitioned_round_assignment_delivers_only_the_reviewers_own_rows() {
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let entry = |finding_id: String, source: &str| review_core::FindingSetEntryV1 {
+            finding_id,
+            status: "open".into(),
+            severity: review_core::Severity::Major,
+            effective_severity: Some(review_core::Severity::Major),
+            scope: "in".into(),
+            file: Some("src/lib.rs".into()),
+            line: Some(1),
+            location_unrecorded: false,
+            title: "claim".into(),
+            body: "body".into(),
+            fix: Some("fix".into()),
+            confidence: Some(0.9),
+            source: source.into(),
+            last_seen_round: 1,
+            report_ids: vec![digest('d')],
+        };
+        let architecture_row = digest('a');
+        let performance_row = digest('b');
+        let orphan_row = digest('c');
+        let full_set = || review_core::FindingSetV1 {
+            subject_id: digest('d'),
+            round: 2,
+            prior_finding_set_id: digest('e'),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: Vec::new(),
+            relation_ids: Vec::new(),
+            resolution_ids: Vec::new(),
+            findings: vec![
+                entry(architecture_row.clone(), "architecture"),
+                entry(performance_row.clone(), "performance"),
+                entry(orphan_row.clone(), "imported"),
+            ],
+        };
+        let partitioned = serde_json::json!({
+            "subject_id": digest('f'),
+            "round": 2,
+            "prior_findings": [
+                {"key": architecture_row, "source": "architecture"},
+                {"key": performance_row, "source": "performance"},
+                {"key": orphan_row, "source": "imported"},
+            ],
+            "assignments": {
+                "architecture": [architecture_row, orphan_row],
+                "performance": [performance_row, orphan_row],
+            },
+        });
+
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &partitioned, "architecture").unwrap();
+        assert_eq!(
+            set.findings
+                .iter()
+                .map(|finding| finding.finding_id.clone())
+                .collect::<Vec<_>>(),
+            vec![architecture_row.clone(), orphan_row.clone()]
+        );
+
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &partitioned, "performance").unwrap();
+        assert_eq!(
+            set.findings
+                .iter()
+                .map(|finding| finding.finding_id.clone())
+                .collect::<Vec<_>>(),
+            vec![performance_row.clone(), orphan_row.clone()]
+        );
+
+        let error = retain_round_assignment(&mut full_set(), &partitioned, "tests").unwrap_err();
+        assert!(
+            error.contains("no partition for reviewer `tests`"),
+            "{error}"
+        );
+
+        let mut legacy = partitioned.clone();
+        legacy.as_object_mut().unwrap().remove("assignments");
+        let mut set = full_set();
+        retain_round_assignment(&mut set, &legacy, "architecture").unwrap();
+        assert_eq!(
+            set.findings.len(),
+            3,
+            "a Round without a partition keeps the union"
+        );
     }
 
     #[test]
