@@ -597,7 +597,7 @@ fn worker_context_manifests_name_records_that_validate() {
 /// names its own version.
 #[test]
 fn records_written_by_af_v0_7_1_still_validate() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/task-v0.7.1");
+    let directory = workspace_root().join("crates/reviewctl/tests/fixtures/task-v0.7.1");
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())

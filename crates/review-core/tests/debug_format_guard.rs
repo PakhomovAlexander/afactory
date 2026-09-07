@@ -243,11 +243,16 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
 ];
 
+/// The tree under test, resolved at runtime.
+///
+/// Never from `CARGO_MANIFEST_DIR` alone: a Gate materializes the tree into a fresh sandbox and
+/// reuses a shared `CARGO_TARGET_DIR`, so a cached test binary was compiled in an earlier,
+/// already-deleted sandbox and that path no longer exists. `scripts/verify.sh` exports
+/// `AF_WORKSPACE_ROOT`; the manifest dir is only the fallback for a plain `cargo test`.
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root")
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 fn rust_sources(root: &Path) -> Vec<PathBuf> {
