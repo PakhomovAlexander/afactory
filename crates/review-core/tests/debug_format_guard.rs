@@ -46,7 +46,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     // non-serde type: a bounded sample of mutated paths in a gate diagnostic
     (
-        "crates/review-pipeline/src/lib.rs",
+        "crates/review-pipeline/src/kernel/gate.rs",
         "\"gate mutated its read-only sandbox: {} paths, e.g. {:?}\",",
     ),
     // quoted text / non-serde type: OsString attribute, ExitStatus, the sandbox `Isolation` enum
