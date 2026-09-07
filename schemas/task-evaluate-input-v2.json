@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-evaluate-input:2",
+  "title": "af/evaluate-input@2 Worker input",
+  "description": "The exact, role-scoped input the independent evaluator receives for one implement Task (ADR-0028, ADR-0046). It is Worker Input, not a log record: no Task event references it, but it is durable in the CAS and named by `af/worker-evidence@1`'s context manifest, which is what makes the manifest's claim about what the evaluator was shown checkable. `@2` replaces `@1`'s complete mutation path lists with a bounded summary; the change was breaking because `mutations.added` went from an array of paths to an integer count.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "goal",
+    "source_snapshot_id",
+    "derived_snapshot_id",
+    "mutations",
+    "gates",
+    "budget",
+    "output_contract"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/evaluate-input@2"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "goal": {
+      "description": "The operator's verbatim goal. The evaluator judges the derived Snapshot against this and nothing else.",
+      "type": "string",
+      "minLength": 1
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "derived_snapshot_id": {
+      "description": "The Snapshot materialized read-only as the evaluator's sandbox: the tree the verdict is about.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "mutations": {
+      "description": "The bounded summary of what the implementer changed. `count`/`added`/`modified`/`deleted` are exact totals; `sample` is at most 20 paths and `truncated` says whether it is partial. `artifact` names the `af/derived-snapshot@1` record holding the complete lists — durable once, and not fetchable from the evaluator's sandbox.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "added",
+        "modified",
+        "deleted",
+        "sample",
+        "truncated",
+        "artifact"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "added": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "modified": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deleted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sample": {
+          "description": "Sorted across all three kinds, capped at `MUTATION_SAMPLE` (20). Illustrative, never the scope signal — the counts are.",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "artifact": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "gates": {
+      "description": "Every acceptance Gate the kernel ran on the derived Snapshot, in pipeline order. All of them passed, or the Task would not have reached the evaluator.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "result_artifact"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "not_run"
+            ]
+          },
+          "result_artifact": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "output_contract": {
+      "description": "The exact shape of the one JSON object the evaluator must return, restated in the input so the Worker never has to infer it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "summary"
+      ],
+      "properties": {
+        "verdict": {
+          "const": "approve|reject"
+        },
+        "summary": {
+          "const": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "budget": {
+      "description": "The bounded reservation for this Attempt (ADR-0028). `reserved_tokens` is what the kernel charged the run budget before dispatch, not a quota the Worker must spend.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reserved_tokens"
+      ],
+      "properties": {
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

@@ -6,12 +6,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema",
     "verdict",
     "summary"
   ],
   "properties": {
     "schema": {
+      "description": "Marker the current writer always emits. Not required: `af` v0.7.1 wrote `verdict` and `summary` alone, and those rows are still in Task state.",
       "const": "af/task-evaluation@1"
     },
     "verdict": {

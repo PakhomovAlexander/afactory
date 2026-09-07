@@ -13,7 +13,6 @@
     "goal_artifact_id",
     "source_snapshot_id",
     "derived_snapshot_id",
-    "derived_snapshot_size",
     "authority",
     "workers",
     "gates",
@@ -76,6 +75,7 @@
       ]
     },
     "derived_snapshot_size": {
+      "description": "Recorded by the current writer on every outcome, null when no derived Snapshot was published. Not required: `af` v0.7.1 wrote this record without it, and absent means unmeasured, not zero.",
       "oneOf": [
         {
           "$ref": "#/$defs/size"
@@ -237,6 +237,7 @@
               "const": "unverified"
             },
             "stage": {
+              "description": "Closed inside `@1`: a reader holding this file must not start hard-failing records it was told it could read, so adding a stage bumps the type to `af/task-outcome@2` (ADR-0046).",
               "enum": [
                 "implementer",
                 "budget",

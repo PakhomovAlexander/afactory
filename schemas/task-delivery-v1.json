@@ -13,7 +13,6 @@
     "derived_snapshot_id",
     "target",
     "outcome",
-    "ignored_paths",
     "remote_actions"
   ],
   "properties": {
@@ -73,7 +72,7 @@
       ]
     },
     "ignored_paths": {
-      "description": "Losslessly encoded delivered Snapshot paths the operator's ordinary `git add` would ignore.",
+      "description": "Losslessly encoded delivered Snapshot paths the operator's ordinary `git add` would ignore. Advisory, and written by the current writer on every receipt. Not required: pilot receipts predate the field, which is why the Rust reader defaults it (`crates/reviewctl/src/task.rs`).",
       "type": "array",
       "items": {
         "type": "string",

@@ -47,7 +47,11 @@ The Task log is a **distinct contract**: not a second kernel, and not a tenant o
    sorted sample of twenty paths, and the `af/derived-snapshot@1` artifact ID — never the complete
    path lists ([ADR-0028](0028-prioritize-wise-token-use-and-minimum-worker-context.md)). The full
    lists are durable once, in that artifact. One helper (`review_pipeline::mutations`) serves the
-   review path's provenance record and the Task path's prompt.
+   review path's provenance record and the Task path's prompt. Least-sufficient is not
+   least-informed: the evaluator's prompt (`.af/workers/evaluator/reviewer.md`) names the exact
+   `af/evaluate-input@2` fields it receives, says that `sample` is capped and `truncated` means
+   partial, and directs the Worker to read its sandbox and treat the counts — not the sample — as
+   the scope signal.
 6. **A ceiling, checked before publication.** `DerivedSize::measure` reads only the seal scan's
    metadata. `MAX_DERIVED_MUTATION_ENTRIES_V1 = 4096` and `MAX_DERIVED_MUTATION_BYTES_V1 =
    256 MiB` bound what the implementer added or modified: a `cargo check` of this workspace
@@ -62,10 +66,37 @@ The Task log is a **distinct contract**: not a second kernel, and not a tenant o
    and cloned per Gate and for the evaluator.
 
 Task records follow [ADR-0002](0002-event-payload-changes-bump-the-type-version.md): a shape
-change bumps the version. The `schema` markers on `af/worker-evidence@1` and
-`af/task-evaluation@1` and the new `size` / `derived_snapshot_size` fields are additive; the
-delivery reader already treats a missing advisory field as absent rather than as a different
-contract, and readers of earlier pilot state do the same here.
+change bumps the version. `af task` shipped in `v0.7.1`, so real Task state exists in the
+shapes that release wrote, and `af/…@1` readers are permanent. What this decision adds to `@1`
+is therefore **optional, never required**: the `schema` markers on `af/worker-evidence@1` and
+`af/task-evaluation@1`, `size` on `af/derived-snapshot@1`, and `derived_snapshot_size` on
+`af/task-outcome@1` are written by every current record and absent from every `v0.7.1` one, and
+`ignored_paths` on `af/task-delivery@1` predates even that. A `required` entry is not an
+additive change — it would make durable state invalid against the schema that names its own
+version — so those five stay out of the schemas' `required` lists while keeping their `const`,
+`pattern`, and type constraints. That the current binary always writes them is a test assertion
+(`crates/reviewctl/tests/task_contracts.rs`), not a schema rule, and the `v0.7.1` shapes are
+stored as fixtures the `@1` schemas must keep accepting
+(`crates/reviewctl/tests/fixtures/task-v0.7.1`).
+
+Three consequences of that rule are fixed here so they are not rediscovered:
+
+- **The `stage` vocabulary is closed inside `@1`.** `af/task-outcome@1`'s `outcome.stage` is an
+  enum under `additionalProperties: false`; the `snapshot` member is safe only because the schema
+  was born containing it. Adding a stage bumps the type to `af/task-outcome@2` — a reader holding
+  today's schema file must not start hard-failing records it was told it could read. An open enum
+  with a fallback was rejected: an unrecognised stage is exactly the case where the reader cannot
+  act correctly, so silence is worse than a version it can refuse by name.
+- **Every declared `af/…@N` marker has a schema.** A marker with no schema file is a decorative
+  version number: nothing states what the version means, and renumbering it breaks no test. The
+  Worker-input markers now have theirs — `schemas/task-worker-package-v1.json`,
+  `schemas/task-implement-input-v1.json`, `schemas/task-evaluate-input-v2.json` — and a test
+  enumerates the marker constants declared in the workspace and fails when one is unregistered.
+  `af/evaluate-input@2` is a real bump: `mutations.added` went from an array of paths to an
+  integer count.
+- **A serialized Task event is the whole envelope.** `schemas/task-event-v1.json` requires
+  `task_id`, so the rows `af task show --json` emits as `history[]` carry it, rather than being a
+  subset of the envelope the schema describes.
 
 ## Considered options
 
@@ -98,7 +129,10 @@ contract, and readers of earlier pilot state do the same here.
   catches any of the four missing. The `af/…@1` readers are permanent
   ([ADR-0002](0002-event-payload-changes-bump-the-type-version.md)).
 - `crates/reviewctl/tests/task_contracts.rs` validates every row a real Task and delivery persist
-  against `schemas/`; a record shape can no longer change without a schema change beside it.
+  against `schemas/`, and every stored `v0.7.1`-era record against the same `@1` files; a record
+  shape can no longer change without a schema change beside it, in either direction. It also
+  fetches every artifact a Worker context manifest names and validates it against the schema the
+  manifest claims for it, so `artifact_type` is a falsifiable claim rather than a free string.
 - The Task ceiling is a kernel constant, not project policy. A project that legitimately needs a
   larger derived Snapshot needs a new decision, not a knob.
 - `review-pipeline` gains `serde` and `tempfile` as ordinary dependencies; it still does not

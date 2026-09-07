@@ -31,6 +31,20 @@ release pages only.
   instead of filing build output into the Store as permanent state.
 - Tasks are recorded in a typed Task log with nine schema-backed event types (ADR-0046); a Task
   event referencing an artifact the CAS does not hold is refused.
+- Task records written by `0.7.1` stay valid: the fields added to `af/…@1` Task types are
+  optional, not `required`, and stored `0.7.1`-era records are validated against the published
+  `@1` schemas on every run of the suite. Adding an `outcome.stage` member now bumps the type to
+  `af/task-outcome@2` rather than changing `@1`.
+- The Worker-input markers have schemas: `af/worker-package@1`, `af/implement-input@1`, and
+  `af/evaluate-input@2`. A declared `af/…@N` marker with no schema file fails the suite, and each
+  artifact a Worker context manifest names is validated against the schema it claims.
+- `af task show --json` history rows carry `task_id`, so an emitted row is the whole
+  `TaskEvent@1` envelope.
+- The evaluator's prompt names the exact `af/evaluate-input@2` fields it receives, including that
+  `mutations.sample` is capped at twenty paths and `truncated` marks the list partial.
+- `af onboard --refresh-lock` re-derives the digest of every pinned Worker package that still
+  exists, so an implementer or evaluator referenced only from a Task pipeline can no longer keep
+  a pin its files no longer match.
 - `install.sh` is published inside the signed `SHA256SUMS` set and is fetched by release tag;
   the release workflow verifies each archive after packaging and obtains minisign by pinned
   digest.

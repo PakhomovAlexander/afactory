@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-worker-package:1",
+  "title": "af/worker-package@1 record",
+  "description": "One digest-pinned Worker package published to the CAS before any Worker of a Task runs. Referenced by ID from `af/task-opened@1`, `af/task-outcome@1`, and every `af/worker-evidence@1` context manifest, so the exact instructions a Worker was given stay recoverable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "version",
+    "digest",
+    "files"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/worker-package@1"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "description": "The package digest the Authority Snapshot's lock pins.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "files": {
+      "description": "Every file of the package, by package-relative path, each stored as its own CAS object.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    }
+  }
+}
