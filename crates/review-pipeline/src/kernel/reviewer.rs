@@ -169,6 +169,11 @@ impl Kernel<'_> {
             }
             return Err(error);
         }
+        // Which of the delivered Findings this node *owes* a disposition for. Membership and
+        // coverage are deliberately different sets: every reviewer is delivered the whole Round
+        // union and may name any of it — that is the only route a peer's wrong claim reaches
+        // `contested` — while only its own rows are required back.
+        let mut required_finding_ids: BTreeSet<String> = BTreeSet::new();
         if let Some(artifact) = &prior_findings_artifact {
             let encoded = match self
                 .cas
@@ -286,10 +291,7 @@ impl Kernel<'_> {
                         return Err(error);
                     }
                 };
-                let assignment_node = self.reviewer_binding_node(node_id);
-                if let Err(error) =
-                    retain_round_assignment(&mut set, &round_assignment, &assignment_node)
-                {
+                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
                     if let Some(prepared) = prepared.take() {
                         self.release_prepared_attempt(
                             node_id,
@@ -299,6 +301,35 @@ impl Kernel<'_> {
                         )?;
                     }
                     return Err(error);
+                }
+                // A dynamic shard owes what its Scatter owes: coverage is keyed by the static
+                // node the Round's rows name as their `source`.
+                let assignment_node = self.reviewer_binding_node(node_id);
+                // Cloned, not held: the coverage decision must not keep a lock across the
+                // failure path below.
+                let orphaned = self
+                    .orphaned_prior_sources
+                    .lock()
+                    .expect("orphaned prior sources")
+                    .clone();
+                match round_coverage(
+                    &round_assignment,
+                    &self.prior_finding_receivers,
+                    &orphaned,
+                    &assignment_node,
+                ) {
+                    Ok(coverage) => required_finding_ids = coverage,
+                    Err(error) => {
+                        if let Some(prepared) = prepared.take() {
+                            self.release_prepared_attempt(
+                                node_id,
+                                &prepared.attempt,
+                                prepared.reservation.as_ref(),
+                                &error,
+                            )?;
+                        }
+                        return Err(error);
+                    }
                 }
                 serde_json::to_value(set).expect("validated FindingSet@1 serializes")
             } else {
@@ -319,6 +350,25 @@ impl Kernel<'_> {
             }
         }
         inputs.prior_findings_artifact_id = prior_findings_artifact.clone();
+
+        // Every Finding the Round delivered to this node: what a disposition or a Proposal claim
+        // may name. This is the whole Round union, as it was before the delivered set was ever
+        // narrowed, so a reviewer can still `dispute` a peer's claim and attach a fix to it.
+        let permitted_finding_ids: Vec<String> = inputs
+            .prior_findings
+            .as_ref()
+            .and_then(|value| value.get("findings"))
+            .and_then(serde_json::Value::as_array)
+            .map(|findings| {
+                findings
+                    .iter()
+                    .filter_map(|finding| finding.get("finding_id"))
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        required_finding_ids.retain(|id| permitted_finding_ids.iter().any(|kept| kept == id));
 
         let mut retry_failures: Vec<String> = Vec::new();
         let broker_fence_authority = self
@@ -543,24 +593,11 @@ impl Kernel<'_> {
                     }
                     let returned = receipted.returned;
                     let proposal_declaration = returned.proposal;
-                    let assigned_finding_ids = inputs
-                        .prior_findings
-                        .as_ref()
-                        .and_then(|value| value.get("findings"))
-                        .and_then(serde_json::Value::as_array)
-                        .map(|findings| {
-                            findings
-                                .iter()
-                                .filter_map(|finding| finding.get("finding_id"))
-                                .filter_map(serde_json::Value::as_str)
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
                     let result_value = match reviewer_result_value(
                         &returned.output,
                         result_contract,
-                        &assigned_finding_ids,
+                        &permitted_finding_ids,
+                        &required_finding_ids,
                     ) {
                         Ok(value) => value,
                         Err(error) => {
@@ -595,7 +632,7 @@ impl Kernel<'_> {
                             &attempt,
                             &result_artifact,
                             proposal_declaration,
-                            &assigned_finding_ids,
+                            &permitted_finding_ids,
                             returned.output.findings.len(),
                             &sealed,
                         )?;
@@ -869,10 +906,16 @@ impl Kernel<'_> {
     }
 }
 
+/// Admit one returned reviewer result. For `ReviewerResult@2` the two prior-Finding sets are
+/// deliberately different: `permitted_finding_ids` is every Finding the Round delivered (the
+/// whole union — a disposition may name a peer's claim, which is how a Dispute reaches
+/// `contested` at all), while `required_finding_ids` is only this node's own partition of that
+/// union, which it must return in full. Membership is the union; coverage is the partition.
 fn reviewer_result_value(
     stage: &LegacyStageOutput,
     contract: ReviewerResultContract,
-    assigned_finding_ids: &[String],
+    permitted_finding_ids: &[String],
+    required_finding_ids: &BTreeSet<String>,
 ) -> Result<serde_json::Value, ReviewerResultRejection> {
     let mut object =
         match serde_json::to_value(stage).map_err(|_| ReviewerResultRejection::ReportPayload)? {
@@ -931,7 +974,7 @@ fn reviewer_result_value(
         }
         ReviewerResultContract::V2 => {
             review_core::validate_reviewer_result_v2_classified(&value)?;
-            let expected: BTreeSet<_> = assigned_finding_ids.iter().map(String::as_str).collect();
+            let permitted: BTreeSet<_> = permitted_finding_ids.iter().map(String::as_str).collect();
             let dispositions = value["dispositions"]
                 .as_array()
                 .expect("ReviewerResult@2 validator checked dispositions");
@@ -943,11 +986,15 @@ fn reviewer_result_value(
                 if !actual.insert(finding_id) {
                     return Err(ReviewerResultRejection::DuplicateDisposition);
                 }
-                if !expected.contains(finding_id) {
+                // Outside the Round entirely — an invented or stale key, not a peer's claim.
+                if !permitted.contains(finding_id) {
                     return Err(ReviewerResultRejection::UnassignedDisposition);
                 }
             }
-            if actual != expected {
+            if required_finding_ids
+                .iter()
+                .any(|required| !actual.contains(required.as_str()))
+            {
                 return Err(ReviewerResultRejection::MissingDispositionCoverage);
             }
         }
@@ -1001,14 +1048,21 @@ pub(crate) fn reviewer_stage_output(
         .map_err(|error| error.to_string())
 }
 
-/// Reduce the exact FindingSet@1 to what `node` must examine this Round: the rows the Round's
-/// pinned assignment document partitions to it under `assignments` — or, for a Round started
-/// before partitions existed, the whole Round-wide union, which stays the frozen delivery for
-/// those Rounds. A dynamic shard passes its Scatter's id, the node the partition is keyed by.
+/// Reduce the exact FindingSet@1 to the Round's pinned prior-Finding union: the rows the Round
+/// document names, and nothing else. Every reviewer receives the same union — the delivered
+/// input bytes are the Round's, not a per-reviewer slice — because a reviewer that cannot see a
+/// peer's claim cannot dispute it, and `contested` is the only route by which peer review
+/// challenges a wrong claim.
+///
+/// The reduction is real: the reducer's Set carries every Finding view, including the rejected,
+/// wontfix, and authority-diagnostic rows the Round document deliberately leaves out. So the
+/// Set-level reduction provenance — `selected_report_ids`, `relation_ids`, `resolution_ids` —
+/// describes the reduction, not this projection of it, and would otherwise name Findings the
+/// delivered document does not carry and a sandbox cannot dereference. When anything is
+/// dropped, those lists go with it; when the union is the whole reduction, they are untouched.
 fn retain_round_assignment(
     set: &mut review_core::FindingSetV1,
     round_assignment: &serde_json::Value,
-    node: &str,
 ) -> Result<(), String> {
     let rows = round_assignment
         .get("prior_findings")
@@ -1034,99 +1088,83 @@ fn retain_round_assignment(
             "Round prior Finding assignment is not a subset of its exact FindingSet@1".into(),
         );
     }
-    let retained: BTreeSet<&str> = match round_assignment.get("assignments") {
-        None => assigned,
-        Some(assignments) => {
-            let partition = assignments
-                .as_object()
-                .ok_or("Round prior Finding assignments are not an object")?;
-            let mine = partition
-                .get(node)
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    format!("Round prior Finding assignment has no partition for reviewer `{node}`")
-                })?;
-            let mut retained = BTreeSet::new();
-            for key in mine {
-                let key = key.as_str().ok_or_else(|| {
-                    format!("Round prior Finding assignment for `{node}` contains a non-string key")
-                })?;
-                if !assigned.contains(key) {
-                    return Err(format!(
-                        "Round prior Finding assignment for `{node}` names a Finding outside the Round assignment"
-                    ));
-                }
-                retained.insert(key);
-            }
-            retained
-        }
-    };
+    let reduced = assigned.len() < set.findings.len();
     set.findings
-        .retain(|finding| retained.contains(finding.finding_id.as_str()));
+        .retain(|finding| assigned.contains(finding.finding_id.as_str()));
+    if reduced {
+        set.selected_report_ids.clear();
+        set.relation_ids.clear();
+        set.resolution_ids.clear();
+    }
     Ok(())
+}
+
+/// The rows `node` must return a disposition for this Round, derived — never read back from the
+/// persisted document, which carries only the union (see
+/// `reviewctl::authority::prior_finding_set_document`). The rule, once:
+///
+/// - a row belongs to the receiving node its `source` names; a Scatter shard `node#slice:…`
+///   counts as its Scatter `node`, whose shards all inherit the Scatter's rows;
+/// - a row whose source is no receiving node — a reviewer with no `FindingSet@1` input, a
+///   legacy imported source, or a Scatter this generation already closed without one
+///   `Completed` shard — is orphan, and joins *every* receiving node's coverage, so an open
+///   prior Finding can never lose its disposition obligation by falling between reviewers;
+/// - when the caller composed no pipeline definition, `receiving` is empty, every row is orphan
+///   and the whole union is required — the conservative pre-partition obligation.
+///
+/// What this saves, and what it does not: the *output* obligation shrinks from R×N dispositions
+/// to N across R reviewers; the delivered input bytes are unchanged, because the union is
+/// delivered whole. Delivering only the partition would save those bytes too, but it would make
+/// a cross-reviewer Dispute and a cross-reviewer Proposal claim structurally impossible — that
+/// is a documented mechanism (see `CONTEXT.md`, **Dispute**) and needs its own ADR, so it is
+/// deliberately not done here.
+fn round_coverage(
+    round_assignment: &serde_json::Value,
+    receiving: &[String],
+    orphaned: &BTreeSet<String>,
+    node: &str,
+) -> Result<BTreeSet<String>, String> {
+    let rows = round_assignment
+        .get("prior_findings")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("Round prior Finding assignment does not contain a prior_findings array")?;
+    let owns = |source: &str| {
+        let base = source
+            .split_once("#slice:")
+            .map_or(source, |(base, _)| base);
+        receiving.iter().any(|receiver| receiver == base)
+            && !orphaned.contains(base)
+            && base == node
+    };
+    let orphan = |source: &str| {
+        let base = source
+            .split_once("#slice:")
+            .map_or(source, |(base, _)| base);
+        !receiving.iter().any(|receiver| receiver == base) || orphaned.contains(base)
+    };
+    let mut coverage = BTreeSet::new();
+    for row in rows {
+        let key = row
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Round prior Finding assignment contains a row without a key")?;
+        let source = row
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if owns(source) || orphan(source) {
+            coverage.insert(key.to_string());
+        }
+    }
+    Ok(coverage)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn exact_finding_set_is_filtered_by_the_pinned_round_assignment() {
-        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-        let entry = |finding_id: String| review_core::FindingSetEntryV1 {
-            finding_id,
-            status: "open".into(),
-            severity: review_core::Severity::Major,
-            effective_severity: Some(review_core::Severity::Major),
-            scope: "in".into(),
-            file: Some("src/lib.rs".into()),
-            line: Some(1),
-            location_unrecorded: false,
-            title: "claim".into(),
-            body: "body".into(),
-            fix: Some("fix".into()),
-            confidence: Some(0.9),
-            source: "correctness".into(),
-            last_seen_round: 1,
-            report_ids: vec![digest('d')],
-        };
-        let keep = digest('a');
-        let declined = digest('b');
-        let diagnostic = digest('c');
-        let mut set = review_core::FindingSetV1 {
-            subject_id: digest('d'),
-            round: 1,
-            prior_finding_set_id: digest('e'),
-            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
-            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
-            selected_report_ids: Vec::new(),
-            relation_ids: Vec::new(),
-            resolution_ids: Vec::new(),
-            findings: vec![entry(keep.clone()), entry(declined), entry(diagnostic)],
-        };
-
-        retain_round_assignment(
-            &mut set,
-            &serde_json::json!({
-                "subject_id": digest('f'),
-                "round": 2,
-                "prior_findings": [{"key": keep}]
-            }),
-            "correctness",
-        )
-        .unwrap();
-
-        assert_eq!(set.findings.len(), 1);
-        assert_eq!(set.findings[0].finding_id, keep);
-    }
-
-    /// With a partition beside the union, a reviewer is delivered only its own rows; a Round
-    /// without one (started before partitions existed) still delivers the whole union; a node
-    /// the partition does not name is refused rather than silently given everything.
-    #[test]
-    fn a_partitioned_round_assignment_delivers_only_the_reviewers_own_rows() {
-        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-        let entry = |finding_id: String, source: &str| review_core::FindingSetEntryV1 {
+    fn entry(finding_id: String, source: &str) -> review_core::FindingSetEntryV1 {
+        review_core::FindingSetEntryV1 {
             finding_id,
             status: "open".into(),
             severity: review_core::Severity::Major,
@@ -1141,8 +1179,60 @@ mod tests {
             confidence: Some(0.9),
             source: source.into(),
             last_seen_round: 1,
-            report_ids: vec![digest('d')],
+            report_ids: vec![format!("sha256:{}", "d".repeat(64))],
+        }
+    }
+
+    fn digest(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    #[test]
+    fn exact_finding_set_is_filtered_by_the_pinned_round_assignment() {
+        let keep = digest('a');
+        let declined = digest('b');
+        let diagnostic = digest('c');
+        let mut set = review_core::FindingSetV1 {
+            subject_id: digest('d'),
+            round: 1,
+            prior_finding_set_id: digest('e'),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
+            identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            selected_report_ids: vec![digest('f')],
+            relation_ids: vec![digest('0')],
+            resolution_ids: vec![digest('1')],
+            findings: vec![
+                entry(keep.clone(), "correctness"),
+                entry(declined, "correctness"),
+                entry(diagnostic, "correctness"),
+            ],
         };
+
+        retain_round_assignment(
+            &mut set,
+            &serde_json::json!({
+                "subject_id": digest('f'),
+                "round": 2,
+                "prior_findings": [{"key": keep, "source": "correctness"}]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(set.findings.len(), 1);
+        assert_eq!(set.findings[0].finding_id, keep);
+        // The reduction's own provenance describes the reduction, not this projection: it named
+        // two Findings the delivered document no longer carries, and a sandbox can dereference
+        // none of it (ADR-0028).
+        assert!(set.selected_report_ids.is_empty());
+        assert!(set.relation_ids.is_empty());
+        assert!(set.resolution_ids.is_empty());
+    }
+
+    /// Delivery is the Round-wide union for every reviewer, exactly as it was before the
+    /// partition existed. Nothing per-reviewer is read out of the persisted document; a stray
+    /// `assignments` key written by an unreleased dev build is ignored rather than obeyed.
+    #[test]
+    fn a_partitioned_round_assignment_delivers_only_the_reviewers_own_rows() {
         let architecture_row = digest('a');
         let performance_row = digest('b');
         let orphan_row = digest('c');
@@ -1161,7 +1251,7 @@ mod tests {
                 entry(orphan_row.clone(), "imported"),
             ],
         };
-        let partitioned = serde_json::json!({
+        let union = serde_json::json!({
             "subject_id": digest('f'),
             "round": 2,
             "prior_findings": [
@@ -1169,46 +1259,136 @@ mod tests {
                 {"key": performance_row, "source": "performance"},
                 {"key": orphan_row, "source": "imported"},
             ],
-            "assignments": {
-                "architecture": [architecture_row, orphan_row],
-                "performance": [performance_row, orphan_row],
-            },
         });
-
-        let mut set = full_set();
-        retain_round_assignment(&mut set, &partitioned, "architecture").unwrap();
-        assert_eq!(
-            set.findings
-                .iter()
-                .map(|finding| finding.finding_id.clone())
-                .collect::<Vec<_>>(),
-            vec![architecture_row.clone(), orphan_row.clone()]
+        let mut with_stray_key = union.clone();
+        with_stray_key.as_object_mut().unwrap().insert(
+            "assignments".into(),
+            serde_json::json!({"architecture": [architecture_row.clone()]}),
         );
 
-        let mut set = full_set();
-        retain_round_assignment(&mut set, &partitioned, "performance").unwrap();
+        for document in [&union, &with_stray_key] {
+            for node in ["architecture", "performance"] {
+                let mut set = full_set();
+                retain_round_assignment(&mut set, document).unwrap();
+                assert_eq!(
+                    set.findings
+                        .iter()
+                        .map(|finding| finding.finding_id.clone())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        architecture_row.clone(),
+                        performance_row.clone(),
+                        orphan_row.clone()
+                    ],
+                    "{node} sees the whole union, so it can dispute a peer's claim"
+                );
+            }
+        }
+    }
+
+    /// Coverage is the partition: a row goes to the receiving node its `source` names (a shard
+    /// to its Scatter), an orphan row to every receiving node, and with no pipeline definition
+    /// at all the whole union is required — the conservative pre-partition obligation.
+    #[test]
+    fn prior_assignments_partition_by_source_and_send_orphans_everywhere() {
+        let rows = serde_json::json!({
+            "subject_id": digest('f'),
+            "round": 2,
+            "prior_findings": [
+                {"key": "a", "source": "architecture"},
+                {"key": "b", "source": "performance"},
+                {"key": "c", "source": "scatter#slice:1:0123456789abcdef"},
+                {"key": "d", "source": "legacy-import"},
+            ],
+        });
+        let receiving: Vec<String> = ["architecture", "performance", "scatter"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let none = BTreeSet::new();
+        let coverage = |node| round_coverage(&rows, &receiving, &none, node).unwrap();
+        assert_eq!(coverage("architecture"), keys(["a", "d"]));
+        assert_eq!(coverage("performance"), keys(["b", "d"]));
+        assert_eq!(coverage("scatter"), keys(["c", "d"]));
+
+        // A Scatter that closed without one Completed shard owes nothing; its rows join the
+        // coverage of the receiving nodes still to be delivered theirs.
+        let dead: BTreeSet<String> = ["scatter"].into_iter().map(String::from).collect();
         assert_eq!(
-            set.findings
-                .iter()
-                .map(|finding| finding.finding_id.clone())
-                .collect::<Vec<_>>(),
-            vec![performance_row.clone(), orphan_row.clone()]
+            round_coverage(&rows, &receiving, &dead, "architecture").unwrap(),
+            keys(["a", "c", "d"])
+        );
+        assert_eq!(
+            round_coverage(&rows, &receiving, &dead, "performance").unwrap(),
+            keys(["b", "c", "d"])
         );
 
-        let error = retain_round_assignment(&mut full_set(), &partitioned, "tests").unwrap_err();
-        assert!(
-            error.contains("no partition for reviewer `tests`"),
-            "{error}"
+        // No pipeline definition: every row is orphan, so the whole union stays required.
+        assert_eq!(
+            round_coverage(&rows, &[], &none, "architecture").unwrap(),
+            keys(["a", "b", "c", "d"])
+        );
+    }
+
+    fn keys<const N: usize>(keys: [&str; N]) -> BTreeSet<String> {
+        keys.into_iter().map(String::from).collect()
+    }
+
+    /// The split the Round contract now draws: a reviewer must return its own rows and may name
+    /// any Finding the Round delivered — including a peer's, which is the only route by which
+    /// `dispute` moves a wrong claim to `contested` (`CONTEXT.md`, **Dispute**). Only a key
+    /// outside the Round entirely is refused.
+    #[test]
+    fn a_disposition_may_name_a_peers_finding_while_coverage_stays_the_partition() {
+        let mine = digest('a');
+        let peers = digest('b');
+        let stranger = digest('c');
+        let result = |dispositions: serde_json::Value| {
+            let (contract, output) = reviewer_stage_output(serde_json::json!({
+                "verdict": "approve",
+                "summary": null,
+                "reports": [],
+                "benchmark_demands": [],
+                "dispositions": dispositions,
+            }))
+            .unwrap();
+            let permitted = vec![mine.clone(), peers.clone()];
+            let required: BTreeSet<String> = [mine.clone()].into_iter().collect();
+            reviewer_result_value(&output, contract, &permitted, &required)
+        };
+        let disposition = |finding_id: &str, position: &str| {
+            serde_json::json!({
+                "finding_id": finding_id,
+                "position": position,
+                "reason": "checked against the current Subject",
+            })
+        };
+
+        // Own row only: the obligation is N, not R×N.
+        result(serde_json::json!([disposition(&mine, "not_reproduced")])).unwrap();
+
+        // Own row plus a Dispute of a peer's claim: accepted.
+        let value = result(serde_json::json!([
+            disposition(&mine, "corroborate"),
+            disposition(&peers, "dispute"),
+        ]))
+        .unwrap();
+        assert_eq!(value["dispositions"].as_array().unwrap().len(), 2);
+
+        // A peer's claim alone leaves the reviewer's own row uncovered.
+        assert_eq!(
+            result(serde_json::json!([disposition(&peers, "dispute")])).unwrap_err(),
+            ReviewerResultRejection::MissingDispositionCoverage
         );
 
-        let mut legacy = partitioned.clone();
-        legacy.as_object_mut().unwrap().remove("assignments");
-        let mut set = full_set();
-        retain_round_assignment(&mut set, &legacy, "architecture").unwrap();
+        // A key the Round never delivered is still refused.
         assert_eq!(
-            set.findings.len(),
-            3,
-            "a Round without a partition keeps the union"
+            result(serde_json::json!([
+                disposition(&mine, "corroborate"),
+                disposition(&stranger, "dispute"),
+            ]))
+            .unwrap_err(),
+            ReviewerResultRejection::UnassignedDisposition
         );
     }
 
@@ -1256,13 +1436,16 @@ mod tests {
                 })
                 .collect(),
         };
+        // A node whose partition happens to be the whole Round: permitted and required coincide.
         let assigned = vec!["finding:a".to_string(), "finding:b".to_string()];
+        let required: BTreeSet<String> = assigned.iter().cloned().collect();
 
         assert_eq!(
             reviewer_result_value(
                 &stage(&["finding:a"]),
                 ReviewerResultContract::V2,
                 &assigned,
+                &required,
             )
             .unwrap_err(),
             ReviewerResultRejection::MissingDispositionCoverage
@@ -1272,6 +1455,7 @@ mod tests {
                 &stage(&["finding:a", "finding:a"]),
                 ReviewerResultContract::V2,
                 &assigned,
+                &required,
             )
             .unwrap_err(),
             ReviewerResultRejection::DuplicateDisposition
@@ -1281,6 +1465,7 @@ mod tests {
                 &stage(&["finding:a", "finding:outside"]),
                 ReviewerResultContract::V2,
                 &assigned,
+                &required,
             )
             .unwrap_err(),
             ReviewerResultRejection::UnassignedDisposition
@@ -1290,6 +1475,7 @@ mod tests {
             &stage(&["finding:b", "finding:a"]),
             ReviewerResultContract::V2,
             &assigned,
+            &required,
         )
         .unwrap();
         assert!(value.get("disputes").is_none());

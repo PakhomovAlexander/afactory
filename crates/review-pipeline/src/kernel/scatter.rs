@@ -262,6 +262,12 @@ impl Kernel<'_> {
                 .collect(),
         };
         shard_set.validate_against(&slice_set)?;
+        // A Scatter whose shards all ended Missing or Failed still completes when the Slice
+        // policy does not require them all: it is no missing node, so the verdict sees nothing
+        // wrong and the Round can close. But nothing examined its prior Findings. Record it, so
+        // the receiving nodes still to be delivered inherit those rows as orphans instead of the
+        // Round closing with an open prior Finding nobody dispositioned.
+        let no_shard_completed = crate::scatter::scatter_left_prior_findings_unexamined(&shard_set);
         let mut artifact_inputs = vec![slice_set_record.clone()];
         artifact_inputs.extend(
             shard_set
@@ -304,6 +310,12 @@ impl Kernel<'_> {
             .node(&node.id)
             .referencing(vec![record_id.clone(), slice_set_record.clone()]),
         )?;
+        if no_shard_completed {
+            self.orphaned_prior_sources
+                .lock()
+                .expect("orphaned prior sources")
+                .insert(node.id.clone());
+        }
         Ok(vec![record_id])
     }
 

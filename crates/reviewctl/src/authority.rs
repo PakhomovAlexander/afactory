@@ -1718,18 +1718,17 @@ fn start_integrated_round(
     }
     let prior_findings = prior_rows(ledger_projection.ledger());
     let prior_count = prior_findings.len();
-    let prior_finding_set = prior_finding_set_document(
-        &campaign.loaded,
-        &committed.derived_subject_id,
-        round,
-        prior_findings,
-    );
+    let prior_finding_set =
+        prior_finding_set_document(&committed.derived_subject_id, round, prior_findings);
+    // Measured on the document this Round persists — the union and its two identity keys, and
+    // nothing else. Nothing per-reviewer is stored here, so the ceiling bounds the prior
+    // Findings themselves rather than any bookkeeping added beside them.
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
     if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
         return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes: the Round-wide union of open prior Findings is over the ceiling — reject, group, or fix Findings before starting another Round"
         ));
     }
     let prior_finding_set_id = cas
@@ -2015,14 +2014,15 @@ fn capture_round(
 
     let prior_findings = prior_rows(ledger_projection.ledger());
     let prior_count = prior_findings.len();
-    let prior_finding_set =
-        prior_finding_set_document(&campaign.loaded, &subject_id, round, prior_findings);
+    let prior_finding_set = prior_finding_set_document(&subject_id, round, prior_findings);
+    // Measured on the document this Round persists — the union and its two identity keys, and
+    // nothing else (see `prior_finding_set_document`).
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
     if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
         return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes: the Round-wide union of open prior Findings is over the ceiling — reject, group, or fix Findings before starting another Round"
         ));
     }
     let prior_finding_set_id = cas
@@ -2288,16 +2288,16 @@ fn validate_round_set(
     let object = value
         .as_object()
         .ok_or_else(|| format!("Round {items_field} set is not an object"))?;
-    let mut expected = BTreeSet::from(["subject_id", "round", items_field]);
-    // The per-node partition beside the union: present since it was introduced, absent in
-    // Rounds started before it, which keep their frozen whole-union delivery.
-    let assignments = (items_field == "prior_findings")
-        .then(|| object.get("assignments"))
-        .flatten();
-    if assignments.is_some() {
-        expected.insert("assignments");
-    }
-    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    let expected = BTreeSet::from(["subject_id", "round", items_field]);
+    // Exactly the frozen key set, the one `v0.7.1` also builds. The single tolerance is an
+    // `assignments` key on a prior-Finding document: no released binary ever wrote one, only an
+    // unreleased dev build of this branch did, and such a Round resumes here by ignoring it —
+    // per-reviewer scoping is derived at delivery time now, never read back from the document.
+    let actual: BTreeSet<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !(items_field == "prior_findings" && *key == "assignments"))
+        .collect();
     if actual != expected
         || value["subject_id"].as_str() != Some(subject_id)
         || value["round"].as_u64() != Some(u64::from(round))
@@ -2306,13 +2306,10 @@ fn validate_round_set(
             "Round {items_field} set does not match its Subject and round"
         ));
     }
-    let items = value[items_field]
+    value[items_field]
         .as_array()
-        .ok_or_else(|| format!("Round {items_field} set does not contain an array"))?;
-    if let Some(assignments) = assignments {
-        validate_prior_assignments(assignments, items)?;
-    }
-    Ok(items.len())
+        .map(Vec::len)
+        .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
 }
 
 fn latest_demand_set_id(
@@ -2366,132 +2363,27 @@ pub(crate) fn serde_name<T: serde::Serialize>(value: &T) -> String {
     }
 }
 
-/// The Round's prior-Finding assignment as one document: the Round-wide union that convergence,
-/// replay, and every Attempt's pinned input keep naming, plus `assignments` — the partition of
-/// that union across the reviewer nodes that receive it. Each reviewer is delivered and must
-/// disposition only its own rows (the smallest sufficient context, ADR-0028), while the union
-/// still drives convergence unchanged.
+/// The Round's prior-Finding assignment as one document, in exactly the three keys every
+/// released reader knows: `subject_id`, `round`, and the union of open prior Findings. It is a
+/// versioned persisted contract — `v0.7.1`'s `validate_round_set` builds
+/// `expected = {"subject_id", "round", "prior_findings"}` and refuses any other key set — so a
+/// Round this binary starts must stay byte-identical to one the released binary starts, or a
+/// consumer that rolls back finds the Round permanently unresumable.
+///
+/// Per-reviewer scoping therefore lives nowhere in this document. Which reviewer owes a
+/// disposition for which row is derived by the kernel at delivery time from each row's `source`
+/// and the pinned pipeline's receiving reviewer nodes — data that is already present on both
+/// sides — so the split costs no persisted key and moves no artifact digest.
 pub(crate) fn prior_finding_set_document(
-    loaded: &review_config::Loaded,
     subject_id: &str,
     round: u32,
     prior_findings: Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    let receiving = loaded.reviewer_nodes_receiving(review_core::contract::FINDING_SET_V1);
-    // A legacy pipeline publishes this document itself, as the Generation node's typed
-    // `PriorFindings@1` output (an opaque `findings` port in format 1), and every reviewer on
-    // that path receives the whole union verbatim: the store pins that artifact to exactly its
-    // frozen keys, and a partition would have no consumer. Only a pipeline whose reviewers
-    // take the exact `FindingSet@1` — where `run_reviewer` retains a node's partition — gets one.
-    let legacy_delivery = loaded.node_kind_has_output_type(
-        review_graph::NodeKind::Generation,
-        review_core::contract::PRIOR_FINDINGS_V1,
-    ) || loaded.node_kind_has_output_type(
-        review_graph::NodeKind::Generation,
-        review_core::contract::OPAQUE_V1,
-    );
-    if receiving.is_empty() || legacy_delivery {
-        return serde_json::json!({
-            "subject_id": subject_id,
-            "round": round,
-            "prior_findings": prior_findings,
-        });
-    }
-    let assignments = prior_assignments(&prior_findings, &receiving);
     serde_json::json!({
         "subject_id": subject_id,
         "round": round,
         "prior_findings": prior_findings,
-        "assignments": assignments,
     })
-}
-
-/// Partition the union rows by their `source` node. The rule lives here, once:
-///
-/// - a row belongs to the receiving node its `source` names; a Scatter shard `node#slice:…`
-///   counts as its Scatter `node`, whose shards all inherit the Scatter's rows;
-/// - a row whose source is no receiving node — a reviewer with no `FindingSet@1` input, or a
-///   legacy imported source — goes to *every* receiving node, so an assigned Finding can never
-///   lose its disposition obligation by falling between reviewers;
-/// - every receiving node has an entry, empty when nothing is assigned to it.
-///
-/// Rows keep their union order inside each entry, and the node's partition is what
-/// `run_reviewer` delivers and requires dispositions for.
-fn prior_assignments(
-    prior_findings: &[serde_json::Value],
-    receiving: &[String],
-) -> BTreeMap<String, Vec<String>> {
-    let mut assignments: BTreeMap<String, Vec<String>> = receiving
-        .iter()
-        .map(|node| (node.clone(), Vec::new()))
-        .collect();
-    for row in prior_findings {
-        let Some(key) = row.get("key").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let source = row
-            .get("source")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        let base = source
-            .split_once("#slice:")
-            .map_or(source, |(base, _)| base);
-        match assignments.get_mut(base) {
-            Some(keys) => keys.push(key.to_string()),
-            None => {
-                for keys in assignments.values_mut() {
-                    keys.push(key.to_string());
-                }
-            }
-        }
-    }
-    assignments
-}
-
-/// A stored partition is authority for its Round: it must be an object of node -> Finding
-/// keys, each key a row of the union, no key twice under one node, and every row assigned to
-/// at least one node.
-fn validate_prior_assignments(
-    assignments: &serde_json::Value,
-    prior_findings: &[serde_json::Value],
-) -> Result<(), String> {
-    let partition = assignments
-        .as_object()
-        .ok_or("Round prior Finding assignments are not an object")?;
-    let union: BTreeSet<&str> = prior_findings
-        .iter()
-        .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str))
-        .collect();
-    let mut covered = BTreeSet::new();
-    for (node, keys) in partition {
-        if node.trim().is_empty() {
-            return Err("Round prior Finding assignments name an empty reviewer".into());
-        }
-        let keys = keys.as_array().ok_or_else(|| {
-            format!("Round prior Finding assignment for `{node}` is not an array")
-        })?;
-        let mut seen = BTreeSet::new();
-        for key in keys {
-            let key = key.as_str().ok_or_else(|| {
-                format!("Round prior Finding assignment for `{node}` contains a non-string key")
-            })?;
-            if !union.contains(key) {
-                return Err(format!(
-                    "Round prior Finding assignment for `{node}` names a Finding outside the union"
-                ));
-            }
-            if !seen.insert(key) {
-                return Err(format!(
-                    "Round prior Finding assignment for `{node}` repeats a Finding"
-                ));
-            }
-            covered.insert(key);
-        }
-    }
-    if !partition.is_empty() && covered != union {
-        return Err("Round prior Finding assignments do not cover the union".into());
-    }
-    Ok(())
 }
 
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
@@ -2754,46 +2646,54 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 mod tests {
     use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
 
-    /// Campaign manifests, Worker prior-Finding rows, and the JSON documents used to spell a
-    /// Severity as its lowercased Rust `Debug` name. The serde name replaces it and must be
-    /// byte-identical, or every pinned `CampaignManifest@1` gate and every measured Worker
-    /// input would change under a refactor.
-    /// The partition rule: a row goes to the receiving node its `source` names (a shard to
-    /// its Scatter), an orphan row to every receiving node; the stored partition must cover
-    /// the union exactly once per node and name nothing outside it.
+    /// The Round's prior-Finding document is a versioned persisted contract with frozen
+    /// readers in shipped releases: exactly `subject_id`, `round`, `prior_findings`, and no
+    /// fourth key, whatever the pipeline's reviewer count. `v0.7.1` builds
+    /// `expected = {"subject_id", "round", "prior_findings"}` and refuses anything else, so a
+    /// consumer that runs one Round with this binary and rolls back must still resume it.
     #[test]
-    fn prior_assignments_partition_by_source_and_send_orphans_everywhere() {
+    fn prior_finding_set_document_keeps_the_released_three_key_shape() {
         use serde_json::json;
-        let rows = vec![
+        let subject = format!("sha256:{}", "a".repeat(64));
+
+        // One reviewer, where any partition buys nothing at all.
+        let single = vec![json!({"key": "a", "source": "correctness"})];
+        let document = super::prior_finding_set_document(&subject, 2, single.clone());
+        assert_eq!(
+            document,
+            json!({"subject_id": subject, "round": 2, "prior_findings": single}),
+            "the single-reviewer document is the released one, byte for byte"
+        );
+
+        // Several reviewers plus a Scatter shard and an imported row: still three keys.
+        let many = vec![
             json!({"key": "a", "source": "architecture"}),
             json!({"key": "b", "source": "performance"}),
             json!({"key": "c", "source": "scatter#slice:1:0123456789abcdef"}),
             json!({"key": "d", "source": "legacy-import"}),
         ];
-        let receiving: Vec<String> = ["architecture", "performance", "scatter"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let assignments = super::prior_assignments(&rows, &receiving);
-        assert_eq!(assignments["architecture"], vec!["a", "d"]);
-        assert_eq!(assignments["performance"], vec!["b", "d"]);
-        assert_eq!(assignments["scatter"], vec!["c", "d"]);
-        super::validate_prior_assignments(&json!(assignments), &rows).unwrap();
-
-        let dropped = json!({"architecture": ["a"], "performance": ["b"], "scatter": ["c"]});
-        let error = super::validate_prior_assignments(&dropped, &rows).unwrap_err();
-        assert!(error.contains("do not cover the union"), "{error}");
-        let foreign = json!({"architecture": ["a", "b", "c", "d", "z"]});
-        let error = super::validate_prior_assignments(&foreign, &rows).unwrap_err();
-        assert!(error.contains("outside the union"), "{error}");
-        let repeated = json!({"architecture": ["a", "a", "b", "c", "d"]});
-        let error = super::validate_prior_assignments(&repeated, &rows).unwrap_err();
-        assert!(error.contains("repeats a Finding"), "{error}");
-
-        let none: Vec<String> = Vec::new();
-        assert!(super::prior_assignments(&rows, &none).is_empty());
+        let document = super::prior_finding_set_document(&subject, 3, many.clone());
+        assert_eq!(
+            document,
+            json!({"subject_id": subject, "round": 3, "prior_findings": many}),
+            "the multi-reviewer document is the released one, byte for byte"
+        );
+        assert_eq!(
+            document
+                .as_object()
+                .expect("the document is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["subject_id", "round", "prior_findings"],
+            "no fourth key: the frozen reader in v0.7.1 refuses one"
+        );
     }
 
+    /// Campaign manifests, Worker prior-Finding rows, and the JSON documents used to spell a
+    /// Severity as its lowercased Rust `Debug` name. The serde name replaces it and must be
+    /// byte-identical, or every pinned `CampaignManifest@1` gate and every measured Worker
+    /// input would change under a refactor.
     #[test]
     fn serde_names_match_the_lowercased_debug_spellings_they_replace() {
         use review_core::Severity;

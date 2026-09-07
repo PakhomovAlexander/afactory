@@ -258,14 +258,25 @@ gate = "major"
 }
 
 /// Two reviewers over one Subject. Each reports its own major Finding while `src/main.rs` still
-/// spins, and afterwards dispositions *every* Finding id its input carries — so what it was
-/// delivered is exactly what it dispositions.
-fn write_partition_config(repo: &Path) {
+/// spins. Afterwards each is delivered the whole Round union — it can read a peer's row — and
+/// returns a disposition for exactly the rows whose `source` names it: the coverage the kernel
+/// derives for that node. With `cross_dispute`, `performance` also disputes the peer rows it
+/// was delivered but does not own, which is the mechanism `CONTEXT.md` calls a **Dispute**.
+fn write_partition_config(repo: &Path, cross_dispute: bool) {
     let mut programs = Vec::new();
     for (node, title) in [
         ("architecture", "Unbounded loop"),
         ("performance", "Quadratic scan"),
     ] {
+        let peer_dispositions = if cross_dispute && node == "performance" {
+            r#"  for id in $peers; do
+    entry=$(printf '{"finding_id":"%s","position":"dispute","reason":"the claim is wrong: the loop was always bounded"}' "$id")
+    if [ -z "$dispositions" ]; then dispositions="$entry"; else dispositions="$dispositions,$entry"; fi
+  done
+"#
+        } else {
+            ""
+        };
         let reviewer = repo.join(format!("{node}-reviewer.sh"));
         std::fs::write(
             &reviewer,
@@ -275,13 +286,15 @@ input=$(cat)
 if grep -q 'loop {{}}' src/main.rs; then
   printf '%s' '{{"verdict":"request-changes","summary":null,"findings":[{{"severity":"major","file":"src/main.rs","line":1,"title":"{title}","body":"{node} claim","fix":"fix it","confidence":0.9}}],"benchmark_demands":[],"dispositions":[]}}'
 else
-  ids=$(printf '%s' "$input" | grep -o '"finding_id":"[^"]*"' | sed 's/.*:"//; s/"$//')
+  rows=$(printf '%s' "$input" | tr '{{' '\n' | grep '"finding_id":')
+  own=$(printf '%s\n' "$rows" | grep '"source":"{node}"' | sed 's/.*"finding_id":"//; s/".*//')
+  peers=$(printf '%s\n' "$rows" | grep -v '"source":"{node}"' | sed 's/.*"finding_id":"//; s/".*//')
   dispositions=""
-  for id in $ids; do
+  for id in $own; do
     entry=$(printf '{{"finding_id":"%s","position":"not_reproduced","reason":"absent from the current Subject"}}' "$id")
     if [ -z "$dispositions" ]; then dispositions="$entry"; else dispositions="$dispositions,$entry"; fi
   done
-  printf '{{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[%s]}}' "$dispositions"
+{peer_dispositions}  printf '{{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[%s]}}' "$dispositions"
 fi
 "#
             ),
@@ -986,15 +999,18 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
     );
 }
 
-/// Round 2's prior-Finding assignment is partitioned by reporter: each reviewer is delivered,
-/// and must disposition, only the Finding it reported — not the whole Round-wide set — while
-/// the union still reaches the Ledger and convergence. A reviewer dispositioning only its own
-/// row completes the Round; both Findings stay open, so the Campaign does not converge.
+/// Round 2's prior-Finding coverage is partitioned by reporter: each reviewer is delivered the
+/// whole Round-wide union, and must disposition only the Finding it reported. The obligation is
+/// N dispositions across R reviewers, not R×N, while the union still reaches the Ledger and
+/// convergence. Both Findings stay open, so the Campaign does not converge.
+///
+/// The Round document itself stays exactly the three keys every released reader knows: nothing
+/// per-reviewer is persisted, so a consumer pinned to an older `af` can still resume the Round.
 #[test]
 fn each_reviewer_dispositions_only_its_own_prior_findings() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    write_partition_config(&repo);
+    write_partition_config(&repo, false);
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "two reviewers"]);
 
@@ -1024,7 +1040,7 @@ fn each_reviewer_dispositions_only_its_own_prior_findings() {
     let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
     let events = store.replay("campaign-partition").unwrap();
 
-    // The pinned Round document: the union plus a partition keyed by the reporting node.
+    // The pinned Round document: the union, and nothing beside it.
     let round = events
         .iter()
         .rev()
@@ -1036,28 +1052,42 @@ fn each_reviewer_dispositions_only_its_own_prior_findings() {
     let document = cas.get_json(&round.prior_finding_set_id).unwrap();
     let union = document["prior_findings"].as_array().unwrap();
     assert_eq!(union.len(), 2, "{document}");
-    let source_of = |key: &str| {
+    assert_eq!(
         union
             .iter()
-            .find(|row| row["key"].as_str() == Some(key))
-            .and_then(|row| row["source"].as_str())
-            .map(str::to_string)
-            .expect("assigned key is a union row")
-    };
-    let assignments = document["assignments"].as_object().unwrap();
-    assert_eq!(
-        assignments.keys().collect::<Vec<_>>(),
-        vec!["architecture", "performance"]
+            .filter_map(|row| row["source"].as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["architecture", "performance"].into_iter().collect(),
+        "one row per reporting reviewer: {document}"
     );
-    for (node, keys) in assignments {
-        let keys = keys.as_array().unwrap();
-        assert_eq!(
-            keys.len(),
-            1,
-            "{node} receives exactly its own row: {document}"
-        );
-        assert_eq!(&source_of(keys[0].as_str().unwrap()), node);
-    }
+    assert_eq!(
+        document
+            .as_object()
+            .expect("the Round document is an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["prior_findings", "round", "subject_id"],
+        "the released three-key document, with no per-reviewer key beside it: {document}"
+    );
+
+    // Both reviewers are pinned to the same Round-wide prior-Finding input: there is no
+    // per-reviewer artifact, so each of them can see — and dispute — the other's claim.
+    let pinned = |node: &str| {
+        let dispatched = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.event_type == review_core::EventType::AttemptDispatchedV1
+                    && event.node_id.as_deref() == Some(node)
+            })
+            .expect("Round 2 reviewer dispatch");
+        let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
+            serde_json::from_value(dispatched.payload.clone()).unwrap();
+        dispatch.prior_findings
+    };
+    assert!(pinned("architecture").is_some());
+    assert_eq!(pinned("architecture"), pinned("performance"));
 
     // What each reviewer dispositioned is exactly the row partitioned to it, and the reduced
     // Round-2 FindingSet still holds the whole union.
@@ -1107,6 +1137,87 @@ fn each_reviewer_dispositions_only_its_own_prior_findings() {
             "a reviewer dispositions only what it reported"
         );
     }
+}
+
+/// A reviewer may name any Finding the Round delivered, not only its own partition of it: the
+/// `performance` reviewer disputes the claim `architecture` reported, and the kernel admits the
+/// Attempt instead of burning it on an unassigned disposition. The disputed Finding becomes
+/// `contested`, which blocks convergence exactly as `open` does (`CONTEXT.md`, **Dispute**) —
+/// the only route by which peer review challenges a wrong claim.
+#[test]
+fn a_reviewer_may_dispute_a_peers_prior_finding() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    write_partition_config(&repo, true);
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "two reviewers"]);
+
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "cross-dispute", "--state", &state],
+    );
+    assert_eq!(code, 3, "round 1 reports two majors\n{stdout}\n{stderr}");
+
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound the loop"]);
+    let (code, stdout, stderr) = reviewctl(
+        &repo,
+        &home,
+        &["run", "--campaign", "cross-dispute", "--state", &state],
+    );
+    assert_eq!(
+        code, 3,
+        "a cross-reviewer Dispute is admitted and still blocks\n{stdout}\n{stderr}"
+    );
+    assert!(!stdout.contains("Incomplete"), "{stdout}");
+
+    let state = Path::new(&state);
+    let cas = review_store::Cas::open(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let events = store.replay("campaign-cross-dispute").unwrap();
+    let ledger_receipt = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == review_core::EventType::NodeOutputReceiptV1
+                && event.node_id.as_deref() == Some("ledger")
+        })
+        .expect("Round 2 ledger receipt");
+    let receipt: review_core::NodeOutputReceiptPayloadV1 =
+        serde_json::from_value(ledger_receipt.payload.clone()).unwrap();
+    let set_envelope: review_core::ArtifactEnvelope =
+        serde_json::from_value(cas.get_json(&receipt.outputs[0].artifact_ids[0]).unwrap()).unwrap();
+    let set: review_core::FindingSetV1 =
+        serde_json::from_value(set_envelope.payload.clone()).unwrap();
+    assert_eq!(set.round, 2);
+    assert_eq!(set.findings.len(), 2);
+
+    let dispositions: Vec<review_core::FindingDispositionV1> = set_envelope
+        .input_artifacts
+        .iter()
+        .filter_map(|id| cas.get_json(id).ok())
+        .filter_map(|value| serde_json::from_value::<review_core::ArtifactEnvelope>(value).ok())
+        .filter(|envelope| envelope.artifact_type == review_core::contract::FINDING_DISPOSITION_V1)
+        .map(|envelope| serde_json::from_value(envelope.payload).unwrap())
+        .collect();
+    let dispute = dispositions
+        .iter()
+        .find(|disposition| {
+            disposition.position == review_core::FindingDispositionPosition::Dispute
+        })
+        .expect("performance disputed the peer claim it was delivered");
+    assert_eq!(dispute.source, "performance");
+    let disputed = set
+        .findings
+        .iter()
+        .find(|finding| finding.finding_id == dispute.finding_id)
+        .expect("the disputed Finding is in the Round union");
+    assert_eq!(
+        disputed.source, "architecture",
+        "the dispute names a Finding another reviewer reported"
+    );
+    assert_eq!(disputed.status, "contested");
 }
 
 #[test]

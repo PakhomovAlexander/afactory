@@ -85,6 +85,19 @@ impl StaticSlicePolicy {
     }
 }
 
+/// Whether a completed Scatter examined none of the prior Findings assigned to it: not one shard
+/// reached `Completed`, so no reviewer under it returned a disposition. A Slice policy with
+/// `all_shards_required = false` lets exactly this Scatter finish `Ok` — it is no missing node,
+/// the verdict sees nothing wrong, and the Round would close with the Scatter's prior Findings
+/// holding no disposition at all. The kernel routes those rows to the receiving nodes still to
+/// be delivered theirs instead.
+pub fn scatter_left_prior_findings_unexamined(shard_set: &ShardSetV1) -> bool {
+    !shard_set
+        .shards
+        .iter()
+        .any(|shard| matches!(shard.outcome, ShardOutcomeV1::Completed { .. }))
+}
+
 /// Prove actual semantic-output routing after scatter and reduction. The caller supplies every
 /// selected semantic artifact by kind; this function deliberately flattens kinds only after each
 /// ID has acquired a named authoritative sink.
@@ -163,6 +176,53 @@ mod tests {
 
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    /// A Scatter that completes without one `Completed` shard examined nothing; one that
+    /// completed a single shard, however many others failed or went missing, did.
+    #[test]
+    fn a_scatter_with_no_completed_shard_examined_no_prior_finding() {
+        let receipt = |slice: &str, outcome: ShardOutcomeV1| ShardReceiptV1 {
+            slice_id: slice.into(),
+            runtime_node_id: format!("scatter#slice:{slice}"),
+            outcome,
+        };
+        let set = |shards: Vec<ShardReceiptV1>| ShardSetV1 {
+            subject_id: digest('a'),
+            slice_set_id: digest('b'),
+            all_shards_required: false,
+            shards,
+        };
+
+        assert!(scatter_left_prior_findings_unexamined(&set(vec![
+            receipt(
+                "1",
+                ShardOutcomeV1::Missing {
+                    reason: "the fan-out cap refused it".into()
+                }
+            ),
+            receipt(
+                "2",
+                ShardOutcomeV1::Failed {
+                    reason: "every attempt failed".into()
+                }
+            ),
+        ])));
+        assert!(scatter_left_prior_findings_unexamined(&set(Vec::new())));
+        assert!(!scatter_left_prior_findings_unexamined(&set(vec![
+            receipt(
+                "1",
+                ShardOutcomeV1::Completed {
+                    result_artifact_ids: vec![digest('c')]
+                }
+            ),
+            receipt(
+                "2",
+                ShardOutcomeV1::Failed {
+                    reason: "every attempt failed".into()
+                }
+            ),
+        ])));
     }
 
     #[test]
