@@ -676,7 +676,7 @@ mod tests {
             &mut command,
             Duration::from_secs(30),
             ExitPolicy::PreserveProcessGroup,
-            |_stdin: &mut dyn Write| Ok::<(), ()>(()),
+            None::<fn(&mut dyn Write) -> Result<(), ()>>,
             |stdout: &mut dyn Read, abort: AbortSignal| {
                 let mut buffer = [0_u8; 1024];
                 while kept.len() < 4096 {
