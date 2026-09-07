@@ -272,7 +272,9 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grant, RedactionChain, parse_proposal_declaration, parse_stage_output, redact};
+    use super::{
+        Grant, RedactionChain, RunnerError, parse_proposal_declaration, parse_stage_output, redact,
+    };
 
     /// The whole-buffer loop the streaming chain replaced: the oracle for byte identity.
     fn redact_by_scanning(bytes: &[u8], grants: &[Grant]) -> Vec<u8> {
@@ -439,6 +441,48 @@ mod tests {
     fn more_than_one_proposal_cannot_fit_the_transport_shape() {
         let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"proposal":[]}"#;
         assert!(parse_proposal_declaration(answer).is_err());
+    }
+
+    /// A spool write that fails once the provider has already run is a *charge*, not a refund:
+    /// the reviewer treats `Unavailable` as "nothing was spent" and releases the reservation, so
+    /// a 350k-token Attempt that then met a full `/tmp` would be recorded as costing zero. The
+    /// truncated file is also never published: the sink kept receiving after the failure, so the
+    /// parser saw a stream the spool no longer holds.
+    #[test]
+    fn a_spool_failure_after_the_run_charges_and_publishes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = super::Cas::open(directory.path().join("cas")).unwrap();
+        // A read-only handle fails every write, exactly as a full filesystem's would.
+        let path = directory.path().join("spool");
+        std::fs::write(&path, b"").unwrap();
+        let spool = std::fs::File::open(&path).unwrap();
+
+        let mut folded = Vec::new();
+        let error = {
+            let mut sink = |chunk: &[u8]| folded.extend_from_slice(chunk);
+            let mut stream = super::StdoutStream {
+                spool,
+                redaction: RedactionChain::new(&[]),
+                sink: &mut sink,
+                limit: super::MAX_REVIEWER_OUTPUT_BYTES,
+                kept: 0,
+                overflowed: false,
+                spool_error: None,
+                read_error: None,
+            };
+            assert!(stream.accept(b"a whole paid attempt's answer"));
+            assert!(stream.spool_error.is_some(), "the write must have failed");
+            stream.publish(&cas).unwrap_err()
+        };
+
+        assert!(
+            matches!(error, RunnerError::Failed { .. }),
+            "a post-run spool failure must charge, not release: {error:?}"
+        );
+        assert_eq!(
+            folded, b"a whole paid attempt's answer",
+            "the parser saw the whole stream, which is why the spool must not be published"
+        );
     }
 }
 
@@ -1188,8 +1232,9 @@ impl ReviewerAdapter for Command {
 /// A 350k-token Attempt's `codex exec --json` stream — every event, reasoning and echoed tool
 /// output included — is a few megabytes; 64 MiB is more than an order of magnitude of headroom
 /// over that. Beyond it the producer is a runaway (a tool loop echoing a repository), and it is
-/// ended at the ceiling rather than at the deadline or in memory: the first 64 MiB are kept as
-/// the Attempt's raw artifact and the Attempt fails as malformed output naming this limit.
+/// ended at the ceiling rather than at the deadline or in memory: the first 64 MiB *after
+/// redaction* — the bytes actually spooled, published, and reported as `stdout_bytes` — are kept
+/// as the Attempt's raw artifact and the Attempt fails as malformed output naming this limit.
 /// Provider probes and smoke tests cap at 64 KiB; the stream that is orders of magnitude larger
 /// was the one without a ceiling.
 pub const MAX_REVIEWER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
@@ -1329,9 +1374,9 @@ impl ModelRunner {
     /// `sink` — a protocol folder that keeps one event resident, not the stream. The file is
     /// published to the CAS by reader when the process ends, so the stdout of a 350k-token
     /// Attempt is never resident in this process. Past [`MAX_REVIEWER_OUTPUT_BYTES`] (or the
-    /// runner's lower limit) the process group is ended and the Attempt is
-    /// [`RunnerError::MalformedOutput`] naming the limit, with the bytes up to it as its raw
-    /// artifact.
+    /// runner's lower limit), counted over the redacted bytes that are kept, the process group
+    /// is ended and the Attempt is [`RunnerError::MalformedOutput`] naming the limit, with the
+    /// redacted bytes up to it as its raw artifact.
     pub fn capture_streamed(
         &self,
         cas: &Cas,
@@ -1366,6 +1411,7 @@ impl ModelRunner {
             kept: 0,
             overflowed: false,
             spool_error: None,
+            read_error: None,
         };
         // No input means no pipe on fd 0: a provider CLI that branches on whether stdin is a
         // pipe — several read a prompt from one — must see exactly what it saw before this
@@ -1389,8 +1435,8 @@ impl ModelRunner {
         let exceeded = |raw_artifact: String| RunnerError::MalformedOutput {
             raw_artifact,
             why: format!(
-                "reviewer stdout exceeded MAX_REVIEWER_OUTPUT_BYTES ({limit} bytes); the process \
-                 was ended and the first {limit} bytes were kept"
+                "reviewer stdout exceeded MAX_REVIEWER_OUTPUT_BYTES ({limit} redacted bytes); \
+                 the process was ended and the first {limit} redacted bytes were kept"
             ),
         };
         match outcome {
@@ -1401,10 +1447,15 @@ impl ModelRunner {
                         stderr_excerpt: format!("delivering process input: {error}"),
                     });
                 }
-                if let Some(error) = stream.spool_error.take() {
-                    return Err(RunnerError::Unavailable(format!(
-                        "spooling raw output: {error}"
-                    )));
+                // The read failed after the process ran, so the Attempt is charged — the same
+                // classification, and the same wording, the shared supervisor gives its own
+                // `OutputRead`. Only a spool that could not be created before the spawn leaves
+                // this layer with nothing spent.
+                if let Some(error) = stream.read_error.take() {
+                    return Err(RunnerError::Failed {
+                        exit_code: -1,
+                        stderr_excerpt: format!("reading process stdout: {error}"),
+                    });
                 }
                 let raw_artifact = stream.publish(cas)?;
                 if stream.overflowed {
@@ -1449,10 +1500,16 @@ struct StdoutStream<'a> {
     redaction: RedactionChain,
     sink: &'a mut (dyn FnMut(&[u8]) + Send),
     limit: usize,
-    /// Raw bytes accepted so far (before redaction), never more than `limit`.
+    /// Redacted bytes written to the spool and handed to the sink — exactly what is published
+    /// and reported as `stdout_bytes` — never more than `limit`.
     kept: u64,
     overflowed: bool,
+    /// A spool write that failed. The sink kept receiving, so the file is now a silent
+    /// truncation of the stream the parser saw: nothing may be published from it.
     spool_error: Option<std::io::Error>,
+    /// A failed read of the child's stdout pipe. The process had already run, so this is a
+    /// charged failure, not a structural unavailability.
+    read_error: Option<std::io::Error>,
 }
 
 impl StdoutStream<'_> {
@@ -1464,15 +1521,12 @@ impl StdoutStream<'_> {
                 Ok(read) => read,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    self.spool_error = Some(error);
+                    self.read_error = Some(error);
                     break;
                 }
             };
-            let room = usize::try_from(self.limit as u64 - self.kept).unwrap_or(usize::MAX);
-            let accepted = read.min(room);
-            self.emit(&buffer[..accepted]);
-            self.kept += accepted as u64;
-            if read > accepted {
+            let redacted = self.redaction.push(&buffer[..read]);
+            if !self.accept(&redacted) {
                 // Past the ceiling: keep nothing more and end the producer now, not at the
                 // deadline. The supervisor reports the refusal; the kept bytes are published.
                 self.overflowed = true;
@@ -1482,14 +1536,25 @@ impl StdoutStream<'_> {
         }
     }
 
-    fn emit(&mut self, raw: &[u8]) {
-        let redacted = self.redaction.push(raw);
-        self.write(&redacted);
+    /// Keep as much of one redacted chunk as the ceiling still allows, and say whether it fit.
+    ///
+    /// The count is of *redacted* bytes, because those are the bytes that go to the spool, to
+    /// the CAS artifact, to the caller's sink, and into `stdout_bytes`. Counting raw bytes
+    /// instead would let a stream whose grants each expand to `[redacted]` publish an artifact
+    /// larger than the limit the refusal names.
+    fn accept(&mut self, redacted: &[u8]) -> bool {
+        let room = usize::try_from(self.limit as u64 - self.kept).unwrap_or(usize::MAX);
+        let accepted = redacted.len().min(room);
+        self.write(&redacted[..accepted]);
+        self.kept += accepted as u64;
+        redacted.len() <= room
     }
 
     fn finish(&mut self) {
         let tail = self.redaction.finish();
-        self.write(&tail);
+        if !self.accept(&tail) {
+            self.overflowed = true;
+        }
     }
 
     fn write(&mut self, redacted: &[u8]) {
@@ -1506,9 +1571,23 @@ impl StdoutStream<'_> {
 
     /// Publish the spooled, redacted stdout by reader: hashed and copied through one fixed
     /// buffer, never loaded whole.
+    ///
+    /// Refuses outright once a spool write has failed. `write` keeps feeding the sink after
+    /// such a failure, so the parser saw the whole stream while the file stopped at the failure
+    /// point — and `write_all` can fail after a partial write, ending it mid-record. Publishing
+    /// that file would file a silent truncation as the Attempt's raw evidence.
     fn publish(&mut self, cas: &Cas) -> Result<String, RunnerError> {
-        let spooling = |error: std::fmt::Arguments<'_>| {
-            RunnerError::Unavailable(format!("storing raw output: {error}"))
+        // Every failure below happened *after* the process ran, so each is a charged failure:
+        // a provider that burned a full Attempt and then hit a full `/tmp` did not cost zero.
+        if let Some(error) = &self.spool_error {
+            return Err(RunnerError::Failed {
+                exit_code: -1,
+                stderr_excerpt: format!("spooling raw output: {error}"),
+            });
+        }
+        let spooling = |error: std::fmt::Arguments<'_>| RunnerError::Failed {
+            exit_code: -1,
+            stderr_excerpt: format!("storing raw output: {error}"),
         };
         self.spool
             .rewind()

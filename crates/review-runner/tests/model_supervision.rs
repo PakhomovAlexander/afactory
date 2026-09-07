@@ -290,6 +290,53 @@ fn runaway_stderr_is_bounded_and_says_it_was_cut() {
     );
 }
 
+/// The ceiling bounds what is *kept*, not what was read. Every occurrence of a grant shorter
+/// than `[redacted]` expands, so counting raw bytes would spool, publish, and report an artifact
+/// larger than the limit its own refusal names.
+#[test]
+fn the_ceiling_bounds_the_redacted_artifact_that_grants_expanded() {
+    let (dir, cas) = workdir();
+    let limit = 4096;
+    // Seven bytes in, ten bytes out: `sk-abc\n` (7) becomes `[redacted]\n` (11).
+    let secret = "sk-abc";
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(30))
+        .with_output_limit(limit)
+        .with_grant("REVIEW_MODEL_KEY", secret);
+
+    let error = runner
+        .capture(&cas, &sh("yes \"$REVIEW_MODEL_KEY\""))
+        .unwrap_err();
+    let RunnerError::MalformedOutput { raw_artifact, why } = error else {
+        panic!("expected MalformedOutput, got {error:?}");
+    };
+    assert!(why.contains(&limit.to_string()), "{why}");
+    let kept = cas.get(&raw_artifact).unwrap();
+    assert_eq!(
+        kept.len(),
+        limit,
+        "the published artifact must never exceed the limit the refusal names"
+    );
+    assert!(kept.starts_with(b"[redacted]\n[redacted]\n"));
+    assert!(!kept.windows(secret.len()).any(|w| w == secret.as_bytes()));
+
+    // And below the ceiling, the reported count is exactly what was published.
+    let mut streamed = Vec::new();
+    let capture = runner
+        .capture_streamed(
+            &cas,
+            &sh("printf '%s\\n' \"$REVIEW_MODEL_KEY\" \"$REVIEW_MODEL_KEY\""),
+            None,
+            &mut |chunk: &[u8]| streamed.extend_from_slice(chunk),
+        )
+        .unwrap();
+    assert_eq!(streamed, b"[redacted]\n[redacted]\n");
+    assert_eq!(capture.stdout_bytes, streamed.len() as u64);
+    assert_eq!(
+        cas.get(&capture.raw_artifact).unwrap().len() as u64,
+        capture.stdout_bytes
+    );
+}
+
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.
 #[test]
 fn an_ungranted_variable_never_reaches_the_child() {
