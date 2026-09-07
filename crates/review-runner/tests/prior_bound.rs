@@ -36,7 +36,7 @@ fn oversized_prior_findings_fail_closed_without_silent_truncation() {
     .render();
 
     let error = rendered.expect_err("an inexact prompt must never reach a reviewer");
-    assert!(error.contains("partitioning is required"), "{error}");
+    assert!(error.contains("reject, group, or fix Findings"), "{error}");
 }
 
 #[test]

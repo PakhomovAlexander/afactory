@@ -987,7 +987,7 @@ impl ReviewerInputs {
             let section_bytes = rendered.len() + required_section.len();
             if section_bytes > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
-                    "exact prior Finding Set with its required-disposition list is {section_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+                    "exact prior Finding Set with its required-disposition list is {section_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes: the Round-wide union of open prior Findings is over the ceiling — reject, group, or fix Findings before starting another Round"
                 ));
             }
             prompt.push_str(&format!(
