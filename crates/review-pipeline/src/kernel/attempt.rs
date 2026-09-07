@@ -207,17 +207,50 @@ impl Kernel<'_> {
     }
 
     /// Append every still-buffered node event, sorted by `(node, emission order)`, then clear the
-    /// buffer. Ordinary successful nodes flush their own events with their output receipt;
-    /// gather and final publication drain leftovers from failed or suppressed paths. This makes
-    /// each published node batch internally canonical. It does not reorder already-durable
-    /// dispatch/failure events or successful node receipts across concurrent nodes. Idempotent:
-    /// a second call on an already-drained buffer is a no-op.
+    /// buffer. This is the terminal drain, and it is only correct where nothing can still reach
+    /// `record_outputs`: the run's own report. Mid-run callers use
+    /// [`flush_orphaned_reviewer_events`](Self::flush_orphaned_reviewer_events), because
+    /// `record_outputs` is the sole publisher for any node that reaches admission and a mid-run
+    /// whole-buffer drain would split a still-running sibling's lifecycle from its receipt. It
+    /// does not reorder already-durable dispatch/failure events or successful node receipts
+    /// across concurrent nodes. Idempotent: a second call on an already-drained buffer is a
+    /// no-op.
     pub fn flush_reviewer_events(&self) -> Result<(), String> {
         let mut pending = self.reviewer_events.lock().expect("reviewer events");
         pending.sort_by(|a, b| a.0.cmp(&b.0));
         let events: Vec<NewEvent> = pending.iter().map(|(_, event)| event.clone()).collect();
         self.append_batch(&events)?;
         pending.clear();
+        Ok(())
+    }
+
+    /// Publish, in `(node, emission order)`, only what belongs to nodes that failed — the nodes
+    /// that will never reach `record_outputs`, so nothing else would ever publish it. Every
+    /// other node's buffered events stay buffered until its own receipt commits them in one
+    /// transaction. Idempotent; a no-op when nothing has failed.
+    ///
+    /// A node-scoped drain is the whole point. Slots are refilled as they free, so while this
+    /// runs a plan-later sibling may be sitting completed and unadmitted with its
+    /// `AttemptAdmitted@1` buffered. Draining that here would append it in *this* node's batch
+    /// and leave the sibling's receipt to land alone: a crash between the two appends leaves a
+    /// durable selected Attempt with no receipt, and the Round becomes unresumable.
+    pub(crate) fn flush_orphaned_reviewer_events(&self) -> Result<(), String> {
+        let failed = self.failed_nodes.lock().expect("failed nodes").clone();
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let mut pending = self.reviewer_events.lock().expect("reviewer events");
+        pending.sort_by(|a, b| a.0.cmp(&b.0));
+        let events: Vec<NewEvent> = pending
+            .iter()
+            .filter(|((node, _), _)| failed.contains(node))
+            .map(|(_, event)| event.clone())
+            .collect();
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.append_batch(&events)?;
+        pending.retain(|((node, _), _)| !failed.contains(node));
         Ok(())
     }
 }

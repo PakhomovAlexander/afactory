@@ -19,6 +19,9 @@ release pages only.
 - Scatter shards run at the Slice policy's `max_fanout`, not the host's CPU count.
 - The scheduler refills a freed slot immediately, and `max_parallel` (default 4) is a pipeline
   field shown by `af review plan`, the run, and `af review report`.
+- A gather no longer publishes a concurrently running node's Attempt events: each node's
+  lifecycle facts and its output receipt commit in one transaction, so a crash mid-run cannot
+  leave a selected Attempt without a receipt and make the Round unresumable.
 - `--timeout-secs` is documented as the per-Attempt Worker timeout, not a whole-run budget.
 - Persisted `missing_nodes[].reason` for a suppressed node uses the schema spelling
   (`gate_blocked`, `upstream_missing`); Provider failure fingerprints derive from the class's

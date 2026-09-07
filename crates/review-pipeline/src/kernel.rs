@@ -133,6 +133,10 @@ pub struct Kernel<'a> {
     /// claiming whole-log determinism that the scheduler cannot provide.
     reviewer_events: Mutex<Vec<((String, u64), NewEvent)>>,
     reviewer_event_seq: Mutex<u64>,
+    /// Nodes whose dispatch returned `Err`. They never reach `record_outputs`, so whatever they
+    /// buffered has no receipt to publish it; those events — and only those — are what a gather
+    /// or the terminal report may flush on another node's behalf.
+    failed_nodes: Mutex<BTreeSet<String>>,
     /// First attempts are reserved, assigned, and durably dispatched by the scheduler thread in
     /// plan order before any external model call starts. The worker removes its prepared entry.
     prepared_attempts: Mutex<BTreeMap<String, PreparedReviewerAttempt>>,
@@ -354,6 +358,7 @@ impl<'a> Kernel<'a> {
             prior_findings,
             reviewer_events: Mutex::new(Vec::new()),
             reviewer_event_seq: Mutex::new(0),
+            failed_nodes: Mutex::new(BTreeSet::new()),
             prepared_attempts: Mutex::new(BTreeMap::new()),
             failure_classes: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
@@ -894,11 +899,12 @@ impl<'a> Kernel<'a> {
         if prior_conclusion {
             return Err("this campaign generation already has a durable conclusion".to_string());
         }
-        // The guaranteed flush point. `run_gather` flushes when it runs — the ordinary case,
-        // and the one that keeps attempt events ahead of the findings — but a gather that was
-        // suppressed (a failed reviewer upstream) or a pipeline with no gather node never
-        // reaches it, and the buffered attempts, charges included, would be lost. Every run
-        // ends with a report, so flushing here records the paid work no matter the graph.
+        // The terminal flush point, and the only place a whole-buffer drain is sound: the run
+        // is over, so no node can still commit its own events with a receipt. Every node that
+        // reached admission published its buffered events with that receipt; what remains here
+        // belongs to nodes that failed or whose receipt never landed — attempts, charges
+        // included, that would otherwise be lost. Every run ends with a report, so this records
+        // the paid work no matter the graph.
         self.flush_reviewer_events()?;
         let convergence = self.convergence(policy);
         let verdict = run_verdict(report, &convergence);
@@ -1147,77 +1153,10 @@ fn validate_generation_outputs(
     Ok(())
 }
 
-impl Dispatch for Kernel<'_> {
-    fn failure_class(&self, node_id: &str) -> Option<NodeFailureClass> {
-        self.failure_classes
-            .lock()
-            .expect("failure classes")
-            .get(node_id)
-            .copied()
-    }
-
-    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
-        let payload = NodeInvocationPayloadV1 {
-            node: node.id.clone(),
-            inputs: port_artifacts(&node.inputs, inputs, &self.authority.head_snapshot_id),
-        };
-        if let Some(recorded) = self.replayed_invocations.get(&node.id) {
-            if recorded != &payload {
-                return Err(format!(
-                    "node `{}` no longer resolves to its durable invocation",
-                    node.id
-                ));
-            }
-        } else {
-            self.append(
-                NewEvent::new(
-                    EventType::NodeInvocationV1,
-                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
-                )
-                .node(&node.id)
-                .referencing(artifact_ids(inputs)),
-            )?;
-        }
-        if node.kind == NodeKind::Reviewer {
-            self.reviewer_input_artifacts
-                .lock()
-                .expect("reviewer inputs")
-                .insert(node.id.clone(), artifact_ids(inputs));
-        }
-        Ok(())
-    }
-
-    /// The reservation and durable dispatch of a reviewer's first Attempt happen here, on the
-    /// scheduler thread as the node takes its slot — never earlier, so a run cap is consumed in
-    /// dispatch order and a released reservation is available to the node dispatched next.
-    fn prepare_dispatch(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
-        if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
-            let binding_node = self.reviewer_binding_node(&node.id);
-            if !self.reviewers.contains_key(&binding_node) {
-                return Err(format!("no reviewer bound to node {}", node.id));
-            }
-            let prior_findings = node
-                .inputs
-                .iter()
-                .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version))
-                .and_then(|port| inputs.get(&port.name))
-                .and_then(|artifacts| artifacts.first());
-            let replayed_failures = self
-                .replayed_refusal_histories
-                .get(&node.id)
-                .cloned()
-                .unwrap_or_default();
-            let prepared =
-                self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
-            self.prepared_attempts
-                .lock()
-                .expect("prepared attempts")
-                .insert(node.id.clone(), prepared);
-        }
-        Ok(())
-    }
-
-    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+impl Kernel<'_> {
+    /// Execute one node. The `Dispatch::run` wrapper records a failure here as a node that
+    /// will never publish a receipt, which is what makes its buffered events orphans.
+    fn run_node(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         if let Some(receipt) = self.replayed_outputs.get(&node.id) {
             if node.kind == NodeKind::Reviewer {
                 let selections = self
@@ -1289,6 +1228,92 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Reviewer => self.run_reviewer(node, inputs),
         }?;
         bind_single_output(node, artifacts)
+    }
+}
+
+impl Dispatch for Kernel<'_> {
+    fn failure_class(&self, node_id: &str) -> Option<NodeFailureClass> {
+        self.failure_classes
+            .lock()
+            .expect("failure classes")
+            .get(node_id)
+            .copied()
+    }
+
+    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
+        let payload = NodeInvocationPayloadV1 {
+            node: node.id.clone(),
+            inputs: port_artifacts(&node.inputs, inputs, &self.authority.head_snapshot_id),
+        };
+        if let Some(recorded) = self.replayed_invocations.get(&node.id) {
+            if recorded != &payload {
+                return Err(format!(
+                    "node `{}` no longer resolves to its durable invocation",
+                    node.id
+                ));
+            }
+        } else {
+            self.append(
+                NewEvent::new(
+                    EventType::NodeInvocationV1,
+                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                )
+                .node(&node.id)
+                .referencing(artifact_ids(inputs)),
+            )?;
+        }
+        if node.kind == NodeKind::Reviewer {
+            self.reviewer_input_artifacts
+                .lock()
+                .expect("reviewer inputs")
+                .insert(node.id.clone(), artifact_ids(inputs));
+        }
+        Ok(())
+    }
+
+    /// The reservation and durable dispatch of a reviewer's first Attempt happen here, on the
+    /// scheduler thread as the node takes its slot — never earlier, so a run cap is consumed in
+    /// dispatch order and a released reservation is available to the node dispatched next.
+    fn prepare_dispatch(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
+        if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
+            let binding_node = self.reviewer_binding_node(&node.id);
+            if !self.reviewers.contains_key(&binding_node) {
+                return Err(format!("no reviewer bound to node {}", node.id));
+            }
+            let prior_findings = node
+                .inputs
+                .iter()
+                .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version))
+                .and_then(|port| inputs.get(&port.name))
+                .and_then(|artifacts| artifacts.first());
+            let replayed_failures = self
+                .replayed_refusal_histories
+                .get(&node.id)
+                .cloned()
+                .unwrap_or_default();
+            let prepared =
+                self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
+            self.prepared_attempts
+                .lock()
+                .expect("prepared attempts")
+                .insert(node.id.clone(), prepared);
+        }
+        Ok(())
+    }
+
+    /// Every failure is recorded before it leaves this thread: a node whose dispatch returned
+    /// `Err` never reaches `record_outputs`, so nothing else will ever publish what it
+    /// buffered. That set — and nothing else — is what `flush_orphaned_reviewer_events` may
+    /// publish on another node's behalf.
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+        let result = self.run_node(node, inputs);
+        if result.is_err() {
+            self.failed_nodes
+                .lock()
+                .expect("failed nodes")
+                .insert(node.id.clone());
+        }
+        result
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
