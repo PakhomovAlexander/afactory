@@ -23,6 +23,19 @@ release pages only.
 - Persisted `missing_nodes[].reason` for a suppressed node uses the schema spelling
   (`gate_blocked`, `upstream_missing`); Provider failure fingerprints derive from the class's
   serde name, with fingerprints stored by earlier releases still matched.
+- The evaluator's Worker input is `af/evaluate-input@2`: the sandbox mutation set arrives as a
+  bounded summary (counts, a sorted sample, the derived-Snapshot artifact id) instead of the
+  complete path lists.
+- A derived Snapshot has ceilings on what the implementer may leave behind (4096 entries,
+  256 MiB). Past one, the Task ends unverified at the new `snapshot` stage naming the limit
+  instead of filing build output into the Store as permanent state.
+- Tasks are recorded in a typed Task log with nine schema-backed event types (ADR-0046); a Task
+  event referencing an artifact the CAS does not hold is refused.
+- `install.sh` is published inside the signed `SHA256SUMS` set and is fetched by release tag;
+  the release workflow verifies each archive after packaging and obtains minisign by pinned
+  digest.
+- This repository's own `.af/pipelines/review.toml` is the v3 shape `af onboard` emits, gating on
+  `scripts/verify.sh` with markdownlint from a lock-pinned toolchain rather than a live fetch.
 
 ## [0.7.1] - 2026-09-03
 
