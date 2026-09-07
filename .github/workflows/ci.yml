@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
 
+# Read-only by default: checkout's persisted token then cannot push, tag, or publish from
+# code a pull request brought in. The release workflow scopes its own write permission to the
+# two jobs that tag and publish.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -20,6 +26,8 @@ jobs:
         run: make check
       - name: CLI smoke
         run: cargo run --locked -p reviewctl --bin af -- --version
+      - name: Installer test, signature path (minisign fetched by digest)
+        run: MINISIGN="$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")" make installer-test-signed
 
   container-probes:
     runs-on: ubuntu-latest

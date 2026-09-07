@@ -14,8 +14,8 @@ Each directory here is one consumer-shaped policy, copied verbatim:
 | `hub/` | `PakhomovAlexander/afactory-hub` policy as of 2026-09-02 (single correctness reviewer), moved to `.af/` by `af onboard --migrate --apply` on 2026-09-06 | `.af/`: one correctness Worker mirroring this repo's `.af/workers/correctness`, two gate checks, `af.lock` with Worker and pipeline pins and no `af` pin (a source build wrote it) |
 
 The hub's previous `.review/` layout survives only as the migration test fixture under
-`crates/reviewctl/tests/fixtures/legacy-hub/`; since `v0.8.0` that layout is no longer read for
-new Campaigns (ADR-0043), so it cannot be a consumer fixture.
+`crates/reviewctl/tests/fixtures/legacy-hub/`; from `v0.8.0` on (unreleased at this commit) that
+layout is no longer read for new Campaigns (ADR-0043), so it cannot be a consumer fixture.
 
 ## What checks them
 

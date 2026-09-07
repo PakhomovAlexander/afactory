@@ -20,7 +20,7 @@ arguing about what a Finding, a Report, a Subject or a Scope is. Queued work liv
 [`docs/workstream.md`](docs/workstream.md)**, which carries the status, the resume point, and
 the gotchas that are not obvious from the code.
 
-The legacy shell harness (`.agents/skills/self-review-heavy/scripts/`) is retired as the
+The legacy shell harness (`compat/legacy-harness/`) is retired as the
 orchestrator but kept deliberately: it is the reference implementation that regenerates
 the synthetic fixture corpus, gated in CI.
 
@@ -28,20 +28,28 @@ the synthetic fixture corpus, gated in CI.
 
 One line installs the newest stable release (by semantic version) into the self-managed layout
 (`$XDG_DATA_HOME/af/versions/<v>/`, default symlink at `~/.local/bin/af`) while the repository is
-private; `af` takes over from there:
+private; `af` takes over from there. The installer is a release asset, listed in that release's
+signed `SHA256SUMS` beside the archives, so fetch it from a release — never from a branch:
 
 ```sh
-gh api repos/PakhomovAlexander/afactory/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
+gh release download --repo PakhomovAlexander/afactory --pattern install.sh --output - | sh
+gh release download vX.Y.Z --repo PakhomovAlexander/afactory --pattern install.sh --output - | sh   # an exact release
 af self setup-shell --write     # completions + man pages for your shell
 af self status                  # what is installed, the default, the release key, the pin here
 af self update --check          # exit 10 when a newer release exists; `af self update` installs it
 ```
 
+To check the installer before running it, download `SHA256SUMS` and `SHA256SUMS.minisig` from
+the same release, verify the signature (`minisign -V -p crates/reviewctl/keys/release.pub -m
+SHA256SUMS`), and compare `install.sh` with its line. `make installer-test` drives the installer
+end to end against a local fake release (`scripts/installer-test.sh`).
+
 Releases are built for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
-`aarch64-unknown-linux-musl` (static: no glibc floor). Every release from 0.8.0 ships a signed
-`SHA256SUMS`; the binary embeds the release public key (`crates/reviewctl/keys/release.pub`) and
-refuses an unsigned or badly signed release. Nothing older than 0.7.1 — the first release with
-`af self` — is ever activated or dispatched to.
+`aarch64-unknown-linux-musl` (static: no glibc floor). Every release from 0.8.0 on — unreleased
+at this commit — ships a signed `SHA256SUMS` listing the archives and the installer; the binary
+embeds the release public key (`crates/reviewctl/keys/release.pub`) and refuses an unsigned or
+badly signed release. Nothing older than 0.7.1 — the first release with `af self` — is ever
+activated or dispatched to.
 
 A project's `.af/af.lock` pins the release that wrote it **and its archive digest per target**;
 inside such a project any `af` on `PATH` execs that version, installing it on demand only when the
@@ -66,14 +74,29 @@ make release VERSION=0.8.0 COMPAT="requires \`af onboard --migrate --apply\` for
 requests merged since the last release, and opens `release: vX.Y.Z`. Merging it makes
 `.github/workflows/release.yml` tag the commit, run `make check` on Linux and macOS, build every
 target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the key in the
-`MINISIGN_SECRET_KEY` secret, and publish. Legacy `.review/` policy is no longer read for new
-Campaigns since 0.8.0 ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md)):
-`af onboard --migrate --apply` moves a consumer to `.af/`.
+`MINISIGN_SECRET_KEY` secret (a `minisign` fetched by version and digest,
+`scripts/fetch-minisign.sh`), and publish. From 0.8.0 on — unreleased at this commit — legacy
+`.review/` policy is no longer read for new Campaigns
+([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md)): `af onboard --migrate
+--apply` moves a consumer to `.af/`.
+
+`scripts/verify.sh` is `make check` as a Gate Check: it runs from the read-only tree a Gate
+sandbox materializes, reusing the machine's build cache (`$XDG_CACHE_HOME/afactory/review-target`,
+or `AFACTORY_REVIEW_TARGET_DIR`). Both first-party pipelines gate on it —
+[`.af/pipelines/review.toml`](.af/pipelines/review.toml) with markdownlint as a second Check, and
+[`.af/pipelines/audit.toml`](.af/pipelines/audit.toml) — so it is the deterministic project gate
+that follows a light Campaign's Findings.
 
 ```sh
-make check       # fmt + clippy + tests + fixture reproduction
+make check       # fmt + clippy + tests + fixture reproduction + relative links + installer test
 make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
+make links       # every relative link in every Markdown file resolves
+make markdownlint            # markdownlint over **/*.md from the pinned toolchain (tools/markdownlint/)
+make installer-test-signed   # install.sh with the signature path; needs minisign (MINISIGN=<path>)
+make review-kernel-container-probes   # live containment probes; a missing daemon is a failure
+make review-kernel-test-corpus        # the private legacy corpus; a missing corpus is a failure
+AF_ACK_PAID_SMOKE=1 make review-kernel-codex-smoke   # one real codex exec; spends tokens
 cargo run -p reviewctl --bin af -- onboard --help
 cargo run -p reviewctl --bin af -- review tui
 cargo run -p reviewctl --bin af -- provider status
@@ -208,11 +231,22 @@ crates/
                  checks, reviewers and the ledger
   review-config/ the pipeline definition format
   review-attempt/ attempt fencing and budgets that reserve before they spend
+  review-broker/ the trusted, revocable capability broker: a Worker holds a
+                 handle, credential bytes never enter a sandbox
+  review-runner-codex/ the Codex adapter — a digest-pinned package driving
+                 `codex exec`
+  review-runner-claude/ the Claude adapter — the same shape over `claude -p`
+  reviewctl/     the `af` binary: review, task, onboard, provider, self, the
+                 campaign loop, and dispatch to a project's pinned release
 fixtures/
   legacy/        frozen real /self-review-heavy bundles — private per-hub data; the
                  template ships none, so the tests that read them are #[ignore]d
   synthetic/     16 cases generated by running the real harness
   adversarial/   four cases specified where no legacy behavior exists to capture
+compat/
+  legacy-harness/ the retired shell harness (ledger.sh, checks.sh, bundle.sh):
+                 the executable specification fixtures/synthetic/generate.sh
+                 reruns to reproduce the corpus
 ```
 
 ## Contracts
@@ -551,9 +585,10 @@ Three properties, end to end:
 ## Defining a pipeline
 
 A review is described in a file rather than constructed in code —
-[`.af/pipelines/review.toml`](.af/pipelines/review.toml) is this repository's own, and a test
-asserts it loads through its lock and Worker registry, because a checked-in example that does
-not parse reads as a working reference.
+[`.af/pipelines/review.toml`](.af/pipelines/review.toml) is this repository's own, and tests
+assert that it loads through its lock and Worker registry and that `.af/af.lock` is exactly what
+`af onboard --refresh-lock` writes for the tree, because a checked-in example that does not parse,
+or a lock that has drifted from its packages, reads as a working reference.
 
 Everything is validated before a node runs, and every failure is fatal: a pipeline that is 90%
 valid is not 90% of a review. Unknown fields are refused, so `gated_bye` is an error rather than
@@ -585,8 +620,9 @@ caches = ["cargo"]                # optional symbolic request; never a host path
 
 The binding is part of the captured pipeline artifact, so a later Round cannot silently change
 its provider, image, or isolation policy. `af onboard` emits the explicit trusted-local form for
-its documented first-party workflow; upgrading that policy to safe containment is a reviewed
-edit with a project-toolchain image, never a generic moving tag.
+its documented first-party workflow, and this repository's own review pipeline is that form;
+upgrading that policy to safe containment is a reviewed edit with a project-toolchain image,
+never a generic moving tag.
 
 A cache request is resolved twice: project authority names only `cargo`, while machine-local
 operator policy selects the source and hard limits. The default policy path is

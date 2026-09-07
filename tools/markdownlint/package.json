@@ -1,0 +1,8 @@
+{
+  "name": "afactory-markdownlint",
+  "private": true,
+  "description": "The digest-pinned markdownlint toolchain scripts/markdownlint.sh installs with `npm ci`; bump the version here and regenerate package-lock.json with `npm install --package-lock-only --ignore-scripts`.",
+  "devDependencies": {
+    "markdownlint-cli2": "0.22.1"
+  }
+}

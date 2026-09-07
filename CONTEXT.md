@@ -3,8 +3,8 @@
 The vocabulary of Afactory's Review Kernel and the `af review` command behind it. These words are
 load-bearing: the kernel's guarantees are stated in them, and several of its invariants are
 only expressible because two nearby concepts are kept apart. The mechanism itself is
-documented in [`../../docs/self-review-heavy.md`](../../docs/self-review-heavy.md); this file
-defines only the terms.
+documented in the README ([one review, end to end](README.md#one-review-end-to-end)) and its
+status in [`docs/workstream.md`](docs/workstream.md); this file defines only the terms.
 
 ## Language
 
