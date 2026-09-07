@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-evaluation:1",
+  "title": "af/task-evaluation@1 payload",
+  "description": "Referenced by EvaluationCompleted@1: the independent evaluator's parsed verdict over the derived Snapshot. Only the typed verdict is recorded here; the evaluator's raw output stays in its worker evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "verdict",
+    "summary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-evaluation@1"
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    }
+  }
+}

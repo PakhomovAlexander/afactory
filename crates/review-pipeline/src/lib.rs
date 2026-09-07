@@ -22,7 +22,11 @@
 //! A blocked gate makes every node after it unreachable, so a review that could not build
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
+pub mod mutations;
 pub mod scatter;
+pub mod task;
+
+pub use mutations::mutation_summary;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -5769,37 +5773,6 @@ fn retain_round_assignment(
     set.findings
         .retain(|finding| assigned.contains(finding.finding_id.as_str()));
     Ok(())
-}
-
-/// A compact record of a sandbox's mutations: the counts, a bounded sample of paths, and the
-/// CAS digest of the full set. Bounded on purpose — the full list is thousands of entries when
-/// a reviewer built, and it must not be inlined into every event payload.
-fn mutation_summary(
-    mutations: &review_sandbox::MutationSet,
-    full_artifact: &str,
-) -> serde_json::Value {
-    const SAMPLE: usize = 20;
-    let groups = [&mutations.added, &mutations.modified, &mutations.deleted];
-    let mut positions = [0_usize; 3];
-    let mut sample = Vec::new();
-    while sample.len() < SAMPLE {
-        let next = (0..groups.len())
-            .filter(|index| positions[*index] < groups[*index].len())
-            .min_by_key(|index| groups[*index][positions[*index]].as_str());
-        let Some(index) = next else { break };
-        sample.push(&groups[index][positions[index]]);
-        positions[index] += 1;
-    }
-    let count = groups.iter().map(|group| group.len()).sum::<usize>();
-    serde_json::json!({
-        "count": count,
-        "added": mutations.added.len(),
-        "modified": mutations.modified.len(),
-        "deleted": mutations.deleted.len(),
-        "sample": sample,
-        "truncated": count > SAMPLE,
-        "artifact": full_artifact,
-    })
 }
 
 fn validate_generation_outputs(
