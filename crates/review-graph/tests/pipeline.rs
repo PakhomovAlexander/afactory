@@ -288,15 +288,40 @@ fn gating_reaches_through_the_graph() {
     assert!(plan.gates_for("gate").is_empty());
 }
 
-/// The point of the concurrency: independent reviewers cost max(t), not sum(t). Three 300ms
-/// reviewers behind one gate must overlap — a sequential dispatcher would take 900ms.
+/// The point of the concurrency: independent reviewers cost max(t), not sum(t). Three reviewers
+/// behind one gate must be in flight *at the same time*. The dispatcher proves it directly: each
+/// reviewer holds its slot until all three have arrived, and the maximum simultaneous count is
+/// asserted to be exactly three. An elapsed-time bound would also have passed a two-at-a-time
+/// scheduler (600ms of 300ms reviewers is under any generous limit); only the timeout that stops
+/// a wedged scheduler from hanging the suite is time-based.
 #[test]
 fn independent_reviewers_run_concurrently() {
-    struct Sleepy;
-    impl Dispatch for Sleepy {
+    struct Rendezvous {
+        /// `(active now, maximum ever active)` reviewer dispatches.
+        state: Mutex<(usize, usize)>,
+        arrived: std::sync::Condvar,
+        expected: usize,
+    }
+    impl Dispatch for Rendezvous {
         fn run(&self, node: &Node, _inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
             if node.kind == NodeKind::Reviewer {
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                let mut state = self.state.lock().unwrap();
+                state.0 += 1;
+                state.1 = state.1.max(state.0);
+                self.arrived.notify_all();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while state.1 < self.expected {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        state.0 -= 1;
+                        return Err(format!(
+                            "{} waited 10s for {} simultaneous reviewers; saw at most {}",
+                            node.id, self.expected, state.1
+                        ));
+                    }
+                    state = self.arrived.wait_timeout(state, remaining).unwrap().0;
+                }
+                state.0 -= 1;
             }
             Ok(BTreeMap::from([(
                 node.outputs[0].name.clone(),
@@ -306,14 +331,19 @@ fn independent_reviewers_run_concurrently() {
     }
 
     let plan = heavy_pipeline().plan().unwrap();
-    let start = std::time::Instant::now();
-    let report = Scheduler::new(&plan).run(&Sleepy);
-    let elapsed = start.elapsed();
+    let dispatcher = Rendezvous {
+        state: Mutex::new((0, 0)),
+        arrived: std::sync::Condvar::new(),
+        expected: 3,
+    };
+    let report = Scheduler::new(&plan).run(&dispatcher);
 
     assert!(report.complete(), "{:?}", report.outcomes);
-    assert!(
-        elapsed < std::time::Duration::from_millis(700),
-        "three 300ms reviewers took {elapsed:?}; they must overlap"
+    let (active, max_active) = *dispatcher.state.lock().unwrap();
+    assert_eq!(active, 0, "every reviewer released its slot");
+    assert_eq!(
+        max_active, 3,
+        "three independent reviewers must be dispatched simultaneously"
     );
 }
 
