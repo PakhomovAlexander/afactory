@@ -19,7 +19,16 @@ pub type ArtifactMap = BTreeMap<String, Vec<String>>;
 /// caller owns *what* — so scheduling can be tested without models, checks, or a filesystem.
 pub trait Dispatch {
     /// Persist or otherwise observe the exact input selection before the node is scheduled.
+    /// Called on the scheduler thread the moment every input is published, in plan order,
+    /// whether or not a slot is free — so the record is a function of the plan alone.
     fn record_invocation(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Reserve what the node needs and durably record its dispatch, immediately before it
+    /// starts. Called on the scheduler thread in the order nodes take slots, so under
+    /// `max_parallel = 1` reservations are strictly sequential. `Err` means the node never ran.
+    fn prepare_dispatch(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<(), String> {
         Ok(())
     }
 
@@ -165,17 +174,20 @@ impl<'a> Scheduler<'a> {
     ///   every gate and upstream node it depends on has been admitted, in plan order, whether
     ///   or not a slot is free — its inputs are exactly what the edges deliver (sorted) and can
     ///   no longer change;
-    /// - invoked nodes start in plan order as slots free up; a completion is buffered and
-    ///   *admitted* (validated, published through `record_outputs`, and made visible to
-    ///   dependents) only when every invoked node ahead of it in plan order has been admitted;
+    /// - invoked nodes take slots in plan order as slots free up; taking a slot runs
+    ///   `prepare_dispatch` (reservation, durable dispatch) on this thread just before the node
+    ///   starts, so reservations are sequential under a bound of one;
+    /// - a completion is buffered and *admitted* (validated, published through
+    ///   `record_outputs`, and made visible to dependents) only when every invoked node ahead
+    ///   of it in plan order has been admitted;
     /// - after each single admission the plan is rescanned before the next, so the nodes an
     ///   admission makes ready are invoked at one canonical point in the sequence.
     ///
-    /// The sequence of `record_invocation` and `record_outputs` calls is therefore a function of
-    /// the pipeline alone — the same for every completion order and every `max_parallel` —
-    /// which is what lets the durable log keep its shape while workers stay saturated.
-    /// Suppression is a function of resolved upstream state alone, and the report lists nodes
-    /// in plan order.
+    /// The sequence of `record_invocation` and `record_outputs` calls — inputs and publications
+    /// — is therefore a function of the pipeline alone, the same for every completion order and
+    /// every `max_parallel`. Only *when* a refilled slot's `prepare_dispatch` runs follows the
+    /// completion that freed it, which is the one thing a refill cannot avoid. Suppression is a
+    /// function of resolved upstream state alone, and the report lists nodes in plan order.
     pub fn run(&self, dispatch: &(dyn Dispatch + Sync)) -> RunReport {
         let mut outputs: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         let mut outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
@@ -296,7 +308,23 @@ impl<'a> Scheduler<'a> {
                         break;
                     };
                     let inputs = waiting.remove(&position).expect("waiting node");
-                    let node = &self.plan.nodes[&self.plan.order[position]];
+                    let node_id = &self.plan.order[position];
+                    let node = &self.plan.nodes[node_id];
+                    if let Err(error) = dispatch.prepare_dispatch(node, &inputs) {
+                        unusable.insert(node_id.clone());
+                        if node.kind == NodeKind::Gate {
+                            blocked_gates.insert(node_id.clone());
+                        }
+                        outcomes.insert(
+                            node_id.clone(),
+                            NodeOutcome::Failed {
+                                error,
+                                class: dispatch.failure_class(node_id),
+                            },
+                        );
+                        progressed = true;
+                        continue;
+                    }
                     running.insert(position);
                     let tx = tx.clone();
                     scope.spawn(move || {

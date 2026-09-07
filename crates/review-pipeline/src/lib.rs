@@ -4488,7 +4488,12 @@ impl<'a> Kernel<'a> {
                 .emitting_contracts(vec![PortContract::new("out", result_contract)]);
             let mut dynamic_inputs = inherited_inputs.clone();
             dynamic_inputs.insert("slice".into(), vec![slice_record]);
-            match self.record_invocation(&dynamic_node, &dynamic_inputs) {
+            // Invocation and reservation both up front, in canonical Slice order: a shard
+            // the fan-out cap refuses is a durable Missing outcome before any shard runs.
+            match self
+                .record_invocation(&dynamic_node, &dynamic_inputs)
+                .and_then(|()| self.prepare_dispatch(&dynamic_node, &dynamic_inputs))
+            {
                 Ok(()) => runnable.push((slice.clone(), dynamic_node, dynamic_inputs)),
                 Err(error) => {
                     outcomes.insert(
@@ -5971,6 +5976,13 @@ impl Dispatch for Kernel<'_> {
                 .expect("reviewer inputs")
                 .insert(node.id.clone(), artifact_ids(inputs));
         }
+        Ok(())
+    }
+
+    /// The reservation and durable dispatch of a reviewer's first Attempt happen here, on the
+    /// scheduler thread as the node takes its slot — never earlier, so a run cap is consumed in
+    /// dispatch order and a released reservation is available to the node dispatched next.
+    fn prepare_dispatch(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             let binding_node = self.reviewer_binding_node(&node.id);
             if !self.reviewers.contains_key(&binding_node) {
