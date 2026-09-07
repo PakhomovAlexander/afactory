@@ -259,9 +259,12 @@ gate = "major"
 
 /// Two reviewers over one Subject. Each reports its own major Finding while `src/main.rs` still
 /// spins. Afterwards each is delivered the whole Round union — it can read a peer's row — and
-/// returns a disposition for exactly the rows whose `source` names it: the coverage the kernel
-/// derives for that node. With `cross_dispute`, `performance` also disputes the peer rows it
-/// was delivered but does not own, which is the mechanism `CONTEXT.md` calls a **Dispute**.
+/// returns a disposition for exactly the rows the delivered input names in
+/// `required_finding_ids`: the coverage the kernel derives for that node. The script reads that
+/// list rather than matching each row's `source` against its own name, because a real Worker is
+/// never told its node id — if the kernel stopped delivering the partition, the round would fail
+/// on missing coverage. With `cross_dispute`, `performance` also disputes the peer rows it was
+/// delivered but does not own, which is the mechanism `CONTEXT.md` calls a **Dispute**.
 fn write_partition_config(repo: &Path, cross_dispute: bool) {
     let mut programs = Vec::new();
     for (node, title) in [
@@ -286,9 +289,15 @@ input=$(cat)
 if grep -q 'loop {{}}' src/main.rs; then
   printf '%s' '{{"verdict":"request-changes","summary":null,"findings":[{{"severity":"major","file":"src/main.rs","line":1,"title":"{title}","body":"{node} claim","fix":"fix it","confidence":0.9}}],"benchmark_demands":[],"dispositions":[]}}'
 else
-  rows=$(printf '%s' "$input" | tr '{{' '\n' | grep '"finding_id":')
-  own=$(printf '%s\n' "$rows" | grep '"source":"{node}"' | sed 's/.*"finding_id":"//; s/".*//')
-  peers=$(printf '%s\n' "$rows" | grep -v '"source":"{node}"' | sed 's/.*"finding_id":"//; s/".*//')
+  rows=$(printf '%s' "$input" | tr '{{' '\n' | grep '"finding_id":' | sed 's/.*"finding_id":"//; s/".*//')
+  own=$(printf '%s' "$input" | grep -o '"required_finding_ids":\[[^]]*\]' | sed 's/.*\[//; s/\]//' | tr ',' '\n' | tr -d '"' | tr '\n' ' ')
+  peers=""
+  for id in $rows; do
+    case " $own " in
+      *" $id "*) ;;
+      *) peers="$peers $id" ;;
+    esac
+  done
   dispositions=""
   for id in $own; do
     entry=$(printf '{{"finding_id":"%s","position":"not_reproduced","reason":"absent from the current Subject"}}' "$id")
