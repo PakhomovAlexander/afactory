@@ -7,6 +7,19 @@ use std::time::{Duration, Instant};
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
+/// The most stderr bytes one duplex-supervised process's diagnostics are kept for.
+///
+/// Stderr is diagnostics, never the answer: callers quote its last line and store nothing else,
+/// so by construction it is orders of magnitude smaller than the stdout a bounded reader is
+/// draining beside it. 1 MiB holds thousands of log lines — far more than any excerpt needs —
+/// and closes the hole a stdout ceiling alone leaves: a producer that writes its runaway output
+/// to fd 2 instead of fd 1 (`yes >&2`, or a CLI whose progress and tracing go to stderr) grows
+/// this process's memory without limit while the stdout reader sits idle and never aborts.
+/// Past the ceiling the tail is read and discarded rather than left unread — an unread pipe
+/// blocks the producer instead of ending it — and the kept bytes carry a truncation marker, so
+/// a cut is never mistaken for the whole stream.
+pub const MAX_STDERR_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug)]
 pub enum SupervisedError {
     Spawn(std::io::Error),
@@ -164,7 +177,7 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    run_supervised_duplex_with_abort(command, timeout, exit_policy, writer, |stdout, _| {
+    run_supervised_duplex_with_abort(command, timeout, exit_policy, Some(writer), |stdout, _| {
         reader(stdout)
     })
 }
@@ -173,11 +186,15 @@ where
 /// [`AbortSignal`]. On abort the process group is killed, its exit reaped, and the call returns
 /// [`SupervisedError::OutputRefused`]; whatever the reader retained through captured state is
 /// still the caller's, exactly as on a deadline.
+///
+/// `writer` decides what fd 0 is, exactly as it does for [`run_supervised`]: `Some` gives the
+/// child a pipe, `None` gives it `/dev/null`. Which one a child sees is observable — CLIs that
+/// read a prompt from stdin branch on it — so a caller with no input must not hand one a pipe.
 pub fn run_supervised_duplex_with_abort<I, R, F, G>(
     command: &mut std::process::Command,
     timeout: Duration,
     exit_policy: ExitPolicy,
-    writer: F,
+    writer: Option<F>,
     reader: G,
 ) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
 where
@@ -186,7 +203,11 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read, AbortSignal) -> R + Send,
 {
-    command.stdin(Stdio::piped());
+    command.stdin(if writer.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     #[cfg(unix)]
@@ -198,12 +219,15 @@ where
     let mut child = command.spawn().map_err(SupervisedError::Spawn)?;
     let pid = child.id();
     std::thread::scope(|scope| {
-        let mut stdin = child.stdin.take().expect("stdin was piped");
-        let (input_send, input_receive) = std::sync::mpsc::channel();
-        scope.spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut stdin)));
-            let _ = input_send.send(result);
+        let input_receive = writer.map(|writer| {
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            let (input_send, input_receive) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut stdin)));
+                let _ = input_send.send(result);
+            });
+            input_receive
         });
 
         let (waited_send, waited_receive) = std::sync::mpsc::channel();
@@ -219,7 +243,10 @@ where
             let _ = output_send.send(result);
         });
 
-        let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
+        let stderr = drain_async_bounded(
+            child.stderr.take().expect("stderr was piped"),
+            MAX_STDERR_BYTES,
+        );
         let deadline = Instant::now() + timeout;
         let status = match wait_exact_or_abort(child, deadline, waited_send, waited_receive) {
             Ok(Waited::Exited(Ok(status))) => status,
@@ -235,25 +262,30 @@ where
             kill_process_group(pid);
         }
 
-        let input = match input_receive.recv_timeout(stdin_writer_wait(deadline)) {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                return Err(SupervisedError::Stdin(std::io::Error::other(
-                    "input writer panicked",
-                )));
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                kill_process_group(pid);
-                return Err(SupervisedError::TimedOut {
-                    stdout: Vec::new(),
-                    stderr: collect_after_kill(stderr),
-                });
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(SupervisedError::Stdin(std::io::Error::other(
-                    "input writer stopped without a result",
-                )));
-            }
+        let input = match input_receive {
+            // No writer, so nothing was delivered and nothing can have failed: the child was
+            // given `/dev/null` on fd 0 and never had a pipe to wait on.
+            None => Ok(()),
+            Some(receiver) => match receiver.recv_timeout(stdin_writer_wait(deadline)) {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => {
+                    return Err(SupervisedError::Stdin(std::io::Error::other(
+                        "input writer panicked",
+                    )));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    kill_process_group(pid);
+                    return Err(SupervisedError::TimedOut {
+                        stdout: Vec::new(),
+                        stderr: collect_after_kill(stderr),
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(SupervisedError::Stdin(std::io::Error::other(
+                        "input writer stopped without a result",
+                    )));
+                }
+            },
         };
         let output = match output_receive.recv_timeout(OUTPUT_DRAIN_GRACE) {
             Ok(Ok(output)) => output,
@@ -401,6 +433,40 @@ fn drain_async(
         let mut bytes = Vec::new();
         let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
         let _ = send.send(result);
+    });
+    receive
+}
+
+/// [`drain_async`] under a byte ceiling: at most `limit` bytes are retained, the rest is read
+/// and thrown away so the producer is never blocked on a full pipe, and a truncation marker is
+/// appended to what is kept. See [`MAX_STDERR_BYTES`].
+fn drain_async_bounded(
+    mut pipe: impl Read + Send + 'static,
+    limit: usize,
+) -> std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut truncated = false;
+        let result = loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) => break Ok(()),
+                Ok(read) => {
+                    let kept = read.min(limit.saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&buffer[..kept]);
+                    truncated |= read > kept;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        if truncated {
+            bytes.extend_from_slice(
+                format!("\n[stderr exceeded {limit} bytes; the rest was discarded]\n").as_bytes(),
+            );
+        }
+        let _ = send.send(result.map(|()| bytes));
     });
     receive
 }
@@ -610,7 +676,7 @@ mod tests {
             &mut command,
             Duration::from_secs(30),
             ExitPolicy::PreserveProcessGroup,
-            |_stdin: &mut dyn Write| Ok::<(), ()>(()),
+            None::<fn(&mut dyn Write) -> Result<(), ()>>,
             |stdout: &mut dyn Read, abort: AbortSignal| {
                 let mut buffer = [0_u8; 1024];
                 while kept.len() < 4096 {
