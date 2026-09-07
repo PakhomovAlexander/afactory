@@ -22,6 +22,10 @@ release pages only.
 - A gather no longer publishes a concurrently running node's Attempt events: each node's
   lifecycle facts and its output receipt commit in one transaction, so a crash mid-run cannot
   leave a selected Attempt without a receipt and make the Round unresumable.
+- A freed slot is filled only after the completion that freed it has been admitted and the
+  plan rescanned, so a node an admission readies competes for that slot. Budget reservations,
+  and therefore which node a run cap exhausts, no longer follow how many completions a drain
+  happened to collect.
 - `--timeout-secs` is documented as the per-Attempt Worker timeout, not a whole-run budget.
 - Persisted `missing_nodes[].reason` for a suppressed node uses the schema spelling
   (`gate_blocked`, `upstream_missing`); Provider failure fingerprints derive from the class's

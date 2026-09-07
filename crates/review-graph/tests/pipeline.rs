@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use review_graph::{
-    ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, Pipeline, PlanError, Port, PortCardinality,
-    PortContract, Scheduler, SnapshotAffinity, SuppressionReason,
+    ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, Pipeline, PlanError,
+    Port, PortCardinality, PortContract, Scheduler, SnapshotAffinity, SuppressionReason,
 };
 
 /// Records every dispatch, so "this node never ran" is checkable rather than assumed.
@@ -623,4 +623,231 @@ fn planning_uses_the_persisted_artifact_type_contract() {
             Err(PlanError::InvalidArtifactType { .. })
         ));
     }
+}
+
+/// A `Capped` dispatcher stands in for the run-scope budget: `prepare_dispatch` is where the
+/// kernel takes a `BudgetScope::Run` reservation, and its refusal is `RunBudgetExhausted` — a
+/// durable `Failed` outcome the report carries. Reservations are never returned, which is the
+/// shape of a run cap that cannot cover every first Attempt.
+struct Capped {
+    delays_ms: BTreeMap<&'static str, u64>,
+    per_node_tokens: u64,
+    remaining: Mutex<u64>,
+    /// Every `prepare_dispatch`, in the order it happened: reserved or refused.
+    sequence: Mutex<Vec<String>>,
+    completed: Mutex<Vec<String>>,
+}
+
+impl Capped {
+    fn new(delays_ms: BTreeMap<&'static str, u64>, per_node_tokens: u64, cap: u64) -> Capped {
+        Capped {
+            delays_ms,
+            per_node_tokens,
+            remaining: Mutex::new(cap),
+            sequence: Mutex::new(Vec::new()),
+            completed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Dispatch for Capped {
+    fn prepare_dispatch(&self, node: &Node, _inputs: &ArtifactMap) -> Result<(), String> {
+        let mut remaining = self.remaining.lock().unwrap();
+        if *remaining < self.per_node_tokens {
+            self.sequence
+                .lock()
+                .unwrap()
+                .push(format!("refused:{}", node.id));
+            return Err(format!("run budget exhausted reserving for {}", node.id));
+        }
+        *remaining -= self.per_node_tokens;
+        self.sequence
+            .lock()
+            .unwrap()
+            .push(format!("reserved:{}", node.id));
+        Ok(())
+    }
+
+    fn failure_class(&self, _node_id: &str) -> Option<NodeFailureClass> {
+        Some(NodeFailureClass::RunBudgetExhausted)
+    }
+
+    fn run(&self, node: &Node, _inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+        if let Some(delay) = self.delays_ms.get(node.id.as_str()) {
+            std::thread::sleep(std::time::Duration::from_millis(*delay));
+        }
+        self.completed.lock().unwrap().push(node.id.clone());
+        Ok(BTreeMap::from([(
+            node.outputs[0].name.clone(),
+            vec![format!("artifact:{}", node.id)],
+        )]))
+    }
+}
+
+/// The node a run cap exhausts is a fact about the pipeline, not about who finished first.
+///
+/// The existing sequence tests use dispatchers with no budget, so they never observe the one
+/// thing `prepare_dispatch` exists for. Here the cap covers the gate and three of the four
+/// reviewers: the fourth must be the *same* reviewer in every run, `Failed` with
+/// `RunBudgetExhausted`, cascading the same suppression — otherwise two runs over an identical
+/// Subject reach different verdicts, and the difference is a durable, reviewer-visible artifact
+/// that is not a function of the pipeline.
+#[test]
+fn a_run_cap_exhausts_the_same_node_under_every_completion_order_and_bound() {
+    let mut pipeline = Pipeline::default()
+        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
+        .node(
+            Node::new("gather", NodeKind::Gather)
+                .accepting(&["r1", "r2", "r3", "r4"])
+                .emitting(&["reports"]),
+        )
+        .node(
+            Node::new("ledger", NodeKind::Ledger)
+                .accepting(&["reports"])
+                .emitting(&["findings"]),
+        )
+        .edge(
+            Port::new("gather", "reports"),
+            Port::new("ledger", "reports"),
+        );
+    for reviewer in ["r1", "r2", "r3", "r4"] {
+        pipeline = pipeline
+            .node(
+                Node::new(reviewer, NodeKind::Reviewer)
+                    .accepting(&["gate"])
+                    .emitting(&["result"])
+                    .gated_by("gate"),
+            )
+            .edge(Port::new("gate", "decision"), Port::new(reviewer, "gate"))
+            .edge(Port::new(reviewer, "result"), Port::new("gather", reviewer));
+    }
+    let plan = pipeline.plan().unwrap();
+
+    // Four reservations of 300k against a 1.2M cap: the gate and three reviewers fit, `r4`
+    // does not, and `gather` is suppressed because its input never arrives.
+    let patterns: [[u64; 4]; 4] = [
+        [0, 20, 40, 60],
+        [60, 40, 20, 0],
+        [40, 0, 60, 20],
+        [20, 60, 0, 40],
+    ];
+    let mut sequences = BTreeSet::new();
+    let mut reports = BTreeSet::new();
+    let mut parallel_completion_orders = BTreeSet::new();
+    for pattern in patterns {
+        for bound in [1, 2, 4] {
+            let dispatcher = Capped::new(
+                ["r1", "r2", "r3", "r4"].into_iter().zip(pattern).collect(),
+                300_000,
+                1_200_000,
+            );
+            let report = Scheduler::new(&plan)
+                .with_parallelism(bound)
+                .run(&dispatcher);
+            reports.insert(
+                report
+                    .outcomes
+                    .iter()
+                    .map(|(id, outcome)| {
+                        let shape = match outcome {
+                            NodeOutcome::Completed { .. } => "completed".to_string(),
+                            NodeOutcome::Failed { class, .. } => format!("failed:{class:?}"),
+                            NodeOutcome::Suppressed { reason } => format!("suppressed:{reason:?}"),
+                        };
+                        format!("{id}={shape}")
+                    })
+                    .collect::<Vec<String>>(),
+            );
+            sequences.insert(dispatcher.sequence.into_inner().unwrap());
+            if bound == 4 {
+                parallel_completion_orders.insert(dispatcher.completed.into_inner().unwrap());
+            }
+        }
+    }
+
+    assert!(
+        parallel_completion_orders.len() >= 3,
+        "the delay patterns must really change the completion order: {parallel_completion_orders:?}"
+    );
+    assert_eq!(
+        sequences,
+        BTreeSet::from([vec![
+            "reserved:gate".to_string(),
+            "reserved:r1".to_string(),
+            "reserved:r2".to_string(),
+            "reserved:r3".to_string(),
+            "refused:r4".to_string(),
+        ]]),
+        "the run cap was consumed in a different order"
+    );
+    assert_eq!(
+        reports,
+        BTreeSet::from([vec![
+            "gate=completed".to_string(),
+            "r1=completed".to_string(),
+            "r2=completed".to_string(),
+            "r3=completed".to_string(),
+            "r4=failed:Some(RunBudgetExhausted)".to_string(),
+            "gather=suppressed:UpstreamMissing".to_string(),
+            "ledger=suppressed:UpstreamMissing".to_string(),
+        ]]),
+        "a different node was failed or suppressed"
+    );
+}
+
+/// An admission readies its dependent *before* the slot it freed is filled.
+///
+/// Plan `a, b, c, x1, x2` with `c` downstream of `a` and the rest sources, bound two. When `a`
+/// completes, the loop admits it, rescans — which invokes `c` — and only then fills the slot
+/// `a` just freed, so `c` takes it. Filling first handed that slot to `x1`, and whether `c` or
+/// `x1` reserved third then depended on how many completions the last drain happened to
+/// collect: a plain `try_recv` race that varies run to run at identical delays. `a` is the
+/// fastest node here, so this is the case the loop order decides; when the plan-earliest
+/// running node is *not* first to finish, dispatch order still follows the completion that
+/// freed the slot, which `Scheduler::run` documents.
+#[test]
+fn an_admission_readies_its_dependent_before_the_slot_it_freed_is_filled() {
+    let pipeline = Pipeline::default()
+        .node(Node::new("a", NodeKind::Reviewer).emitting(&["result"]))
+        .node(Node::new("b", NodeKind::Reviewer).emitting(&["result"]))
+        .node(
+            Node::new("c", NodeKind::Reviewer)
+                .accepting(&["upstream"])
+                .emitting(&["result"]),
+        )
+        .node(Node::new("x1", NodeKind::Reviewer).emitting(&["result"]))
+        .node(Node::new("x2", NodeKind::Reviewer).emitting(&["result"]))
+        .edge(Port::new("a", "result"), Port::new("c", "upstream"));
+    let plan = pipeline.plan().unwrap();
+    assert_eq!(plan.order, vec!["a", "b", "c", "x1", "x2"]);
+
+    let mut sequences = BTreeSet::new();
+    for trailing in [[30_u64, 60], [60, 30], [30, 30], [0, 0]] {
+        for _ in 0..4 {
+            let dispatcher = Capped::new(
+                BTreeMap::from([
+                    ("a", 0),
+                    ("b", 90),
+                    ("x1", trailing[0]),
+                    ("x2", trailing[1]),
+                ]),
+                300_000,
+                u64::MAX,
+            );
+            let report = Scheduler::new(&plan).with_parallelism(2).run(&dispatcher);
+            assert!(report.complete(), "{:?}", report.outcomes);
+            sequences.insert(dispatcher.sequence.into_inner().unwrap());
+        }
+    }
+    assert_eq!(
+        sequences,
+        BTreeSet::from([vec![
+            "reserved:a".to_string(),
+            "reserved:b".to_string(),
+            "reserved:c".to_string(),
+            "reserved:x1".to_string(),
+            "reserved:x2".to_string(),
+        ]]),
+        "a slot freed by `a` went to a plan-later node instead of the dependent `a` readied"
+    );
 }
