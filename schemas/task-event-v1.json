@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-event:1",
+  "title": "TaskEvent@1 envelope",
+  "description": "One row of the Task log behind `af task` (ADR-0046), a contract distinct from RunEvent@1. A Task is one append-only sequence keyed by its ID; `sequence` is dense, gapless, and the only ordering authority. A Task event carries no inline payload: it names exactly one immutable CAS artifact, which must be durable before the row lands, and that artifact's `schema` marker is the payload contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "sequence",
+    "event_type",
+    "artifact_id"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "event_type": {
+      "description": "Closed Task event vocabulary. Adding one is an explicit enum, schema, and admission change; the Rust `TaskEventType` must list exactly these.",
+      "type": "string",
+      "enum": [
+        "TaskOpened@1",
+        "WorkerCompleted@1",
+        "SnapshotDerived@1",
+        "GateCompleted@1",
+        "EvaluationCompleted@1",
+        "TaskCompleted@1",
+        "TaskDeliveryPrepared@1",
+        "TaskDelivered@1",
+        "TaskDeliveryFailed@1"
+      ]
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-delivery-prepared:1",
+  "title": "af/task-delivery-prepared@1 payload",
+  "description": "Referenced by TaskDeliveryPrepared@1, durable before the first Git mutation of a local delivery (ADR-0031). The record is what a restarted process reconciles against, so it names the exact target and the source revision the branch will be created at.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "delivery_id",
+    "task_id",
+    "source_snapshot_id",
+    "derived_snapshot_id",
+    "source_revision",
+    "target"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-delivery-prepared@1"
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^delivery-[0-9a-f]{64}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "derived_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "repository_id",
+        "branch",
+        "worktree"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repository_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worktree": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

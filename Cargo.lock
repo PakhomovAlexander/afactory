@@ -1480,6 +1480,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "crossterm",
+ "jsonschema",
  "minisign",
  "minisign-verify",
  "nix 0.30.1",

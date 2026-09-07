@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-snapshot:1",
+  "title": "af/snapshot@1 receipt",
+  "description": "The Task path's Snapshot receipt: content identity plus repository provenance, referenced by ID from Task records. A `source` Snapshot is what the operator authorized; a `derived` Snapshot is the implementer's sealed sandbox, exactly parented by its source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "content_digest",
+    "manifest_artifact_id",
+    "repository_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/snapshot@1"
+    },
+    "kind": {
+      "enum": [
+        "source",
+        "derived"
+      ]
+    },
+    "content_digest": {
+      "description": "Tree Digest of the ordered Manifest.",
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "parent_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "repository_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_revision": {
+      "description": "Git commit ID the source content corresponds to; absent for an uncommitted capture and always absent on a derived Snapshot.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "derived"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "parent_snapshot_id"
+        ],
+        "not": {
+          "required": [
+            "source_revision"
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "parent_snapshot_id"
+          ]
+        }
+      }
+    }
+  ]
+}

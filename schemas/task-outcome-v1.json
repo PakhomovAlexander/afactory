@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-outcome:1",
+  "title": "af/task-outcome@1 payload",
+  "description": "Referenced by TaskCompleted@1, the Task's one terminal record and what `af task start --json` prints. `verified` names the exact derived Snapshot that passed every acceptance gate and the independent evaluator; `unverified` names the stage that stopped the Task and why. Delivery is recorded separately and never here (ADR-0031).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate",
+    "task_id",
+    "kind",
+    "goal_artifact_id",
+    "source_snapshot_id",
+    "derived_snapshot_id",
+    "derived_snapshot_size",
+    "authority",
+    "workers",
+    "gates",
+    "totals",
+    "delivery",
+    "outcome"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-outcome@1"
+    },
+    "candidate": {
+      "description": "The exact `af` that produced this record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "executable",
+        "binary_sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executable": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "kind": {
+      "const": "implement"
+    },
+    "goal_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "derived_snapshot_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "derived_snapshot_size": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/size"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline_artifact_id",
+        "lock_artifact_id",
+        "project_artifact_id",
+        "workers"
+      ],
+      "properties": {
+        "pipeline_artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "lock_artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "project_artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "workers": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "urn:review-kernel:schema:task-opened:1#/$defs/worker_authority"
+          }
+        }
+      }
+    },
+    "workers": {
+      "description": "Evidence for every Worker that ran, in dispatch order: the implementer alone when the Task stopped before evaluation.",
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "$ref": "urn:review-kernel:schema:task-worker-evidence:1"
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "result_artifact"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "not_run"
+            ]
+          },
+          "result_artifact": {
+            "description": "A CheckResult@1 artifact.",
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context",
+        "usage"
+      ],
+      "properties": {
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rendered_bytes",
+            "estimated_tokens"
+          ],
+          "properties": {
+            "rendered_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "estimated_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "usage": {
+          "$ref": "urn:review-kernel:schema:task-worker-evidence:1#/$defs/token_usage"
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "snapshot_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "verified"
+            },
+            "snapshot_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "stage",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unverified"
+            },
+            "stage": {
+              "enum": [
+                "implementer",
+                "budget",
+                "snapshot",
+                "gates",
+                "evaluator",
+                "evaluation"
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "kind": {
+                "const": "verified"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "derived_snapshot_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "derived_snapshot_size": {
+            "$ref": "#/$defs/size"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "size": {
+      "description": "Measured size of the derived Snapshot, so the ceiling is a number in the record rather than something discovered from disk. `mutated_*` count the entries the implementer added or modified, which is what the ceiling bounds; `entries`/`bytes` describe the whole tree.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "bytes",
+        "mutated_entries",
+        "mutated_bytes"
+      ],
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mutated_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mutated_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

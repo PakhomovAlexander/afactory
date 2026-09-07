@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-delivery:1",
+  "title": "af/task-delivery@1 payload",
+  "description": "Referenced by TaskDelivered@1 and TaskDeliveryFailed@1: the terminal receipt of one prepared local delivery. `remote_actions` is recorded so that its emptiness is a stated fact \u2014 delivery never pushes, opens a pull request, or invokes a remote.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "delivery_id",
+    "task_id",
+    "source_snapshot_id",
+    "derived_snapshot_id",
+    "target",
+    "outcome",
+    "ignored_paths",
+    "remote_actions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-delivery@1"
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^delivery-[0-9a-f]{64}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "derived_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target": {
+      "$ref": "urn:review-kernel:schema:task-delivery-prepared:1#/$defs/target"
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "delivered"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "ignored_paths": {
+      "description": "Losslessly encoded delivered Snapshot paths the operator's ordinary `git add` would ignore.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "remote_actions": {
+      "type": "array",
+      "maxItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
