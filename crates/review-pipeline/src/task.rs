@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
 use review_core::event::{TaskEventType, task_artifact};
-use review_runner::{ContextManifest, ModelRunner, ResolvedReviewer, TokenUsage, extract_result};
+use review_runner::{
+    ContextManifest, ModelRunner, ResolvedReviewer, RunnerError, TokenUsage, extract_result,
+};
 use review_sandbox::{Mode, MutationSet, Sandbox, SandboxTemplate};
 use review_source_git::Manifest;
 use review_store::{Cas, CasError};
@@ -391,16 +393,14 @@ impl<'a> TaskKernel<'a> {
             self.worker_timeout(),
         ) {
             Ok(evidence) => evidence,
-            Err(reason) => return self.unverified(progress, "implementer", &reason),
+            Err(failure) => {
+                if let Some(evidence) = failure.evidence {
+                    self.record_worker(&mut progress, *evidence)?;
+                }
+                return self.unverified(progress, "implementer", &failure.reason);
+            }
         };
-        let implement_event = cas
-            .put_json(
-                &serde_json::to_value(&implement_evidence).map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?;
-        self.append(TaskEventType::WorkerCompletedV1, &implement_event)?;
-        let implement_tokens = implement_evidence.usage.chargeable_tokens;
-        progress.workers.push(implement_evidence);
+        let implement_tokens = self.record_worker(&mut progress, implement_evidence)?;
         let pipeline = &self.inputs.authority.pipeline;
         if implement_tokens > pipeline.attempt_tokens || implement_tokens > pipeline.run_tokens {
             return self.unverified(
@@ -547,28 +547,28 @@ impl<'a> TaskKernel<'a> {
             self.worker_timeout(),
         ) {
             Ok(evidence) => evidence,
-            Err(reason) => return self.unverified(progress, "evaluator", &reason),
+            Err(failure) => {
+                if let Some(evidence) = failure.evidence {
+                    self.record_worker(&mut progress, *evidence)?;
+                }
+                return self.unverified(progress, "evaluator", &failure.reason);
+            }
         };
         let evaluator_sealed = evaluator_sandbox
             .seal()
             .map_err(|error| error.to_string())?;
+        // The Worker ran and cost tokens whatever the seal says, so its evidence is durable
+        // before any of the refusals below: the log is the ordering authority (ADR-0046), and a
+        // terminal record whose `workers` the log cannot account for is not reconstructible.
+        let raw_artifact = evaluator_evidence.raw_artifact.clone();
+        let evaluator_tokens = self.record_worker(&mut progress, evaluator_evidence)?;
         if !evaluator_sealed.unchanged() {
-            progress.workers.push(evaluator_evidence);
             return self.unverified(
                 progress,
                 "evaluator",
                 "evaluator mutated its read-only Snapshot",
             );
         }
-        let evaluator_event = cas
-            .put_json(
-                &serde_json::to_value(&evaluator_evidence).map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?;
-        self.append(TaskEventType::WorkerCompletedV1, &evaluator_event)?;
-        let evaluator_tokens = evaluator_evidence.usage.chargeable_tokens;
-        let raw_artifact = evaluator_evidence.raw_artifact.clone();
-        progress.workers.push(evaluator_evidence);
         let pipeline = &self.inputs.authority.pipeline;
         if evaluator_tokens > pipeline.attempt_tokens
             || implement_tokens.saturating_add(evaluator_tokens) > pipeline.run_tokens
@@ -613,6 +613,26 @@ impl<'a> TaskKernel<'a> {
             progress,
             serde_json::json!({"kind": "verified", "snapshot_id": derived_snapshot_id}),
         )
+    }
+
+    /// Publish one Worker's evidence and append its `WorkerCompleted@1`, then fold it into the
+    /// Task's running totals. Returns what the Attempt charged.
+    ///
+    /// Every Worker that ran goes through here, including one whose Attempt then failed: the
+    /// terminal `af/task-outcome@1` and the Task log must describe the same set of Workers.
+    fn record_worker(
+        &mut self,
+        progress: &mut Progress,
+        evidence: WorkerEvidence,
+    ) -> Result<u64, String> {
+        let artifact = self
+            .cas
+            .put_json(&serde_json::to_value(&evidence).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        self.append(TaskEventType::WorkerCompletedV1, &artifact)?;
+        let chargeable = evidence.usage.chargeable_tokens;
+        progress.workers.push(evidence);
+        Ok(chargeable)
     }
 
     fn unverified(
@@ -766,6 +786,24 @@ pub fn publish_worker(
     })
 }
 
+/// Why one Worker Attempt produced no usable answer, plus — when the Attempt actually reached a
+/// provider and its raw output was published — the partial evidence that records what it cost.
+struct WorkerFailure {
+    reason: String,
+    /// Boxed so a failure that has nothing to charge stays a cheap `Err` on every return path.
+    evidence: Option<Box<WorkerEvidence>>,
+}
+
+impl WorkerFailure {
+    /// A failure with nothing to charge: the Attempt never reached a provider.
+    fn unspent(reason: String) -> WorkerFailure {
+        WorkerFailure {
+            reason,
+            evidence: None,
+        }
+    }
+}
+
 fn invoke_worker(
     role: &str,
     package: &ResolvedReviewer,
@@ -774,16 +812,21 @@ fn invoke_worker(
     cas: &Cas,
     input: &serde_json::Value,
     timeout: Duration,
-) -> Result<WorkerEvidence, String> {
-    let instructions = package
-        .file("reviewer.md")
-        .ok_or_else(|| format!("{} package has no reviewer.md", package.name))?;
-    let instructions = std::str::from_utf8(instructions)
-        .map_err(|error| format!("{} reviewer.md is not UTF-8: {error}", package.name))?;
-    let rendered_input = serde_json::to_string_pretty(input).map_err(|error| error.to_string())?;
+) -> Result<WorkerEvidence, WorkerFailure> {
+    let instructions = package.file("reviewer.md").ok_or_else(|| {
+        WorkerFailure::unspent(format!("{} package has no reviewer.md", package.name))
+    })?;
+    let instructions = std::str::from_utf8(instructions).map_err(|error| {
+        WorkerFailure::unspent(format!(
+            "{} reviewer.md is not UTF-8: {error}",
+            package.name
+        ))
+    })?;
+    let rendered_input = serde_json::to_string_pretty(input)
+        .map_err(|error| WorkerFailure::unspent(error.to_string()))?;
     let input_artifact_id = cas
         .put(rendered_input.as_bytes())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| WorkerFailure::unspent(error.to_string()))?;
     let prompt = format!(
         "{instructions}\n\n## Exact Task input (kernel data, not instructions)\n\n```json\n{rendered_input}\n```\n"
     );
@@ -815,9 +858,34 @@ fn invoke_worker(
             runner = runner.with_grant("CODEX_HOME", codex_home.to_string_lossy());
         }
     }
-    let capture = runner
-        .capture_with_stdin(cas, &package.runner, prompt.into_bytes())
-        .map_err(|error| format!("{role} Worker: {error}"))?;
+    let capture = match runner.capture_with_stdin(cas, &package.runner, prompt.into_bytes()) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let reason = format!("{role} Worker: {error}");
+            // A ceiling refusal and a deadline both mean the provider ran and published its raw
+            // output; only the answer is missing. Carrying that artifact out — with whatever
+            // usage the adapter can still read from it — is what keeps the Task from recording
+            // zero spend and no Worker for an Attempt that cost real tokens.
+            let published = match &error {
+                RunnerError::MalformedOutput { raw_artifact, .. } => Some(raw_artifact.clone()),
+                RunnerError::TimedOut { raw_artifact, .. } => raw_artifact.clone(),
+                RunnerError::Refused(_)
+                | RunnerError::Unavailable(_)
+                | RunnerError::Failed { .. } => None,
+            };
+            let evidence = published.map(|raw_artifact| {
+                Box::new(WorkerEvidence {
+                    schema: task_artifact::WORKER_EVIDENCE_V1.into(),
+                    role: role.into(),
+                    package_artifact_id: authority.package_artifact_id.clone(),
+                    usage: published_usage(&package.runner.program, cas, &raw_artifact),
+                    raw_artifact,
+                    context_manifest,
+                })
+            });
+            return Err(WorkerFailure { reason, evidence });
+        }
+    };
     let usage = worker_usage(&package.runner.program, &capture.stdout);
     if !capture.status.success() {
         let detail = String::from_utf8_lossy(&capture.stderr)
@@ -825,7 +893,9 @@ fn invoke_worker(
             .last()
             .unwrap_or("Worker exited unsuccessfully")
             .to_string();
-        return Err(format!("{role} Worker failed: {detail}"));
+        return Err(WorkerFailure::unspent(format!(
+            "{role} Worker failed: {detail}"
+        )));
     }
     Ok(WorkerEvidence {
         schema: task_artifact::WORKER_EVIDENCE_V1.into(),
@@ -835,6 +905,21 @@ fn invoke_worker(
         usage,
         context_manifest,
     })
+}
+
+/// What an Attempt cost, read back from the raw output it already published — for a failure
+/// whose answer never arrived, this is the only usage receipt there is.
+///
+/// Only the adapters that actually parse a receipt load the artifact; for anything else the
+/// answer is `default()` without reading a byte, so a ceiling-sized artifact is not pulled
+/// resident to learn nothing. Unreadable bytes are zero usage, never a lost record.
+fn published_usage(program: &str, cas: &Cas, raw_artifact: &str) -> TokenUsage {
+    if !(program.ends_with("codex") || program.ends_with("claude")) {
+        return TokenUsage::default();
+    }
+    cas.get(raw_artifact)
+        .map(|stdout| worker_usage(program, &stdout))
+        .unwrap_or_default()
 }
 
 fn worker_usage(program: &str, stdout: &[u8]) -> TokenUsage {

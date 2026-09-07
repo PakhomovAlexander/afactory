@@ -128,6 +128,17 @@ struct Fixture {
 /// A committed repository whose implementer runs `implementer_script` in its sandbox, whose one
 /// acceptance gate checks `implemented.txt`, and whose evaluator approves.
 fn fixture(root: &Path, implementer_script: &str) -> Fixture {
+    fixture_with(root, implementer_script, APPROVING_EVALUATOR, 60)
+}
+
+/// [`fixture`] with the evaluator and the Worker deadline chosen by the caller — the two knobs a
+/// Worker that runs, costs tokens, and then fails needs.
+fn fixture_with(
+    root: &Path,
+    implementer_script: &str,
+    evaluator_script: &str,
+    worker_timeout_seconds: u64,
+) -> Fixture {
     let repo = root.join("repo");
     let home = root.join("home");
     let state = root.join("state");
@@ -149,13 +160,16 @@ fn fixture(root: &Path, implementer_script: &str) -> Fixture {
     write_package(
         &repo.join(".af/workers"),
         "evaluator",
-        r#"printf '{"verdict":"approve","summary":"independent pass"}'"#,
+        evaluator_script,
         "Evaluate the goal against the provided Snapshot. Return only the requested JSON.",
     );
-    let pipeline = "version = 1\nkind = \"implement\"\nimplementer = \"implementer\"\n\
-         evaluator = \"evaluator\"\ntimeout_seconds = 60\ncheck_timeout_seconds = 60\n\n\
+    let pipeline = format!(
+        "version = 1\nkind = \"implement\"\nimplementer = \"implementer\"\n\
+         evaluator = \"evaluator\"\ntimeout_seconds = {worker_timeout_seconds}\ncheck_timeout_seconds = 60\n\n\
          attempt_tokens = 1000\nrun_tokens = 2000\n\n[[checks]]\nname = \"acceptance\"\nprogram = \"/bin/sh\"\n\
-         args = [{ value = \"-c\" }, { value = '''test \"$(cat implemented.txt)\" = derived''' }]\n";
+         args = [{{ value = \"-c\" }}, {{ value = '''test \"$(cat implemented.txt)\" = derived''' }}]\n"
+    );
+    let pipeline = pipeline.as_str();
     std::fs::write(repo.join(".af/pipelines/implement.toml"), pipeline).unwrap();
     let implementer = package_digest("implementer", &repo.join(".af/workers/implementer")).unwrap();
     let evaluator = package_digest("evaluator", &repo.join(".af/workers/evaluator")).unwrap();
@@ -247,6 +261,7 @@ fn evaluator_task_input(cas: &Cas, outcome: &Value) -> Value {
 }
 
 const SIMPLE_IMPLEMENTER: &str = "printf 'derived\\n' > implemented.txt; printf done";
+const APPROVING_EVALUATOR: &str = r#"printf '{"verdict":"approve","summary":"independent pass"}'"#;
 
 #[test]
 fn task_event_schema_and_rust_vocabulary_are_identical() {
@@ -549,4 +564,92 @@ fn evaluator_input_carries_a_bounded_mutation_summary() {
     assert_eq!(record["mutations"]["added"].as_array().unwrap().len(), 301);
     assert!(input.get("implementer_output").is_none());
     assert!(input.get("implementer_transcript").is_none());
+}
+
+/// A Worker that reached a provider and spent tokens leaves a durable record, whatever failed
+/// afterwards. A deadline and the reviewer-output ceiling both publish the Attempt's raw output
+/// before returning an error, so the Task must name that Worker and reference those bytes —
+/// not report `workers: []` and `chargeable_tokens: 0` while the artifact sits unreferenced.
+#[test]
+fn a_worker_that_ran_is_recorded_even_when_its_attempt_failed() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = fixture_with(
+        directory.path(),
+        "printf 'partial answer'; sleep 30",
+        APPROVING_EVALUATOR,
+        1,
+    );
+    let (code, outcome, stderr) = run_task(&fixture);
+    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(outcome["outcome"]["kind"], "unverified");
+    assert_eq!(outcome["outcome"]["stage"], "implementer");
+    let workers = outcome["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 1, "{outcome:#}");
+    assert_eq!(workers[0]["role"], "implementer");
+    assert_valid("task-outcome-v1.json", &outcome);
+
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let events = task_events(&fixture, task_id);
+    let types: Vec<&str> = events.iter().map(|(_, kind, _)| kind.as_str()).collect();
+    assert_eq!(
+        types,
+        ["TaskOpened@1", "WorkerCompleted@1", "TaskCompleted@1"],
+        "the outcome names a Worker the log never recorded"
+    );
+
+    // The evidence is the Attempt's own published stdout, not an invention.
+    let cas = Cas::open(fixture.state.join("cas")).unwrap();
+    let evidence = cas.get_json(&events[1].2).unwrap();
+    assert_valid("task-worker-evidence-v1.json", &evidence);
+    assert_eq!(evidence["raw_artifact"], workers[0]["raw_artifact"]);
+    assert_eq!(
+        cas.get(evidence["raw_artifact"].as_str().unwrap()).unwrap(),
+        b"partial answer"
+    );
+}
+
+/// An evaluator that mutates its read-only Snapshot still ran and still cost tokens. Its
+/// evidence is already in the terminal record's `workers` and totals, so it has to be in the
+/// log too: the log is the ordering authority (ADR-0046), and a Task reconstructed from it must
+/// not disagree with the outcome about which Workers existed.
+#[test]
+fn a_mutating_evaluator_is_logged_before_its_snapshot_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = fixture_with(
+        directory.path(),
+        SIMPLE_IMPLEMENTER,
+        // Read-only is permission bits, and the owner may lift them: exactly the tamper the
+        // seal comparison exists to catch.
+        r#"chmod u+w . seed.txt; printf 'tampered\n' >> seed.txt; printf '{"verdict":"approve","summary":"x"}'"#,
+        60,
+    );
+    let (code, outcome, stderr) = run_task(&fixture);
+    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(outcome["outcome"]["stage"], "evaluator");
+    assert_eq!(
+        outcome["outcome"]["reason"],
+        "evaluator mutated its read-only Snapshot"
+    );
+    assert_eq!(outcome["workers"].as_array().unwrap().len(), 2);
+    assert_valid("task-outcome-v1.json", &outcome);
+
+    let task_id = outcome["task_id"].as_str().unwrap();
+    let events = task_events(&fixture, task_id);
+    let types: Vec<&str> = events.iter().map(|(_, kind, _)| kind.as_str()).collect();
+    assert_eq!(
+        types,
+        [
+            "TaskOpened@1",
+            "WorkerCompleted@1",
+            "SnapshotDerived@1",
+            "GateCompleted@1",
+            "WorkerCompleted@1",
+            "TaskCompleted@1",
+        ],
+        "the outcome names two Workers; the log must too"
+    );
+    let cas = Cas::open(fixture.state.join("cas")).unwrap();
+    let evidence = cas.get_json(&events[4].2).unwrap();
+    assert_eq!(evidence["role"], "evaluator");
+    assert_valid("task-worker-evidence-v1.json", &evidence);
 }
