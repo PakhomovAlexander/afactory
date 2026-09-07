@@ -1196,7 +1196,9 @@ pub const MAX_REVIEWER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// One supervised process whose stdout was streamed — redacted, written to a temporary file,
 /// handed chunk by chunk to the caller's sink, and published to the CAS by reader — instead of
-/// held resident. Only stderr, which is small and quoted in diagnostics, is returned by value.
+/// held resident. Only stderr is returned by value: it is diagnostics, quoted a line at a time,
+/// and the shared supervisor bounds it at [`review_process::MAX_STDERR_BYTES`], so a producer
+/// that redirects its runaway output to fd 2 cannot get past the stdout ceiling that way.
 #[derive(Debug, Clone)]
 pub struct StreamedCapture {
     pub status: std::process::ExitStatus,

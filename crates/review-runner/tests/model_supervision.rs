@@ -261,6 +261,35 @@ fn a_capture_without_input_leaves_the_child_no_pipe_on_stdin() {
     assert_eq!(capture.stdout, b"prompt\npipe\n");
 }
 
+/// The ceiling is not a stdout ceiling with a hole beside it: a producer that writes its runaway
+/// output to fd 2 is bounded too, and what is kept says so instead of pretending to be whole.
+#[test]
+fn runaway_stderr_is_bounded_and_says_it_was_cut() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(60));
+    // Four times the stderr ceiling, then a normal answer on stdout.
+    let capture = runner
+        .capture(
+            &cas,
+            &sh("yes 'stderr noise' | head -c 4194304 >&2; printf answer"),
+        )
+        .unwrap();
+
+    assert_eq!(capture.stdout, b"answer");
+    assert!(
+        capture.stderr.len() < review_process::MAX_STDERR_BYTES + 4096,
+        "stderr was not bounded: {} bytes",
+        capture.stderr.len()
+    );
+    let stderr = String::from_utf8_lossy(&capture.stderr);
+    assert!(stderr.starts_with("stderr noise"), "{}", &stderr[..64]);
+    assert!(
+        stderr.trim_end().ends_with("the rest was discarded]"),
+        "a silent cut is indistinguishable from a short stderr: {:?}",
+        &stderr[stderr.len().saturating_sub(120)..]
+    );
+}
+
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.
 #[test]
 fn an_ungranted_variable_never_reaches_the_child() {

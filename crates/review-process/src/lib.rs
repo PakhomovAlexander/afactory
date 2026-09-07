@@ -7,6 +7,19 @@ use std::time::{Duration, Instant};
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
+/// The most stderr bytes one duplex-supervised process's diagnostics are kept for.
+///
+/// Stderr is diagnostics, never the answer: callers quote its last line and store nothing else,
+/// so by construction it is orders of magnitude smaller than the stdout a bounded reader is
+/// draining beside it. 1 MiB holds thousands of log lines — far more than any excerpt needs —
+/// and closes the hole a stdout ceiling alone leaves: a producer that writes its runaway output
+/// to fd 2 instead of fd 1 (`yes >&2`, or a CLI whose progress and tracing go to stderr) grows
+/// this process's memory without limit while the stdout reader sits idle and never aborts.
+/// Past the ceiling the tail is read and discarded rather than left unread — an unread pipe
+/// blocks the producer instead of ending it — and the kept bytes carry a truncation marker, so
+/// a cut is never mistaken for the whole stream.
+pub const MAX_STDERR_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug)]
 pub enum SupervisedError {
     Spawn(std::io::Error),
@@ -230,7 +243,10 @@ where
             let _ = output_send.send(result);
         });
 
-        let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
+        let stderr = drain_async_bounded(
+            child.stderr.take().expect("stderr was piped"),
+            MAX_STDERR_BYTES,
+        );
         let deadline = Instant::now() + timeout;
         let status = match wait_exact_or_abort(child, deadline, waited_send, waited_receive) {
             Ok(Waited::Exited(Ok(status))) => status,
@@ -417,6 +433,40 @@ fn drain_async(
         let mut bytes = Vec::new();
         let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
         let _ = send.send(result);
+    });
+    receive
+}
+
+/// [`drain_async`] under a byte ceiling: at most `limit` bytes are retained, the rest is read
+/// and thrown away so the producer is never blocked on a full pipe, and a truncation marker is
+/// appended to what is kept. See [`MAX_STDERR_BYTES`].
+fn drain_async_bounded(
+    mut pipe: impl Read + Send + 'static,
+    limit: usize,
+) -> std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut truncated = false;
+        let result = loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) => break Ok(()),
+                Ok(read) => {
+                    let kept = read.min(limit.saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&buffer[..kept]);
+                    truncated |= read > kept;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        if truncated {
+            bytes.extend_from_slice(
+                format!("\n[stderr exceeded {limit} bytes; the rest was discarded]\n").as_bytes(),
+            );
+        }
+        let _ = send.send(result.map(|()| bytes));
     });
     receive
 }
