@@ -24,7 +24,7 @@
 
 pub mod scatter;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -4496,16 +4496,24 @@ impl<'a> Kernel<'a> {
             }
         }
 
-        // Dispatches above are durable in canonical Slice order. Model execution may now run on
-        // the shared bounded executor; receipts are committed below in the same canonical order.
-        let executed =
-            review_parallel::try_map_owned(runnable, |(slice, dynamic_node, inputs)| {
-                Ok::<_, String>((
+        // Dispatches above are durable in canonical Slice order. Shards are model calls that
+        // block for minutes, so they run on their own bounded thread set — never on the shared
+        // filesystem executor, whose width is the host's CPU count and whose workers the shards'
+        // own sandbox clone, seal, and CAS phases need. The in-flight bound is the Slice
+        // policy's `max_fanout`: the persisted SliceSet@1 carries it and validates
+        // `slices.len() <= max_fanout`, so the fan-out the plan declares is the fan-out that
+        // runs. Receipts are committed below in the same canonical order.
+        let executed = dispatch_shards(
+            runnable,
+            slice_set.max_fanout,
+            |(slice, dynamic_node, inputs)| {
+                (
                     slice,
                     dynamic_node.clone(),
                     self.run(&dynamic_node, &inputs),
-                ))
-            })?;
+                )
+            },
+        );
         for (slice, dynamic_node, result) in executed {
             let outcome = match result {
                 Ok(outputs) => match self.record_outputs(&dynamic_node, &outputs) {
@@ -5751,6 +5759,43 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
                     .collect(),
             }
         })
+        .collect()
+}
+
+/// Run every shard on at most `bound` scoped threads and return the results in input order.
+/// Scoped, so a shard borrows the kernel like a static node does; bounded by the Slice policy,
+/// not by the machine, so a 32-shard policy on an 8-core host still runs 32 model calls at once
+/// while the filesystem executor stays free for the phases inside each shard.
+fn dispatch_shards<T, R>(items: Vec<T>, bound: u32, operation: impl Fn(T) -> R + Sync) -> Vec<R>
+where
+    T: Send,
+    R: Send,
+{
+    let count = items.len();
+    let workers = usize::try_from(bound)
+        .unwrap_or(usize::MAX)
+        .clamp(1, count.max(1));
+    let queue = Mutex::new(items.into_iter().enumerate().collect::<VecDeque<_>>());
+    let results: Mutex<Vec<Option<R>>> = Mutex::new((0..count).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let next = queue.lock().expect("shard queue").pop_front();
+                    let Some((index, item)) = next else {
+                        break;
+                    };
+                    let result = operation(item);
+                    results.lock().expect("shard results")[index] = Some(result);
+                }
+            });
+        }
+    });
+    results
+        .into_inner()
+        .expect("shard results")
+        .into_iter()
+        .map(|result| result.expect("every shard produced a result"))
         .collect()
 }
 
