@@ -15,7 +15,18 @@ release pages only.
 - Each reviewer receives and must disposition only the prior Findings it reported: the Round's
   prior-Finding document carries a per-node `assignments` partition beside the unchanged union.
 - Reviewer stdout is streamed to the CAS with incremental redaction under a 64 MiB ceiling
-  (`MAX_REVIEWER_OUTPUT_BYTES`); past it the process is ended and the Attempt is malformed output.
+  (`MAX_REVIEWER_OUTPUT_BYTES`), counted over the redacted bytes that are actually spooled,
+  published and reported; past it the process is ended and the Attempt is malformed output.
+  Reviewer stderr is bounded too (1 MiB), and what is kept says so when the tail was discarded.
+- An Attempt whose raw output could not be spooled or stored after the process ran is charged,
+  not released, and its truncated spool is never published as the Attempt's evidence.
+- A capture with no input again gives the child `/dev/null` on stdin rather than an open pipe.
+- `af task` records a Worker that reached a provider and then failed on the output ceiling or its
+  deadline: `WorkerCompleted@1` and the terminal record carry its published raw output instead of
+  reporting no Worker and zero spend. An evaluator refused for mutating its read-only Snapshot is
+  logged before the refusal, so the log and the outcome name the same Workers.
+- A `GateCompleted@1` artifact is admitted against the shape `CheckResult@1` requires; that event
+  type no longer accepts an unvalidated payload for want of a `schema` marker.
 - Scatter shards run at the Slice policy's `max_fanout`, not the host's CPU count.
 - The scheduler refills a freed slot immediately, and `max_parallel` (default 4) is a pipeline
   field shown by `af review plan`, the run, and `af review report`.
