@@ -6,7 +6,6 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema",
     "role",
     "package_artifact_id",
     "raw_artifact",
@@ -15,6 +14,7 @@
   ],
   "properties": {
     "schema": {
+      "description": "Marker the current writer always emits. Not required: `af` v0.7.1 wrote this record without one, and those rows are still in Task state.",
       "const": "af/worker-evidence@1"
     },
     "role": {
@@ -69,8 +69,9 @@
                 "pattern": "^sha256:[0-9a-f]{64}$"
               },
               "artifact_type": {
+                "description": "The injected artifact's own `schema` marker, so the manifest's claim about what the Worker was shown is checkable against that artifact.",
                 "type": "string",
-                "minLength": 1
+                "pattern": "^af/[a-z0-9-]+@[0-9]+$"
               },
               "rendered_bytes": {
                 "type": "integer",

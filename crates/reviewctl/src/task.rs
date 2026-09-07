@@ -260,8 +260,12 @@ struct TaskStore {
     connection: Connection,
 }
 
+/// One row of the Task log, and the only serialized form of it: `af task show --json` emits
+/// these as `history[]`. It carries `task_id` because `schemas/task-event-v1.json` requires it —
+/// the emitted row must be the envelope the schema describes, not a subset of it.
 #[derive(Debug, Clone, Serialize)]
 struct TaskEvent {
+    task_id: String,
     sequence: u64,
     event_type: TaskEventType,
     artifact_id: String,
@@ -339,6 +343,7 @@ impl TaskStore {
         rows.map(|row| {
             let (sequence, event_type, artifact_id) = row.map_err(|error| error.to_string())?;
             Ok(TaskEvent {
+                task_id: task_id.to_string(),
                 sequence,
                 event_type: event_type
                     .parse()

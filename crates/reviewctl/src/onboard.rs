@@ -1594,9 +1594,21 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
             }
         }
     }
-    refreshed
+    // A pin describes the package on disk, so refreshing drops packages that are gone and
+    // re-derives the digest of every one that remains. Re-pinning only what a review pipeline
+    // references would leave a Task pipeline's implementer and evaluator — referenced by name
+    // from the pipeline file, not by a node — carrying a digest their files no longer match.
+    let pinned: Vec<String> = refreshed
         .workers
-        .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
+        .keys()
+        .filter(|name| repo.join(".af/workers").join(name).is_dir())
+        .cloned()
+        .collect();
+    refreshed.workers.clear();
+    for name in pinned {
+        let pin = Lockfile::pin(&name, &registry).map_err(|error| error.to_string())?;
+        refreshed.workers.insert(name, pin);
+    }
     refreshed
         .reviewers
         .retain(|name, _| repo.join(".af/workers").join(name).is_dir());

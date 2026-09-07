@@ -1,0 +1,8 @@
+{
+  "schema": "af/snapshot@1",
+  "kind": "derived",
+  "content_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "manifest_artifact_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "parent_snapshot_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "repository_id": "repo-fixture"
+}

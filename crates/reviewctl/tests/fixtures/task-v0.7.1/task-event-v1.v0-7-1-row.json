@@ -1,0 +1,6 @@
+{
+  "task_id": "task-0123456789abcdef0123",
+  "sequence": 3,
+  "event_type": "SnapshotDerived@1",
+  "artifact_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

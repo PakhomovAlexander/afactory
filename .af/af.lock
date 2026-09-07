@@ -16,7 +16,7 @@ digest = "sha256:b164787386e6c53fca45042da0ee9c282092c1826e71ae59812cd9a32fcb6d5
 
 [workers.evaluator]
 version = "1.0.0"
-digest = "sha256:cec369961c685997a857c7b7ea206163178cdb72eea568bfdcc0b35daef73ec0"
+digest = "sha256:23b04cda189435e2c08c4635ca1eb459e1b6061d83d75b3aec14cec9569c2f5a"
 
 [workers.implementer]
 version = "1.0.0"
