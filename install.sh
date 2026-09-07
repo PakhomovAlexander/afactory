@@ -5,11 +5,15 @@
 # private. Never stores a token. Re-running is idempotent; `af self` takes over from here: the
 # installed binary records the activation, so `af self rollback` works from the first update on.
 #
-#   gh api repos/PakhomovAlexander/afactory/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
+# This script is a release asset, listed in the release's signed SHA256SUMS beside the archives;
+# fetch it from a release, never from a branch:
+#
+#   gh release download --repo PakhomovAlexander/afactory --pattern install.sh --output - | sh
 #
 # Verification: the archive digest against the release's SHA256SUMS, and — when `minisign` is on
 # PATH and AF_RELEASE_KEY names the release public key file — that file's signature too. The
-# installed `af` carries the key itself and verifies every later install.
+# installed `af` carries the key itself and verifies every later install. `make installer-test`
+# (scripts/installer-test.sh) drives this script end to end against a local fake release.
 set -eu
 
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"

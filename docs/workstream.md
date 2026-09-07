@@ -422,13 +422,15 @@ isolation, and verification prerequisites.
   computing the diff in-process; change it only through another superseding ADR.
 - **File and line references in `backlog.md` will drift** as soon as M1.1 lands. Treat them as
   where-to-look, not as ground truth, and prefer grepping the symbol.
-- **CI gates on markdownlint across `**/*.md`.** Run
-  `npx --yes markdownlint-cli2@0.22.1 --config .markdownlint-cli2.jsonc "**/*.md"`
-  before pushing. A missing blank line before `---` turns the preceding paragraph into a setext
-  heading and fails the build.
-- **Editing a reviewer package requires re-locking**, or the digest check fails at load:
-  `cargo run -p review-config --example lock -- .review/reviewers correctness` is
-  the kernel repo's shipped generator. Replace `.review/review.lock` with its stdout atomically.
+- **The review pipeline's Gate runs markdownlint across `**/*.md`** (`scripts/markdownlint.sh`,
+  from the digest-pinned toolchain in `tools/markdownlint/`; CI does not). Run `make markdownlint`
+  before opening a review. A missing blank line before `---` turns the preceding paragraph into a
+  setext heading and fails the Gate.
+- **Editing a Worker package or a pipeline requires re-locking**, or the digest check fails at
+  load: `af onboard --refresh-lock` (from a source build, `cargo run -p reviewctl --bin af --
+  onboard --refresh-lock`) rewrites `.af/af.lock` atomically; a source build pins no `[af]`
+  release and keeps an existing pin. `make check` fails while the committed lock is not what the
+  refresh writes (`crates/reviewctl/tests/own_authority.rs`).
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.
 - **Candidate dogfood cannot be its own only safety story.** `make check` remains independent;
