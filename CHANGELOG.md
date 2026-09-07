@@ -12,8 +12,30 @@ release pages only.
 - A `0.7.1` default cannot read a lock written by `0.8.0` (its `[af]` table is an unknown field
   to the older parser), so it neither dispatches to `0.8.0` nor plans: run `af self update`
   first on such a machine.
-- Each reviewer receives and must disposition only the prior Findings it reported: the Round's
-  prior-Finding document carries a per-node `assignments` partition beside the unchanged union.
+- Each reviewer must disposition only the prior Findings it reported, while still being
+  delivered — and still allowed to name — the whole Round-wide union. Membership stays the
+  union, coverage becomes the reviewer's own rows, derived by the kernel at delivery time from
+  each row's `source` and the pinned pipeline's receiving reviewer nodes. The Round's
+  prior-Finding document is unchanged: exactly `subject_id`, `round`, `prior_findings`, the
+  three keys `0.7.1` reads, so a Round this release starts still resumes on an older `af`.
+- What that saves and what it does not: the output-side obligation shrinks from R×N dispositions
+  to N across R reviewers; the delivered input bytes are unchanged, because the union is
+  delivered whole. Delivering only the reviewer's own rows would save those bytes too, but it
+  would make a cross-reviewer Dispute and a cross-reviewer Proposal claim structurally
+  impossible — `contested` is the only route by which peer review challenges a wrong claim — so
+  that trade needs its own ADR and is not made here. The reviewer prompt still asks for a
+  disposition per delivered Finding; only the kernel's obligation has narrowed.
+- A Scatter that completes without one `Completed` shard (`all_shards_required = false`, every
+  shard refused or failed) no longer closes a Round leaving its prior Findings undispositioned:
+  its rows become orphan for that Round and join the coverage of the receiving nodes still to be
+  delivered theirs.
+- The `MAX_PRIOR_FINDINGS_BYTES` refusal names a remedy instead of naming partitioning, which
+  was the thing inflating the document it measures.
+- The prior `FindingSet@1` delivered to a reviewer is the Round union, and when that is a strict
+  reduction of the reducer's Set — rejected, wontfix, and authority-diagnostic rows are not
+  Round rows — its Set-level provenance (`selected_report_ids`, `relation_ids`, `resolution_ids`)
+  goes with the rows it described, instead of naming Findings the delivered document does not
+  carry and a sandbox cannot dereference.
 - Reviewer stdout is streamed to the CAS with incremental redaction under a 64 MiB ceiling
   (`MAX_REVIEWER_OUTPUT_BYTES`); past it the process is ended and the Attempt is malformed output.
 - Scatter shards run at the Slice policy's `max_fanout`, not the host's CPU count.

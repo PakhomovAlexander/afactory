@@ -121,6 +121,16 @@ pub struct Kernel<'a> {
     timeout_retries: u32,
     /// Gate decisions by gate node. Keyed, so two gates in one pipeline never share a verdict.
     gates: Mutex<BTreeMap<String, GateDecision>>,
+    /// Reviewer and Scatter nodes, in plan order, that declare a prior `FindingSet@1` input:
+    /// the receiving set the Round's prior-Finding coverage is partitioned across. Derived from
+    /// the pinned pipeline, never persisted beside the Round document — see
+    /// [`crate::kernel::reviewer::round_coverage`]. Empty when a caller composed this kernel
+    /// without a pipeline definition, which falls back to requiring the whole union.
+    prior_finding_receivers: Vec<String>,
+    /// Receiving nodes whose prior-Finding rows became orphan during this generation: a Scatter
+    /// that completed without a single `Completed` shard owes nothing, so its rows join the
+    /// coverage of the receiving nodes that have not been delivered theirs yet.
+    orphaned_prior_sources: Mutex<BTreeSet<String>>,
     /// The campaign's prior findings, as a CAS artifact every reviewer attempt receives —
     /// labelled data resolved by the kernel, which is what makes round N+1 a re-examination
     /// of round N's claims instead of a fresh look that happens to share a repository.
@@ -347,6 +357,8 @@ impl<'a> Kernel<'a> {
             dynamic_reviewer_bases: Mutex::new(BTreeMap::new()),
             fan_out_cap: None,
             node_attempt_caps: BTreeMap::new(),
+            prior_finding_receivers: Vec::new(),
+            orphaned_prior_sources: Mutex::new(BTreeSet::new()),
             attempts: Mutex::new(attempts),
             budgets: None,
             timeout_retries: 1,
@@ -441,6 +453,8 @@ impl<'a> Kernel<'a> {
         kernel.static_node_ids = loaded.plan_order().iter().cloned().collect();
         kernel.fan_out_cap = loaded.budgets().and_then(|budgets| budgets.fan_out);
         kernel.node_attempt_caps = loaded.node_attempt_caps().clone();
+        kernel.prior_finding_receivers =
+            loaded.reviewer_nodes_receiving(review_core::contract::FINDING_SET_V1);
         Ok(kernel)
     }
 

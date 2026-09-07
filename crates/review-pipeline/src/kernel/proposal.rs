@@ -31,7 +31,10 @@ impl Kernel<'_> {
         attempt: &AttemptId,
         result_artifact: &str,
         declaration: Result<Option<ReviewerProposalDeclaration>, String>,
-        assigned_finding_ids: &[String],
+        // `permitted_finding_ids` is every Finding the Round delivered to this reviewer — the
+        // whole union, not the reviewer's own partition of it. A reviewer may attach a fix to a
+        // peer's claim; only a claim naming a Finding outside the Round at all is invalid.
+        permitted_finding_ids: &[String],
         report_count: usize,
         sealed: &review_sandbox::SealedSandbox,
     ) -> Result<PreparedProposal, String> {
@@ -76,7 +79,7 @@ impl Kernel<'_> {
         if finding_ids.windows(2).any(|pair| pair[0] == pair[1])
             || finding_ids
                 .iter()
-                .any(|id| !assigned_finding_ids.contains(id))
+                .any(|id| !permitted_finding_ids.contains(id))
             || report_indexes.is_empty() && finding_ids.is_empty()
         {
             return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
