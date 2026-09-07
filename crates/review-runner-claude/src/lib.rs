@@ -223,9 +223,17 @@ impl ReviewerAdapter for ClaudeAdapter {
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
-
-        let envelope = Envelope::parse(&capture.stdout);
+        // `-p --output-format json` is one envelope: the result text plus usage, not the
+        // transcript. It is accumulated once, bounded by the runner's ceiling, and parsed whole;
+        // the redacted bytes go to the CAS by reader inside the runner.
+        let mut stdout = Vec::new();
+        let capture = runner.capture_streamed(
+            cas,
+            &command,
+            Some(prompt.into_bytes()),
+            &mut |chunk: &[u8]| stdout.extend_from_slice(chunk),
+        )?;
+        let envelope = Envelope::parse(&stdout);
         let cost = envelope.cost_tokens;
         if capture.status.success() && !envelope.is_error {
             let text = envelope

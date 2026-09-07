@@ -20,6 +20,7 @@
 //! some other envelope) is the provider adapter's job, behind [`ReviewerAdapter`].
 
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +33,7 @@ use review_core::{
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
-use review_process::{SupervisedError, run_supervised};
+use review_process::{AbortSignal, ExitPolicy, SupervisedError, run_supervised_duplex_with_abort};
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -271,7 +272,83 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_stage_output};
+    use super::{Grant, RedactionChain, parse_proposal_declaration, parse_stage_output, redact};
+
+    /// The whole-buffer loop the streaming chain replaced: the oracle for byte identity.
+    fn redact_by_scanning(bytes: &[u8], grants: &[Grant]) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        for grant in grants {
+            let secret = grant.value.as_bytes();
+            if secret.is_empty() {
+                continue;
+            }
+            let mut scrubbed = Vec::with_capacity(out.len());
+            let mut index = 0;
+            while index < out.len() {
+                if out[index..].starts_with(secret) {
+                    scrubbed.extend_from_slice(b"[redacted]");
+                    index += secret.len();
+                } else {
+                    scrubbed.push(out[index]);
+                    index += 1;
+                }
+            }
+            out = scrubbed;
+        }
+        out
+    }
+
+    fn grants() -> Vec<Grant> {
+        ["rt_live_key_5f3a9c1b2d", "sk-ant-secret", "", "ab"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| Grant {
+                name: format!("G{index}"),
+                value: value.to_string(),
+            })
+            .collect()
+    }
+
+    /// Streaming redaction is byte-identical to the whole-buffer scan for every chunk
+    /// boundary, including boundaries inside a secret, adjacent and overlapping secrets, a
+    /// secret produced by an earlier grant's replacement, and a stream that ends mid-secret.
+    #[test]
+    fn streaming_redaction_matches_whole_buffer_redaction_at_every_chunk_boundary() {
+        let stream = b"key=rt_live_key_5f3a9c1b2d ab sk-ant-secret\n\xFFrt_live_key_5f3a9c1b2drt_live_key_5f3a9c1b2d abab a rt_live_key_5f3a";
+        let grants = grants();
+        let expected = redact_by_scanning(stream, &grants);
+        assert!(expected.starts_with(b"key=[redacted] [redacted] [redacted]\n"));
+        assert_eq!(redact(stream.to_vec(), &grants), expected);
+        for split in 0..=stream.len() {
+            for second in split..=stream.len() {
+                let mut chain = RedactionChain::new(&grants);
+                let mut out = chain.push(&stream[..split]);
+                out.extend_from_slice(&chain.push(&stream[split..second]));
+                out.extend_from_slice(&chain.push(&stream[second..]));
+                out.extend_from_slice(&chain.finish());
+                assert_eq!(out, expected, "chunks at {split} and {second}");
+            }
+        }
+        for size in [1, 2, 3, 7, 64] {
+            let mut chain = RedactionChain::new(&grants);
+            let mut out = Vec::new();
+            for chunk in stream.chunks(size) {
+                out.extend_from_slice(&chain.push(chunk));
+            }
+            out.extend_from_slice(&chain.finish());
+            assert_eq!(out, expected, "chunk size {size}");
+        }
+    }
+
+    #[test]
+    fn redaction_without_grants_is_the_identity() {
+        let bytes = b"nothing to hide \x00\xFF".to_vec();
+        assert_eq!(redact(bytes.clone(), &[]), bytes);
+        let mut chain = RedactionChain::new(&[]);
+        let mut out = chain.push(&bytes);
+        out.extend_from_slice(&chain.finish());
+        assert_eq!(out, bytes);
+    }
 
     #[test]
     fn extra_fields_are_dropped_and_the_findings_survive() {
@@ -1106,6 +1183,30 @@ impl ReviewerAdapter for Command {
     }
 }
 
+/// The most bytes of a reviewer's stdout the kernel keeps for one Attempt.
+///
+/// A 350k-token Attempt's `codex exec --json` stream — every event, reasoning and echoed tool
+/// output included — is a few megabytes; 64 MiB is more than an order of magnitude of headroom
+/// over that. Beyond it the producer is a runaway (a tool loop echoing a repository), and it is
+/// ended at the ceiling rather than at the deadline or in memory: the first 64 MiB are kept as
+/// the Attempt's raw artifact and the Attempt fails as malformed output naming this limit.
+/// Provider probes and smoke tests cap at 64 KiB; the stream that is orders of magnitude larger
+/// was the one without a ceiling.
+pub const MAX_REVIEWER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// One supervised process whose stdout was streamed — redacted, written to a temporary file,
+/// handed chunk by chunk to the caller's sink, and published to the CAS by reader — instead of
+/// held resident. Only stderr, which is small and quoted in diagnostics, is returned by value.
+#[derive(Debug, Clone)]
+pub struct StreamedCapture {
+    pub status: std::process::ExitStatus,
+    pub stderr: Vec<u8>,
+    /// CAS id of the redacted stdout.
+    pub raw_artifact: String,
+    /// Redacted stdout bytes kept (and published).
+    pub stdout_bytes: u64,
+}
+
 /// The raw capture of one supervised process, after redaction.
 ///
 /// A nonzero exit is *in* the capture, not an error: what a provider's failure means — spent
@@ -1144,6 +1245,7 @@ pub struct ModelRunner {
     timeout: Duration,
     grants: Vec<Grant>,
     environment: Vec<Grant>,
+    output_limit: usize,
 }
 
 impl ModelRunner {
@@ -1153,7 +1255,15 @@ impl ModelRunner {
             timeout,
             grants: Vec::new(),
             environment: Vec::new(),
+            output_limit: MAX_REVIEWER_OUTPUT_BYTES,
         }
+    }
+
+    /// Lower the stdout ceiling below [`MAX_REVIEWER_OUTPUT_BYTES`]; it cannot be raised above
+    /// it. Tests use this to prove the ceiling without producing 64 MiB.
+    pub fn with_output_limit(mut self, bytes: usize) -> Self {
+        self.output_limit = bytes.min(MAX_REVIEWER_OUTPUT_BYTES);
+        self
     }
 
     /// Grant one credential to the child. The value never appears in anything stored: it is
@@ -1177,9 +1287,11 @@ impl ModelRunner {
     }
 
     /// Run the command to completion or deadline. Stdout is redacted and stored to the CAS
-    /// before this returns, so even a failure leaves the bytes inspectable.
+    /// before this returns, so even a failure leaves the bytes inspectable. The redacted stdout
+    /// is returned resident once (bounded by the ceiling); adapters that can fold their
+    /// protocol incrementally use [`capture_streamed`](Self::capture_streamed) instead.
     pub fn capture(&self, cas: &Cas, command: &Command) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, None)
+        self.capture_resident(cas, command, None)
     }
 
     /// Run a model command with its prompt on stdin, outside argv's platform-sized ceiling.
@@ -1189,15 +1301,42 @@ impl ModelRunner {
         command: &Command,
         input: Vec<u8>,
     ) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, Some(input))
+        self.capture_resident(cas, command, Some(input))
     }
 
-    fn capture_inner(
+    fn capture_resident(
         &self,
         cas: &Cas,
         command: &Command,
         input: Option<Vec<u8>>,
     ) -> Result<RawCapture, RunnerError> {
+        let mut stdout = Vec::new();
+        let capture = self.capture_streamed(cas, command, input, &mut |chunk: &[u8]| {
+            stdout.extend_from_slice(chunk);
+        })?;
+        Ok(RawCapture {
+            status: capture.status,
+            stdout,
+            stderr: capture.stderr,
+            raw_artifact: capture.raw_artifact,
+        })
+    }
+
+    /// Run the command, streaming its stdout: every chunk is redacted as it arrives (a grant
+    /// split across two reads is still caught), appended to a temporary file, and handed to
+    /// `sink` — a protocol folder that keeps one event resident, not the stream. The file is
+    /// published to the CAS by reader when the process ends, so the stdout of a 350k-token
+    /// Attempt is never resident in this process. Past [`MAX_REVIEWER_OUTPUT_BYTES`] (or the
+    /// runner's lower limit) the process group is ended and the Attempt is
+    /// [`RunnerError::MalformedOutput`] naming the limit, with the bytes up to it as its raw
+    /// artifact.
+    pub fn capture_streamed(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Option<Vec<u8>>,
+        sink: &mut (dyn FnMut(&[u8]) + Send),
+    ) -> Result<StreamedCapture, RunnerError> {
         let argv = command
             .resolve()
             .map_err(|e| RunnerError::Refused(e.to_string()))?;
@@ -1215,37 +1354,243 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        let output =
-            run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
-                SupervisedError::TimedOut { stdout, .. } => {
-                    let stdout = redact(stdout, &self.grants);
-                    RunnerError::TimedOut {
-                        after_ms: self.timeout.as_millis() as u64,
-                        raw_artifact: cas.put(&stdout).ok(),
-                    }
-                }
-                SupervisedError::Spawn(error) => {
-                    RunnerError::Unavailable(format!("{}: {error}", command.program))
-                }
-                error => RunnerError::Failed {
-                    exit_code: -1,
-                    stderr_excerpt: error.to_string(),
+        let spool = tempfile::tempfile()
+            .map_err(|error| RunnerError::Unavailable(format!("spooling raw output: {error}")))?;
+        let mut stream = StdoutStream {
+            spool,
+            redaction: RedactionChain::new(&self.grants),
+            sink,
+            limit: self.output_limit,
+            kept: 0,
+            overflowed: false,
+            spool_error: None,
+        };
+        let outcome = run_supervised_duplex_with_abort(
+            &mut cmd,
+            self.timeout,
+            ExitPolicy::PreserveProcessGroup,
+            move |stdin: &mut dyn Write| match input {
+                Some(input) => match stdin.write_all(&input) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    Err(error) => Err(error),
                 },
-            })?;
-        let stdout = redact(output.stdout, &self.grants);
-        let mut stderr = redact(output.stderr, &self.grants);
-        if output.stderr_held {
-            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
-        }
-        let raw_artifact = cas
-            .put(&stdout)
-            .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
-        Ok(RawCapture {
-            status: output.status,
-            stdout,
-            stderr,
+                None => Ok(()),
+            },
+            |stdout: &mut dyn Read, abort: AbortSignal| stream.drain(stdout, abort),
+        );
+        stream.finish();
+        let limit = self.output_limit;
+        let exceeded = |raw_artifact: String| RunnerError::MalformedOutput {
             raw_artifact,
-        })
+            why: format!(
+                "reviewer stdout exceeded MAX_REVIEWER_OUTPUT_BYTES ({limit} bytes); the process \
+                 was ended and the first {limit} bytes were kept"
+            ),
+        };
+        match outcome {
+            Ok(output) => {
+                if let Err(error) = output.input {
+                    return Err(RunnerError::Failed {
+                        exit_code: -1,
+                        stderr_excerpt: format!("delivering process input: {error}"),
+                    });
+                }
+                if let Some(error) = stream.spool_error.take() {
+                    return Err(RunnerError::Unavailable(format!(
+                        "spooling raw output: {error}"
+                    )));
+                }
+                let raw_artifact = stream.publish(cas)?;
+                if stream.overflowed {
+                    return Err(exceeded(raw_artifact));
+                }
+                let mut stderr = redact(output.stderr, &self.grants);
+                if output.stderr_held {
+                    stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+                }
+                Ok(StreamedCapture {
+                    status: output.status,
+                    stderr,
+                    raw_artifact,
+                    stdout_bytes: stream.kept,
+                })
+            }
+            Err(SupervisedError::OutputRefused { .. }) => {
+                // The only refusal this reader issues is the ceiling.
+                let raw_artifact = stream.publish(cas)?;
+                Err(exceeded(raw_artifact))
+            }
+            Err(SupervisedError::TimedOut { .. }) => Err(RunnerError::TimedOut {
+                after_ms: self.timeout.as_millis() as u64,
+                raw_artifact: stream.publish(cas).ok(),
+            }),
+            Err(SupervisedError::Spawn(error)) => Err(RunnerError::Unavailable(format!(
+                "{}: {error}",
+                command.program
+            ))),
+            Err(error) => Err(RunnerError::Failed {
+                exit_code: -1,
+                stderr_excerpt: error.to_string(),
+            }),
+        }
+    }
+}
+
+/// The stdout side of one streamed capture: bytes flow read -> redaction -> spool file and
+/// sink, bounded by `limit`.
+struct StdoutStream<'a> {
+    spool: std::fs::File,
+    redaction: RedactionChain,
+    sink: &'a mut (dyn FnMut(&[u8]) + Send),
+    limit: usize,
+    /// Raw bytes accepted so far (before redaction), never more than `limit`.
+    kept: u64,
+    overflowed: bool,
+    spool_error: Option<std::io::Error>,
+}
+
+impl StdoutStream<'_> {
+    fn drain(&mut self, stdout: &mut dyn Read, abort: AbortSignal) {
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = match stdout.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    self.spool_error = Some(error);
+                    break;
+                }
+            };
+            let room = usize::try_from(self.limit as u64 - self.kept).unwrap_or(usize::MAX);
+            let accepted = read.min(room);
+            self.emit(&buffer[..accepted]);
+            self.kept += accepted as u64;
+            if read > accepted {
+                // Past the ceiling: keep nothing more and end the producer now, not at the
+                // deadline. The supervisor reports the refusal; the kept bytes are published.
+                self.overflowed = true;
+                abort.abort();
+                break;
+            }
+        }
+    }
+
+    fn emit(&mut self, raw: &[u8]) {
+        let redacted = self.redaction.push(raw);
+        self.write(&redacted);
+    }
+
+    fn finish(&mut self) {
+        let tail = self.redaction.finish();
+        self.write(&tail);
+    }
+
+    fn write(&mut self, redacted: &[u8]) {
+        if redacted.is_empty() {
+            return;
+        }
+        if self.spool_error.is_none()
+            && let Err(error) = self.spool.write_all(redacted)
+        {
+            self.spool_error = Some(error);
+        }
+        (self.sink)(redacted);
+    }
+
+    /// Publish the spooled, redacted stdout by reader: hashed and copied through one fixed
+    /// buffer, never loaded whole.
+    fn publish(&mut self, cas: &Cas) -> Result<String, RunnerError> {
+        let spooling = |error: std::fmt::Arguments<'_>| {
+            RunnerError::Unavailable(format!("storing raw output: {error}"))
+        };
+        self.spool
+            .rewind()
+            .map_err(|error| spooling(format_args!("{error}")))?;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        cas.put_reader_with_buffer(&mut self.spool, &mut buffer)
+            .map(|(digest, _)| digest)
+            .map_err(|error| spooling(format_args!("{error}")))
+    }
+}
+
+/// Streaming replacement of one grant value: the leftmost, non-overlapping occurrences are
+/// replaced as bytes arrive, and the last `len - 1` bytes of every push are carried until the
+/// next push or the flush, because they may be the start of a match that a chunk boundary cut.
+struct Redactor {
+    secret: Vec<u8>,
+    carry: Vec<u8>,
+}
+
+impl Redactor {
+    fn push(&mut self, chunk: &[u8], out: &mut Vec<u8>) {
+        self.carry.extend_from_slice(chunk);
+        let mut start = 0;
+        while let Some(found) = find(&self.carry[start..], &self.secret) {
+            out.extend_from_slice(&self.carry[start..start + found]);
+            out.extend_from_slice(b"[redacted]");
+            start += found + self.secret.len();
+        }
+        let retain = (self.secret.len() - 1).min(self.carry.len() - start);
+        let emitted_end = self.carry.len() - retain;
+        out.extend_from_slice(&self.carry[start..emitted_end]);
+        self.carry.drain(..emitted_end);
+    }
+
+    fn finish(&mut self, out: &mut Vec<u8>) {
+        out.append(&mut self.carry);
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Every grant applied in order, each stage streaming into the next — exactly the sequential
+/// whole-buffer replacement, one chunk at a time.
+struct RedactionChain {
+    stages: Vec<Redactor>,
+}
+
+impl RedactionChain {
+    fn new(grants: &[Grant]) -> Self {
+        Self {
+            stages: grants
+                .iter()
+                .filter(|grant| !grant.value.is_empty())
+                .map(|grant| Redactor {
+                    secret: grant.value.as_bytes().to_vec(),
+                    carry: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        let mut current = chunk.to_vec();
+        for stage in &mut self.stages {
+            let mut next = Vec::with_capacity(current.len());
+            stage.push(&current, &mut next);
+            current = next;
+        }
+        current
+    }
+
+    fn finish(&mut self) -> Vec<u8> {
+        let mut pending = Vec::new();
+        for stage in &mut self.stages {
+            let mut out = Vec::new();
+            stage.push(&pending, &mut out);
+            stage.finish(&mut out);
+            pending = out;
+        }
+        pending
     }
 }
 
@@ -1253,24 +1598,8 @@ impl ModelRunner {
 /// guaranteed to be UTF-8 and a secret split across an encoding error must still be caught
 /// where it appears intact.
 fn redact(bytes: Vec<u8>, grants: &[Grant]) -> Vec<u8> {
-    let mut out = bytes;
-    for grant in grants {
-        let secret = grant.value.as_bytes();
-        if secret.is_empty() {
-            continue;
-        }
-        let mut scrubbed = Vec::with_capacity(out.len());
-        let mut index = 0;
-        while index < out.len() {
-            if out[index..].starts_with(secret) {
-                scrubbed.extend_from_slice("[redacted]".as_bytes());
-                index += secret.len();
-            } else {
-                scrubbed.push(out[index]);
-                index += 1;
-            }
-        }
-        out = scrubbed;
-    }
+    let mut chain = RedactionChain::new(grants);
+    let mut out = chain.push(&bytes);
+    out.extend_from_slice(&chain.finish());
     out
 }

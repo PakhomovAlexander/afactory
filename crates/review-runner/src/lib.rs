@@ -23,19 +23,21 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
-    RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn, RenderedInput,
-    ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
-    ReviewerProposalDeclaration, ReviewerReturn, TokenUsage, compose_command_input,
-    compose_model_prompt, estimate_tokens, extract_result, parse_proposal_declaration,
-    parse_stage_output, parse_stage_output_for, result_contract, unfence,
+    CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport,
+    MAX_REVIEWER_OUTPUT_BYTES, ModelRunner, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture,
+    ReceiptedReviewerReturn, RenderedInput, ReviewerAdapter, ReviewerAttemptContext,
+    ReviewerInputArtifact, ReviewerInputs, ReviewerProposalDeclaration, ReviewerReturn,
+    StreamedCapture, TokenUsage, compose_command_input, compose_model_prompt, estimate_tokens,
+    extract_result, parse_proposal_declaration, parse_stage_output, parse_stage_output_for,
+    result_contract, unfence,
 };
 pub use review_broker::BrokerClient;
 pub use review_core::BrokerCredentialModeV1;
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{
-    ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,
-    run_supervised, run_supervised_duplex, run_supervised_streaming, run_supervised_with_policy,
+    AbortSignal, ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput,
+    SupervisedStreamError, run_supervised, run_supervised_duplex, run_supervised_duplex_with_abort,
+    run_supervised_streaming, run_supervised_with_policy,
 };
 
 use std::collections::BTreeMap;

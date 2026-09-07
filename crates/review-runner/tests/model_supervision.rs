@@ -160,6 +160,87 @@ fn a_granted_secret_is_redacted_from_everything_kept() {
     assert!(stderr_excerpt.contains("[redacted]"));
 }
 
+/// A granted secret split across two reads of the pipe is still redacted: the chunk boundary
+/// is inside the secret, and both the returned bytes and the CAS copy are scrubbed.
+#[test]
+fn a_secret_split_across_chunks_is_still_redacted() {
+    let (dir, cas) = workdir();
+    let secret = "rt_live_key_5f3a9c1b2d";
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10))
+        .with_grant("REVIEW_MODEL_KEY", secret);
+    let capture = runner
+        .capture(
+            &cas,
+            &sh("printf 'key=rt_live'; sleep 0.3; printf '_key_5f3a9c1b2d\\n'"),
+        )
+        .unwrap();
+    assert_eq!(capture.stdout, b"key=[redacted]\n");
+    assert_eq!(cas.get(&capture.raw_artifact).unwrap(), b"key=[redacted]\n");
+}
+
+/// Streaming changes nothing about what is kept: a multi-megabyte, multi-chunk capture is
+/// byte-identical to the process's own stdout, returned and in the CAS.
+#[test]
+fn a_normal_capture_is_byte_identical_to_the_direct_bytes() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(30));
+    let script = "seq 1 300000";
+    let direct = std::process::Command::new("/bin/sh")
+        .args(["-c", script])
+        .output()
+        .unwrap()
+        .stdout;
+    assert!(direct.len() > 1024 * 1024, "{} bytes", direct.len());
+
+    let capture = runner.capture(&cas, &sh(script)).unwrap();
+    assert!(capture.status.success());
+    assert_eq!(capture.stdout, direct);
+    assert_eq!(cas.get(&capture.raw_artifact).unwrap(), direct);
+
+    let mut streamed = Vec::new();
+    let capture = runner
+        .capture_streamed(&cas, &sh(script), None, &mut |chunk: &[u8]| {
+            streamed.extend_from_slice(chunk);
+        })
+        .unwrap();
+    assert_eq!(streamed, direct);
+    assert_eq!(capture.stdout_bytes, direct.len() as u64);
+    assert_eq!(cas.get(&capture.raw_artifact).unwrap(), direct);
+}
+
+/// The ceiling is enforced while draining: an endless producer is ended at the limit — long
+/// before its deadline — the Attempt is malformed output naming the limit, and exactly the
+/// bytes up to the limit are its raw artifact.
+#[test]
+fn reviewer_stdout_past_the_ceiling_ends_the_process_and_is_malformed_output() {
+    let (dir, cas) = workdir();
+    let limit = 4096;
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(30)).with_output_limit(limit);
+    let started = Instant::now();
+    let error = runner.capture(&cas, &sh("yes")).unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the producer must be ended at the ceiling, not at the deadline"
+    );
+    let RunnerError::MalformedOutput { raw_artifact, why } = error else {
+        panic!("expected MalformedOutput, got {error:?}");
+    };
+    assert!(why.contains("MAX_REVIEWER_OUTPUT_BYTES"), "{why}");
+    assert!(why.contains(&limit.to_string()), "{why}");
+    let kept = cas.get(&raw_artifact).unwrap();
+    assert_eq!(kept.len(), limit);
+    assert!(kept.starts_with(b"y\ny\n"));
+
+    // Exactly the limit is not an overflow.
+    let exact = runner.capture(&cas, &sh("head -c 4096 /dev/zero")).unwrap();
+    assert_eq!(exact.stdout.len(), limit);
+    assert_eq!(
+        review_runner::MAX_REVIEWER_OUTPUT_BYTES,
+        64 * 1024 * 1024,
+        "the documented default"
+    );
+}
+
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.
 #[test]
 fn an_ungranted_variable_never_reaches_the_child() {

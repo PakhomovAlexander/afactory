@@ -232,9 +232,16 @@ impl ReviewerAdapter for CodexAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
-
-        let events = Events::parse(&capture.stdout);
+        // The JSONL stream is folded as it arrives: one line resident at a time, never the
+        // stream. The redacted bytes go to the CAS by reader inside the runner.
+        let mut events = Events::default();
+        let capture = runner.capture_streamed(
+            cas,
+            &command,
+            Some(prompt.into_bytes()),
+            &mut |chunk: &[u8]| events.feed(chunk),
+        )?;
+        events.finish();
         if !capture.status.success() {
             let message = events.error.unwrap_or_else(|| {
                 String::from_utf8_lossy(&capture.stderr)
@@ -293,16 +300,38 @@ struct Events {
     usage: TokenUsage,
     final_message: Option<String>,
     error: Option<String>,
+    /// The line in progress: a chunk boundary can fall anywhere inside a JSONL record.
+    partial: Vec<u8>,
 }
 
 impl Events {
-    /// Fold the JSONL stream. Unknown event types are ignored — the CLI adds kinds freely —
-    /// but the three that matter are pinned by fixtures captured from a real run.
-    fn parse(stdout: &[u8]) -> Events {
-        let mut events = Events::default();
-        for line in stdout.split(|b| *b == b'\n') {
+    /// Fold one chunk of the JSONL stream. Unknown event types are ignored — the CLI adds kinds
+    /// freely — but the three that matter are pinned by fixtures captured from a real run.
+    fn feed(&mut self, chunk: &[u8]) {
+        let mut rest = chunk;
+        while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
+            let (line, tail) = rest.split_at(newline);
+            let mut complete = std::mem::take(&mut self.partial);
+            complete.extend_from_slice(line);
+            self.fold_line(&complete);
+            rest = &tail[1..];
+        }
+        self.partial.extend_from_slice(rest);
+    }
+
+    /// Fold the final unterminated line, if the stream ended without a newline.
+    fn finish(&mut self) {
+        let last = std::mem::take(&mut self.partial);
+        if !last.is_empty() {
+            self.fold_line(&last);
+        }
+    }
+
+    fn fold_line(&mut self, line: &[u8]) {
+        let events = self;
+        {
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-                continue;
+                return;
             };
             match value.get("type").and_then(|t| t.as_str()) {
                 Some("turn.completed") => {
@@ -345,7 +374,6 @@ impl Events {
                 _ => {}
             }
         }
-        events
     }
 }
 
