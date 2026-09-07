@@ -186,13 +186,21 @@ fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String
     Ok(selected)
 }
 
+/// The one opaque name a canonical repository has beneath every per-repository local state
+/// root (`af/review/local`, `af/task/local`). The bytes are frozen: existing state directories
+/// are addressed by exactly this undomained SHA-256 prefix, so it stays distinct from the
+/// domain-separated Campaign ID (ADR-0035) rather than being unified with it.
+fn repository_state_id(canonical_repository: &Path) -> String {
+    let identity = Sha256::digest(canonical_repository.as_os_str().as_encoded_bytes());
+    format!("{identity:x}")[..16].to_string()
+}
+
 fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
     let repository = std::fs::canonicalize(repository)
         .map_err(|error| format!("opening repository {}: {error}", repository.display()))?;
-    let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
     Ok(xdg_state_root()?
         .join("af/review/local")
-        .join(&format!("{identity:x}")[..16]))
+        .join(repository_state_id(&repository)))
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
@@ -4738,7 +4746,7 @@ mod option_tests {
     use super::{
         CampaignMode, Options, campaign_id, campaign_state_beneath, enumerate_campaigns,
         last_closed_summary, latest_round_evidence, report_round_authority, report_rounds,
-        report_spend, require_static_attempt_capacity, validate_campaign_name,
+        report_spend, repository_state_id, require_static_attempt_capacity, validate_campaign_name,
     };
 
     fn event(
@@ -4830,6 +4838,20 @@ mod option_tests {
                 .referencing(vec![manifest.authority_snapshot_id, manifest_id]),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn repository_state_id_is_the_frozen_undomained_digest_prefix() {
+        // Pinned bytes: review and Task state directories already on disk are named by this
+        // exact value, so the shared helper must keep producing it for the same canonical path.
+        let id = repository_state_id(std::path::Path::new("/srv/repos/afactory"));
+        assert_eq!(id, "da65312a575a5687");
+        assert_eq!(id.len(), 16);
+        assert_ne!(
+            repository_state_id(std::path::Path::new("/srv/repos/afactory/")),
+            id,
+            "the digest covers the exact path bytes; callers canonicalize first"
+        );
     }
 
     #[test]

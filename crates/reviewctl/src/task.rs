@@ -22,7 +22,10 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{candidate_identity, normalize_absolute, resolve_filesystem_path, xdg_state_root};
+use super::{
+    candidate_identity, normalize_absolute, repository_state_id, resolve_filesystem_path,
+    xdg_state_root,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct TaskOptions {
@@ -2184,14 +2187,11 @@ fn task_state(options: &TaskOptions, repository: &Path) -> Result<PathBuf, Strin
 fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {
     match state {
         Some(state) => resolve_filesystem_path(state),
-        None => {
-            let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
-            normalize_absolute(
-                &xdg_state_root()?
-                    .join("af/task/local")
-                    .join(&format!("{identity:x}")[..16]),
-            )
-        }
+        None => normalize_absolute(
+            &xdg_state_root()?
+                .join("af/task/local")
+                .join(repository_state_id(repository)),
+        ),
     }
 }
 
