@@ -323,15 +323,19 @@ impl Kernel<'_> {
     /// A reviewer whose result port feeds no edge is absent here, and therefore absent from
     /// everything downstream — the plan is the data flow, not a suggestion about it.
     ///
-    /// This is also the run's canonical barrier: every reviewer has finished, so the buffered
-    /// reviewer events are flushed here in node order, giving the log a shape that is a
-    /// function of the pipeline rather than of thread timing.
+    /// A gather is not a barrier. Slots are refilled as they free, so reviewers this gather does
+    /// not cover may still be running — or completed and waiting their turn to be admitted —
+    /// while it runs. It therefore publishes only what belongs to *failed* nodes, which will
+    /// never reach `record_outputs`; every admitted node's attempt events are committed with its
+    /// own receipt, which happens before this gather could be invoked on its output. That keeps
+    /// attempt events ahead of the findings the ledger reduces from this gather, in node order,
+    /// without splitting a sibling's lifecycle across two transactions.
     pub(crate) fn run_gather(
         &self,
         node: &Node,
         inputs: &ArtifactMap,
     ) -> Result<Vec<String>, String> {
-        self.flush_reviewer_events()?;
+        self.flush_orphaned_reviewer_events()?;
         if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
         {
             let sources = self.input_bindings.get(&node.id).ok_or_else(|| {

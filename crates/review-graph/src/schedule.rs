@@ -167,27 +167,45 @@ impl<'a> Scheduler<'a> {
     /// Execute the plan.
     ///
     /// Ready nodes run concurrently, up to `max_parallel`, and a slot is refilled the moment
-    /// its occupant completes — never held until the slowest node of a wave returns. Determinism
-    /// survives the concurrency because nothing about the *result* depends on completion order:
+    /// its occupant completes — never held until the slowest node of a wave returns. Each pass
+    /// of the loop is *admit, rescan, fill*:
     ///
     /// - a node is *invoked* (its exact inputs recorded through `record_invocation`) as soon as
     ///   every gate and upstream node it depends on has been admitted, in plan order, whether
     ///   or not a slot is free — its inputs are exactly what the edges deliver (sorted) and can
     ///   no longer change;
-    /// - invoked nodes take slots in plan order as slots free up; taking a slot runs
-    ///   `prepare_dispatch` (reservation, durable dispatch) on this thread just before the node
-    ///   starts, so reservations are sequential under a bound of one;
     /// - a completion is buffered and *admitted* (validated, published through
     ///   `record_outputs`, and made visible to dependents) only when every invoked node ahead
     ///   of it in plan order has been admitted;
     /// - after each single admission the plan is rescanned before the next, so the nodes an
-    ///   admission makes ready are invoked at one canonical point in the sequence.
+    ///   admission makes ready are invoked at one canonical point in the sequence;
+    /// - only then are free slots filled, in plan order among the invoked nodes. Taking a slot
+    ///   runs `prepare_dispatch` (reservation, durable dispatch) on this thread just before the
+    ///   node starts, so reservations are sequential under a bound of one.
     ///
     /// The sequence of `record_invocation` and `record_outputs` calls — inputs and publications
-    /// — is therefore a function of the pipeline alone, the same for every completion order and
-    /// every `max_parallel`. Only *when* a refilled slot's `prepare_dispatch` runs follows the
-    /// completion that freed it, which is the one thing a refill cannot avoid. Suppression is a
-    /// function of resolved upstream state alone, and the report lists nodes in plan order.
+    /// — is a function of the pipeline alone, the same for every completion order and every
+    /// `max_parallel`. Suppression is a function of resolved upstream state alone, and the
+    /// report lists nodes in plan order.
+    ///
+    /// **What is not canonical.** Dispatch order is not, and cannot be while a freed slot is
+    /// refilled: which invoked node takes a slot depends on which nodes were invoked when the
+    /// slot freed, and that depends on which completions have arrived. Filling only after the
+    /// admission and rescan removes the part that depended on how many completions the last
+    /// drain collected — with `[A, B, N, L1, L2]`, `N` downstream of `A`, and a bound of two,
+    /// `A`'s completion now readies `N` for the slot it frees whether or not `B`'s completion
+    /// arrived with it. What remains is the case where the plan-earliest running node has *not*
+    /// finished: `B` completing first frees a slot that only `L1` can take, because `N` is not
+    /// invocable until `A` is admitted.
+    ///
+    /// That matters because `prepare_dispatch` is where a `BudgetScope::Run` reservation is
+    /// taken. Under a run cap that cannot cover every first Attempt, a pipeline of that shape
+    /// can exhaust the cap at a different node in two runs over the same Subject, and a
+    /// different node is then `Failed` with `RunBudgetExhausted`. Pipelines whose concurrent
+    /// nodes are all invoked together — the usual shape, independent reviewers behind a gate —
+    /// do not have that shape: nothing plan-earlier is still waiting to be invoked, so their
+    /// dispatch order, and the node a run cap exhausts, is the plan's. `max_parallel = 1` makes
+    /// dispatch order the plan order for any shape.
     pub fn run(&self, dispatch: &(dyn Dispatch + Sync)) -> RunReport {
         let mut outputs: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         let mut outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
@@ -204,9 +222,90 @@ impl<'a> Scheduler<'a> {
             let (tx, rx) = std::sync::mpsc::channel::<Completion>();
 
             loop {
+                let mut progressed = false;
+
+                // Admit the plan-earliest invoked node once it has completed, and do it before
+                // any slot is refilled below — admit, rescan, then fill. A slot freed by a
+                // completion is offered first to whatever that admission and the rescan make
+                // ready, never to a plan-later node that merely happened to be invoked already.
+                // Otherwise the candidate set at each fill — and with it the order
+                // `prepare_dispatch` takes budget reservations, and which node a run cap
+                // exhausts — would follow how many completions the last drain collected.
+                let head = waiting
+                    .keys()
+                    .next()
+                    .copied()
+                    .into_iter()
+                    .chain(running.iter().next().copied())
+                    .chain(done.keys().next().copied())
+                    .min();
+                let mut admitted = false;
+                if let Some(position) = head
+                    && let Some(result) = done.remove(&position)
+                {
+                    admitted = true;
+                    let node_id = &self.plan.order[position];
+                    let node = &self.plan.nodes[node_id];
+                    'admit: {
+                        match result {
+                            Ok(produced) => {
+                                if let Err(error) = validate_outputs(node, &produced) {
+                                    unusable.insert(node_id.clone());
+                                    if node.kind == NodeKind::Gate {
+                                        blocked_gates.insert(node_id.clone());
+                                    }
+                                    outcomes.insert(
+                                        node_id.clone(),
+                                        NodeOutcome::Failed { error, class: None },
+                                    );
+                                    break 'admit;
+                                }
+                                if let Err(error) = dispatch.record_outputs(node, &produced) {
+                                    unusable.insert(node_id.clone());
+                                    if node.kind == NodeKind::Gate {
+                                        blocked_gates.insert(node_id.clone());
+                                    }
+                                    outcomes.insert(
+                                        node_id.clone(),
+                                        NodeOutcome::Failed { error, class: None },
+                                    );
+                                    break 'admit;
+                                }
+                                for (port, artifacts) in &produced {
+                                    outputs
+                                        .insert((node_id.clone(), port.clone()), artifacts.clone());
+                                }
+                                if node.kind == NodeKind::Gate
+                                    && !dispatch.gate_passed(node_id, &produced)
+                                {
+                                    blocked_gates.insert(node_id.clone());
+                                }
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Completed { outputs: produced },
+                                );
+                            }
+                            Err(error) => {
+                                // A failed node's dependents cannot run — they would be reviewing an
+                                // input that does not exist — but the rest of the graph continues.
+                                unusable.insert(node_id.clone());
+                                if node.kind == NodeKind::Gate {
+                                    blocked_gates.insert(node_id.clone());
+                                }
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Failed {
+                                        error,
+                                        class: dispatch.failure_class(node_id),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Decide everything currently decidable, in plan order: suppress what a
                 // blocked gate or a missing upstream has doomed, invoke what is ready.
-                let mut progressed = false;
                 for (position, node_id) in self.plan.order.iter().enumerate() {
                     if outcomes.contains_key(node_id)
                         || waiting.contains_key(&position)
@@ -302,7 +401,9 @@ impl<'a> Scheduler<'a> {
                     progressed = true;
                 }
 
-                // Fill every free slot, in plan order among the invoked nodes.
+                // Fill every free slot, in plan order among the invoked nodes — after the
+                // admission and rescan above, so a node an admission just readied competes for
+                // the slot rather than losing it to a plan-later node invoked earlier.
                 while running.len() < self.max_parallel {
                     let Some(position) = waiting.keys().next().copied() else {
                         break;
@@ -338,74 +439,8 @@ impl<'a> Scheduler<'a> {
                     });
                 }
 
-                // Admit the plan-earliest invoked node once it has completed — one admission,
-                // then rescan, so dependents it readies are invoked at a canonical point.
-                let head = waiting
-                    .keys()
-                    .next()
-                    .copied()
-                    .into_iter()
-                    .chain(running.iter().next().copied())
-                    .chain(done.keys().next().copied())
-                    .min();
-                if let Some(position) = head
-                    && let Some(result) = done.remove(&position)
-                {
-                    let node_id = &self.plan.order[position];
-                    let node = &self.plan.nodes[node_id];
-                    match result {
-                        Ok(produced) => {
-                            if let Err(error) = validate_outputs(node, &produced) {
-                                unusable.insert(node_id.clone());
-                                if node.kind == NodeKind::Gate {
-                                    blocked_gates.insert(node_id.clone());
-                                }
-                                outcomes.insert(
-                                    node_id.clone(),
-                                    NodeOutcome::Failed { error, class: None },
-                                );
-                                continue;
-                            }
-                            if let Err(error) = dispatch.record_outputs(node, &produced) {
-                                unusable.insert(node_id.clone());
-                                if node.kind == NodeKind::Gate {
-                                    blocked_gates.insert(node_id.clone());
-                                }
-                                outcomes.insert(
-                                    node_id.clone(),
-                                    NodeOutcome::Failed { error, class: None },
-                                );
-                                continue;
-                            }
-                            for (port, artifacts) in &produced {
-                                outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
-                            }
-                            if node.kind == NodeKind::Gate
-                                && !dispatch.gate_passed(node_id, &produced)
-                            {
-                                blocked_gates.insert(node_id.clone());
-                            }
-                            outcomes.insert(
-                                node_id.clone(),
-                                NodeOutcome::Completed { outputs: produced },
-                            );
-                        }
-                        Err(error) => {
-                            // A failed node's dependents cannot run — they would be reviewing an
-                            // input that does not exist — but the rest of the graph continues.
-                            unusable.insert(node_id.clone());
-                            if node.kind == NodeKind::Gate {
-                                blocked_gates.insert(node_id.clone());
-                            }
-                            outcomes.insert(
-                                node_id.clone(),
-                                NodeOutcome::Failed {
-                                    error,
-                                    class: dispatch.failure_class(node_id),
-                                },
-                            );
-                        }
-                    }
+                if admitted {
+                    // One admission per pass: rescan and refill from the top.
                     continue;
                 }
 

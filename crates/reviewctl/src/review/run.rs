@@ -376,20 +376,24 @@ fn packaged_runner(command: &review_core::Command) -> String {
         .unwrap_or_default()
 }
 
-/// `static_reservation_tokens` is every static Worker's first Attempt together — each node's
-/// own cap where declared, the pipeline attempt cap elsewhere.
+/// `static_reservation_tokens` is the most the static Workers can hold reserved at once — the
+/// `max_parallel` largest first-Attempt reservations (each node's own cap where declared, the
+/// pipeline attempt cap elsewhere), with a Scatter node counted at its whole declared fan-out
+/// because it reserves every shard up front. See `project::max_simultaneous_reservation`.
 pub(crate) fn require_static_attempt_capacity(
     static_reservation_tokens: u64,
     run_tokens: u64,
     static_workers: usize,
+    max_parallel: usize,
     committed_tokens: u64,
 ) -> Result<(), String> {
     let required = committed_tokens
         .checked_add(static_reservation_tokens)
         .ok_or("Provider spend plus static Worker budget arithmetic overflow")?;
     if required > run_tokens {
+        let concurrent = max_parallel.min(static_workers);
         return Err(format!(
-            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for the first Attempt of each of {static_workers} required static Workers ({static_reservation_tokens} tokens reserved together): cap {run_tokens}, required {required}"
+            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for the {concurrent} of {static_workers} required static Workers that can hold a first Attempt reserved at once under this pipeline's max_parallel = {max_parallel} ({static_reservation_tokens} tokens, counting a Scatter node's whole fan-out): cap {run_tokens}, required {required}"
         ));
     }
     Ok(())
@@ -508,6 +512,7 @@ fn admit_review_providers(
             static_reservation,
             budgets.run,
             loaded.reviewers().len(),
+            loaded.max_parallel(),
             committed,
         )?;
     }

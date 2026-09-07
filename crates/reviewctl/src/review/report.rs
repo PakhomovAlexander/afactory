@@ -295,13 +295,16 @@ pub(crate) fn print_report(options: &ReportOptions) -> Result<(), String> {
         .find(|event| event.event_type == EventType::RoundStartedV1)
         .map(|round| pinned_pipeline_definition(round, &cas))
         .transpose()?
-        .map(|definition| {
-            definition
-                .max_parallel
-                .map_or(review_graph::DEFAULT_MAX_PARALLEL, |bound| {
-                    usize::try_from(bound).unwrap_or(usize::MAX)
-                })
-        });
+        .map(|definition| match definition.max_parallel {
+            None => Ok(review_graph::DEFAULT_MAX_PARALLEL),
+            // The run path refuses a bound this platform cannot represent
+            // (`ConfigError::Binding`). Reporting must not silently widen the pinned bound to
+            // `usize::MAX` and print it as the policy the Round actually ran under.
+            Some(bound) => usize::try_from(bound).map_err(|_| {
+                format!("the pinned pipeline's max_parallel = {bound} exceeds this platform")
+            }),
+        })
+        .transpose()?;
     let findings = ledger.finding_views();
     let view = ReviewReportView {
         schema: "af/review-report@1",

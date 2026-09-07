@@ -297,6 +297,20 @@ fn clean_reviewer() -> Command {
     )
 }
 
+/// `clean_reviewer`, slow enough that a concurrently dispatched sibling is certain to finish
+/// first. The pause is the test's control over completion order, not over the scheduler.
+fn slow_clean_reviewer() -> Command {
+    Command::new(
+        "/bin/sh",
+        vec![
+            Arg::literal("-c"),
+            Arg::literal(
+                "cat src/main.rs > /dev/null; sleep 2; printf '%s\\n' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'",
+            ),
+        ],
+    )
+}
+
 fn gate_isolated_reviewer() -> Command {
     Command::new(
         "/bin/sh",
@@ -1964,6 +1978,74 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     let ledger = kernel.ledger();
     assert_eq!(ledger.len(), 1, "only the wired reviewer's finding lands");
     assert_eq!(ledger.findings()[0].title, "Wired");
+}
+
+/// A node's lifecycle facts and its receipt are one transaction, and a gather does not get to
+/// break that for a node it does not cover.
+///
+/// `unwired_pipeline` plans as gate, architecture, gather, ledger, sidecar: the gather covers
+/// `architecture` alone and `sidecar` is plan-*later* than it. Slots are refilled as they free,
+/// so `sidecar` finishes first (`architecture` sleeps), sits completed with its
+/// `AttemptAdmitted@1` buffered and unadmitted — plan order admits the gather before it — and
+/// the gather runs while it waits. A whole-buffer flush inside the gather appended `sidecar`'s
+/// admission in the gather's batch and left `sidecar`'s `NodeOutputReceipt@1` to land alone. A
+/// crash between those two appends is a durable selected Attempt with no receipt: the resume
+/// re-runs the paid model call, and the next resume dies on "multiple selected attempts".
+#[test]
+fn a_gather_does_not_split_a_sibling_lifecycle_from_its_receipt() {
+    let (_dir, repo_path, home) = fixture();
+    let workspace = tempfile::tempdir().unwrap();
+    let cas = Cas::open(workspace.path().join("cas")).unwrap();
+    let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
+    let repo = Repo::open(&repo_path, &home);
+    let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
+
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        UNWIRED_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    // `architecture` is the gathered reviewer and finishes last, so `sidecar` is already
+    // complete and buffered when `architecture`'s admission invokes and dispatches the gather.
+    .with_reviewer("architecture", slow_clean_reviewer())
+    .with_reviewer("sidecar", clean_reviewer());
+
+    let plan = unwired_pipeline(false).plan().unwrap();
+    assert_eq!(
+        plan.order,
+        vec!["gate", "architecture", "gather", "ledger", "sidecar"],
+        "the sibling must be planned after the gather for its completion to sit unadmitted"
+    );
+    let report = Scheduler::new(&plan).run(&kernel);
+    assert!(report.complete(), "{:?}", report.outcomes);
+
+    let events = store.replay("run").unwrap();
+    for node in ["architecture", "sidecar"] {
+        let lifecycle: Vec<(&str, u64)> = events
+            .iter()
+            .filter(|event| event.node_id.as_deref() == Some(node))
+            .map(|event| (event.event_type.as_str(), event.sequence))
+            .collect();
+        let admitted = lifecycle
+            .iter()
+            .find(|(event_type, _)| *event_type == "AttemptAdmitted@1")
+            .unwrap_or_else(|| panic!("{node} admitted no attempt: {lifecycle:?}"));
+        let receipt = lifecycle
+            .iter()
+            .find(|(event_type, _)| *event_type == "NodeOutputReceipt@1")
+            .unwrap_or_else(|| panic!("{node} published no receipt: {lifecycle:?}"));
+        // Sequences are dense and gapless, so adjacency is the observable form of "one
+        // `append_batch`": nothing — least of all another node's gather — landed between them.
+        assert_eq!(
+            receipt.1,
+            admitted.1 + 1,
+            "{node}'s admission and receipt must commit together: {lifecycle:?}"
+        );
+    }
 }
 
 /// The run's story is in its log: capture aside (the driver appends that), every kernel
