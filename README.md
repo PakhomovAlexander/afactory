@@ -93,7 +93,9 @@ requests merged since the last release, and opens `release: vX.Y.Z`. Merging it 
 `.github/workflows/release.yml` tag the commit, run `make check` on Linux and macOS, build every
 target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the key in the
 `MINISIGN_SECRET_KEY` secret (a `minisign` fetched by version and digest,
-`scripts/fetch-minisign.sh`), and publish. From 0.8.0 on — unreleased at this commit — legacy
+`scripts/fetch-minisign.sh` — its macOS pin is exercised by the same workflow's `make check
+(macos-latest)` job, since the publishing job is Linux and would never run that branch), and
+publish. From 0.8.0 on — unreleased at this commit — legacy
 `.review/` policy is no longer read for new Campaigns
 ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md)): `af onboard --migrate
 --apply` moves a consumer to `.af/`.

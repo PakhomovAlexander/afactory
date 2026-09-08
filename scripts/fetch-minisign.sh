@@ -7,7 +7,12 @@
 # here, and it must be proven before the signing key is anywhere near it: the archive digest is
 # checked first, and only then is the extracted binary run — to verify upstream's own signature
 # over that archive as a second, independent check. Nothing is fetched by a floating tag or from
-# a distribution package. Linux (x86_64, aarch64) and macOS are covered; the release job is Linux.
+# a distribution package. Linux (x86_64, aarch64) and macOS are covered.
+#
+# The publishing job is Linux, so the Darwin pin would rot unseen if nothing ran it. The
+# `make check (macos-latest)` job in .github/workflows/release.yml exercises it — fetch, digest,
+# upstream signature, then `make installer-test-signed` with the extracted binary — which is the
+# release path itself, checked before anything is published rather than after the pin has rotted.
 #
 # Digest provenance: the official release assets at
 # https://github.com/jedisct1/minisign/releases/tag/0.12 —
@@ -22,12 +27,20 @@ upstream_key="RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
 case "$(uname -s)" in
   Linux)
     asset="minisign-$version-linux.tar.gz"
-    sha256="9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73" ;;
+    sha256="9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73"
+    unpacker="tar" ;;
   Darwin)
     asset="minisign-$version-macos.zip"
-    sha256="89000b19535765f9cffc65a65d64a820f433ef6db8020667f7570e06bf6aac63" ;;
+    sha256="89000b19535765f9cffc65a65d64a820f433ef6db8020667f7570e06bf6aac63"
+    unpacker="unzip" ;;
   *) echo "fetch-minisign: no pinned minisign asset for $(uname -s)" >&2; exit 1 ;;
 esac
+# Named per branch, because the macOS asset is a zip and `unzip` is not on every image. Without
+# this the failure is `unzip: command not found` from the middle of a verification step.
+for program in curl "$unpacker"; do
+  command -v "$program" >/dev/null 2>&1 \
+    || { echo "fetch-minisign: $program is required to unpack $asset on $(uname -s)" >&2; exit 1; }
+done
 dest="${1:?usage: scripts/fetch-minisign.sh <dest-dir>}"
 mkdir -p "$dest"
 

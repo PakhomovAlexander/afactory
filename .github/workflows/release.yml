@@ -90,6 +90,18 @@ jobs:
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
       - name: Check the tagged commit
         run: make check
+      # The publishing job is Linux, so nothing else ever runs fetch-minisign.sh's Darwin branch
+      # and its pinned digest could rot unnoticed until a release needed it. This job already
+      # exists on macOS, so exercising the pin here — and the signature path with the binary it
+      # yields — costs one step and fails the release before anything is published.
+      - name: Fetch the pinned minisign (macOS branch) and run the signature path
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          minisign="$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")"
+          [[ -x "$minisign" ]] || { echo "no verified minisign at '$minisign'"; exit 1; }
+          MINISIGN="$minisign" make installer-test-signed
 
   build:
     name: build ${{ matrix.target }}
