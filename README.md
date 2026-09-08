@@ -39,10 +39,28 @@ af self status                  # what is installed, the default, the release ke
 af self update --check          # exit 10 when a newer release exists; `af self update` installs it
 ```
 
-To check the installer before running it, download `SHA256SUMS` and `SHA256SUMS.minisig` from
-the same release, verify the signature (`minisign -V -p crates/reviewctl/keys/release.pub -m
-SHA256SUMS`), and compare `install.sh` with its line. `make installer-test` drives the installer
-end to end against a local fake release (`scripts/installer-test.sh`).
+The first line is convenience, not verification: it pipes whatever arrives straight into `sh`,
+checking neither the digest nor the signature the installer is listed under. To use the property
+the release actually provides, verify the installer's line in the signed `SHA256SUMS` first —
+`AF_RELEASE_KEY` names the release public key file, `crates/reviewctl/keys/release.pub`:
+
+```sh
+tag=vX.Y.Z
+repo=PakhomovAlexander/afactory
+if command -v sha256sum >/dev/null 2>&1; then check="sha256sum -c"; else check="shasum -a 256 -c"; fi
+tmp="$(mktemp -d)" &&
+gh release download "$tag" --repo "$repo" --pattern SHA256SUMS --dir "$tmp" &&
+gh release download "$tag" --repo "$repo" --pattern SHA256SUMS.minisig --dir "$tmp" &&
+gh release download "$tag" --repo "$repo" --pattern install.sh --dir "$tmp" &&
+minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$AF_RELEASE_KEY" &&
+( cd "$tmp" && grep ' install.sh$' SHA256SUMS > install.sh.sha256 && $check install.sh.sha256 ) &&
+sh "$tmp/install.sh"
+```
+
+`scripts/installer-test.sh` runs those exact lines against a fake release — both that a good one
+installs and that a tampered `install.sh` line is refused — and checks this block still matches
+the copy in `install.sh`'s header, so neither can rot. `make installer-test` drives the installer
+end to end against the same fake release.
 
 Releases are built for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
 `aarch64-unknown-linux-musl` (static: no glibc floor). Every release from 0.8.0 on — unreleased
@@ -75,7 +93,9 @@ requests merged since the last release, and opens `release: vX.Y.Z`. Merging it 
 `.github/workflows/release.yml` tag the commit, run `make check` on Linux and macOS, build every
 target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the key in the
 `MINISIGN_SECRET_KEY` secret (a `minisign` fetched by version and digest,
-`scripts/fetch-minisign.sh`), and publish. From 0.8.0 on — unreleased at this commit — legacy
+`scripts/fetch-minisign.sh` — its macOS pin is exercised by the same workflow's `make check
+(macos-latest)` job, since the publishing job is Linux and would never run that branch), and
+publish. From 0.8.0 on — unreleased at this commit — legacy
 `.review/` policy is no longer read for new Campaigns
 ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md)): `af onboard --migrate
 --apply` moves a consumer to `.af/`.
@@ -83,15 +103,18 @@ target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the 
 `scripts/verify.sh` is `make check` as a Gate Check: it runs from the read-only tree a Gate
 sandbox materializes, reusing the machine's build cache (`$XDG_CACHE_HOME/afactory/review-target`,
 or `AFACTORY_REVIEW_TARGET_DIR`). Both first-party pipelines gate on it —
-[`.af/pipelines/review.toml`](.af/pipelines/review.toml) with markdownlint as a second Check, and
-[`.af/pipelines/audit.toml`](.af/pipelines/audit.toml) — so it is the deterministic project gate
-that follows a light Campaign's Findings.
+[`.af/pipelines/review.toml`](.af/pipelines/review.toml) with markdownlint as a second, advisory
+Check, and [`.af/pipelines/audit.toml`](.af/pipelines/audit.toml) — so it is the deterministic
+project gate that follows a light Campaign's Findings. markdownlint is *enforced* by the
+`markdownlint` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), where the network
+exists: its `npm ci` install has no offline path, and a required Check that cannot run would cost
+a Round.
 
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction + relative links + installer test
 make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
-make links       # every relative link in every Markdown file resolves
+make links       # every relative Markdown link and cited cargo example resolves
 make markdownlint            # markdownlint over **/*.md from the pinned toolchain (tools/markdownlint/)
 make installer-test-signed   # install.sh with the signature path; needs minisign (MINISIGN=<path>)
 make review-kernel-container-probes   # live containment probes; a missing daemon is a failure

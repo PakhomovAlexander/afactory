@@ -5,8 +5,13 @@
 #
 # The Gate runs the deterministic project gate first: scripts/verify.sh is `make check` from the
 # read-only tree a Gate sandbox materializes, reusing the machine's build cache — the same Check
-# .af/pipelines/audit.toml gates on. markdownlint follows, from the digest-pinned toolchain in
-# tools/markdownlint/ rather than a live `npx` fetch. A red tree gets no reviewer.
+# .af/pipelines/audit.toml gates on. It is required: a red tree gets no reviewer.
+#
+# markdownlint follows, advisory. It installs its digest-pinned toolchain (tools/markdownlint/)
+# with `npm ci`, which has no offline path: on a cold cache or restricted DNS the Check cannot
+# run, and a *required* Check that cannot run loses the Round with no reviewer. A lint must never
+# cost a Round, so it reports without blocking here and is enforced where the network exists —
+# the `markdownlint` job in .github/workflows/ci.yml, and `make markdownlint` locally.
 #
 # Editing this file or a Worker package requires `af onboard --refresh-lock`; `make check` fails
 # while .af/af.lock is not what that refresh writes.
@@ -26,7 +31,7 @@ required = true
 name = "markdownlint"
 program = "bash"
 args = [{ value = "scripts/markdownlint.sh", provenance = "literal" }]
-required = true
+required = false
 
 [gate]
 provider = "trusted_local"

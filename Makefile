@@ -32,8 +32,10 @@ installer-test-signed:
 	cargo build --locked -p reviewctl --bin af
 	scripts/installer-test.sh --signed $(AF_DEBUG)
 
-# markdownlint over **/*.md from the digest-pinned toolchain in tools/markdownlint/ — the review
-# pipeline's second Gate Check (.af/pipelines/review.toml). Needs node and npm.
+# markdownlint over **/*.md from the digest-pinned toolchain in tools/markdownlint/. Enforced by
+# the markdownlint job in .github/workflows/ci.yml; the review pipeline's Gate runs the same
+# script advisorily (.af/pipelines/review.toml). Needs node and npm, and a reachable registry on
+# the first run.
 markdownlint:
 	scripts/markdownlint.sh
 

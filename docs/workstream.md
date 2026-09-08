@@ -422,10 +422,12 @@ isolation, and verification prerequisites.
   computing the diff in-process; change it only through another superseding ADR.
 - **File and line references in `backlog.md` will drift** as soon as M1.1 lands. Treat them as
   where-to-look, not as ground truth, and prefer grepping the symbol.
-- **The review pipeline's Gate runs markdownlint across `**/*.md`** (`scripts/markdownlint.sh`,
-  from the digest-pinned toolchain in `tools/markdownlint/`; CI does not). Run `make markdownlint`
-  before opening a review. A missing blank line before `---` turns the preceding paragraph into a
-  setext heading and fails the Gate.
+- **markdownlint across `**/*.md` is enforced by the `markdownlint` job in
+  `.github/workflows/ci.yml`** (`scripts/markdownlint.sh`, from the digest-pinned toolchain in
+  `tools/markdownlint/`). The review pipeline's Gate runs the same script as an *advisory* Check:
+  `npm ci` has no offline path, so a required Check that cannot reach the registry would lose the
+  Round with no reviewer. Run `make markdownlint` before opening a review — a missing blank line
+  before `---` turns the preceding paragraph into a setext heading and fails CI.
 - **Editing a Worker package or a pipeline requires re-locking**, or the digest check fails at
   load: `af onboard --refresh-lock` (from a source build, `cargo run -p reviewctl --bin af --
   onboard --refresh-lock`) rewrites `.af/af.lock` atomically; a source build pins no `[af]`

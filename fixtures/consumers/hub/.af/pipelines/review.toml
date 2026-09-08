@@ -2,12 +2,12 @@
 #
 # One high-effort correctness reviewer, one required clean Round, at most two Rounds — the shape
 # the kernel adopted in ADR-0027 after the two-specialist, two-million-token pipeline never
-# converged. The reviewer is a package from .review/reviewers/, pinned by content digest in
-# .review/review.lock. The package and lock entry mirror the kernel repo's
-# `.review/reviewers/correctness` byte for byte: to change the package, copy the kernel's package
-# and lock entry together, or produce the digest with the kernel's lock generator
-# (`cargo run -p review-config --example lock -- .review/reviewers correctness` there). The pinned
-# release must still accept this file: `make review-plan` proves it without spending tokens.
+# converged. The reviewer is a package from .af/workers/, pinned by content digest in .af/af.lock.
+# The package and lock entry mirror the kernel repo's `.af/workers/correctness` byte for byte: to
+# change the package, copy the kernel's package and lock entry together, then re-pin with
+# `af onboard --refresh-lock` (from a source build, `cargo run -p reviewctl --bin af -- onboard
+# --refresh-lock`). The pinned release must still accept this file: `make review-plan` proves it
+# without spending tokens.
 version = 2
 check_timeout_seconds = 3600
 
@@ -17,19 +17,23 @@ kind = "diff"
 # ---------------------------------------------------------------- gate checks
 # Programs and options are trusted literals. A value derived from the change under review must be
 # marked `untrusted`, and can then never occupy an option position.
+#
+# A Gate Check runs in a sandbox with no network guarantee, so it never fetches its own tool: no
+# `npx --yes <tool>@<version>`, which reaches the registry on every cold run. The lint calls a
+# checked-in wrapper that installs a lock-pinned toolchain instead, and it is advisory — an
+# installer that cannot reach a registry would otherwise block the Gate and lose the Round with
+# no reviewer, which is a steep price for a lint. Enforce lint in CI, where the network exists.
 [[checks]]
 name = "markdownlint"
-program = "npx"
-args = [
-  { value = "--yes" },
-  { value = "markdownlint-cli2@0.22.1" },
-  { value = "**/*.md" },
-]
+program = "bash"
+args = [{ value = "scripts/markdownlint.sh" }]
+required = false
 
 [[checks]]
 name = "hub-verify"
 program = "bash"
 args = [{ value = "scripts/verify.sh" }]
+required = true
 
 # ---------------------------------------------------------------------- nodes
 [[nodes]]

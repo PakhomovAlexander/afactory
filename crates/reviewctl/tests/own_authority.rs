@@ -113,8 +113,18 @@ fn the_committed_authority_validates_as_the_first_party_form() {
     let definition = review_config::Definition::from_toml(&pipeline).unwrap();
     assert_eq!(definition.version, 3);
     assert!(definition.gate.is_some(), "an explicit [gate] binding");
-    assert!(
-        definition.checks.iter().all(|check| check.required),
-        "every Gate Check is required"
+    // Which Check may cost a Round is pinned by name, not left to a default. The deterministic
+    // project gate blocks; markdownlint cannot, because `npm ci` has no offline path and a
+    // required Check that cannot run loses the Round with no reviewer. Flipping either one has
+    // to be a deliberate edit here.
+    let required: Vec<(&str, bool)> = definition
+        .checks
+        .iter()
+        .map(|check| (check.name.as_str(), check.required))
+        .collect();
+    assert_eq!(
+        required,
+        [("check", true), ("markdownlint", false)],
+        "the project gate is required and markdownlint is advisory"
     );
 }
