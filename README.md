@@ -39,10 +39,28 @@ af self status                  # what is installed, the default, the release ke
 af self update --check          # exit 10 when a newer release exists; `af self update` installs it
 ```
 
-To check the installer before running it, download `SHA256SUMS` and `SHA256SUMS.minisig` from
-the same release, verify the signature (`minisign -V -p crates/reviewctl/keys/release.pub -m
-SHA256SUMS`), and compare `install.sh` with its line. `make installer-test` drives the installer
-end to end against a local fake release (`scripts/installer-test.sh`).
+The first line is convenience, not verification: it pipes whatever arrives straight into `sh`,
+checking neither the digest nor the signature the installer is listed under. To use the property
+the release actually provides, verify the installer's line in the signed `SHA256SUMS` first —
+`AF_RELEASE_KEY` names the release public key file, `crates/reviewctl/keys/release.pub`:
+
+```sh
+tag=vX.Y.Z
+repo=PakhomovAlexander/afactory
+if command -v sha256sum >/dev/null 2>&1; then check="sha256sum -c"; else check="shasum -a 256 -c"; fi
+tmp="$(mktemp -d)" &&
+gh release download "$tag" --repo "$repo" --pattern SHA256SUMS --dir "$tmp" &&
+gh release download "$tag" --repo "$repo" --pattern SHA256SUMS.minisig --dir "$tmp" &&
+gh release download "$tag" --repo "$repo" --pattern install.sh --dir "$tmp" &&
+minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$AF_RELEASE_KEY" &&
+( cd "$tmp" && grep ' install.sh$' SHA256SUMS > install.sh.sha256 && $check install.sh.sha256 ) &&
+sh "$tmp/install.sh"
+```
+
+`scripts/installer-test.sh` runs those exact lines against a fake release — both that a good one
+installs and that a tampered `install.sh` line is refused — and checks this block still matches
+the copy in `install.sh`'s header, so neither can rot. `make installer-test` drives the installer
+end to end against the same fake release.
 
 Releases are built for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
 `aarch64-unknown-linux-musl` (static: no glibc floor). Every release from 0.8.0 on — unreleased

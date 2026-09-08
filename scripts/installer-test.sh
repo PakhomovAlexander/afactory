@@ -13,7 +13,9 @@
 # refused and leave nothing behind; a rerun is idempotent. With --signed, minisign
 # (MINISIGN=<path>, or on PATH — absent is a failure, never a skip) signs SHA256SUMS the way the
 # release job does: a valid signature is recorded in the receipt; a forged, tampered, or
-# missing one is refused.
+# missing one is refused, and the verify-then-run snippet install.sh's header publishes (the
+# README repeats it verbatim, checked here) installs a good release and refuses a tampered
+# install.sh line.
 set -euo pipefail
 
 signed=0
@@ -136,7 +138,9 @@ publish() {
     ok) printf '%s  %s\n%s  install.sh\n' "$real" "$asset" "$(digest_of "$installer")" > "$dir/SHA256SUMS" ;;
     tampered) printf '%064d  %s\n' 0 "$asset" > "$dir/SHA256SUMS" ;;
     unlisted) printf '%s  af-v%s-other-target.tar.gz\n' "$real" "$v" > "$dir/SHA256SUMS" ;;
+    tampered-installer) printf '%s  %s\n%064d  install.sh\n' "$real" "$asset" 0 > "$dir/SHA256SUMS" ;;
   esac
+  cp "$installer" "$dir/install.sh"
 }
 
 # sign <case> <version> <key-name>: SHA256SUMS.minisig the way the release job writes it
@@ -168,6 +172,13 @@ run_installer() {
   local case_dir="$1"
   shift
   sandboxed "$case_dir" "$@" sh "$installer"
+}
+
+# The verified-install snippet install.sh's header publishes, extracted verbatim: the only edit
+# is the release tag, which the header writes as the placeholder a reader replaces.
+verified_install_snippet() {
+  awk '/^# >>> verified install$/ { on = 1; next } /^# <<< verified install$/ { exit }
+       on { sub(/^# ?/, ""); sub(/^  /, ""); print }' "$installer"
 }
 
 passed=0
@@ -264,6 +275,44 @@ if [[ "$signed" -eq 1 ]]; then
   case_dir="$work/unsigned"
   publish "$case_dir" "$version" "$af"
   expect_refusal "a release without SHA256SUMS.minisig is refused" "$case_dir" "has no SHA256SUMS.minisig" AF_INSTALL_VERSION="$version"
+
+  # ------------------------------------------- the published verify-then-run snippet
+  # install.sh's own one-liner pipes to sh without checking the digest or the signature the
+  # script is listed under. The snippet in its header (and in the README) is what actually uses
+  # that property, so it is executed here — both halves.
+  snippet="$work/verified-install.sh"
+  verified_install_snippet | sed "s|^tag=vX.Y.Z$|tag=v$version|" > "$snippet"
+  [[ -s "$snippet" ]] || fail "the verified-install snippet is missing from install.sh's header"
+  grep -q "^sh \"\$tmp/install.sh\"$" "$snippet" \
+    || fail "the verified-install snippet does not end by running the fetched install.sh" "$(cat "$snippet")"
+
+  # The README publishes the same lines; a reader must not get a stale copy of either.
+  readme_snippet="$(awk '/^```sh$/ { block = ""; on = 1; next } on && /^```$/ { on = 0 }
+                         on { block = block $0 "\n" }
+                         /^sh "\$tmp\/install.sh"$/ { printf "%s", block }' "$root/README.md")"
+  [[ "$readme_snippet" == "$(verified_install_snippet)" ]] \
+    || fail "README.md's verified-install block is not install.sh's header snippet" "$readme_snippet"
+  ok "the README publishes install.sh's verified-install snippet verbatim"
+
+  case_dir="$work/verified"
+  publish "$case_dir" "$version" "$af"
+  sign "$case_dir" "$version" release
+  output="$(sandboxed "$case_dir" sh "$snippet" 2>&1)" || fail "verified install" "$output"
+  [[ "$output" == *"af $version installed at"* ]] || fail "verified install: no installed line" "$output"
+  [[ -x "$case_dir/data/af/versions/$version/af" ]] || fail "verified install: nothing installed" "$output"
+  ok "the published snippet verifies the signature and this install.sh line, then installs"
+
+  case_dir="$work/tampered-installer"
+  publish "$case_dir" "$version" "$af" tampered-installer
+  sign "$case_dir" "$version" release
+  if output="$(sandboxed "$case_dir" sh "$snippet" 2>&1)"; then
+    fail "a tampered install.sh line is refused: the snippet succeeded" "$output"
+  fi
+  [[ "$output" == *"install.sh"*"FAILED"* || "$output" == *"checksum"* ]] \
+    || fail "a tampered install.sh line is refused: expected a checksum failure" "$output"
+  [[ ! -e "$case_dir/data/af/versions" && ! -e "$case_dir/bin/af" ]] \
+    || fail "a tampered install.sh line is refused: something was installed" "$output"
+  ok "a tampered install.sh line in a validly signed SHA256SUMS is refused before it runs"
 fi
 
 if [[ "$signed" -eq 1 ]]; then
