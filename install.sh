@@ -44,12 +44,17 @@ BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 # The first release with `af self`. Older releases cannot activate themselves or update back.
 FLOOR="0.7.1"
 
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) host="aarch64-apple-darwin" ;;
-  Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
-  Linux:aarch64|Linux:arm64) host="aarch64-unknown-linux-musl" ;;
-  Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/reviewctl --locked)" >&2; exit 1 ;;
-  *) echo "af: unsupported platform $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+# AF_INSTALL_TARGET names the target to install when it is not the one this host maps to —
+# a build for another libc, or a test harness installing a locally built binary. It chooses
+# which asset is fetched and nothing else: the archive must still be listed in SHA256SUMS and
+# match its digest (and its signature, from 0.8.0 on), exactly as the mapped target must.
+case "${AF_INSTALL_TARGET:+named}:$(uname -s):$(uname -m)" in
+  named:*) host="$AF_INSTALL_TARGET" ;;
+  :Darwin:arm64) host="aarch64-apple-darwin" ;;
+  :Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
+  :Linux:aarch64|:Linux:arm64) host="aarch64-unknown-linux-musl" ;;
+  :Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/reviewctl --locked)" >&2; exit 1 ;;
+  *) echo "af: unsupported platform $(uname -s)/$(uname -m) — fix: name the target with AF_INSTALL_TARGET" >&2; exit 1 ;;
 esac
 
 command -v gh >/dev/null 2>&1 || { echo "af: the GitHub CLI is required — fix: install gh, then gh auth login" >&2; exit 1; }

@@ -53,12 +53,13 @@ if [[ "$signed" -eq 1 ]]; then
   }
 fi
 
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) host="aarch64-apple-darwin" ;;
-  Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
-  Linux:aarch64|Linux:arm64) host="aarch64-unknown-linux-musl" ;;
-  *) echo "installer-test: install.sh installs no release on $(uname -s)/$(uname -m)" >&2; exit 1 ;;
-esac
+# The target under test is the one the binary under test was built for, not the one this host
+# maps to: a release ships musl for Linux while a dev build is gnu, and a receipt is only
+# recognised by a binary whose own target matches it. Publishing under the binary's own target
+# and naming it to install.sh keeps every verification step real on both.
+host="$(AF_SELF_OFFLINE=1 "$af" --version --json | sed -n 's/^ *"target": *"\(.*\)",\{0,1\}$/\1/p')"
+[ -n "$host" ] || { echo "installer-test: $af --version --json reported no target" >&2; exit 1; }
+export AF_INSTALL_TARGET="$host"
 version="$(AF_SELF_OFFLINE=1 "$af" --version | awk '{print $2}')"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "installer-test: $af --version reported '$version'" >&2; exit 1; }
 
@@ -162,7 +163,7 @@ sandboxed() {
   local case_dir="$1"
   shift
   mkdir -p "$case_dir/home"
-  env -i PATH="$shim:/usr/bin:/bin" HOME="$case_dir/home" \
+  env -i PATH="$shim:/usr/bin:/bin" HOME="$case_dir/home" AF_INSTALL_TARGET="$host" \
     XDG_CONFIG_HOME="$case_dir/config" XDG_DATA_HOME="$case_dir/data" XDG_STATE_HOME="$case_dir/state" \
     XDG_CACHE_HOME="$case_dir/cache" XDG_BIN_HOME="$case_dir/bin" \
     AF_RELEASE_SOURCE="$case_dir/releases" NO_COLOR=1 ${keyenv[@]+"${keyenv[@]}"} "$@"
